@@ -24226,6 +24226,18 @@ msgctxt "#39203"
 msgid "When enabled, your subtitle style preferences (font, colors, size, etc.) will override the native styling embedded in ASS / SSA subtitle files. When disabled, ASS / SSA subtitles are rendered with their original styles."
 msgstr ""
 
+#. Setting to make CC subtitles for hearing impaired only
+#: system/settings/settings.xml
+msgctxt "#39204"
+msgid "Set CC subtitles only for the hearing impaired"
+msgstr ""
+
+#. Help text for setting of label #39204
+#: system/settings/settings.xml
+msgctxt "#39205"
+msgid "By enabling it, CC subtitles will be labeled for the hearing impaired; this will affect the automatic selection of subtitles, which unless otherwise specified will not be displayed by default."
+msgstr ""
+
 #. Label for Bluetooth audio codec selection setting
 #: system/settings/settings.xml
 msgctxt "#39210"
