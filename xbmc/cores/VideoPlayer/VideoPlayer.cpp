@@ -1786,6 +1786,8 @@ void CVideoPlayer::ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket)
 
   if (CheckSceneSkip(m_CurrentVideo))
     drop = true;
+    
+  m_CurrentVideo.lastdts = pPacket->dts;
 
   m_CurrentVideo.lastdts = pPacket->dts;
 
@@ -4348,6 +4350,10 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
       CGUIDialogKaiToast::QueueNotification(g_localizeStrings.Get(16026), g_localizeStrings.Get(29805));
     }
     break;
+    case BD_EVENT_DISCONTINUITY:
+      CLog::Log(LOGDEBUG, "CVideoPlayer::OnDiscNavResult - libbluray discontinuity detected (DEMUXER_RESET)");
+      m_messenger.Put(std::make_shared<CDVDMsg>(CDVDMsg::DEMUXER_RESET));
+      break;
     default:
       break;
     }

@@ -1387,6 +1387,7 @@ bool CDVDDemuxFFmpeg::SeekTime(double time, bool backwards, double* startpts)
   }
   else
     return false;
+
 }
 
 bool CDVDDemuxFFmpeg::SeekByte(int64_t pos)

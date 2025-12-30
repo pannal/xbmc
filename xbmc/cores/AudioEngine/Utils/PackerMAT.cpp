@@ -187,6 +187,17 @@ bool CPackerMAT::PackTrueHD(const uint8_t* data, int size)
     }
   }
 
+  // LAV: Record the offset of frame time to output time, which is used to verify
+  // the size of the padding on discontinuities
+  if (m_lavStyleEnabled && m_state.outputTimingValid)
+  {
+    uint32_t prevOutput = static_cast<uint16_t>(m_state.outputTiming - frameSamples);
+    if (prevOutput < frameTime) // wrap around, output is always in front of frame time
+      prevOutput += UINT16_MAX;
+
+    m_state.nOutputTimeOffset = static_cast<int>(prevOutput - frameTime);
+  }
+
   // store frame time of the previous frame
   m_state.prevFrametime = frameTime;
   m_state.prevFrametimeValid = true;

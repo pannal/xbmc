@@ -2162,7 +2162,8 @@ bool CAMLCodec::OpenDecoder()
       am_private->gcodec.param  = (void*)EXTERNAL_PTS;
       if (m_hints.ptsinvalid)
         am_private->gcodec.param = (void*)(EXTERNAL_PTS | SYNC_OUTSIDE);
-      aml_hevc_nal_skip_policy((am_private->gcodec.dec_mode == STREAM_TYPE_STREAM) ? 1 : 2);
+      if (am_private->gcodec.dec_mode != STREAM_TYPE_STREAM) aml_hevc_nal_skip_policy(2);
+      // aml_hevc_nal_skip_policy((am_private->gcodec.dec_mode == STREAM_TYPE_STREAM) ? 1 : 2);
       break;
     case VFORMAT_VP9:
       am_private->gcodec.format = VIDEO_DEC_FORMAT_VP9;

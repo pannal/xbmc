@@ -16,6 +16,9 @@
 #include "utils/StringUtils.h"
 #include "utils/log.h"
 
+#include <algorithm>
+#include <functional>
+#include <iterator>
 #include <limits>
 
 CGUIString::CGUIString(iString start, iString end, bool carriageReturn)
@@ -62,7 +65,7 @@ void CGUITextLayout::Render(float x,
     return;
 
   // set the main text color
-  if (m_colors.size())
+  if (!m_colors.empty())
     m_colors[0] = color;
 
   // render the text at the required location, angle, and size
@@ -94,7 +97,7 @@ void CGUITextLayout::Render(float x,
     CServiceBroker::GetWinSystem()->GetGfxContext().RemoveTransform();
 }
 
-bool CGUITextLayout::UpdateScrollinfo(CScrollInfo &scrollInfo)
+bool CGUITextLayout::UpdateScrollinfo(CScrollInfo &scrollInfo) const
 {
   if (!m_font)
     return false;
@@ -103,7 +106,6 @@ bool CGUITextLayout::UpdateScrollinfo(CScrollInfo &scrollInfo)
 
   return m_font->UpdateScrollInfo(m_lines[0].m_text, scrollInfo);
 }
-
 
 void CGUITextLayout::RenderScrolling(float x,
                                      float y,
@@ -118,7 +120,7 @@ void CGUITextLayout::RenderScrolling(float x,
     return;
 
   // set the main text color
-  if (m_colors.size())
+  if (!m_colors.empty())
     m_colors[0] = color;
 
   // render the text at the required location, angle, and size
@@ -160,11 +162,6 @@ void CGUITextLayout::RenderOutline(float x,
   if (!m_font)
     return;
 
-  // set the outline color
-  std::vector<UTILS::COLOR::Color> outlineColors;
-  if (m_colors.size())
-    outlineColors.push_back(outlineColor);
-
   // center our text vertically
   if (alignment & XBFONT_CENTER_Y)
   {
@@ -196,14 +193,14 @@ void CGUITextLayout::RenderOutline(float x,
 
       // don't pass maxWidth through to the renderer for the same reason above: it will cause clipping
       // on the left.
-      m_borderFont->DrawText(bx, by, outlineColors, 0, string.m_text, align, 0);
+      m_borderFont->DrawText(bx, by, outlineColor, 0, string.m_text, align, 0);
       by += m_borderFont->GetLineHeight();
     }
     m_borderFont->End();
   }
 
   // set the main text color
-  if (m_colors.size())
+  if (!m_colors.empty())
     m_colors[0] = color;
 
   m_font->Begin();
@@ -580,15 +577,12 @@ void CGUITextLayout::WrapText(const vecText &text, float maxWidth)
       continue;
     }
 
-    std::vector<character_t> tmp;
-    tmp.reserve(line.m_text.size());
     auto widthOf = [&](const std::vector<character_t>::const_iterator start,
-                       const std::vector<character_t>::const_iterator end) -> float
+                       const std::vector<character_t>::const_iterator end)
     {
       if (start == end)
         return 0.0f;
-      tmp.assign(start, end);
-      return m_font->GetTextWidth(tmp);
+      return m_font->GetTextWidth({start, end});
     };
 
     auto skipLeadingSpaces = [&](vecText::const_iterator& it)
@@ -614,11 +608,11 @@ void CGUITextLayout::WrapText(const vecText &text, float maxWidth)
 
       const bool hasSpace = (wordEnd != line.m_text.end());
       const float wordWidth = widthOf(current, wordEnd);
-      const float spaceWidth = hasSpace ? widthOf(wordEnd, wordEnd + 1) : 0.0f;
 
       // Try to include word + trailing space
-      if (currentWidth + wordWidth + spaceWidth <= maxWidth)
-       {
+      if (const float spaceWidth = hasSpace ? widthOf(wordEnd, wordEnd + 1) : 0.0f;
+          currentWidth + wordWidth + spaceWidth <= maxWidth)
+      {
         currentWidth += wordWidth + spaceWidth;
         lastNonSpaceInLine = wordEnd; // exclude trailing space
         current = wordEnd;
@@ -634,7 +628,7 @@ void CGUITextLayout::WrapText(const vecText &text, float maxWidth)
         if (m_lines.size() >= nMaxLines)
           return;
 
-        current = hasSpace ? (wordEnd + 1) : wordEnd;
+        current = wordEnd;
         skipLeadingSpaces(current);
         currentStart = current;
         currentWidth = 0.0f;
@@ -664,13 +658,11 @@ void CGUITextLayout::WrapText(const vecText &text, float maxWidth)
 
       // current line is empty and word is too long: split by character using a safe linear scan.
       // Do not assume monotonic width because shaping/kerning can make width shrink or grow non-linearly.
-      tmp.clear();
       size_t bestCount = 0;
-      for (auto it = current; it != wordEnd; ++it)
+      for (auto it = std::next(current); it < wordEnd; ++it)
       {
-        tmp.push_back(*it);
-        if (m_font->GetTextWidth(tmp) <= maxWidth)
-          bestCount = tmp.size();
+        if (m_font->GetTextWidth({current, it}) <= maxWidth)
+          bestCount = std::distance(current, it);
       }
       if (bestCount == 0)
         bestCount = 1; // ensure progress even if a single glyph is wider than maxWidth
@@ -681,7 +673,6 @@ void CGUITextLayout::WrapText(const vecText &text, float maxWidth)
         return;
 
       current = cut;
-
       skipLeadingSpaces(current);
       currentStart = current;
       currentWidth = 0.0f;
@@ -698,7 +689,7 @@ void CGUITextLayout::WrapText(const vecText &text, float maxWidth)
   }
 }
 
-void CGUITextLayout::LineBreakText(const vecText &text, std::vector<CGUIString> &lines)
+void CGUITextLayout::LineBreakText(const vecText &text, std::vector<CGUIString> &lines) const
 {
   int nMaxLines = (m_maxHeight > 0 && m_font && m_font->GetLineHeight() > 0)?(int)ceilf(m_maxHeight / m_font->GetLineHeight()):-1;
   vecText::const_iterator lineStart = text.begin();
@@ -757,7 +748,7 @@ unsigned int CGUITextLayout::GetTextLength() const
 void CGUITextLayout::GetFirstText(vecText &text) const
 {
   text.clear();
-  if (m_lines.size())
+  if (!m_lines.empty())
     text = m_lines[0].m_text;
 }
 
