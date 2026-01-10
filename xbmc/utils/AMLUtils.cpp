@@ -26,7 +26,6 @@
 #include "application/ApplicationPlayer.h"
 #include "cores/DataCacheCore.h"
 #include "utils/log.h"
-#include "utils/JobManager.h"
 #include "utils/StringUtils.h"
 #include "windowing/GraphicContext.h"
 #include "utils/RegExp.h"
@@ -39,12 +38,15 @@
 #include "ServiceBroker.h"
 
 #include "settings/AdvancedSettings.h"
+#include "HDR10PlusConvert.h"
 
 #include "platform/linux/SysfsPath.h"
 
 #include "linux/fb.h"
 #include <sys/ioctl.h>
 #include <amcodec/codec.h>
+
+static bool vs10_conversion = false;
 
 static std::shared_ptr<CSettings> settings()
 {
@@ -60,20 +62,20 @@ static void aml_dv_reset_osd_max()
 static void aml_dv_toggle_frame(unsigned int mode)
 {
   CSysfsPath dolby_vision_flags{"/sys/module/amdolby_vision/parameters/dolby_vision_flags"};
-  if (dolby_vision_flags.Exists()) 
+  if (dolby_vision_flags.Exists())
   {
     dolby_vision_flags.Set(dolby_vision_flags.Get<unsigned int>().value() | FLAG_TOGGLE_FRAME);
-    CLog::Log(LOGINFO, "AMLUtils::{} - Toggle Frame - start - for mode [{}]", __FUNCTION__, aml_dv_output_mode_to_string(mode));
+    CLog::Log(LOGDEBUG, "AMLUtils::{} - Toggle Frame - start - for mode [{}]", __FUNCTION__, aml_dv_output_mode_to_string(mode));
     std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
-    while(true) { 
+    while(true) {
       if ((dolby_vision_flags.Get<unsigned int>().value() & FLAG_TOGGLE_FRAME) == 0) {
-        CLog::Log(LOGINFO, "AMLUtils::{} - Toggle Frame - done - for mode [{}]", __FUNCTION__, aml_dv_output_mode_to_string(mode));
+        CLog::Log(LOGDEBUG, "AMLUtils::{} - Toggle Frame - done - for mode [{}]", __FUNCTION__, aml_dv_output_mode_to_string(mode));
         break;
       }
       if ((std::chrono::system_clock::now() - now) >= std::chrono::milliseconds(3000)) {
-        CLog::Log(LOGINFO, "AMLUtils::{} - Toggle Frame - wait time elapsed - for mode [{}]", __FUNCTION__, aml_dv_output_mode_to_string(mode));
+        CLog::Log(LOGDEBUG, "AMLUtils::{} - Toggle Frame - wait time elapsed - for mode [{}]", __FUNCTION__, aml_dv_output_mode_to_string(mode));
         break;
-      } 
+      }
       usleep(10000); // wait 10ms
     }
   }
@@ -85,18 +87,18 @@ static void aml_dv_wait_dv_std_vsif_packet()
   CSysfsPath hdmi_pkt{"/sys/kernel/debug/amhdmitx/hdmi_pkt"};
   if (hdmi_pkt.Exists())
   {
-    CLog::Log(LOGINFO, "AMLUtils::{} - DV VSIF Packet - start", __FUNCTION__);
+    CLog::Log(LOGDEBUG, "AMLUtils::{} - DV VSIF Packet - start", __FUNCTION__);
     std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
-    while(true) { 
+    while(true) {
       std::string valstr = hdmi_pkt.Get<std::string>().value();
       if (valstr.find("DV STD hdmitx_parsing_vsifpkt") != std::string::npos) {
-        CLog::Log(LOGINFO, "AMLUtils::{} - DV VSIF Packet - done", __FUNCTION__);
+        CLog::Log(LOGDEBUG, "AMLUtils::{} - DV VSIF Packet - done", __FUNCTION__);
         break;
       }
       if ((std::chrono::system_clock::now() - now) >= std::chrono::milliseconds(3000)) {
-        CLog::Log(LOGINFO, "AMLUtils::{} - DV VSIF Packet - wait time elapsed", __FUNCTION__);
+        CLog::Log(LOGDEBUG, "AMLUtils::{} - DV VSIF Packet - wait time elapsed", __FUNCTION__);
         break;
-      } 
+      }
       usleep(10000); // wait 10ms
     }
   }
@@ -106,14 +108,20 @@ void aml_reset_audio_from_vs10_change()
 {
   CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSync(true);
   CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSeek(true);
-  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetAlgoForReset(1);
   CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetLastResetTime(0.0);
+  CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetAlgoForReset(1);
 }
 
-void aml_dv_set_vs10_mode(unsigned int mode)
+void aml_dv_set_vs10_mode(unsigned int mode, StreamHdrType hdrType)
 {
-  if (mode != DOLBY_VISION_OUTPUT_MODE_BYPASS) 
+  if (mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+  {
+    if (hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION)
+      vs10_conversion = true;
+    else
+      vs10_conversion = false;
     aml_dv_on(mode);
+  }
   else if (aml_is_dv_enable()) // DV BYPASS, and it is on - then switch it off.
     aml_dv_off();
 
@@ -125,18 +133,18 @@ void aml_dv_wait_video_off(int timeout)
   // Wait for dv_video_on to unset.
   CSysfsPath dv_video_on{"/sys/class/amdolby_vision/dv_video_on"};
   if (dv_video_on.Exists())
-  {      
-    CLog::Log(LOGINFO, "AMLUtils::{} - DV Video Off - start", __FUNCTION__);
+  {
+    CLog::Log(LOGDEBUG, "AMLUtils::{} - DV Video Off - start", __FUNCTION__);
     std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
-    while(true) { 
+    while(true) {
       if (dv_video_on.Get<int>().value() == 0) {
-        CLog::Log(LOGINFO, "AMLUtils::{} - DV Video Off - done", __FUNCTION__);
+        CLog::Log(LOGDEBUG, "AMLUtils::{} - DV Video Off - done", __FUNCTION__);
         break;
       }
       if ((std::chrono::system_clock::now() - now) >= std::chrono::seconds(timeout)) {
-        CLog::Log(LOGINFO, "AMLUtils::{} - DV Video Off - wait time elapsed", __FUNCTION__);
+        CLog::Log(LOGDEBUG, "AMLUtils::{} - DV Video Off - wait time elapsed", __FUNCTION__);
         break;
-      } 
+      }
       usleep(10000); // wait 10ms
     }
   }
@@ -177,6 +185,12 @@ static unsigned int aml_vs10_by_hdrtype(StreamHdrType hdrType, unsigned int bitD
       vs10_mode = aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
       break;
   }
+
+  if ((vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS) && (hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION))
+    vs10_conversion = true;
+  else
+    vs10_conversion = false;
+
   return vs10_mode;
 }
 
@@ -242,7 +256,7 @@ bool aml_display_support_dv_ll()
 {
   int support_ll = 0;
   CRegExp regexp;
-  regexp.RegComp("YCbCr_422_12BIT");
+  regexp.RegComp("LL_YCbCr_422_12BIT");
   std::string valstr;
   CSysfsPath dv_cap{"/sys/devices/virtual/amhdmitx/amhdmitx0/dv_cap"};
   if (dv_cap.Exists())
@@ -483,54 +497,136 @@ std::string aml_dv_type_to_string(enum DV_TYPE type)
     case DV_TYPE::DV_TYPE_VS10_ONLY:
       type_string = "3-VS10 Only";
       break;
+    case DV_TYPE::DV_TYPE_PLAYER_LED_HDR2:
+      type_string = "4-Player Led (HDR2)";
+      break;
   }
   return type_string;
 }
 
+void set_vsvdb_payload_ver(enum DV_TYPE dv_type, int max_lum_nits_value, int source_max_pq)
+{
+  if ((dv_type == DV_TYPE_DISPLAY_LED) ||
+      (max_lum_nits_value < 400) ||
+      ((max_lum_nits_value > 6450) && (source_max_pq == 4095)))
+    CalculateVSVDBPayload_2();
+  else
+    CalculateVSVDBPayload();
+}
+
 unsigned int aml_dv_on(unsigned int mode)
 {
+  bool dv_source_level_5(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_SOURCE_LEVEL_5));
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_meta_level_5", dv_source_level_5);
 
-  // set the DV-LL Dolby VSVDB limit to latest value from user.
-  int dv_ll_dolby_vsvdb_limit(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LL_VSVDB_LIMIT));
-  CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_dolby_vsvdb_source_lum_limit", dv_ll_dolby_vsvdb_limit);
+  bool dv_source_level_5_osdst(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_SOURCE_LEVEL_5_OSDST));
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_meta_level_5_osdst", dv_source_level_5_osdst);
 
-  // set the Dolby VSVDB parameter to latest value from user.
-  bool dv_dolby_vsvdb_inject(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_INJECT));
-  CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_dolby_vsvdb_inject", dv_dolby_vsvdb_inject ? 1 : 0);
+  int xbmc_dv_vsvdb_source_lum_limit_num = 0;
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_vsvdb_source_lum_limit_num", xbmc_dv_vsvdb_source_lum_limit_num);
 
-  if (dv_dolby_vsvdb_inject) {
-    std::string dv_dolby_vsvdb_payload(settings()->GetString(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_PAYLOAD));
-    CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_dolby_vsvdb_payload", dv_dolby_vsvdb_payload);
-  }
-
-  // set the HDR Infoframe parameter to latest value from user.
-  bool dv_hdr_inject(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR_INJECT));
-  CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_hdr_inject", dv_hdr_inject ? 1 : 0);
-
-  if (dv_hdr_inject) {
-    std::string dv_hdr_payload(settings()->GetString(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR_PAYLOAD));
-    CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_hdr_payload", dv_hdr_payload);
-  }
-
-  // set the Colorimetery to latest value from user.
-  int colorimetry(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_COLORIMETRY_FOR_STD));
+  xbmc_dv_cap::dv_ver_i = 0;
+  aml_get_dv_cap();
+  enum DV_COLORIMETRY colorimetry = DV_COLORIMETRY_AMLOGIC;
+  if (xbmc_dv_cap::dv_ver_i == 2) colorimetry = DV_COLORIMETRY_REMOVE;
   CSysfsPath("/sys/module/hdmitx20/parameters/dovi_tv_led_bt2020", (colorimetry == DV_COLORIMETRY_BT2020NC) ? 'Y' : 'N');
   CSysfsPath("/sys/module/hdmitx20/parameters/dovi_tv_led_no_colorimetry", (colorimetry == DV_COLORIMETRY_REMOVE) ? 'Y' : 'N');
 
-  // set source metadata handling
-  bool dv_source_levels_metadata(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_SOURCE_LEVELS_METADATA)); 
-  CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_use_source_meta_levels", dv_source_levels_metadata);
+  DOVIStreamMetadata dovi_stream_metadata;
+  dovi_stream_metadata = CServiceBroker::GetDataCacheCore().GetVideoDoViStreamMetadata();
+  int source_max_pq = static_cast<int>(dovi_stream_metadata.source_max_pq);
+  enum DV_TYPE dv_type(static_cast<DV_TYPE>(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE)));
+  int max_lum_nits_value(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM));
 
-  int dv_source_level_5(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_SOURCE_LEVEL_5));
-  CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_keep_source_meta_level_5", dv_source_level_5);
+  bool dv_type_vp_auto(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE_VP_AUTO));
+  int dv_vp(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR));
+  if ((dv_vp != 0) || (dv_type == DV_TYPE_DISPLAY_LED) || (max_lum_nits_value < max_pq_to_nits(source_max_pq))) dv_type_vp_auto = false;
+  if (dv_type_vp_auto)
+  {
+    switch (dv_type)
+    {
+      case DV_TYPE_PLAYER_LED_HDR:
+        dv_vp = 1;
+        break;
+      case DV_TYPE_PLAYER_LED_HDR2:
+        dv_vp = 2;
+        break;
+      case DV_TYPE_PLAYER_LED_LLDV:
+        dv_vp = 3;
+        break;
+      default:
+        break;
+    }
+  }
+  if ((CServiceBroker::GetDataCacheCore().GetVideoFps() > 32.0f) && ((dv_vp == 4) || (dv_vp == 5)))
+  {
+    if (dv_vp == 4) dv_vp = 6;
+    else if (dv_vp == 5) dv_vp = 7;
+  }
+  if ((dv_vp != 0) && vs10_conversion)
+  {
+    switch (dv_vp)
+    {
+      case 1:
+        dv_type = DV_TYPE_PLAYER_LED_HDR;
+        break;
+      case 2:
+        dv_type = DV_TYPE_PLAYER_LED_HDR2;
+        break;
+      case 3:
+        dv_type = DV_TYPE_PLAYER_LED_LLDV;
+        break;
+      case 4:
+        dv_type = DV_TYPE_PLAYER_LED_LLDV;
+        break;
+      default:
+        break;
+    }
+    dv_vp = 0;
+    vs10_conversion = false;
+  }
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_vp", dv_vp);
 
-  int dv_source_level_6(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_SOURCE_LEVEL_6));
-  CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_keep_source_meta_level_6", dv_source_level_6);
+  int dv_vp_tm(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR_TM));
+  dv_vp_tm = 4;
+  CSysfsPath dvprofile{"/sys/module/amdolby_vision/parameters/xbmc_dv_profile"};
+  if (dvprofile.Exists())
+  {
+    int dv_profile = dvprofile.Get<int>().value();
+    if ((dv_vp != 0) && (dv_vp_tm > 3) && (dv_profile == 5)) dv_vp_tm = 3;
+    if ((dv_vp != 0) && (dv_vp_tm > 2) && ((dv_vp == 5) || (dv_vp == 7))) dv_vp_tm = 2;
+  }
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_vp_tm", dv_vp_tm);
 
-  enum DV_TYPE dv_type(aml_dv_type());
-  
-  // set the HDR for LLDV if DV_TYPE_PLAYER_LED_HDR.
-  CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_hdr_for_lldv", (dv_type == DV_TYPE_PLAYER_LED_HDR) ? 'Y' : 'N'); 
+  if (dv_vp > 2) dv_type = DV_TYPE_PLAYER_LED_LLDV;
+  else if (dv_vp == 1) dv_type = DV_TYPE_PLAYER_LED_HDR;
+  else if (dv_vp == 2) dv_type = DV_TYPE_PLAYER_LED_HDR2;
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_type", dv_type);
+
+  bool lldv_to_hdr10_fmt = false;
+  if (dv_vp == 1) lldv_to_hdr10_fmt = false;
+  else if ((dv_vp == 2) && (CServiceBroker::GetDataCacheCore().GetVideoFps() < 32.0f)) lldv_to_hdr10_fmt = true;
+  else if ((dv_vp == 0) && (dv_type == DV_TYPE_PLAYER_LED_HDR)) lldv_to_hdr10_fmt = false;
+  else if ((dv_vp == 0) && (dv_type == DV_TYPE_PLAYER_LED_HDR2) && (CServiceBroker::GetDataCacheCore().GetVideoFps() < 32.0f)) lldv_to_hdr10_fmt = true;
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_lldv_to_hdr10_fmt", lldv_to_hdr10_fmt);
+
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_hdr10_for_dv_ll", ((dv_type == DV_TYPE_PLAYER_LED_HDR) || (dv_type == DV_TYPE_PLAYER_LED_HDR2)) ? 'Y' : 'N');
+  int xbmc_dv_hdr10_for_dv_ll_inject_num = 0;
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_hdr10_for_dv_ll_inject_num", xbmc_dv_hdr10_for_dv_ll_inject_num);
+
+  bool dv_dolby_vsvdb_inject(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_INJECT));
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_vsvdb_inject", dv_dolby_vsvdb_inject);
+  int xbmc_dv_vsvdb_inject_num = 0;
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_vsvdb_inject_num", xbmc_dv_vsvdb_inject_num);
+
+  set_vsvdb_payload_ver(dv_type, max_lum_nits_value, source_max_pq);
+
+  std::string dv_dolby_vsvdb_payload(settings()->GetString(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_PAYLOAD));
+  if ((dv_vp != 0) && (dv_vp_tm > 1))
+    dv_dolby_vsvdb_payload = "27FE012E5699AA";
+  else if ((dv_vp != 0) && (dv_vp_tm == 1))
+    dv_dolby_vsvdb_payload = "27FE012D5699AA";
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_vsvdb_payload", dv_dolby_vsvdb_payload);
 
   // setup display led or player led
   CSysfsPath dolby_vision_flags{"/sys/module/amdolby_vision/parameters/dolby_vision_flags"};
@@ -540,13 +636,24 @@ unsigned int aml_dv_on(unsigned int mode)
   {
     if (dv_type == DV_TYPE_DISPLAY_LED) // Display Led (DV-Std)
     {
+      dolby_vision_flags.Set(dolby_vision_flags.Get<unsigned int>().value() & ~(FLAG_FORCE_RGB_OUTPUT));
       dolby_vision_flags.Set(dolby_vision_flags.Get<unsigned int>().value() & ~(FLAG_FORCE_DOVI_LL));
       dolby_vision_ll_policy.Set(DOLBY_VISION_LL_DISABLE);
     }
     else // Player Led (DV-LL and HDR) or VS10 Only.
     {
-      dolby_vision_flags.Set(dolby_vision_flags.Get<unsigned int>().value() | FLAG_FORCE_DOVI_LL);
-      dolby_vision_ll_policy.Set(DOLBY_VISION_LL_YUV422);
+      if ((dv_vp == 5) || (dv_vp == 7))
+      {
+        dolby_vision_flags.Set(dolby_vision_flags.Get<unsigned int>().value() | FLAG_FORCE_DOVI_LL);
+        dolby_vision_flags.Set(dolby_vision_flags.Get<unsigned int>().value() | FLAG_FORCE_RGB_OUTPUT);
+        dolby_vision_ll_policy.Set(DOLBY_VISION_LL_RGB444);
+      }
+      else
+      {
+        dolby_vision_flags.Set(dolby_vision_flags.Get<unsigned int>().value() & ~(FLAG_FORCE_RGB_OUTPUT));
+        dolby_vision_flags.Set(dolby_vision_flags.Get<unsigned int>().value() | FLAG_FORCE_DOVI_LL);
+        dolby_vision_ll_policy.Set(DOLBY_VISION_LL_YUV422);
+      }
     }
   }
 
@@ -558,12 +665,13 @@ unsigned int aml_dv_on(unsigned int mode)
   CSysfsPath dolby_vision_mode{"/sys/module/amdolby_vision/parameters/dolby_vision_mode"};
   unsigned int existing_mode = dolby_vision_mode.Get<unsigned int>().value();
   bool modeChange(existing_mode != mode);
-  CLog::Log(LOGINFO, "AMLUtils::{} - mode change [{}], existing mode [{}], this mode [{}]", __FUNCTION__, modeChange, aml_dv_output_mode_to_string(existing_mode), aml_dv_output_mode_to_string(mode));
+  CLog::Log(LOGDEBUG, "AMLUtils::{} - mode change [{}], existing mode [{}], this mode [{}]", __FUNCTION__, modeChange, aml_dv_output_mode_to_string(existing_mode), aml_dv_output_mode_to_string(mode));
   if (modeChange) CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_mode", mode);
   CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_policy", DOLBY_VISION_FORCE_OUTPUT_MODE);  
   CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_enable", "Y");
 
-  if (modeChange) {
+  if (modeChange)
+  {
     aml_dv_toggle_frame(mode);
 
     // Re-trigger update resolution when mode IPT Tunnel and in Display Led (DV-Std).
@@ -573,7 +681,8 @@ unsigned int aml_dv_on(unsigned int mode)
     if ((mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL) && (dv_type == DV_TYPE_DISPLAY_LED))
       aml_dv_wait_dv_std_vsif_packet();
 
-    if ((mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL) || (mode == DOLBY_VISION_OUTPUT_MODE_IPT)) {
+    if ((mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL) || (mode == DOLBY_VISION_OUTPUT_MODE_IPT))
+    {
       aml_dv_trigger_update_resolution(StreamHdrType::HDR_TYPE_DOLBYVISION); // Required for 60Hz VS10 > DV.
       aml_dv_display_auto_now();
     }
@@ -589,7 +698,7 @@ void aml_dv_off()
   unsigned int existing_mode = dolby_vision_mode.Get<unsigned int>().value();
   bool modeChange(existing_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS);
 
-  CLog::Log(LOGINFO, "AMLUtils::{} - mode change [{}], existing mode [{}], this mode [{}]", 
+  CLog::Log(LOGDEBUG, "AMLUtils::{} - mode change [{}], existing mode [{}], this mode [{}]", 
     __FUNCTION__, modeChange,
     aml_dv_output_mode_to_string(existing_mode), 
     aml_dv_output_mode_to_string(DOLBY_VISION_OUTPUT_MODE_BYPASS));
@@ -598,6 +707,9 @@ void aml_dv_off()
   CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_policy", DOLBY_VISION_FOLLOW_SOURCE);
   if (modeChange) aml_dv_toggle_frame(DOLBY_VISION_OUTPUT_MODE_BYPASS);
   CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_enable", "N");
+
+  CSysfsPath amdolby_vision_debug{"/sys/class/amdolby_vision/debug"};
+  if (amdolby_vision_debug.Exists()) CSysfsPath("/sys/class/amdolby_vision/debug", "enable_fel 0");
 
   // Finally reset back to bypass for consistency.
   CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_policy", DOLBY_VISION_FORCE_OUTPUT_MODE);
@@ -616,18 +728,18 @@ unsigned int aml_dv_dolby_vision_mode()
 void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth)
 {
   enum DV_MODE dv_mode(aml_dv_mode());
-  CLog::Log(LOGINFO, "AMLUtils::{} - Checking DV for DV mode: [{}], DV type: [{}]", __FUNCTION__, aml_dv_mode_to_string(dv_mode), aml_dv_type_to_string(aml_dv_type()));
+  CLog::Log(LOGDEBUG, "AMLUtils::{} - Checking DV for DV mode: [{}], DV type: [{}]", __FUNCTION__, aml_dv_mode_to_string(dv_mode), aml_dv_type_to_string(aml_dv_type()));
   if (dv_mode == DV_MODE_ON || dv_mode == DV_MODE_ON_DEMAND) {
 
-    unsigned int vs10_mode = aml_vs10_by_hdrtype(hdrType, bitDepth);    
+    unsigned int vs10_mode = aml_vs10_by_hdrtype(hdrType, bitDepth);
 
-    if (vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS) 
+    if (vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
       vs10_mode = aml_dv_on(vs10_mode);
     else if (aml_is_dv_enable()) // DV BYPASS, and it is on - then switch it off.
-      aml_dv_off(); 
+      aml_dv_off();
 
     bool content_is_dv(hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION);
-    CLog::Log(LOGINFO, "AMLUtils::{} - DV is [{}], requested with vs10 mode: [{}], set for: [{}]",  __FUNCTION__, aml_is_dv_enable(), aml_dv_output_mode_to_string(vs10_mode), content_is_dv ? "content" : "mapping");
+    CLog::Log(LOGDEBUG, "AMLUtils::{} - DV is [{}], requested with vs10 mode: [{}], set for: [{}]",  __FUNCTION__, aml_is_dv_enable(), aml_dv_output_mode_to_string(vs10_mode), content_is_dv ? "content" : "mapping");
   }
 }
 
@@ -672,9 +784,9 @@ void aml_dv_start()
   }
 }
 
-void aml_dv_set_subtitles(bool visible) 
-{
-  CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_subtitles", visible ? 1 : 0);
+void aml_dv_set_subtitles(bool visible) {
+
+  CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_subtitles", visible);
 }
 
 void aml_dv_set_xbmc_osd()
@@ -685,14 +797,7 @@ void aml_dv_set_xbmc_osd()
                     wm.IsWindowVisible(WINDOW_VIDEO_MENU) ||
                     CServiceBroker::GetDataCacheCore().GetAVChangeExtended();
 
-  CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_xbmc_osd", osd_active ? 1 : 0);
-}
-
-bool aml_dv_use_active_area()
-{
-  return (aml_is_dv_enable() &&
-          (aml_dv_dolby_vision_mode() == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL) &&
-         settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_RESTRICT_OVERLAYS));
+  CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_xbmc_osd", osd_active);
 }
 
 enum DV_MODE aml_dv_mode()
@@ -740,7 +845,7 @@ void aml_set_transfer_pq(StreamHdrType hdrType, unsigned int bitDepth) {
     }
   }
 
-  CLog::Log(LOGINFO, "AMLUtils::{} - {}DV support, {}, HDR type is {}, transfer PQ is {}",
+  CLog::Log(LOGDEBUG, "AMLUtils::{} - {}DV support, {}, HDR type is {}, transfer PQ is {}",
           __FUNCTION__,
           aml_support_dolby_vision() ? "" : "no ",
           dv_on ? "enabled" : "disabled",
@@ -819,7 +924,7 @@ void aml_probe_hdmi_audio()
     {
       if (i->find("Audio") == std::string::npos)
       {
-        for (std::vector<std::string>::const_iterator j = i + 1; j != probe_str.end(); ++j)
+        for (auto j = i + 1; j != probe_str.end(); ++j)
         {
           if      (j->find("{1,")  != std::string::npos)
             printf(" PCM found {1,\n");
@@ -872,13 +977,10 @@ int aml_axis_value(AML_DISPLAY_AXIS_PARAM param)
   return value[param];
 }
 
-bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res)
+bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO &res)
 {
-  if (!res)
-    return false;
-
-  res->iWidth = 0;
-  res->iHeight= 0;
+  res.iWidth = 0;
+  res.iHeight= 0;
 
   if(!mode)
     return false;
@@ -893,21 +995,21 @@ bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res)
 
   if (StringUtils::EqualsNoCase(fromMode, "panel"))
   {
-    res->iWidth = aml_axis_value(AML_DISPLAY_AXIS_PARAM_WIDTH);
-    res->iHeight= aml_axis_value(AML_DISPLAY_AXIS_PARAM_HEIGHT);
-    res->iScreenWidth = aml_axis_value(AML_DISPLAY_AXIS_PARAM_WIDTH);
-    res->iScreenHeight= aml_axis_value(AML_DISPLAY_AXIS_PARAM_HEIGHT);
-    res->fRefreshRate = 60;
-    res->dwFlags = D3DPRESENTFLAG_PROGRESSIVE;
+    res.iWidth = aml_axis_value(AML_DISPLAY_AXIS_PARAM_WIDTH);
+    res.iHeight= aml_axis_value(AML_DISPLAY_AXIS_PARAM_HEIGHT);
+    res.iScreenWidth = aml_axis_value(AML_DISPLAY_AXIS_PARAM_WIDTH);
+    res.iScreenHeight= aml_axis_value(AML_DISPLAY_AXIS_PARAM_HEIGHT);
+    res.fRefreshRate = 60;
+    res.dwFlags = D3DPRESENTFLAG_PROGRESSIVE;
   }
   else if (StringUtils::EqualsNoCase(fromMode, "4k2ksmpte") || StringUtils::EqualsNoCase(fromMode, "smpte24hz"))
   {
-    res->iWidth = nativeGui ? 4096 : 1920;
-    res->iHeight= nativeGui ? 2160 : 1080;
-    res->iScreenWidth = 4096;
-    res->iScreenHeight= 2160;
-    res->fRefreshRate = 24;
-    res->dwFlags = D3DPRESENTFLAG_PROGRESSIVE;
+    res.iWidth = nativeGui ? 4096 : 1920;
+    res.iHeight= nativeGui ? 2160 : 1080;
+    res.iScreenWidth = 4096;
+    res.iScreenHeight= 2160;
+    res.fRefreshRate = 24;
+    res.dwFlags = D3DPRESENTFLAG_PROGRESSIVE;
   }
   else
   {
@@ -954,48 +1056,49 @@ bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res)
       return false;
     }
 
-    res->iWidth = nativeGui ? width : std::min(width, 1920);
-    res->iHeight= nativeGui ? height : std::min(height, 1080);
-    res->iScreenWidth = width;
-    res->iScreenHeight = height;
-    res->dwFlags = (*smode == 'p') ? D3DPRESENTFLAG_PROGRESSIVE : D3DPRESENTFLAG_INTERLACED;
+    res.iWidth = nativeGui ? width : std::min(width, 1920);
+    res.iHeight= nativeGui ? height : std::min(height, 1080);
+    res.iScreenWidth = width;
+    res.iScreenHeight = height;
+    res.dwFlags = (*smode == 'p') ? D3DPRESENTFLAG_PROGRESSIVE : D3DPRESENTFLAG_INTERLACED;
 
     switch (rrate)
     {
       case 23:
       case 29:
       case 59:
-        res->fRefreshRate = (float)((rrate + 1)/1.001f);
+        res.fRefreshRate = (float)((rrate + 1)/1.001f);
         break;
       default:
-        res->fRefreshRate = (float)rrate;
+        res.fRefreshRate = (float)rrate;
         break;
     }
   }
 
-  res->bFullScreen   = true;
-  res->iSubtitles    = (int)(0.965 * res->iHeight);
-  res->fPixelRatio   = 1.0f;
-  res->strId         = fromMode;
-  res->strMode       = StringUtils::Format("{:d}x{:d} @ {:.2f}{} - Full Screen", res->iScreenWidth, res->iScreenHeight, res->fRefreshRate,
-    res->dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "");
+  res.bFullScreen   = true;
+  res.iSubtitles    = (int)(0.965 * res.iHeight);
+  res.fPixelRatio   = 1.0f;
+  res.strId         = fromMode;
+  res.strMode       = StringUtils::Format("{:d}x{:d} @ {:.2f}{} - Full Screen",
+                                          res.iScreenWidth, res.iScreenHeight, res.fRefreshRate,
+                                          res.dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "");
 
   if (fromMode.find("FramePacking") != std::string::npos)
   {
-    res->iBlanking = res->iScreenHeight == 1080 ? 45 : 30;
-    res->dwFlags |= D3DPRESENTFLAG_MODE3DFP;
+    res.iBlanking = res.iScreenHeight == 1080 ? 45 : 30;
+    res.dwFlags |= D3DPRESENTFLAG_MODE3DFP;
   }
 
   if (fromMode.find("TopBottom") != std::string::npos)
-    res->dwFlags |= D3DPRESENTFLAG_MODE3DTB;
+    res.dwFlags |= D3DPRESENTFLAG_MODE3DTB;
 
   if (fromMode.find("SidebySide") != std::string::npos)
-    res->dwFlags |= D3DPRESENTFLAG_MODE3DSBS;
+    res.dwFlags |= D3DPRESENTFLAG_MODE3DSBS;
 
-  return res->iWidth > 0 && res->iHeight> 0;
+  return ((res.iWidth > 0) && (res.iHeight > 0));
 }
 
-bool aml_get_native_resolution(RESOLUTION_INFO *res)
+bool aml_get_native_resolution(RESOLUTION_INFO &res)
 {
   std::string mode;
   CSysfsPath display_mode{"/sys/class/display/mode"};
@@ -1010,7 +1113,7 @@ bool aml_get_native_resolution(RESOLUTION_INFO *res)
     if (frac_rate_policy.Exists())
       fractional_rate = frac_rate_policy.Get<int>().value();
     if (fractional_rate == 1)
-      res->fRefreshRate /= 1.001f;
+      res.fRefreshRate /= 1.001f;
   }
 
   return result;
@@ -1090,7 +1193,6 @@ bool aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolutions)
       valstr = user_dcapfile_3d.Get<std::string>().value();
   }
 
-
   std::vector<std::string> probe_str = StringUtils::Split(valstr, "\n");
 
   resolutions.clear();
@@ -1099,7 +1201,7 @@ bool aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolutions)
   {
     if (((StringUtils::StartsWith(i->c_str(), "4k2k")) && (aml_support_h264_4k2k() > AML_NO_H264_4K2K)) || !(StringUtils::StartsWith(i->c_str(), "4k2k")))
     {
-      if (aml_mode_to_resolution(i->c_str(), &res))
+      if (aml_mode_to_resolution(i->c_str(), res))
         resolutions.push_back(res);
 
       if (aml_has_frac_rate_policy())
@@ -1304,7 +1406,7 @@ bool aml_read_reg(const std::string &reg, uint32_t &reg_val)
           {
             try
             {
-              reg_val = std::stoul(match, 0, 16);
+              reg_val = std::stoul(match, nullptr, 16);
               return true;
             }
             catch (...) {}
@@ -1381,7 +1483,7 @@ FpsInfo gather_fps_data() {
 
     if ((iss.ignore(std::numeric_limits<std::streamsize>::max(), ':') && iss >> std::hex >> input_fps) &&
         (iss.ignore(std::numeric_limits<std::streamsize>::max(), ':') && iss >> std::hex >> output_fps)) {
-        
+
       // Add new entry
       auto now = std::chrono::steady_clock::now();
       fps_history.push_back({input_fps, output_fps, now});
@@ -1389,7 +1491,7 @@ FpsInfo gather_fps_data() {
       // Remove old entries
       fps_history.erase(
         std::remove_if(
-            fps_history.begin(), fps_history.end(), 
+            fps_history.begin(), fps_history.end(),
             [&now](const FpsData& data) {
               return (now - data.timestamp) > HISTORY_DURATION;
             }
@@ -1484,17 +1586,35 @@ std::string aml_video_fps_drop() {
   return format_fps_info().drop_info;
 }
 
-void aml_toogle_video_freerun_mode() 
-{
-  CSysfsPath freerun_mode{"/sys/class/video/freerun_mode"};
-  if (freerun_mode.Exists()) {
-    freerun_mode.Set(0);
-    // Schedule back to 1 in 1 sec.
-    CServiceBroker::GetJobManager()->Submit([freerun_mode]() mutable {
-      usleep(1000 * 1000);
-      freerun_mode.Set(1);
-    });
-  }
+void aml_dv_send_md_levels() {
+  DOVIStreamMetadata dovi_stream_metadata;
+  dovi_stream_metadata = CServiceBroker::GetDataCacheCore().GetVideoDoViStreamMetadata();
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_md_source_max_pq", dovi_stream_metadata.source_max_pq);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_md_source_min_pq", dovi_stream_metadata.source_min_pq);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_md_level_6_max_lum", dovi_stream_metadata.level6_max_lum);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_md_level_6_min_lum", dovi_stream_metadata.level6_min_lum);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_md_level_6_max_cll", dovi_stream_metadata.level6_max_cll);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_md_level_6_max_fall", dovi_stream_metadata.level6_max_fall);
+}
+
+void aml_dv_send_hdr10_data() {
+  HDRStaticMetadataInfo hdrStaticMetadataInfo;
+  hdrStaticMetadataInfo = CServiceBroker::GetDataCacheCore().GetVideoHDRStaticMetadataInfo();
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_hdr10_max_lum", hdrStaticMetadataInfo.max_lum);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_hdr10_min_lum", hdrStaticMetadataInfo.min_lum);
+  // CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_hdr10_colour_primaries", hdrStaticMetadataInfo.colour_primaries);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_hdr10_max_cll", hdrStaticMetadataInfo.max_cll);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_hdr10_max_fall", hdrStaticMetadataInfo.max_fall);
+}
+
+void aml_dv_send_el_type() {
+  DOVIStreamInfo dovi_stream_info;
+  dovi_stream_info = CServiceBroker::GetDataCacheCore().GetVideoDoViStreamInfo();
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_el_type", dovi_stream_info.dovi_el_type);
+}
+
+void aml_dv_send_profile(int dvprofile) {
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_profile", dvprofile);
 }
 
 void aml_dv_hdr10plus_conversion (bool hdr10plus_conversion) {
@@ -1548,4 +1668,89 @@ void aml_reset_audio_from_play_from_resume()
   CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetResetSeek(true);
   CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetLastResetTime(0.0);
   CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->SetAlgoForReset(1);
+}
+
+void aml_get_dv_cap()
+{
+  if (aml_display_support_dv())
+  {
+    CSysfsPath dv_cap{"/sys/devices/virtual/amhdmitx/amhdmitx0/dv_cap"};
+    if (dv_cap.Exists())
+    {
+      std::string valstr = dv_cap.Get<std::string>().value();
+
+      int pos = valstr.find(": V");
+      std::string dv_ver_s = valstr.substr(pos+3, 1);
+      // int dv_ver_i = std::stoi(dv_ver_s);
+      xbmc_dv_cap::dv_ver_i = std::stoi(dv_ver_s);
+      // CSysfsPath("/sys/module/amdolby_vision/parameters/dv_cap_version", dv_ver_i);
+
+      pos = valstr.find("h: ");
+      std::string dv_len_s = valstr.substr(pos+3, 2);
+      // int dv_len_i = std::stoi(dv_len_s) + 1;
+      xbmc_dv_cap::dv_len_i = std::stoi(dv_len_s) + 1;
+      // CSysfsPath("/sys/module/amdolby_vision/parameters/dv_cap_length", dv_len_i);
+
+      pos = valstr.find("B: ");
+      // std::string dv_vsvdb_s = valstr.substr(pos+3, dv_len_i);
+      xbmc_dv_cap::dv_vsvdb_s = valstr.substr(pos+3, xbmc_dv_cap::dv_len_i);
+      // CSysfsPath("/sys/module/amdolby_vision/parameters/dv_cap_vsvdb", dv_vsvdb_s);    
+
+      pos = valstr.find("M: ");
+      int pos2 = valstr.find("nti");
+      std::string dv_max_v1_s = valstr.substr(pos+3, pos2-pos-1);
+      // int dv_max_v1_i = std::stoi(dv_max_v1_s);
+      xbmc_dv_cap::dv_max_v1_i = std::stoi(dv_max_v1_s);
+      // CSysfsPath("/sys/module/amdolby_vision/parameters/dv_cap_tmax_v1", dv_max_v1_i);
+
+      pos = valstr.find("Q: ");
+      pos2 = valstr.find("pqi");
+      std::string dv_max_v2_s = valstr.substr(pos+3, pos2-pos-1);
+      // int dv_max_v2_i = std::stoi(dv_max_v2_s);
+      xbmc_dv_cap::dv_max_v2_i = std::stoi(dv_max_v2_s);
+      // CSysfsPath("/sys/module/amdolby_vision/parameters/dv_cap_tmax_v2",dv_max_v2_i);
+
+      pos = valstr.find("Rx: ");
+      pos2 = valstr.find("rxi");
+      std::string dv_rx_s = valstr.substr(pos+3, pos2-pos-1);
+      // int dv_rx_i = std::stoi(dv_rx_s);
+      xbmc_dv_cap::dv_rx_i = std::stoi(dv_rx_s);
+      // CSysfsPath("/sys/module/amdolby_vision/parameters/dv_cap_rx",dv_rx_i);
+
+      pos = valstr.find("Ry: ");
+      pos2 = valstr.find("ryi");
+      std::string dv_ry_s = valstr.substr(pos+3, pos2-pos-1);
+      // int dv_ry_i = std::stoi(dv_ry_s);
+      xbmc_dv_cap::dv_ry_i = std::stoi(dv_ry_s);
+      // CSysfsPath("/sys/module/amdolby_vision/parameters/dv_cap_ry",dv_ry_i);
+
+      pos = valstr.find("Gx: ");
+      pos2 = valstr.find("gxi");
+      std::string dv_gx_s = valstr.substr(pos+3, pos2-pos-1);
+      // int dv_gx_i = std::stoi(dv_gx_s);
+      xbmc_dv_cap::dv_gx_i = std::stoi(dv_gx_s);
+      // CSysfsPath("/sys/module/amdolby_vision/parameters/dv_cap_gx",dv_gx_i);
+
+      pos = valstr.find("Gy: ");
+      pos2 = valstr.find("gyi");
+      std::string dv_gy_s = valstr.substr(pos+3, pos2-pos-1);
+      // int dv_gy_i = std::stoi(dv_gy_s);
+      xbmc_dv_cap::dv_gy_i = std::stoi(dv_gy_s);
+      // CSysfsPath("/sys/module/amdolby_vision/parameters/dv_cap_gy",dv_gy_i);
+
+      pos = valstr.find("Bx: ");
+      pos2 = valstr.find("bxi");
+      std::string dv_bx_s = valstr.substr(pos+3, pos2-pos-1);
+      // int dv_bx_i = std::stoi(dv_bx_s);
+      xbmc_dv_cap::dv_bx_i = std::stoi(dv_bx_s);
+      // CSysfsPath("/sys/module/amdolby_vision/parameters/dv_cap_bx",dv_bx_i);
+
+      pos = valstr.find("By: ");
+      pos2 = valstr.find("byi");
+      std::string dv_by_s = valstr.substr(pos+3, pos2-pos-1);
+      // int dv_by_i = std::stoi(dv_by_s);
+      xbmc_dv_cap::dv_by_i = std::stoi(dv_by_s);
+      // CSysfsPath("/sys/module/amdolby_vision/parameters/dv_cap_by",dv_by_i);
+    }
+  }
 }
