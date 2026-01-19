@@ -211,3 +211,4 @@ protected:
 };
 
 void aml_dv_hdr10plus_conversion(bool hdr10plus_conversion);
+void aml_kodi_set_cd_cs(int cd_cs_type);

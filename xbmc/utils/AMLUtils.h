@@ -54,7 +54,8 @@ enum DV_TYPE : int
   DV_TYPE_DISPLAY_LED = 0,
   DV_TYPE_PLAYER_LED_LLDV,
   DV_TYPE_PLAYER_LED_HDR,
-  DV_TYPE_VS10_ONLY
+  DV_TYPE_VS10_ONLY,
+  DV_TYPE_PLAYER_LED_HDR2
 };
 
 enum DV_COLORIMETRY : int
@@ -70,13 +71,14 @@ enum DV_COLORIMETRY : int
 #define AML_G12A    0x28
 #define AML_G12B    0x29
 #define AML_SM1     0x2B
-#define AML_SC2     0x32
 
 #define FLAG_FORCE_DOVI_LL      (unsigned int)(0x4000)
+#define FLAG_FORCE_RGB_OUTPUT   (unsigned int)(0x8000)
 #define FLAG_TOGGLE_FRAME       (unsigned int)(0x80000000)
 
 #define DOLBY_VISION_LL_DISABLE (unsigned int)(0)
 #define DOLBY_VISION_LL_YUV422  (unsigned int)(1)
+#define DOLBY_VISION_LL_RGB444  (unsigned int)(2)
 
 #define DOLBY_VISION_FOLLOW_SOURCE     (unsigned int)(1)
 #define DOLBY_VISION_FORCE_OUTPUT_MODE (unsigned int)(2)
@@ -121,10 +123,9 @@ void aml_dv_display_auto_now();
 void aml_dv_start();
 void aml_dv_set_subtitles(bool visible);
 void aml_dv_set_xbmc_osd();
-bool aml_dv_use_active_area();
+unsigned int aml_vs10_by_setting(const std::string setting);
 enum DV_MODE aml_dv_mode();
 enum DV_TYPE aml_dv_type();
-unsigned int aml_vs10_by_setting(const std::string setting);
 void aml_dv_enable_fel();
 void aml_hevc_nal_skip_policy(const int value);
 void aml_set_transfer_pq(StreamHdrType hdrType, unsigned int bitDepth);
@@ -132,8 +133,8 @@ bool aml_has_frac_rate_policy();
 void aml_video_mute(bool mute);
 void aml_set_audio_passthrough(bool passthrough);
 void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
-bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res);
-bool aml_get_native_resolution(RESOLUTION_INFO *res);
+bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO &res);
+bool aml_get_native_resolution(RESOLUTION_INFO &res);
 bool aml_set_native_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name, const int stereo_mode, bool force_mode_switch);
 bool aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolutions);
 bool aml_set_display_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name, bool force_mode_switch);
@@ -149,7 +150,6 @@ bool aml_set_reg_ignore_alpha();
 bool aml_unset_reg_ignore_alpha();
 std::string aml_video_fps_info();
 std::string aml_video_fps_drop();
-void aml_toogle_video_freerun_mode();
 
 void set_vsvdb_payload_ver(enum DV_TYPE dv_type, int max_lum_nits_value, int source_max_pq);
 void CalculateVSVDBPayload();
@@ -161,3 +161,21 @@ void aml_reset_audio_from_player_pause();
 void aml_reset_audio_from_window_home();
 void aml_reset_audio_from_play_from_beginning();
 void aml_reset_audio_from_play_from_resume();
+
+void aml_kodi_reset_cd_cs();
+
+void aml_get_dv_cap();
+struct xbmc_dv_cap
+{
+  static inline int dv_ver_i = 0;
+  static inline int dv_len_i = 0;
+  static inline int dv_max_v1_i = 0;
+  static inline int dv_max_v2_i = 0;
+  static inline int dv_rx_i = 0;
+  static inline int dv_ry_i = 0;
+  static inline int dv_gx_i = 0;
+  static inline int dv_gy_i = 0;
+  static inline int dv_bx_i = 0;
+  static inline int dv_by_i = 0;
+  static inline std::string dv_vsvdb_s = "";
+};
