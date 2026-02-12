@@ -74,12 +74,20 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
       m_codecName = "pt-ac3";
       if (m_lavStyleSyncEnabled)
         m_jitterThreshold = JITTER_THRESHOLD_DEFAULT;
+
+      m_parser.SetDefeatAC3DialNorm(
+          CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+              CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM));
       break;
 
     case CAEStreamInfo::STREAM_TYPE_EAC3:
       m_codecName = "pt-eac3";
       if (m_lavStyleSyncEnabled)
         m_jitterThreshold = JITTER_THRESHOLD_DEFAULT;
+
+      m_parser.SetDefeatAC3DialNorm(
+          CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+              CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM));
       break;
 
     case CAEStreamInfo::STREAM_TYPE_DTSHD_MA:
@@ -177,7 +185,10 @@ void CDVDAudioCodecPassthrough::Dispose()
 
 bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
 {
-  // Update dialNorm defeat setting dynamically (allows toggling during playback)
+  // Update dialNorm defeat settings dynamically (allows toggling during playback)
+  m_parser.SetDefeatAC3DialNorm(
+      CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+          CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM));
   m_parser.SetDefeatTrueHDDialNorm(
       CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
           CSettings::SETTING_COREELEC_AUDIO_TRUEHD_ATMOS_DIALNORM));
