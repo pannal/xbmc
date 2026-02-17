@@ -3221,6 +3221,31 @@
             <update type="change" />
           </updates>
         </setting>
+        <setting id="audiooutput.btcodec" type="string" label="39210" help="39211">
+          <level>0</level>
+          <default>Default</default>
+          <dependencies>
+            <dependency type="visible" on="property" name="bluetoothconnected">true</dependency>
+          </dependencies>
+          <constraints>
+            <options>bluetoothcodecs</options>
+          </constraints>
+          <control type="list" format="string" />
+          <updates>
+            <update type="change" />
+          </updates>
+        </setting>
+        <setting id="audiooutput.btvolumeboost" type="boolean" label="39212" help="39213">
+          <level>0</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible" on="property" name="bluetoothconnected">true</dependency>
+          </dependencies>
+          <control type="toggle" />
+          <updates>
+            <update type="change" />
+          </updates>
+        </setting>
         <setting id="audiooutput.channels" type="integer" label="34100" help="36362">
           <level>0</level>
           <default>1</default> <!-- AE_CH_LAYOUT_2_0 -->

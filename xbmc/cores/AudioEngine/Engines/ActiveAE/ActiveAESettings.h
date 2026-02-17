@@ -50,6 +50,10 @@ public:
                                                      std::vector<IntegerSettingOption>& list,
                                                      int& current,
                                                      void* data);
+  static void SettingOptionsBluetoothCodecsFiller(const std::shared_ptr<const CSetting>& setting,
+                                                   std::vector<StringSettingOption>& list,
+                                                   std::string& current,
+                                                   void* data);
   static bool IsSettingVisible(const std::string& condition,
                                const std::string& value,
                                const std::shared_ptr<const CSetting>& setting,

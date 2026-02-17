@@ -65,6 +65,7 @@ struct AudioSettings
   int silenceTimeoutMinutes;
   float mixSubLevel;
   bool lowLatencyMode;
+  bool btVolumeBoost;
 };
 
 class CActiveAEControlProtocol : public Protocol
@@ -310,6 +311,8 @@ protected:
   void UnconfigureSink();
   void Dispose();
   void LoadSettings();
+  bool IsSinkA2DP();
+  void ApplyA2DPBoost();
   void ValidateOutputDevices(bool saveChanges);
   bool NeedReconfigureBuffers();
   bool NeedReconfigureSink();

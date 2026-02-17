@@ -343,6 +343,7 @@ struct SinkInfoStruct
   pa_threaded_mainloop *mainloop;
   int samplerate;
   pa_channel_map map;
+  std::string btCodec;
   SinkInfoStruct()
   {
     list = nullptr;
@@ -353,6 +354,7 @@ struct SinkInfoStruct
     mainloop = NULL; //called into C
     samplerate = 0;
     pa_channel_map_init(&map);
+    btCodec = "";
   }
 };
 
@@ -386,7 +388,17 @@ static void SinkInfoCallback(pa_context *c, const pa_sink_info *i, int eol, void
       sinkStruct->isBTDevice =
           StringUtils::EndsWithNoCase(std::string(i->name), std::string("a2dp_sink"));
       if (sinkStruct->isBTDevice)
+      {
         CLog::Log(LOGINFO, "Found BT Device - will adjust buffers to larger values");
+
+        // Extract codec from PulseAudio proplist
+        const char *codec_prop = pa_proplist_gets(i->proplist, "bluetooth.a2dp_codec");
+        if (codec_prop)
+        {
+          sinkStruct->btCodec = std::string(codec_prop);
+          CLog::Log(LOGINFO, "BT Codec: {}", codec_prop);
+        }
+      }
 
       sinkStruct->samplerate = i->sample_spec.rate;
       sinkStruct->device_found = true;
@@ -779,6 +791,7 @@ CAESinkPULSE::CAESinkPULSE()
 {
   m_IsAllocated = false;
   m_passthrough = false;
+  m_isBTDevice = false;
   m_MainLoop = NULL;
   m_BytesPerSecond = 0;
   m_BufferSize = 0;
@@ -789,6 +802,7 @@ CAESinkPULSE::CAESinkPULSE()
   m_IsStreamPaused = false;
   m_volume_needs_update = false;
   m_periodSize = 0;
+  m_btCodec = "";
   pa_cvolume_init(&m_Volume);
 }
 
@@ -950,6 +964,10 @@ bool CAESinkPULSE::Initialize(AEAudioFormat &format, std::string &device)
   pa_stream_set_state_callback(m_Stream, StreamStateCallback, m_MainLoop);
   pa_stream_set_write_callback(m_Stream, StreamRequestCallback, this);
   pa_stream_set_latency_update_callback(m_Stream, StreamLatencyUpdateCallback, m_MainLoop);
+
+  // Store Bluetooth device info
+  m_isBTDevice = sinkStruct.isBTDevice;
+  m_btCodec = sinkStruct.btCodec;
 
   // default buffer construction
   // align with AE's max buffer

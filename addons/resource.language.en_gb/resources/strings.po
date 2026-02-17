@@ -24093,6 +24093,30 @@ msgctxt "#39201"
 msgid "HDR10+"
 msgstr ""
 
+#. Label for Bluetooth audio codec selection setting
+#: system/settings/settings.xml
+msgctxt "#39210"
+msgid "Bluetooth Audio Codec"
+msgstr ""
+
+#. Help text for Bluetooth audio codec selection setting
+#: system/settings/settings.xml
+msgctxt "#39211"
+msgid "Select the Bluetooth audio codec to use when connected to Bluetooth headphones or speakers. Higher quality codecs require device support."
+msgstr ""
+
+#. Label for Bluetooth A2DP volume boost setting
+#: system/settings/settings.xml
+msgctxt "#39212"
+msgid "Bluetooth Volume Boost"
+msgstr ""
+
+#. Help text for Bluetooth A2DP volume boost setting
+#: system/settings/settings.xml
+msgctxt "#39213"
+msgid "Apply a 25% volume boost when using Bluetooth (A2DP) audio output. This can help improve volume levels with quieter Bluetooth devices."
+msgstr ""
+
 #. Dolby Vision RPU Conversion
 #: system/settings/settings.xml
 msgctxt "#39300"

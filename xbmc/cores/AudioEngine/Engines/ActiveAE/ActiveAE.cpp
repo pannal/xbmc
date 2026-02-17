@@ -597,6 +597,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::SETSILENCETIMEOUT,
                                               &m_settings.silenceTimeoutMinutes, sizeof(int));
           ChangeResamplers();
+          ApplyA2DPBoost();
           if (!NeedReconfigureBuffers() && !NeedReconfigureSink())
             return;
           m_state = AE_TOP_RECONFIGURING;
@@ -779,6 +780,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
             msg->Reply(CActiveAEDataProtocol::ACC, &stream, sizeof(CActiveAEStream*));
             LoadSettings();
             Configure();
+            ApplyA2DPBoost();
             if (!m_extError)
             {
               m_state = AE_TOP_CONFIGURED_PLAY;
@@ -2748,6 +2750,10 @@ void CActiveAE::LoadSettings()
   m_settings.silenceTimeoutMinutes = settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_STREAMSILENCE);
   m_settings.mixSubLevel = settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_MIXSUBLEVEL) / 100.0;
   m_settings.lowLatencyMode = settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_LOWLATENCY);
+  m_settings.btVolumeBoost = settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_BTVOLUMEBOOST);
+
+  // Apply A2DP boost if needed
+  ApplyA2DPBoost();
 }
 
 void CActiveAE::ValidateOutputDevices(bool saveChanges)
@@ -2799,6 +2805,51 @@ void CActiveAE::ValidateOutputDevices(bool saveChanges)
         CLog::LogF(LOGDEBUG, "the change of the passthrough output device setting has been saved");
       }
     }
+  }
+}
+
+bool CActiveAE::IsSinkA2DP()
+{
+  // Check if the current audio sink is a Bluetooth A2DP device
+  FILE* pipe = popen("pactl list sinks short 2>/dev/null | grep bluez | grep RUNNING", "r");
+  if (!pipe)
+    return false;
+
+  char buffer[256];
+  bool isA2DP = false;
+
+  if (fgets(buffer, sizeof(buffer), pipe) != nullptr)
+  {
+    std::string sinkInfo(buffer);
+    // A2DP sinks end with "a2dp_sink" in their name
+    isA2DP = (sinkInfo.find("a2dp_sink") != std::string::npos);
+  }
+
+  pclose(pipe);
+  return isA2DP;
+}
+
+void CActiveAE::ApplyA2DPBoost()
+{
+  bool shouldBoost = m_settings.btVolumeBoost && IsSinkA2DP();
+  float targetAmp = shouldBoost ? 1.25f : 1.0f;
+
+  // Apply to all active streams and count changes
+  int streamsUpdated = 0;
+  for (auto stream : m_streams)
+  {
+    if (stream->m_amplify != targetAmp)
+    {
+      stream->SetAmplification(targetAmp);
+      streamsUpdated++;
+    }
+  }
+
+  // Log once if any streams were updated
+  if (streamsUpdated > 0)
+  {
+    CLog::Log(LOGDEBUG, "CActiveAE::ApplyA2DPBoost - {} A2DP volume boost ({}x) to {} stream(s)",
+              shouldBoost ? "Applied" : "Removed", targetAmp, streamsUpdated);
   }
 }
 
