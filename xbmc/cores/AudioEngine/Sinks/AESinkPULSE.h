@@ -62,6 +62,7 @@ private:
   bool m_IsAllocated;
   bool m_passthrough;
   bool m_IsStreamPaused;
+  bool m_isBTDevice;
 
   AEAudioFormat m_format;
   unsigned int m_BytesPerSecond;
@@ -76,6 +77,8 @@ private:
 
   pa_context *m_Context;
   pa_threaded_mainloop *m_MainLoop;
+
+  std::string m_btCodec;
 
   static std::unique_ptr<CDriverMonitor> m_pMonitor;
 };

@@ -137,6 +137,22 @@ bool SupportsScreenMove(const std::string& condition,
   return CServiceBroker::GetWinSystem()->SupportsScreenMove();
 }
 
+bool IsBluetoothConnected(const std::string& condition,
+                          const std::string& value,
+                          const SettingConstPtr& setting,
+                          void* data)
+{
+  // Check if Bluetooth audio device is connected
+  FILE* pipe = popen("pactl list sinks short 2>/dev/null | grep bluez", "r");
+  if (!pipe)
+    return false;
+
+  char buffer[256];
+  bool connected = (fgets(buffer, sizeof(buffer), pipe) != nullptr);
+  pclose(pipe);
+  return connected;
+}
+
 bool IsHDRDisplay(const std::string& condition,
                   const std::string& value,
                   const SettingConstPtr& setting,
@@ -492,6 +508,7 @@ void CSettingConditions::Initialize()
   m_complexConditions.emplace("supportsvideosuperresolution", SupportsVideoSuperResolution);
   m_complexConditions.emplace("supportsdolbyvision", SupportsDolbyVision);
   m_complexConditions.emplace("ishdrdisplay", IsHDRDisplay);
+  m_complexConditions.emplace("bluetoothconnected", IsBluetoothConnected);
   m_complexConditions.emplace("ismasteruser", IsMasterUser);
   m_complexConditions.emplace("hassubtitlesfontextensions", HasSubtitlesFontExtensions);
   m_complexConditions.emplace("profilecanwritedatabase", ProfileCanWriteDatabase);
