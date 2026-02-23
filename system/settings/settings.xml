@@ -3152,6 +3152,21 @@
         <default>40</default>
         <control type="slider" format="percentage" range="0,100" />
       </setting>
+      <setting id="videoscreen.guisdrsaturation" type="integer" label="36095" help="36998">
+        <requirement>
+          <or>
+            <condition>HAS_DX</condition>
+            <condition>HAS_MEDIACODEC</condition>
+            <condition>HAVE_AMCODEC</condition>
+          </or>
+        </requirement>
+        <dependencies>
+          <dependency type="visible" on="property" name="ishdrdisplay"/>
+        </dependencies>
+        <level>2</level>
+        <default>50</default>
+        <control type="slider" format="percentage" range="0,100" />
+      </setting>
       </group>
       <group id="3" label="14126">
         <setting id="videoscreen.whitelist" type="list[string]" parent="videoscreen.screen" label="14126" help="36443">

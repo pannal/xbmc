@@ -1915,7 +1915,7 @@ void CAMLCodec::SetProcessInfoVideoDetails()
   }
 }
 
-bool CAMLCodec::OpenDecoder()
+bool CAMLCodec::OpenDecoder(bool restart)
 {
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
@@ -2075,7 +2075,8 @@ bool CAMLCodec::OpenDecoder()
   if (hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
     aml_dv_send_profile(hints.dovi.dv_profile);
 
-  aml_dv_open(hints.hdrType, hints.bitdepth);
+  if (!restart)
+    aml_dv_open(hints.hdrType, hints.bitdepth);
 
   // Now have the HDRType resolved, ok to set the transfer pq - so renderer can set the shaders as needed.
   aml_set_transfer_pq(hints.hdrType, hints.bitdepth);
@@ -2286,7 +2287,7 @@ void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map)
   }
 }
 
-void CAMLCodec::CloseDecoder()
+void CAMLCodec::CloseDecoder(bool restart)
 {
   CLog::Log(LOGINFO, "CAMLCodec::CloseDecoder");
 
@@ -2315,7 +2316,8 @@ void CAMLCodec::CloseDecoder()
   // return tsync to default so external apps work
   CSysfsPath("/sys/class/tsync/enable", 1);
 
-  aml_dv_wait_video_off(m_decoder_timeout);
+  if (!restart)
+    aml_dv_wait_video_off(m_decoder_timeout);
 
   // restore the saved system blackout_policy value
   aml_blackout_policy(blackout_policy);
@@ -2324,10 +2326,10 @@ void CAMLCodec::CloseDecoder()
 
   CloseAmlVideo();
 
-  aml_dv_close();
-
-  // Ensure kernel OSD PQ bypass doesn't remain enabled after playback ends.
-  aml_set_osd_pq_bypass(StreamHdrType::HDR_TYPE_NONE);
+  if (!restart)
+    aml_dv_close();
+  if (!restart)
+    aml_set_osd_pq_bypass(StreamHdrType::HDR_TYPE_NONE);
 }
 
 void CAMLCodec::CloseAmlVideo()

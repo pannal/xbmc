@@ -625,8 +625,8 @@ void CDVDVideoCodecAmlogic::Reset(void)
 {
   if ((aml_get_cpufamily_id() != AML_G12B) && (m_hints.dovi_el_type == DOVIELType::TYPE_FEL) && (m_dataCacheCore.GetSpeed() == 1.0f))
   {
-    m_Codec->CloseDecoder();
-    m_Codec->OpenDecoder();
+    m_Codec->CloseDecoder(true);
+    m_Codec->OpenDecoder(true);
   }
   else
   {

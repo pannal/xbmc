@@ -8,6 +8,8 @@
 
 #include "WinSystemAmlogic.h"
 
+#include <algorithm>
+#include <cmath>
 #include <string.h>
 #include <float.h>
 
@@ -297,8 +299,19 @@ float CWinSystemAmlogic::GetGuiSdrPeakLuminance() const
 {
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   const int guiSdrPeak = settings->GetInt(CSettings::SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE);
+  constexpr float kMinNits = 30.0f;
+  constexpr float kMaxNits = 1000.0f;
+  const float exponent = std::log(kMaxNits / kMinNits) * (static_cast<float>(guiSdrPeak) / 100.0f);
+  float sdrWhiteNits = std::clamp(kMinNits * std::exp(exponent), kMinNits, kMaxNits);
+  return std::clamp(sdrWhiteNits, 0.0f, 10000.0f) / 100.0f;
+}
 
-  return ((0.7f * guiSdrPeak + 30.0f) / 100.0f);
+float CWinSystemAmlogic::GetGuiSdrSaturation() const
+{
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  const int satClamped = std::clamp(
+      settings->GetInt(CSettings::SETTING_VIDEOSCREEN_GUISDRSATURATION), 0, 100);
+  return std::clamp(static_cast<float>(satClamped) / 50.0f, 0.0f, 2.0f);
 }
 
 bool CWinSystemAmlogic::Hide()

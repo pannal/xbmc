@@ -993,17 +993,12 @@ void aml_set_transfer_pq(StreamHdrType hdrType, unsigned int bitDepth) {
   bool dv_on(aml_dv_mode() != DV_MODE_OFF);
   bool hdr(false);
 
-  if (hdr_display) // Only relevant with an hdr_display 
+  if (hdr_display) // Only relevant with an hdr_display
   {
-    // TODO: any need to test display supports each hdr content (inc fallback) specifically?
-    hdr = (hdrType != StreamHdrType::HDR_TYPE_NONE);
-
-    // Check for vs10 up or down mapping.
-    if (dv_on) {
-      unsigned int vs10_mode = aml_vs10_by_hdrtype(hdrType, bitDepth);
-      hdr = (((vs10_mode == DOLBY_VISION_OUTPUT_MODE_BYPASS) && hdr) ||
-              (vs10_mode <= DOLBY_VISION_OUTPUT_MODE_HDR10));
-    }
+    // Only enable shader PQ OETF for native HDR10/HDR10+ to match osd_pq_bypass.
+    // When DV/vs10 is active, the kernel DV pipeline handles OSD PQ.
+    hdr = !dv_on && ((hdrType == StreamHdrType::HDR_TYPE_HDR10) ||
+                     (hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS));
   }
 
   CLog::Log(LOGINFO, "AMLUtils::{} - {}DV support, {}, HDR type is {}, transfer PQ is {}",

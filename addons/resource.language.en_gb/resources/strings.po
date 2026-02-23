@@ -19334,7 +19334,13 @@ msgctxt "#36059"
 msgid "Wake-Up by active route"
 msgstr ""
 
-#empty strings from id 36060 to 36095
+#empty strings from id 36060 to 36094
+
+#. Label of setting "System / Display / GUI SDR saturation in HDR PQ mode"
+#: system/settings/settings.xml
+msgctxt "#36095"
+msgid "GUI SDR saturation in HDR PQ mode"
+msgstr ""
 
 #. Label of setting "System / Display / Use system HDR/SDR brightness balance"
 #: system/settings/settings.xml
@@ -22237,7 +22243,15 @@ msgctxt "#36921"
 msgid "songs"
 msgstr ""
 
-#empty strings from id 36922 to 36999
+#empty strings from id 36922 to 36997
+
+#. Description of setting with label #36095 "System / Display / GUI SDR saturation in HDR PQ mode"
+#: system/settings/settings.xml
+msgctxt "#36998"
+msgid "Adjusts the color saturation of GUI elements while the display is in HDR PQ mode. Values below 50% desaturate, above 50% increase saturation."
+msgstr ""
+
+#empty string id 36999
 
 #: xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamNavigator.cpp
 msgctxt "#37000"
