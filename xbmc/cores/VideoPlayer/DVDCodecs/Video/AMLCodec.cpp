@@ -1929,17 +1929,13 @@ bool CAMLCodec::OpenDecoder()
   m_decoder_bypass_buffer_ready = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderBypassBufferReady;
   m_decoder_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderBuffer;
   m_decoder_stream_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderStreamBuffer;
-  m_decoder_minimum_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderMinimumBuffer;
-  m_decoder_minimum_stream_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderMinimumStreamBuffer;
   m_buffer_level_ready = false;
 
-  CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder - Decoder settings: timeout: [{:d}s], bypass buffer ready: [{:d}], buffer: [{:.1f}%], stream buffer: [{:.1f}%], minimum buffer: [{:.1f}%], minimum stream buffer: [{:.1f}%]",
+  CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder - Decoder settings: timeout: [{:d}s], bypass buffer ready: [{:d}], buffer: [{:.1f}%], stream buffer: [{:.1f}%]",
     m_decoder_timeout,
     m_decoder_bypass_buffer_ready,
     m_decoder_buffer,
-    m_decoder_stream_buffer,
-    m_decoder_minimum_buffer,
-    m_decoder_minimum_stream_buffer);
+    m_decoder_stream_buffer);
 
   if (!OpenAmlVideo(hints))
   {
@@ -2397,9 +2393,6 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
                               ? new_buffer_level > m_decoder_stream_buffer
                               : new_buffer_level > m_decoder_buffer);
 
-    m_minimum_buffer_level = streambuffer 
-                               ? m_decoder_minimum_stream_buffer
-                               : m_decoder_minimum_buffer;
   }
 
   if (!m_opened || !pData || free_len == 0 || new_buffer_level >= 100.0f)
@@ -2634,16 +2627,13 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
   float buffer_level = GetBufferLevel();
   std::chrono::milliseconds elapsed_since_last_frame(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()
     - m_tp_last_frame).count());
-  bool streambuffer(am_private->gcodec.dec_mode == STREAM_TYPE_STREAM);
 
   if (!m_opened)
     return CDVDVideoCodec::VC_ERROR;
 
-  if (!m_drain && m_buffer_level_ready && (buffer_level > m_minimum_buffer_level) && ((ret = DequeueBuffer()) == 0))
+  if (m_buffer_level_ready && ((ret = DequeueBuffer()) == 0))
   {
     videoPicture.iFlags = 0;
-
-    m_minimum_buffer_level = (streambuffer ? m_minimum_buffer_level : 0.0f);
 
     m_tp_last_frame = std::chrono::system_clock::now();
 
@@ -2701,8 +2691,6 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
   }
   else if (m_drain)
     return CDVDVideoCodec::VC_EOF;
-  else if (buffer_level > (streambuffer ? 100.0f : 10.0f))
-    return CDVDVideoCodec::VC_NONE;
   else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
   {
     CLog::Log(LOGERROR, "CAMLCodec::GetPicture: time elapsed since last frame: {:d}ms ({:d}:{})",
@@ -2710,6 +2698,11 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     m_tp_last_frame = std::chrono::system_clock::now();
     return CDVDVideoCodec::VC_FLUSHED;
   }
+  else if ((buffer_level > 10.0f &&
+            elapsed_since_last_frame < std::chrono::milliseconds(500)) ||
+           (m_buffer_level_ready &&
+            elapsed_since_last_frame < std::chrono::milliseconds(am_private->video_rate * 1000 / UNIT_FREQ)))
+    return CDVDVideoCodec::VC_NONE;
 
   return CDVDVideoCodec::VC_BUFFER;
 }

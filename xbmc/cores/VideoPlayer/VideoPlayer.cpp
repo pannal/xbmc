@@ -1491,18 +1491,31 @@ void CVideoPlayer::Process()
     }
 
     // if the queues are full, no need to read more
-    if ((!m_VideoPlayerAudio->AcceptsData() && m_CurrentAudio.id >= 0) ||
-        (!m_VideoPlayerVideo->AcceptsData() && m_CurrentVideo.id >= 0))
     {
-      if (m_playSpeed == DVD_PLAYSPEED_PAUSE &&
-          m_demuxerSpeed != DVD_PLAYSPEED_PAUSE)
+      bool audioFull = (!m_VideoPlayerAudio->AcceptsData() && m_CurrentAudio.id >= 0);
+      bool videoFull = (!m_VideoPlayerVideo->AcceptsData() && m_CurrentVideo.id >= 0);
+
+      // When only audio is full but video still accepts data, keep demuxing.
+      // This prevents audio queue fullness from starving the video queue,
+      // which is critical for high-bitrate FEL content where the video thread
+      // consumes packets faster than the demuxer can produce them.
+      // Audio packets read during this window temporarily exceed the audio
+      // queue's nominal max, but the audio player drains the excess at
+      // real-time rate.
+      bool shouldBlock = videoFull || (audioFull && m_CurrentVideo.id < 0);
+
+      if (shouldBlock)
       {
-        if (m_pDemuxer)
-          m_pDemuxer->SetSpeed(DVD_PLAYSPEED_PAUSE);
-        m_demuxerSpeed = DVD_PLAYSPEED_PAUSE;
+        if (m_playSpeed == DVD_PLAYSPEED_PAUSE &&
+            m_demuxerSpeed != DVD_PLAYSPEED_PAUSE)
+        {
+          if (m_pDemuxer)
+            m_pDemuxer->SetSpeed(DVD_PLAYSPEED_PAUSE);
+          m_demuxerSpeed = DVD_PLAYSPEED_PAUSE;
+        }
+        CThread::Sleep(10ms);
+        continue;
       }
-      CThread::Sleep(10ms);
-      continue;
     }
 
     // adjust demuxer speed; some rtsp servers wants to know for i.e. ff
