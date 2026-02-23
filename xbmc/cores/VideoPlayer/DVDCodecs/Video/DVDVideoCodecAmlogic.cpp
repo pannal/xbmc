@@ -24,6 +24,8 @@
 
 #define __MODULE_NAME__ "DVDVideoCodecAmlogic"
 
+static constexpr int EL_STARVATION_THRESHOLD = 3;
+
 CAMLVideoBufferPool::~CAMLVideoBufferPool()
 {
   CLog::Log(LOGDEBUG, "CAMLVideoBufferPool::~CAMLVideoBufferPool: Deleting {:d} buffers", static_cast<unsigned int>(m_videoBuffers.size()) );
@@ -460,6 +462,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   int data_added = false;
   bool dual_layer_converted = false;
   bool set_osd_max = false;
+  bool bl_only_flush = false;
+  double bl_only_pts = packet.pts;
 
   if (pData)
   {
@@ -477,6 +481,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
           uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
           uint32_t iSizeBackup = std::get<1>(dual_layer_packet);
           bool isELPackageBackup = std::get<2>(dual_layer_packet);
+          double ptsBackup = std::get<3>(dual_layer_packet);
 
           if (isELPackageBackup != packet.isELPackage)
           {
@@ -492,15 +497,38 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
                 packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSizeBackup);
               dual_layer_converted = m_bitstream->Convert(pData, iSize, pDataBackup, iSizeBackup, packet.pts);
             }
+            m_el_starvation_count = 0;
+          }
+          else if (!packet.isELPackage && !isELPackageBackup)
+          {
+            // Both BL packets — EL is absent (track ended early or gap in stream).
+            // Flush BL-only after starvation threshold; the kernel DV compositor
+            // handles EL absence gracefully via el_track_ended fast path.
+            m_el_starvation_count++;
+            if (m_el_starvation_count >= EL_STARVATION_THRESHOLD)
+            {
+              CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: EL starvation (count {:d}), flushing queued BL pts:{:.3f} without EL",
+                __FUNCTION__, m_el_starvation_count, ptsBackup / DVD_TIME_BASE);
+              if (m_bitstream->Convert(pDataBackup, iSizeBackup, ptsBackup))
+              {
+                KODI::MEMORY::AlignedFree(pDataBackup);
+                m_packages.pop_front();
+                uint8_t *pCurrentBackup = static_cast<uint8_t*>(KODI::MEMORY::AlignedMalloc(packet.iSize + AV_INPUT_BUFFER_PADDING_SIZE, 16));
+                memcpy(pCurrentBackup, packet.pData, packet.iSize);
+                m_packages.push_back(std::make_tuple(pCurrentBackup, packet.iSize, false, packet.pts));
+                bl_only_flush = true;
+                bl_only_pts = ptsBackup;
+              }
+            }
           }
         }
 
-        if (!dual_layer_converted)
+        if (!dual_layer_converted && !bl_only_flush)
         {
           // backup package and don't send to decoder yet
           uint8_t *pDataBackup = static_cast<uint8_t*>(KODI::MEMORY::AlignedMalloc(packet.iSize + AV_INPUT_BUFFER_PADDING_SIZE, 16));
           memcpy(pDataBackup, packet.pData, packet.iSize);
-          m_packages.push_back(std::make_tuple(pDataBackup, iSize, packet.isELPackage));
+          m_packages.push_back(std::make_tuple(pDataBackup, iSize, packet.isELPackage, packet.pts));
           CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
             packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
 
@@ -509,8 +537,31 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       }
       else
       {
-        if (!m_bitstream->Convert(pData, iSize, packet.pts))
-          return true;
+        // Block Addition FEL: EL may be in AV_PKT_DATA_MATROSKA_BLOCKADDITIONAL side data
+        bool ba_el_found = false;
+        if (m_hints.dovi_el_type == DOVIELType::TYPE_FEL && aml_dolby_vision_enabled() &&
+            packet.pSideData && packet.iSideDataElems > 0)
+        {
+          const auto* sd = static_cast<const AVPacketSideData*>(packet.pSideData);
+          for (int i = 0; i < packet.iSideDataElems; i++)
+          {
+            if (sd[i].type == AV_PKT_DATA_MATROSKA_BLOCKADDITIONAL && sd[i].size > 8)
+            {
+              uint8_t* el_data = sd[i].data + 8; // skip 8-byte BlockAddID prefix
+              int el_size = static_cast<int>(sd[i].size) - 8;
+
+              if (!m_bitstream->Convert(pData, iSize, el_data, el_size, packet.pts))
+                return true;
+              ba_el_found = true;
+              break;
+            }
+          }
+        }
+        if (!ba_el_found)
+        {
+          if (!m_bitstream->Convert(pData, iSize, packet.pts))
+            return true;
+        }
       }
 
       if (!m_bitstream->CanStartDecode())
@@ -549,7 +600,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     }
   }
 
-  data_added = m_Codec->AddData(pData, iSize, packet.dts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : packet.pts);
+  data_added = m_Codec->AddData(pData, iSize, packet.dts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : (bl_only_flush ? bl_only_pts : packet.pts));
 
   // pop package only from list if hardware decoder did accept the data
   if (data_added && dual_layer_converted)
@@ -589,6 +640,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
     KODI::MEMORY::AlignedFree(pDataBackup);
     m_packages.pop_front();
   }
+  m_el_starvation_count = 0;
 
   m_mpeg2_sequence_pts = 0;
   m_has_keyframe = false;
@@ -642,6 +694,33 @@ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
   {
     CLog::Log(LOGDEBUG, LOGVIDEO, "{} {:x}->{:x}",  __func__, m_codecControlFlags, flags);
     m_codecControlFlags = flags;
+
+    // On entering drain mode, flush any BL packets orphaned by the EL track ending early.
+    // This covers the common case where only a handful of BL packets are left unpaired at
+    // EOS — too few to reach EL_STARVATION_THRESHOLD in AddData — yet enough to starve
+    // the HW decoder and cause the end-of-file freeze reported with FEL MKV remuxes.
+    if ((flags & DVD_CODEC_CTRL_DRAIN) && !m_packages.empty() && m_bitstream && m_Codec)
+    {
+      while (!m_packages.empty())
+      {
+        DLDemuxPacket pkg = m_packages.front();
+        uint8_t* pData = std::get<0>(pkg);
+        uint32_t iSize = std::get<1>(pkg);
+        bool isEL = std::get<2>(pkg);
+        double pts = std::get<3>(pkg);
+        m_packages.pop_front();
+
+        if (!isEL && m_bitstream->Convert(pData, iSize, pts))
+        {
+          CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: drain flush orphaned BL pts:{:.3f}",
+                    __FUNCTION__, pts / DVD_TIME_BASE);
+          m_Codec->AddData(m_bitstream->GetConvertBuffer(), m_bitstream->GetConvertSize(),
+                           DVD_NOPTS_VALUE, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : pts);
+        }
+        KODI::MEMORY::AlignedFree(pData);
+      }
+      m_el_starvation_count = 0;
+    }
 
     if (flags & DVD_CODEC_CTRL_DROP)
       m_videobuffer.iFlags |= DVP_FLAG_DROPPED;
