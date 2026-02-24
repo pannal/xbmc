@@ -2329,7 +2329,12 @@ void CAMLCodec::CloseDecoder(bool restart)
   if (!restart)
     aml_dv_close();
   if (!restart)
+  {
+    // Reset PQ shader BEFORE osd_pq_bypass to avoid window where shader still
+    // PQ-encodes while kernel also applies PQ processing (double encoding).
+    aml_set_transfer_pq(StreamHdrType::HDR_TYPE_NONE, 0);
     aml_set_osd_pq_bypass(StreamHdrType::HDR_TYPE_NONE);
+  }
 }
 
 void CAMLCodec::CloseAmlVideo()

@@ -990,7 +990,10 @@ void aml_set_transfer_pq(StreamHdrType hdrType, unsigned int bitDepth) {
 
   // Configure GUI/OSD for HDR PQ when display is in HDR PQ mode
   bool hdr_display(CServiceBroker::GetWinSystem()->IsHDRDisplay() || aml_display_support_dv());
-  bool dv_on(aml_dv_mode() != DV_MODE_OFF);
+  // Check actual kernel DV state, not Kodi setting. When DV mode is "On Demand"
+  // but vs10 bypasses the current content (e.g. HDR10), DV is off at kernel level
+  // and the shader must handle PQ encoding for the OSD.
+  bool dv_on(aml_is_dv_enable());
   bool hdr(false);
 
   if (hdr_display) // Only relevant with an hdr_display
