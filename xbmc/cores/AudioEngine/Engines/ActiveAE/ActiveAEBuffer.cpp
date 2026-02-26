@@ -186,6 +186,10 @@ void CActiveAEBufferPoolResample::ChangeResampler()
   srcConfig.bits_per_sample = CAEUtil::DataFormatToUsedBits(m_inputFormat.m_dataFormat);
   srcConfig.dither_bits = CAEUtil::DataFormatToDitherBits(m_inputFormat.m_dataFormat);
 
+  if (srcConfig.sample_rate != dstConfig.sample_rate)
+    CLog::Log(LOGDEBUG, "CActiveAEBufferPoolResample::ChangeResampler - resampling {} Hz -> {} Hz",
+              srcConfig.sample_rate, dstConfig.sample_rate);
+
   m_resampler->Init(dstConfig, srcConfig, m_stereoUpmix, m_normalize, m_centerMixLevel,
                     m_remap ? &m_format.m_channelLayout : nullptr, m_resampleQuality,
                     m_forceResampler, m_mixSubLevel);

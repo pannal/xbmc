@@ -773,6 +773,31 @@ bool CAESinkALSA::Initialize(AEAudioFormat &format, std::string &device)
 
     aml_set_audio_passthrough(m_passthrough);
     aml_configure_simple_control(device, codec);
+
+    // The TDM-B/I2S path used by the surround71 (HDMI Multi Channel PCM) device
+    // on AML AUGESOUND does not reliably support 44.1kHz-family clock rates,
+    // causing DMA underruns/cutouts. Snap to the nearest 48kHz-family rate so
+    // that ActiveAE resamples upstream and the hardware only ever sees 48kHz-
+    // family clocks. The snapped rate is returned via outconfig/format.m_sampleRate
+    // so ActiveAE will create the correct per-stream resampler automatically.
+    if (!m_passthrough && device.substr(0, 10) == "surround71")
+    {
+      switch (inconfig.sampleRate)
+      {
+        case 5512:   inconfig.sampleRate =   6000; break;
+        case 11025:  inconfig.sampleRate =  12000; break;
+        case 22050:  inconfig.sampleRate =  24000; break;
+        case 44100:  inconfig.sampleRate =  48000; break;
+        case 88200:  inconfig.sampleRate =  96000; break;
+        case 176400: inconfig.sampleRate = 192000; break;
+        default: break;
+      }
+      if (inconfig.sampleRate != format.m_sampleRate)
+        CLog::Log(LOGINFO,
+                  "CAESinkALSA::Initialize - AML surround71: snapping {}Hz -> {}Hz (44.1kHz "
+                  "family unsupported on TDM-B path)",
+                  format.m_sampleRate, inconfig.sampleRate);
+    }
   }
 
   CLog::Log(LOGINFO, "CAESinkALSA::Initialize - Attempting to open device \"{}\"", device);
@@ -1836,7 +1861,20 @@ void CAESinkALSA::EnumerateDevice(AEDeviceInfoList &list, const std::string &dev
     else if (info.m_deviceType != AE_DEVTYPE_HDMI)
     {
       if (device.substr(0, 10) == "surround71")
+      {
         info.m_displayNameExtra = "HDMI Multi Ch PCM";
+        // The TDM-B/I2S path used for HDMI multi-channel output on AML AUGESOUND
+        // does not reliably support 44.1kHz-family clock rates, causing periodic
+        // underruns/cutouts. Remove these rates so ActiveAE resamples to the
+        // 48kHz family before the audio reaches the hardware.
+        info.m_sampleRates.erase(
+            std::remove_if(info.m_sampleRates.begin(), info.m_sampleRates.end(),
+                           [](unsigned int rate) {
+                             return rate == 5512 || rate == 11025 || rate == 22050 ||
+                                    rate == 44100 || rate == 88200 || rate == 176400;
+                           }),
+            info.m_sampleRates.end());
+      }
       else
         info.m_displayNameExtra = "PCM";
     }
