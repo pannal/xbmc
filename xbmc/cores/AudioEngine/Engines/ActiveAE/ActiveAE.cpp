@@ -24,6 +24,10 @@
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 
+#if defined(HAS_LIBAMCODEC)
+#include "utils/AMLUtils.h"
+#endif
+
 #include <memory>
 #include <mutex>
 
@@ -2743,6 +2747,24 @@ void CActiveAE::LoadSettings()
       settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSHDCOREFALLBACK);
 
   m_settings.resampleQuality = static_cast<AEQuality>(settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_PROCESSQUALITY));
+#if defined(HAS_LIBAMCODEC)
+  // On AML G12B (S922X) and SC2 (S905X4) the surround71 HDMI Multi Channel PCM
+  // path requires resampling 44.1kHz-family content to 48kHz. Force HIGH quality
+  // to ensure the mandatory resample is transparent, overriding the user setting
+  // if it is set lower.
+  {
+    int cpuFamily = aml_get_cpufamily_id();
+    if ((cpuFamily == AML_G12B || cpuFamily == AML_SC2) &&
+        m_settings.resampleQuality < AE_QUALITY_HIGH)
+    {
+      CLog::Log(LOGINFO,
+                "CActiveAE::LoadSettings - forcing HIGH resampling quality on AML G12B/SC2");
+      m_settings.resampleQuality = AE_QUALITY_HIGH;
+      settings->SetInt(CSettings::SETTING_AUDIOOUTPUT_PROCESSQUALITY,
+                       static_cast<int>(AE_QUALITY_HIGH));
+    }
+  }
+#endif
   m_settings.atempoThreshold = settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_ATEMPOTHRESHOLD) / 100.0;
   m_settings.streamNoise = settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_STREAMNOISE);
   m_settings.silenceTimeoutMinutes = settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_STREAMSILENCE);
