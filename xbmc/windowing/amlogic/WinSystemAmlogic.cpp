@@ -309,9 +309,14 @@ float CWinSystemAmlogic::GetGuiSdrPeakLuminance() const
 float CWinSystemAmlogic::GetGuiSdrSaturation() const
 {
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  const int satClamped = std::clamp(
+  const int slider = std::clamp(
       settings->GetInt(CSettings::SETTING_VIDEOSCREEN_GUISDRSATURATION), 0, 100);
-  return std::clamp(static_cast<float>(satClamped) / 50.0f, 0.0f, 2.0f);
+  // Asymmetric mapping: 0-50% → 0.0-2.0, 50-100% → 2.0-6.0.
+  // 50% already provides 2x boost to compensate for BT.709→BT.2020 desaturation.
+  if (slider <= 50)
+    return static_cast<float>(slider) / 25.0f;
+  else
+    return 2.0f + static_cast<float>(slider - 50) / 50.0f * 4.0f;
 }
 
 bool CWinSystemAmlogic::Hide()

@@ -3164,7 +3164,7 @@
           <dependency type="visible" on="property" name="ishdrdisplay"/>
         </dependencies>
         <level>2</level>
-        <default>50</default>
+        <default>55</default>
         <control type="slider" format="percentage" range="0,100" />
       </setting>
       </group>
