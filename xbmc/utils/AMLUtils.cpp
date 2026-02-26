@@ -612,6 +612,7 @@ unsigned int aml_dv_on(unsigned int mode)
     dv_vp = 0;
     vs10_conversion = false;
   }
+
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_vp", dv_vp);
 
   // VP tone mapping level controls core bypass stages:
@@ -856,6 +857,8 @@ void aml_dv_off()
 
   aml_linux_force_422 = false;
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_aml_linux_force_422", aml_linux_force_422);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_vp", 0);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_vp_tm", 0);
 
   // Do set_disp_mode_auto on kernel.
   if (modeChange)
