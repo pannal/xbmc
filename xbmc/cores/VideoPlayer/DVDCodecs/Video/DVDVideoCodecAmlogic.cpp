@@ -507,6 +507,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
             m_el_starvation_count++;
             if (m_el_starvation_count >= EL_STARVATION_THRESHOLD)
             {
+              // Signal AMLCodec that EL has ended — switches stream mode from
+              // continuous data flow to poll mode for a smooth EL-absent transition.
+              if (m_el_starvation_count == EL_STARVATION_THRESHOLD)
+                m_Codec->SetStreamEOF(true);
+
               CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: EL starvation (count {:d}), flushing queued BL pts:{:.3f} without EL",
                 __FUNCTION__, m_el_starvation_count, ptsBackup / DVD_TIME_BASE);
               if (m_bitstream->Convert(pDataBackup, iSizeBackup, ptsBackup))
@@ -720,6 +725,9 @@ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
         KODI::MEMORY::AlignedFree(pData);
       }
       m_el_starvation_count = 0;
+      // BL-only data was flushed — signal EOF approach so stream mode switches
+      // to poll behavior for a smooth EL-absent transition.
+      m_Codec->SetStreamEOF(true);
     }
 
     if (flags & DVD_CODEC_CTRL_DROP)

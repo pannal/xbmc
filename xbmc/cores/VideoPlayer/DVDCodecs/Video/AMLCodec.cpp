@@ -29,6 +29,7 @@
 
 #include "platform/linux/SysfsPath.h"
 
+#include <algorithm>
 #include <unistd.h>
 #include <queue>
 #include <vector>
@@ -1919,6 +1920,7 @@ bool CAMLCodec::OpenDecoder(bool restart)
 {
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
+  m_stream_eof = false;
   m_cur_pts = DVD_NOPTS_VALUE;
   m_dst_rect.SetRect(0, 0, 0, 0);
   CDVDStreamInfo &hints = m_hints;  // Fudge to avoid large chnage delta renaming hints to m_hints.
@@ -1926,16 +1928,22 @@ bool CAMLCodec::OpenDecoder(bool restart)
   m_hints.pClock = hints.pClock;
   m_tp_last_frame = std::chrono::system_clock::now();
   m_decoder_timeout = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderTimeout;
+  m_decoder_drain_timeout = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderDrainTimeout;
   m_decoder_bypass_buffer_ready = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderBypassBufferReady;
   m_decoder_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderBuffer;
   m_decoder_stream_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderStreamBuffer;
+  m_decoder_minimum_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderMinimumBuffer;
+  m_decoder_minimum_stream_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderMinimumStreamBuffer;
   m_buffer_level_ready = false;
 
-  CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder - Decoder settings: timeout: [{:d}s], bypass buffer ready: [{:d}], buffer: [{:.1f}%], stream buffer: [{:.1f}%]",
+  CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder - Decoder settings: timeout: [{:d}s], drain timeout: [{:d}s], bypass buffer ready: [{:d}], buffer: [{:.1f}%], stream buffer: [{:.1f}%], minimum buffer: [{:.1f}%], minimum stream buffer: [{:.1f}%]",
     m_decoder_timeout,
+    m_decoder_drain_timeout,
     m_decoder_bypass_buffer_ready,
     m_decoder_buffer,
-    m_decoder_stream_buffer);
+    m_decoder_stream_buffer,
+    m_decoder_minimum_buffer,
+    m_decoder_minimum_stream_buffer);
 
   if (!OpenAmlVideo(hints))
   {
@@ -2380,6 +2388,7 @@ void CAMLCodec::Reset()
   m_cur_pts = DVD_NOPTS_VALUE;
   m_last_pts = DVD_NOPTS_VALUE;
   m_state = 0;
+  m_stream_eof = false;
   m_buffer_level_ready = false;
 
   SetSpeed(m_speed);
@@ -2396,10 +2405,13 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
  
   if (!m_buffer_level_ready) {
     m_buffer_level_ready = m_decoder_bypass_buffer_ready ||
-                           (streambuffer 
+                           (streambuffer
                               ? new_buffer_level > m_decoder_stream_buffer
                               : new_buffer_level > m_decoder_buffer);
 
+    m_minimum_buffer_level = streambuffer
+                               ? m_decoder_minimum_stream_buffer
+                               : m_decoder_minimum_buffer;
   }
 
   if (!m_opened || !pData || free_len == 0 || new_buffer_level >= 100.0f)
@@ -2638,9 +2650,41 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
   if (!m_opened)
     return CDVDVideoCodec::VC_ERROR;
 
+  bool streambuffer(am_private->gcodec.dec_mode == STREAM_TYPE_STREAM);
+
+  // Detect approaching EOF using playback position from DataCacheCore.
+  // Use 5% of total duration (floor 30s, ceiling 180s) to handle both short
+  // clips and long movies with early credit rolls.
+  if (streambuffer && !m_stream_eof)
+  {
+    time_t start;
+    int64_t current, min, max;
+    m_dataCacheCore.GetPlayTimes(start, current, min, max);
+    if (max > 0)
+    {
+      int64_t remaining = max - current;
+      int64_t threshold = std::clamp(max / 20, static_cast<int64_t>(30000), static_cast<int64_t>(180000));
+      if (remaining < threshold && remaining >= 0)
+      {
+        CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::GetPicture: approaching EOF — remaining:{:d}ms threshold:{:d}ms, enabling stream EOF mode",
+          remaining, threshold);
+        m_stream_eof = true;
+      }
+    }
+  }
+
+  // Always try to dequeue a decoded frame when the decoder is ready.
+  // The minimum buffer gate is checked separately only when no output frame is
+  // available (EAGAIN), decoupling frame output from the input buffer level.
+  // This prevents burst-gap stutter near EOF where the input buffer oscillates
+  // around the minimum threshold while the decoder still has output frames ready.
   if (m_buffer_level_ready && ((ret = DequeueBuffer()) == 0))
   {
     videoPicture.iFlags = 0;
+
+    // Frame mode: disable the minimum gate after the first frame (only needed for initial fill).
+    // Stream mode: keep the gate active throughout playback.
+    m_minimum_buffer_level = (streambuffer ? m_minimum_buffer_level : 0.0f);
 
     m_tp_last_frame = std::chrono::system_clock::now();
 
@@ -2696,8 +2740,25 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
 
     return CDVDVideoCodec::VC_PICTURE;
   }
+  // During drain, poll while the decoder still has data to process rather than
+  // returning VC_EOF immediately — this lets remaining frames drain smoothly.
+  // Keep polling if:
+  //   1. Buffer has data AND we're within the initial drain timeout, OR
+  //   2. Frames are still being produced (decoder is making progress).
+  // Safety: VC_EOF once buffer is empty AND no frame within frametime*10,
+  // or if decoder stalls for >frametime*10 after the initial timeout.
   else if (m_drain)
+  {
+    auto drain_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now() - m_tp_drain_start);
+    int poll_ms = (am_private->video_rate * 10000 + UNIT_FREQ - 1) / UNIT_FREQ;
+    bool frames_flowing = elapsed_since_last_frame < std::chrono::milliseconds(poll_ms);
+    if (buffer_level > 0.0f &&
+        (drain_elapsed < std::chrono::seconds(m_decoder_drain_timeout) || frames_flowing))
+      return CDVDVideoCodec::VC_NONE;
     return CDVDVideoCodec::VC_EOF;
+  }
+  // Decoder error or no frame produced within the timeout period.
   else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
   {
     CLog::Log(LOGERROR, "CAMLCodec::GetPicture: time elapsed since last frame: {:d}ms ({:d}:{})",
@@ -2705,12 +2766,17 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     m_tp_last_frame = std::chrono::system_clock::now();
     return CDVDVideoCodec::VC_FLUSHED;
   }
-  else if ((buffer_level > 10.0f &&
-            elapsed_since_last_frame < std::chrono::milliseconds(500)) ||
-           (m_buffer_level_ready &&
-            elapsed_since_last_frame < std::chrono::milliseconds(am_private->video_rate * 1000 / UNIT_FREQ)))
+  // No output frame available (EAGAIN): if buffer is below the minimum level
+  // and we're not approaching EOF, return VC_BUFFER to trigger the buffering
+  // indicator for slow/remote sources. Near EOF (m_stream_eof), bypass the gate
+  // so frames drain smoothly instead of stuttering around the threshold.
+  else if (!m_stream_eof && buffer_level < m_minimum_buffer_level)
+    return CDVDVideoCodec::VC_BUFFER;
+  // Frame mode: tight poll while HW buffer is healthy. Self-regulating —
+  // buffer drains during VC_NONE (no data feeding), drops below 10%, then
+  // VC_BUFFER feeds data and refills. Catches frames at vsync rate.
+  if (!streambuffer && buffer_level > 10.0f)
     return CDVDVideoCodec::VC_NONE;
-
   return CDVDVideoCodec::VC_BUFFER;
 }
 

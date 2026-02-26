@@ -71,7 +71,8 @@ public:
   CDVDVideoCodec::VCReturn GetPicture(VideoPicture& videoPicture);
 
   void          SetSpeed(int speed);
-  void          SetDrain(bool drain){m_drain = drain;};
+  void          SetDrain(bool drain){m_drain = drain; if (drain) m_tp_drain_start = std::chrono::system_clock::now();};
+  void          SetStreamEOF(bool eof){m_stream_eof = eof;};
   void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect);
   void          SetVideoRate(int videoRate);
   int           GetOMXPts() const { return static_cast<int>(m_cur_pts); }
@@ -104,6 +105,7 @@ private:
   DllLibAmCodec   *m_dll;
   bool             m_opened;
   bool             m_drain = false;
+  bool             m_stream_eof = false;
   am_private_t    *am_private;
 
   int              m_speed;
@@ -136,11 +138,16 @@ private:
   CDataCacheCore  &m_dataCacheCore;
 
   int m_decoder_timeout;
+  int m_decoder_drain_timeout;
   bool m_decoder_bypass_buffer_ready;
   float m_decoder_buffer;
   float m_decoder_stream_buffer;
+  float m_decoder_minimum_buffer;
+  float m_decoder_minimum_stream_buffer;
 
   std::chrono::time_point<std::chrono::system_clock> m_tp_last_frame;
+  std::chrono::time_point<std::chrono::system_clock> m_tp_drain_start;
 
   bool            m_buffer_level_ready;
+  float           m_minimum_buffer_level;
 };

@@ -174,6 +174,7 @@ void CAdvancedSettings::Initialize()
   m_videoDefaultLatency = 0.0;
 
   m_videoDecoderTimeout = 5;
+  m_videoDecoderDrainTimeout = 5;
   if (aml_get_cpufamily_id() == AML_G12B)
   {
     m_videoDecoderBypassBufferReady = true;
@@ -888,6 +889,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     }
 
     XMLUtils::GetInt(pElement, "decodertimeout", m_videoDecoderTimeout, 1, 60);
+    XMLUtils::GetInt(pElement, "decoderdraintimeout", m_videoDecoderDrainTimeout, 1, 60);
     XMLUtils::GetBoolean(pElement, "decoderbypassbufferready", m_videoDecoderBypassBufferReady);
     XMLUtils::GetFloat(pElement, "decoderbuffer", m_videoDecoderBuffer, 0.0f, 100.0f);
     XMLUtils::GetFloat(pElement, "decoderstreambuffer", m_videoDecoderStreamBuffer, 0.0f, 100.0f);
