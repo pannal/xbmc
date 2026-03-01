@@ -972,6 +972,12 @@ void aml_dv_display_auto_now()
 
 void aml_dv_start()
 {
+  // Clean up stale DV kernel state (e.g. from a previous crash where
+  // aml_dv_off() never ran).  This ensures the display returns to SDR
+  // before we (re-)initialize DV according to the user's settings.
+  if (aml_is_dv_enable())
+    aml_dv_off();
+
   if (aml_dv_mode() == DV_MODE_ON) {
     aml_dv_reset_osd_max();
     aml_dv_on(DOLBY_VISION_OUTPUT_MODE_IPT);
