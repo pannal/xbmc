@@ -10,7 +10,11 @@
 
 #include "DVDCodecs/DVDCodecs.h"
 #include "DVDStreamInfo.h"
+#include "ServiceBroker.h"
 #include "cores/DataCacheCore.h"
+#include "settings/Settings.h"
+#include "settings/SettingsComponent.h"
+#include "settings/lib/Setting.h"
 #include "cores/AudioEngine/Utils/PackerMAT.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "utils/log.h"
@@ -48,6 +52,17 @@ CDVDAudioCodecPassthrough::CDVDAudioCodecPassthrough(CProcessInfo &processInfo, 
   m_format.m_streamInfo.m_type = streamType;
   m_deviceIsRAW = processInfo.WantsRawPassthrough();
 
+  if (const auto settingsComponent = CServiceBroker::GetSettingsComponent())
+  {
+    if (const auto settings = settingsComponent->GetSettings())
+    {
+      settings->RegisterCallback(this, {CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM,
+                                        CSettings::SETTING_COREELEC_AUDIO_TRUEHD_ATMOS_DIALNORM});
+    }
+  }
+
+  UpdateDialNormSettings();
+
   if (m_format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
   {
     m_trueHDBuffer.resize(TRUEHD_BUF_SIZE);
@@ -59,11 +74,41 @@ CDVDAudioCodecPassthrough::CDVDAudioCodecPassthrough(CProcessInfo &processInfo, 
 
 CDVDAudioCodecPassthrough::~CDVDAudioCodecPassthrough(void)
 {
+  if (const auto settingsComponent = CServiceBroker::GetSettingsComponent())
+  {
+    if (const auto settings = settingsComponent->GetSettings())
+      settings->UnregisterCallback(this);
+  }
+
   Dispose();
+}
+
+void CDVDAudioCodecPassthrough::UpdateDialNormSettings()
+{
+  const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+  const auto settings = settingsComponent ? settingsComponent->GetSettings() : nullptr;
+  if (!settings) return;
+
+  m_defeatAC3DialNorm.store(settings->GetBool(CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM));
+  m_defeatTrueHDDialNorm.store(settings->GetBool(CSettings::SETTING_COREELEC_AUDIO_TRUEHD_ATMOS_DIALNORM));
+}
+
+void CDVDAudioCodecPassthrough::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
+{
+  if (!setting) return;
+
+  const std::string& settingId = setting->GetId();
+  if (settingId == CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM ||
+      settingId == CSettings::SETTING_COREELEC_AUDIO_TRUEHD_ATMOS_DIALNORM)
+  {
+    UpdateDialNormSettings();
+  }
 }
 
 bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 {
+  UpdateDialNormSettings();
+
   m_parser.SetCoreOnly(false);
   switch (m_format.m_streamInfo.m_type)
   {
@@ -71,12 +116,16 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
       m_codecName = "pt-ac3";
       if (m_lavStyleSyncEnabled)
         m_jitterThreshold = JITTER_THRESHOLD_DEFAULT;
+
+      m_parser.SetDefeatAC3DialNorm(m_defeatAC3DialNorm.load());
       break;
 
     case CAEStreamInfo::STREAM_TYPE_EAC3:
       m_codecName = "pt-eac3";
       if (m_lavStyleSyncEnabled)
         m_jitterThreshold = JITTER_THRESHOLD_DEFAULT;
+
+      m_parser.SetDefeatAC3DialNorm(m_defeatAC3DialNorm.load());
       break;
 
     case CAEStreamInfo::STREAM_TYPE_DTSHD_MA:
@@ -106,6 +155,8 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
       // LAV Filters: TrueHD/DTS use 10x threshold (1 second) for bitstreaming tolerance
       if (m_lavStyleSyncEnabled)
         m_jitterThreshold = JITTER_THRESHOLD_TRUEHD_DTS;
+
+      m_parser.SetDefeatTrueHDDialNorm(m_defeatTrueHDDialNorm.load());
 
       CLog::Log(LOGDEBUG, "CDVDAudioCodecPassthrough::{} - passthrough output device is {}",
                 __func__, m_deviceIsRAW ? "RAW" : "IEC");
@@ -170,6 +221,10 @@ void CDVDAudioCodecPassthrough::Dispose()
 
 bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
 {
+  // Apply cached values (updated by settings callbacks) without per-packet settings lookups.
+  m_parser.SetDefeatAC3DialNorm(m_defeatAC3DialNorm.load());
+  m_parser.SetDefeatTrueHDDialNorm(m_defeatTrueHDDialNorm.load());
+
   if (m_backlogSize)
   {
     m_dataSize = m_bufferSize;
