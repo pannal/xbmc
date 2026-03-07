@@ -10,7 +10,10 @@
 
 #include "DVDCodecs/DVDCodecs.h"
 #include "DVDStreamInfo.h"
+#include "ServiceBroker.h"
 #include "cores/DataCacheCore.h"
+#include "settings/Settings.h"
+#include "settings/SettingsComponent.h"
 #include "cores/AudioEngine/Utils/PackerMAT.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "utils/log.h"
@@ -71,12 +74,20 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
       m_codecName = "pt-ac3";
       if (m_lavStyleSyncEnabled)
         m_jitterThreshold = JITTER_THRESHOLD_DEFAULT;
+
+      m_parser.SetDefeatAC3DialNorm(
+          CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+              CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM));
       break;
 
     case CAEStreamInfo::STREAM_TYPE_EAC3:
       m_codecName = "pt-eac3";
       if (m_lavStyleSyncEnabled)
         m_jitterThreshold = JITTER_THRESHOLD_DEFAULT;
+
+      m_parser.SetDefeatAC3DialNorm(
+          CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+              CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM));
       break;
 
     case CAEStreamInfo::STREAM_TYPE_DTSHD_MA:
@@ -106,6 +117,10 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
       // LAV Filters: TrueHD/DTS use 10x threshold (1 second) for bitstreaming tolerance
       if (m_lavStyleSyncEnabled)
         m_jitterThreshold = JITTER_THRESHOLD_TRUEHD_DTS;
+
+      m_parser.SetDefeatTrueHDDialNorm(
+          CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+              CSettings::SETTING_COREELEC_AUDIO_TRUEHD_ATMOS_DIALNORM));
 
       CLog::Log(LOGDEBUG, "CDVDAudioCodecPassthrough::{} - passthrough output device is {}",
                 __func__, m_deviceIsRAW ? "RAW" : "IEC");
@@ -170,6 +185,14 @@ void CDVDAudioCodecPassthrough::Dispose()
 
 bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
 {
+  // Update dialNorm defeat settings dynamically (allows toggling during playback)
+  m_parser.SetDefeatAC3DialNorm(
+      CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+          CSettings::SETTING_COREELEC_AUDIO_AC3_DIALNORM));
+  m_parser.SetDefeatTrueHDDialNorm(
+      CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+          CSettings::SETTING_COREELEC_AUDIO_TRUEHD_ATMOS_DIALNORM));
+
   if (m_backlogSize)
   {
     m_dataSize = m_bufferSize;
