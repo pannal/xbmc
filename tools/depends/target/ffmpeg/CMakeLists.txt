@@ -84,7 +84,7 @@ elseif(CORE_SYSTEM_NAME STREQUAL android)
   elseif(CPU MATCHES arm)
     list(APPEND ffmpeg_conf --cpu=cortex-a9)
   elseif(CPU MATCHES x86_64)
-    list(APPEND ffmpeg_conf --cpu=x86_64)
+    list(APPEND ffmpeg_conf --cpu=x86-64)
     list(APPEND ffmpeg_conf --extra-cflags=-mno-stackrealign)
   else()
     list(APPEND ffmpeg_conf --cpu=i686 --disable-mmx --disable-asm)
@@ -92,6 +92,7 @@ elseif(CORE_SYSTEM_NAME STREQUAL android)
   endif()
 elseif(CORE_SYSTEM_NAME STREQUAL darwin_embedded)
   list(APPEND ffmpeg_conf --enable-videotoolbox
+                          --disable-filter=yadif_videotoolbox
                           --target-os=darwin
               )
 elseif(CORE_SYSTEM_NAME STREQUAL osx)
@@ -115,6 +116,10 @@ endif()
 if(CPU MATCHES x86 OR CPU MATCHES x86_64)
   find_package(NASM REQUIRED)
   list(APPEND ffmpeg_conf --x86asmexe=${NASM_EXECUTABLE})
+endif()
+
+if(USE_LTO)
+   list(APPEND ffmpeg_conf --enable-lto)
 endif()
 
 if(ENABLE_DAV1D)
@@ -143,10 +148,14 @@ if(CMAKE_GENERATOR STREQUAL Ninja)
   endif()
 endif()
 
+if(NOT DISABLE_FFMPEG_SOURCE_PLUGINS)
+  set(sourceplugin_patch PATCH_COMMAND patch -p1 -i <SOURCE_DIR>/001-ffmpeg-all-libpostproc-plugin.patch)
+endif()
+
 include(ExternalProject)
 externalproject_add(ffmpeg
                     SOURCE_DIR ${CMAKE_SOURCE_DIR}
-                    PATCH_COMMAND patch -p1 -i <SOURCE_DIR>/0001-libpostproc-plugin.patch
+                    ${sourceplugin_patch}
                     CONFIGURE_COMMAND ${pkgconf} ${pkgconf_path} <SOURCE_DIR>/configure
                       --prefix=${CMAKE_INSTALL_PREFIX}
                       --extra-version="kodi-${FFMPEG_VER}"
