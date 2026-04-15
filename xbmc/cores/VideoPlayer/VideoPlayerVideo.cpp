@@ -655,8 +655,38 @@ void CVideoPlayerVideo::Process()
             bool vfmtIsInterlaced = m_vfmt.compare("progressive") != 0;
             if (vfmtIsInterlaced || !(m_hints.codecOptions & CODEC_INTERLACED))
               m_processInfo.SetVideoInterlaced(vfmtIsInterlaced);
+
+            // Dynamically adjust DI pipeline latency compensation based on the
+            // current deinterlace state. Mixed interlaced/progressive streams
+            // (common in MBAFF HDTV) switch between modes mid-stream — the DI
+            // pipeline only adds latency when actively deinterlacing.
+            // Adjust displayLatency (video timing) and request a precise audio
+            // correction through the clock so SyncStream applies the exact
+            // offset without relying on its averaging window.
+            if (m_processInfo.IsVideoHwDecoder() && m_diDelayMs > 0)
+            {
+              int newDelay = vfmtIsInterlaced ? m_diDelayMs : 0;
+              int oldDelay = m_renderManager.GetDeinterlaceDelay();
+              if (newDelay != oldDelay)
+              {
+                m_renderManager.SetDeinterlaceDelay(newDelay);
+                // Tell the audio engine to apply a precise correction:
+                // interlace→progressive: DI delay drops → video ahead → audio needs to skip forward
+                // progressive→interlace: DI delay rises → video behind → audio needs to wait
+                double correctionMs = static_cast<double>(oldDelay - newDelay);
+                m_pClock->SetSyncCorrection(correctionMs);
+                CLog::Log(LOGDEBUG, "CVideoPlayerVideo - DI state change: delay {}ms → {}ms, "
+                          "sync correction {:.0f}ms",
+                          oldDelay, newDelay, correctionMs);
+              }
+            }
           }
           CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::DEMUXER_PACKET - checking interlace vfmt: {}", m_vfmt);
+
+          // Keep checking vfmt throughout playback for mixed content DI delay.
+          // Re-arm the counter when it would expire so we continue monitoring.
+          if (vfmtCheckCount <= 0 && m_processInfo.IsVideoHwDecoder())
+            vfmtCheckCount = 6; // next check in 5 frames
         }
       }
       else
@@ -874,29 +904,52 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
       // Amlogic hardware deinterlace pipeline latency compensation.
       // When interlaced content is decoded by AML hardware, the VFM pipeline
       // includes a deinterlace module (di0) that buffers multiple fields before
-      // producing output (buffer_keep_count=3, start_frame_drop=2, plus post-
-      // processing). Kodi captures PTS via V4L2 DQBUF *before* the DI stage,
-      // so the frame appears on screen later than Kodi's sync expects.
-      // Set deinterlace delay on the render manager — this compensates both
-      // the initial sync timestamp AND the ongoing displayLatency (frame
-      // release timing in PrepareNextRender), mirroring how the user's manual
-      // AV offset works but automatically gated on hardware DI.
+      // producing output. The pipeline only adds latency when actively
+      // deinterlacing — progressive pass-through has near-zero latency.
+      // Read vfmt NOW to set the correct initial delay for the sync point
+      // (seek into progressive section must not get the interlaced delay).
+      // The ongoing vfmt monitoring in Process() handles mid-stream transitions.
       if (m_processInfo.GetVideoInterlaced() && m_processInfo.IsVideoHwDecoder() &&
           CSysfsPath{"/sys/class/deinterlace/di0/frame_format"}.Exists())
       {
+        // The DI module buffers fields at the field rate, which for
+        // interlaced content is always double the frame rate. Use that
+        // directly — m_fFrameRate may have been changed to the frame rate
+        // by CalcFrameRate (e.g. 25 instead of 50 for 1080i50).
         constexpr int DI_PIPELINE_FIELDS = 12;
-        int diDelayMs = static_cast<int>(DI_PIPELINE_FIELDS * 1000.0 / m_fFrameRate);
-        m_renderManager.SetDeinterlaceDelay(diDelayMs);
+        double fieldRate = m_fFrameRate;
+        if (m_hints.codecOptions & CODEC_INTERLACED)
+        {
+          if (MathUtils::FloatEquals(static_cast<float>(fieldRate), 25.0f, 0.02f))
+            fieldRate = 50.0;
+          else if (MathUtils::FloatEquals(static_cast<float>(fieldRate), 29.97f, 0.02f))
+            fieldRate = 59.94;
+        }
+        m_diDelayMs = static_cast<int>(DI_PIPELINE_FIELDS * 1000.0 / fieldRate);
+
+        // Check current DI state for the initial sync delay
+        CSysfsPath frame_format{"/sys/class/deinterlace/di0/frame_format"};
+        std::string vfmtNow = frame_format.Get<std::string>().value();
+        bool diActiveNow = (vfmtNow != "progressive");
+        int initialDelay = diActiveNow ? m_diDelayMs : 0;
+        m_renderManager.SetDeinterlaceDelay(initialDelay);
         CLog::Log(LOGDEBUG, "CVideoPlayerVideo - DI pipeline latency compensation: "
-                  "{}ms ({} fields at {:.1f}Hz)",
-                  diDelayMs, DI_PIPELINE_FIELDS, m_fFrameRate);
+                  "{}ms (max {}ms, vfmt: {})",
+                  initialDelay, m_diDelayMs, vfmtNow);
       }
       else
       {
+        m_diDelayMs = 0;
         m_renderManager.SetDeinterlaceDelay(0);
       }
 
-      msg.timestamp = hasTimestamp ? (pts + (m_renderManager.GetDelay() + m_renderManager.GetDeinterlaceDelay()) * 1000) : DVD_NOPTS_VALUE;
+      // DI delay is NOT included in msg.timestamp: the audio sync baseline
+      // must be independent of the current DI state so it doesn't need
+      // correction when the stream switches between interlaced/progressive.
+      // DI compensation is applied purely through displayLatency (which
+      // affects frame release timing in PrepareNextRender) and dynamically
+      // tracks the hardware DI state via ongoing vfmt monitoring.
+      msg.timestamp = hasTimestamp ? (pts + m_renderManager.GetDelay() * 1000) : DVD_NOPTS_VALUE;
       m_messageParent.Put(std::make_shared<CDVDMsgType<SStartMsg>>(CDVDMsg::PLAYER_STARTED, msg));
     }
 

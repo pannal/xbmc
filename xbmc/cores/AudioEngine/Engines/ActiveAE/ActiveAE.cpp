@@ -2465,6 +2465,16 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
   if (!stream->m_pClock)
     return ret;
 
+  // Check for a pending sync correction from the video path (e.g. DI pipeline
+  // latency change on interlace↔progressive transition). Force a resync
+  // so the audio engine re-evaluates from scratch with the new video timing.
+  double pendingCorrection = stream->m_pClock->GetAndClearSyncCorrection();
+  if (pendingCorrection != 0.0)
+  {
+    stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
+    CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - DI correction {:.1f}ms, forcing resync", pendingCorrection);
+  }
+
   if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_START)
   {
     stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
