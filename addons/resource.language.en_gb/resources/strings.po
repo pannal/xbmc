@@ -26660,6 +26660,19 @@ msgctxt "#60625"
 msgid "TCL"
 msgstr ""
 
+#. "Dolby Vision HDR Bypass"
+#: system/settings/settings.xml
+msgctxt "#60700"
+msgid "Disable DV blank screen when starting to play"
+msgstr ""
+
+#. "Dolby Vision HDR Bypass"
+#: system/settings/settings.xml
+msgctxt "#60701"
+msgid "Setting this option to avoid handcheck when starting DV video from HDR or SDR"
+msgstr ""
+
+
 #. Title of Dolby Vision RPU conversion setting
 #: system/settings/settings.xml
 msgctxt "#69196"

@@ -1132,7 +1132,8 @@ void aml_dv_close()
   if (aml_dv_mode() == DV_MODE_ON)
     return;
 
-  if (aml_is_dv_enable())
+  const auto bypass_dv_mode_switch_gui = settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_BYPASS);
+  if (aml_is_dv_enable() && !bypass_dv_mode_switch_gui)
     aml_dv_off();
 }
 

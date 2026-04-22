@@ -509,6 +509,7 @@ public:
   static constexpr auto SETTING_COREELEC_AUDIO_AC3_DIALNORM = "coreelec.audio.ac3.dialnorm";
   static constexpr auto SETTING_COREELEC_AUDIO_EAC3_ATMOS_DIALNORM = "coreelec.audio.eac3.atmos.dialnorm";
   static constexpr auto SETTING_COREELEC_AUDIO_TRUEHD_ATMOS_DIALNORM = "coreelec.audio.truehd.atmos.dialnorm";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_BYPASS = "coreelec.amlogic.dolbyvision.bypass";
   static constexpr auto SETTING_CACHE_HARDDISK = "cache.harddisk";
   static constexpr auto SETTING_CACHEVIDEO_DVDROM = "cachevideo.dvdrom";
   static constexpr auto SETTING_CACHEVIDEO_LAN = "cachevideo.lan";

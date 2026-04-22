@@ -4082,6 +4082,11 @@
           </constraints>
           <control type="slider" format="integer" />
         </setting>
+        <setting id="coreelec.amlogic.dolbyvision.bypass" type="boolean" label="60700" help="60701">
+          <level>2</level>
+          <default>true</default>
+          <control type="toggle" />
+        </setting>
         <setting id="coreelec.amlogic.dolbyvision.video.processor" type="integer" label="60501" help="60502">
           <requirement>HAVE_AMCODEC</requirement>
           <visible>false</visible>
