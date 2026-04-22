@@ -58,6 +58,7 @@ protected:
 private:
   CEGLContextUtils m_pGLContext;
   StreamHdrType m_hdrType = StreamHdrType::HDR_TYPE_NONE;
+  bool aml_first_start_GUI = true;
 };
 
 }
