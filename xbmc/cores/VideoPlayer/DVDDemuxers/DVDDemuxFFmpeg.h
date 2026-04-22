@@ -113,6 +113,9 @@ public:
 
   bool Aborted();
 
+  int GetEditionCount() override;
+  std::string GetEditionName(int index) override;
+
   AVFormatContext* m_pFormatContext;
   std::shared_ptr<CDVDInputStream> m_pInput;
   bool m_brokenFileDetected = false;
@@ -120,6 +123,9 @@ public:
 
   void MarkBroken() override;
   int64_t GetSourceReadBytes() override { return m_sourceReadBytes; }
+
+private:
+  int m_edIndex = -1;
 
 protected:
   friend class CDemuxStreamAudioFFmpeg;

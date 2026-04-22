@@ -16807,6 +16807,14 @@ msgctxt "#29805"
 msgid "This Blu-ray disc (or file) is encrypted and can't be played."
 msgstr ""
 
+msgctxt "#29806"
+msgid "Enable MKV Editions selection"
+msgstr "Enable MKV Editions selection"
+
+msgctxt "#29807"
+msgid "Show a selection dialog when an MKV with multiple editions or ordered chapters is detected."
+msgstr "Show a selection dialog when an MKV with multiple editions or ordered chapters is detected."
+
 #empty strings from id 29806 to 29899
 
 #. Header string on RDS Radiotext+ Info dialog

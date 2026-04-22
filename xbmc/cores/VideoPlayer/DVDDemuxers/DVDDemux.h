@@ -301,6 +301,12 @@ public:
    */
   virtual bool SeekTime(double time, bool backwards = false, double* startpts = NULL) = 0;
 
+  /*   
+   * Edition stream
+   */
+  virtual int GetEditionCount() { return 0; } // Par défaut, 0 ou 1
+  virtual std::string GetEditionName(int index) { return ""; }
+
   /*
    * Seek to a specified chapter.
    * startpts can be updated to the point where display should start

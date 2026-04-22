@@ -101,6 +101,11 @@
           </constraints>
           <control type="list" format="string" />
         </setting>
+        <setting id="videoplayer.mkv_editions_enabled" type="boolean" label="29806" help="29807">
+          <level>1</level>
+          <default>true</default>
+          <control type="toggle" />
+        </setting>
       </group>
       <group id="3" label="14231">
         <setting id="videoplayer.rendermethod" type="integer" label="13415" help="36153">

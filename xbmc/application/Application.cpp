@@ -189,6 +189,15 @@
 #include <cdio/logging.h>
 #endif
 
+// --- EDITIONS MKV ---
+#include "cores/VideoPlayer/DVDDemuxers/DVDDemux.h"
+#include "cores/VideoPlayer/DVDDemuxers/DVDFactoryDemuxer.h"
+#include "cores/VideoPlayer/DVDInputStreams/DVDFactoryInputStream.h"
+#include "cores/VideoPlayer/DVDInputStreams/DVDInputStream.h"
+#include "dialogs/GUIDialogSelect.h"
+#include "guilib/GUIDialog.h"
+// --------------------
+
 using namespace ADDON;
 using namespace XFILE;
 #ifdef HAS_OPTICAL_DRIVE
@@ -2612,6 +2621,69 @@ bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRes
     if (dMsgCount > 0)
       CLog::LogF(LOGDEBUG, "Ignored {} playback thread messages", dMsgCount);
   }
+
+  // --- MKV EDITIONS MKV (VERSION DB-COMPATIBLE) ---
+  bool editionsEnabled = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_VIDEOPLAYER_MKV_EDITIONS_ENABLED);
+  if (editionsEnabled && !bRestart && !item.m_bIsFolder)
+  {
+    std::string realPath = item.GetPath();
+    if (item.HasVideoInfoTag() && !item.GetVideoInfoTag()->m_strFileNameAndPath.empty())
+    {
+      realPath = item.GetVideoInfoTag()->m_strFileNameAndPath;
+    }
+
+    if (StringUtils::EndsWithNoCase(realPath, ".mkv"))
+    {
+      CLog::LogF(LOGDEBUG, "MKV Analysis for editions : {}", realPath);
+
+      CFileItem tempItem(realPath, false);
+      auto pInputStream = CDVDFactoryInputStream::CreateInputStream(NULL, tempItem);
+
+      if (pInputStream && pInputStream->Open())
+      {
+        std::unique_ptr<CDVDDemux> pDemuxer(CDVDFactoryDemuxer::CreateDemuxer(pInputStream, true));
+
+        if (pDemuxer && pDemuxer->GetEditionCount() > 1)
+        {
+          int nb = pDemuxer->GetEditionCount();
+          std::vector<std::string> names;
+          for (int i = 0; i < nb; i++)
+            names.push_back(pDemuxer->GetEditionName(i));
+
+          auto* pDlg = static_cast<CGUIDialogSelect*>(
+              CServiceBroker::GetGUI()->GetWindowManager().GetWindow(WINDOW_DIALOG_SELECT));
+          if (pDlg)
+          {
+            pDlg->Reset();
+            pDlg->SetHeading(CVariant{"Selection Edition"});
+            for (const auto& name : names)
+              pDlg->Add(name);
+
+            pDlg->Open();
+            while (pDlg->IsActive())
+            {
+              std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+
+            int selected = pDlg->GetSelectedItem();
+            if (selected >= 0)
+            {
+              std::string val = std::to_string(selected);
+              setenv("KODI_MKV_EDITION", val.c_str(), 1);
+
+              CLog::LogF(LOGDEBUG, "Edition {} choose for {}", val, realPath);
+            }
+            else
+            {
+              CLog::LogF(LOGDEBUG, "Edition: Selection canceled.");
+              return false;
+            }
+          }
+        }
+      }
+    }
+  }
+  // --- END ---
 
   const auto appVolume = GetComponent<CApplicationVolumeHandling>();
   aml_reset_audio_from_player_open();

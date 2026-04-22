@@ -273,6 +273,30 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
   m_pInput = pInput;
   strFile = m_pInput->GetFileName();
 
+  // ==========================================
+  // --- GETTING EDITION ---
+  m_edIndex = -1;
+
+  bool editionsEnabled = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_VIDEOPLAYER_MKV_EDITIONS_ENABLED);
+  
+  const char* envVal = getenv("KODI_MKV_EDITION");
+
+  if (envVal != nullptr)
+  {
+      if (editionsEnabled)
+      {
+          m_edIndex = atoi(envVal);
+          CLog::Log(LOGDEBUG, "Editions MKV ACTIVATED - Index : {}", m_edIndex);
+      }
+      else
+      {
+          CLog::Log(LOGDEBUG, "Editions MKV DESACTIVATED (from settings) - normal playback.");
+      }
+
+      // Reset ENV variable
+      unsetenv("KODI_MKV_EDITION"); 
+  }
+
   if (m_pInput->GetContent().length() > 0)
   {
     std::string content = m_pInput->GetContent();
@@ -309,6 +333,12 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
       // try mmsh, then mmst
       url.SetProtocol("mmsh");
       url.SetProtocolOptions("");
+      if (m_edIndex >= 0)
+      {
+        av_dict_set_int(&options, "edition", m_edIndex, 0);
+        // Keep ordered_chapters
+        av_dict_set(&options, "ordered_chapters", "1", 0);
+      }
       result = avformat_open_input(&m_pFormatContext, url.Get().c_str(), iformat, &options);
       if (result < 0)
       {
@@ -320,6 +350,12 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
     {
       // tcp streams cannot handle multiple connection attempts, so exit early on failure
       // rather than falling through to the retry logic below
+      if (m_edIndex >= 0)
+      {
+        av_dict_set_int(&options, "edition", m_edIndex, 0);
+        // Keep ordered_chapters
+        av_dict_set(&options, "ordered_chapters", "1", 0);
+      }
       result = avformat_open_input(&m_pFormatContext, url.Get().c_str(), iformat, &options);
       if (result < 0)
       {
@@ -446,6 +482,16 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
     m_pFormatContext->pb = m_ioContext;
 
     AVDictionary* options = NULL;
+
+    // EDITION : Injection MKV options
+    if (m_edIndex >= 0)
+    {
+      CLog::Log(LOGDEBUG, "Edition Injection {} for local file/network", m_edIndex);
+      av_dict_set_int(&options, "edition", m_edIndex, 0);
+      av_dict_set(&options, "ordered_chapters", "1", 0);
+    }
+    // -----------------------------------------
+
     if (iformat->name && (strcmp(iformat->name, "mp3") == 0 || strcmp(iformat->name, "mp2") == 0))
     {
       CLog::Log(LOGDEBUG, "{} - setting usetoc to 0 for accurate VBR MP3 seek", __FUNCTION__);
@@ -565,6 +611,25 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
       }
     }
     CLog::Log(LOGDEBUG, "{} - avformat_find_stream_info finished", __FUNCTION__);
+
+    if (m_edIndex >= 0 && m_pFormatContext->nb_chapters > (unsigned int)m_edIndex)
+    {
+      AVChapter* ch = m_pFormatContext->chapters[m_edIndex];
+
+      int64_t start = av_rescale_q(ch->start, ch->time_base, {1, AV_TIME_BASE});
+      int64_t end = av_rescale_q(ch->end, ch->time_base, {1, AV_TIME_BASE});
+      int64_t duration = end - start;
+
+      m_pFormatContext->duration = duration;
+      m_pFormatContext->start_time = start;
+      m_startTime = start; // Indique le décalage à Kodi
+
+      m_pFormatContext->skip_initial_bytes = start;
+
+      avformat_seek_file(m_pFormatContext, -1, INT64_MIN, start, start, 0);
+
+      CLog::Log(LOGDEBUG, "Edition {} - Seek to start {}s", m_edIndex, start / 1000000);
+    }
 
     // print some extra information
     av_dump_format(m_pFormatContext, 0, CURL::GetRedacted(strFile).c_str(), 0);
@@ -1074,6 +1139,29 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
       else
       {
         ParsePacket(&m_pkt.pkt);
+
+        // EDITION -----------------------------------
+        if (m_edIndex >= 0 && m_pFormatContext->nb_chapters > 0)
+        {
+          AVChapter* ch = m_pFormatContext->chapters[m_edIndex];
+
+          AVStream* st = m_pFormatContext->streams[m_pkt.pkt.stream_index];
+          int64_t endTS = av_rescale_q(ch->end, ch->time_base, st->time_base);
+
+          if (m_pkt.pkt.stream_index == m_pFormatContext->streams[0]->index) // On ne check que sur le flux principal (souvent vidéo)
+          {
+            // If DTS or PTS moved after the chapter end, let's do (EOF)
+            if (m_pkt.pkt.dts != AV_NOPTS_VALUE && m_pkt.pkt.dts >= endTS)
+            {
+              CLog::Log(LOGDEBUG, "Edition index end {} reached. Stop the playback.",
+                        m_edIndex);
+              m_pkt.result = AVERROR_EOF;
+              av_packet_unref(&m_pkt.pkt);
+              return nullptr;
+            }
+          }
+        }
+        // -------------------------------------------
 
         if (IsProgramChange())
         {
@@ -2993,4 +3081,65 @@ StreamHdrType CDVDDemuxFFmpeg::DetermineHdrType(AVStream* pStream)
     hdrType = StreamHdrType::HDR_TYPE_HDR10;
 
   return hdrType;
+}
+
+int CDVDDemuxFFmpeg::GetEditionCount()
+{
+  if (!m_pFormatContext || m_pFormatContext->nb_chapters <= 1)
+    return 0;
+
+  for (unsigned int i = 0; i < m_pFormatContext->nb_chapters; i++)
+  {
+    AVDictionaryEntry* tag = nullptr;
+    while ((
+        tag = av_dict_get(m_pFormatContext->chapters[i]->metadata, "", tag, AV_DICT_IGNORE_SUFFIX)))
+    {
+      CLog::Log(LOGDEBUG, "Chapitre {} Tag: {} = {}", i, tag->key, tag->value);
+    }
+  }
+
+  if (m_pFormatContext->nb_programs > 1)
+    return m_pFormatContext->nb_programs;
+
+  bool looksLikeEditions = false;
+
+  for (unsigned int i = 0; i < m_pFormatContext->nb_chapters - 1; i++)
+  {
+    AVChapter* curr = m_pFormatContext->chapters[i];
+    AVChapter* next = m_pFormatContext->chapters[i + 1];
+
+    double endCurr = curr->end * av_q2d(curr->time_base);
+    double startNext = next->start * av_q2d(next->time_base);
+
+    double gap = std::abs(startNext - endCurr);
+
+    // CLog::Log(LOGDEBUG, "Gap between {} et {} : {}s", i, i+1, gap);
+
+    if (gap > 2.0 || startNext < endCurr)
+    {
+      looksLikeEditions = true;
+      CLog::Log(LOGDEBUG, "Non-linearite detected (gap={}s). Passage in editions mode.", gap);
+      break;
+    }
+  }
+
+  return looksLikeEditions ? m_pFormatContext->nb_chapters : 0;
+}
+
+std::string CDVDDemuxFFmpeg::GetEditionName(int index)
+{
+  std::string name;
+  if (m_pFormatContext && (unsigned int)index < m_pFormatContext->nb_chapters)
+  {
+    AVDictionaryEntry* t =
+        av_dict_get(m_pFormatContext->chapters[index]->metadata, "title", NULL, 0);
+    if (t && t->value)
+      name = t->value;
+  }
+
+  // If no title, we return "Edition 1", "Edition 2", etc.
+  if (name.empty())
+    return "Edition " + std::to_string(index + 1);
+
+  return name;
 }
