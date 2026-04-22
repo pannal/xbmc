@@ -211,6 +211,30 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     return false;
   }
 
+  // Init the value set in the DV settings for ON DV_MODE_ON_DEMAND and the Kodi start
+  if (aml_dv_mode() == DV_MODE_ON_DEMAND && aml_first_start_GUI && bypass_dv_mode_switch_gui)
+  {
+    // DOLBY_VISION_OUTPUT_MODE_IPT:        mode_string = "0-IPT";
+    // DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL: mode_string = "1-IPT Tunnel";
+    // DOLBY_VISION_OUTPUT_MODE_HDR10:      mode_string = "2-HDR10";
+    // DOLBY_VISION_OUTPUT_MODE_SDR10:      mode_string = "3-SDR10";
+    // DOLBY_VISION_OUTPUT_MODE_BYPASS:     mode_string = "5-Bypass";
+
+    int configured_mode = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
+
+    CSysfsPath dolby_vision_mode{"/sys/module/amdolby_vision/parameters/dolby_vision_mode"};
+    unsigned int existing_mode = dolby_vision_mode.Get<unsigned int>().value();
+    
+    if (existing_mode != (unsigned int)configured_mode)
+    {
+        aml_dv_on(configured_mode);    
+        aml_first_start_GUI = false;
+        
+        CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: Set mode from settings: [{}] (existing_mode [{}])",
+                  __FUNCTION__, configured_mode, existing_mode);
+    }
+  }
+
   // Wait for any in-progress DV pipeline restoration to complete before
   // creating the EGL surface. Prevents color corruption when the OnStop
   // handler is restoring IPT while we recreate the GL context.
