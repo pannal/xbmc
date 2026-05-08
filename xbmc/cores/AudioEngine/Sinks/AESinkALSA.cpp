@@ -294,6 +294,19 @@ inline CAEChannelInfo CAESinkALSA::GetChannelLayout(const AEAudioFormat& format,
       while (info.Count() < channels)
         info += AE_CH_UNKNOWN1;
 
+      const bool requestedStereo = format.m_channelLayout.Count() == 2 &&
+                                   format.m_channelLayout.HasChannel(AE_CH_FL) &&
+                                   format.m_channelLayout.HasChannel(AE_CH_FR);
+      if (channels == 2 && requestedStereo &&
+          (info.Count() != 2 || info.HasChannel(AE_CH_UNKNOWN1) ||
+           !info.HasChannel(AE_CH_FL) || !info.HasChannel(AE_CH_FR)))
+      {
+        CLog::Log(LOGDEBUG,
+                  "CAESinkALSA::GetChannelLayout - normalizing incomplete stereo map \"{}\"",
+                  std::string(info));
+        info = AE_CH_LAYOUT_2_0;
+      }
+
       free(actualMap);
     }
     else
@@ -1632,6 +1645,7 @@ void CAESinkALSA::EnumerateDevice(AEDeviceInfoList &list, const std::string &dev
   snd_pcm_info_t *pcminfo;
   snd_pcm_info_alloca(&pcminfo);
   memset(pcminfo, 0, snd_pcm_info_sizeof());
+  std::string pcminfoName;
 
   int err = snd_pcm_info(pcmhandle, pcminfo);
   if (err < 0)
@@ -1664,13 +1678,13 @@ void CAESinkALSA::EnumerateDevice(AEDeviceInfoList &list, const std::string &dev
     }
 
     /* "CONEXANT Analog", "USB Audio", "HDMI 0", "ALC889 Digital" ... */
-    std::string pcminfoName = snd_pcm_info_get_name(pcminfo);
+    pcminfoName = snd_pcm_info_get_name(pcminfo);
 
     /*
      * Filter "USB Audio", in those cases snd_card_get_name() is more
      * meaningful already
      */
-    if (pcminfoName != "USB Audio")
+    if (!StringUtils::StartsWithNoCase(pcminfoName, "USB Audio"))
       info.m_displayNameExtra = pcminfoName;
 
     if (info.m_deviceType == AE_DEVTYPE_HDMI)
@@ -1763,6 +1777,17 @@ void CAESinkALSA::EnumerateDevice(AEDeviceInfoList &list, const std::string &dev
       /* Make it "Default (whatever)" */
       info.m_displayName = "Default (" + info.m_displayName + (info.m_displayNameExtra.empty() ? "" : " " + info.m_displayNameExtra + ")");
       info.m_displayNameExtra = "";
+    }
+    else if (info.m_deviceType == AE_DEVTYPE_IEC958 &&
+             StringUtils::StartsWithNoCase(pcminfoName, "USB Audio"))
+    {
+      /*
+       * Some USB audio cards expose a synthetic IEC958 PCM alongside their
+       * normal analog output. That entry is not a real S/PDIF sink, so hide it
+       * and keep the device list focused on the analog PCM path.
+       */
+      snd_pcm_close(pcmhandle);
+      return;
     }
 
   }
