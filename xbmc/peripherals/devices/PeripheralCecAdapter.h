@@ -156,6 +156,8 @@ private:
   void ProcessActivateSource(void);
   void ProcessStandbyDevices(void);
   void ProcessVolumeChange(void);
+  void ActivateSourceAfterRoutingChange(uint16_t newAddress);
+  bool IsActivateSourceSuppressed(void) const;
 
   void PushCecKeypress(const CEC::cec_keypress& key);
   void PushCecKeypress(const CecButtonPress& key);
@@ -211,6 +213,7 @@ private:
   bool m_bSendInactiveSource;
   bool m_bPowerOffScreensaver;
   bool m_bShutdownOnStandby;
+  CDateTime m_preventActivateSourceOnRoutingChange;
   int m_iCec_func_config;
 };
 
