@@ -28,6 +28,7 @@
 #include "FileItem.h"
 #include "GUIUserMessages.h"
 #include "ServiceBroker.h"
+#include "application/ApplicationVolumeHandling.h"
 #include "bus/virtual/PeripheralBusAddon.h"
 #include "bus/virtual/PeripheralBusApplication.h"
 #include "devices/PeripheralBluetooth.h"
@@ -74,6 +75,19 @@ using namespace KODI;
 using namespace JOYSTICK;
 using namespace PERIPHERALS;
 using namespace XFILE;
+
+namespace
+{
+bool ShouldUseCecVolumeControl()
+{
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  if (!settings)
+    return false;
+
+  return CApplicationVolumeHandling::IsAmlAudioDevice(
+      settings->GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE));
+}
+} // namespace
 
 CPeripherals::CPeripherals(CInputManager& inputManager,
                            GAME::CControllerManager& controllerProfiles)
@@ -716,12 +730,12 @@ PeripheralPtr CPeripherals::GetByPath(const std::string& strPath) const
 
 bool CPeripherals::OnAction(const CAction& action)
 {
-  if (action.GetID() == ACTION_MUTE)
+  if (action.GetID() == ACTION_MUTE && ShouldUseCecVolumeControl())
   {
     return ToggleMute();
   }
 
-  if (SupportsCEC() && action.GetAmount() &&
+  if (SupportsCEC() && action.GetAmount() && ShouldUseCecVolumeControl() &&
       (action.GetID() == ACTION_VOLUME_UP || action.GetID() == ACTION_VOLUME_DOWN))
   {
     PeripheralVector peripherals;
@@ -740,6 +754,26 @@ bool CPeripherals::OnAction(const CAction& action)
           return true;
         }
       }
+    }
+  }
+
+  return false;
+}
+
+bool CPeripherals::IsCECVolumeControlActive()
+{
+  if (!ShouldUseCecVolumeControl())
+    return false;
+
+  PeripheralVector peripherals;
+  if (SupportsCEC() && GetPeripheralsWithFeature(peripherals, FEATURE_CEC))
+  {
+    for (const auto& peripheral : peripherals)
+    {
+      const std::shared_ptr<CPeripheralCecAdapter> cecDevice =
+          std::static_pointer_cast<CPeripheralCecAdapter>(peripheral);
+      if (cecDevice->HasAudioControl())
+        return true;
     }
   }
 
@@ -774,6 +808,9 @@ bool CPeripherals::WaitForGUI()
 
 bool CPeripherals::IsMuted()
 {
+  if (!ShouldUseCecVolumeControl())
+    return false;
+
   PeripheralVector peripherals;
   if (SupportsCEC() && GetPeripheralsWithFeature(peripherals, FEATURE_CEC))
   {
@@ -791,6 +828,9 @@ bool CPeripherals::IsMuted()
 
 bool CPeripherals::ToggleMute()
 {
+  if (!ShouldUseCecVolumeControl())
+    return false;
+
   PeripheralVector peripherals;
   if (SupportsCEC() && GetPeripheralsWithFeature(peripherals, FEATURE_CEC))
   {

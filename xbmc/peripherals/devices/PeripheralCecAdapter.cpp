@@ -23,6 +23,8 @@
 #include "input/remote/IRRemote.h"
 #include "messaging/ApplicationMessenger.h"
 #include "pictures/GUIWindowSlideShow.h"
+#include "settings/Settings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/JobManager.h"
 #include "utils/Variant.h"
 #include "utils/log.h"
@@ -1583,6 +1585,10 @@ void CPeripheralCecAdapterUpdateThread::UpdateMenuLanguage(void)
 std::string CPeripheralCecAdapterUpdateThread::UpdateAudioSystemStatus(void)
 {
   std::string strAmpName;
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  const bool useCecVolumeControl = settings &&
+      CApplicationVolumeHandling::IsAmlAudioDevice(
+          settings->GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE));
 
   /* disable the mute setting when an amp is found, because the amp handles the mute setting and
        set PCM output to 100% */
@@ -1597,10 +1603,13 @@ std::string CPeripheralCecAdapterUpdateThread::UpdateAudioSystemStatus(void)
 
     // set amp present
     m_adapter->SetAudioSystemConnected(true);
-    auto& components = CServiceBroker::GetAppComponents();
-    const auto appVolume = components.GetComponent<CApplicationVolumeHandling>();
-    appVolume->SetMute(false);
-    appVolume->SetVolume(CApplicationVolumeHandling::VOLUME_MAXIMUM, false);
+    if (useCecVolumeControl)
+    {
+      auto& components = CServiceBroker::GetAppComponents();
+      const auto appVolume = components.GetComponent<CApplicationVolumeHandling>();
+      appVolume->SetMute(false);
+      appVolume->SetVolume(CApplicationVolumeHandling::VOLUME_MAXIMUM, false);
+    }
   }
   else
   {

@@ -617,6 +617,8 @@ bool CApplication::Initialize()
   const auto level = appVolume->GetVolumeRatio();
   const auto muted = appVolume->IsMuted();
   appVolume->SetHardwareVolume(level);
+  appVolume->SetAudioDevice(CServiceBroker::GetSettingsComponent()->GetSettings()->GetString(
+      CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE));
   CServiceBroker::GetActiveAE()->SetMute(muted);
 
 #if defined(HAS_OPTICAL_DRIVE) && \
@@ -1396,6 +1398,12 @@ bool CApplication::OnAction(const CAction &action)
   if ((action.GetAmount() && (action.GetID() == ACTION_VOLUME_UP || action.GetID() == ACTION_VOLUME_DOWN)) || action.GetID() == ACTION_VOLUME_SET)
   {
     const auto appVolume = GetComponent<CApplicationVolumeHandling>();
+    if (CServiceBroker::GetPeripherals().IsCECVolumeControlActive())
+    {
+      appVolume->ShowVolumeBar(&action);
+      return true;
+    }
+
     if (!appPlayer->IsPassthrough())
     {
       if (appVolume->IsMuted())

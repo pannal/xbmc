@@ -31,4 +31,9 @@ protected:
   bool OnSettingUpdate(const std::shared_ptr<CSetting>& setting,
                        const char* oldSettingId,
                        const TiXmlNode* oldSettingNode) override;
+
+  bool m_restorePassthroughOnAml = false;
+  bool m_ignoreNextPassthroughChange = false;
+  int m_amlChannels = 1;
+  bool m_hasAmlChannels = false;
 };

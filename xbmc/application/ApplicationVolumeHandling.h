@@ -10,6 +10,9 @@
 
 #include "application/IApplicationComponent.h"
 
+#include <map>
+#include <string>
+
 class CAction;
 class CApplication;
 class CSetting;
@@ -37,10 +40,12 @@ public:
   float GetVolumePercent() const;
   float GetVolumeRatio() const;
   bool IsMuted() const;
+  static bool IsAmlAudioDevice(const std::string& device);
 
   void SetVolume(float iValue, bool isPercentage = true);
   void SetMute(bool mute);
   void ToggleMute(void);
+  void SetAudioDevice(const std::string& device);
 
   const ReplayGainSettings& GetReplayGainSettings() const { return m_replayGainSettings; }
 
@@ -62,10 +67,14 @@ protected:
   void UnMute();
 
   void SetHardwareVolume(float hardwareVolume);
+  void StoreVolumeForCurrentDevice();
 
   void VolumeChanged();
 
   bool m_muted = false;
   float m_volumeLevel = VOLUME_MAXIMUM;
+  float m_userVolumeLevel = VOLUME_MAXIMUM;
+  std::string m_audioDevice;
+  std::map<std::string, float> m_deviceVolumes;
   ReplayGainSettings m_replayGainSettings;
 };

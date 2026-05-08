@@ -15,7 +15,9 @@
 #include "dialogs/GUIDialogVolumeBar.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
+#include "input/actions/ActionIDs.h"
 #include "interfaces/AnnouncementManager.h"
+#include "messaging/ApplicationMessenger.h"
 #include "peripherals/Peripherals.h"
 #include "settings/Settings.h"
 #include "settings/lib/Setting.h"
@@ -23,6 +25,20 @@
 #include "utils/XMLUtils.h"
 
 #include <tinyxml.h>
+#include <cstdlib>
+#include <string>
+
+namespace
+{
+constexpr const char* AUDIO_DEVICE_VOLUME_NODE = "devicevolume";
+constexpr const char* AUDIO_DEVICE_VOLUME_NAME = "name";
+constexpr const char* AUDIO_DEVICE_VOLUME_VALUE = "value";
+} // namespace
+
+bool CApplicationVolumeHandling::IsAmlAudioDevice(const std::string& device)
+{
+  return device.find("AUGESOUND") != std::string::npos;
+}
 
 float CApplicationVolumeHandling::GetVolumePercent() const
 {
@@ -42,6 +58,15 @@ void CApplicationVolumeHandling::SetHardwareVolume(float hardwareVolume)
   IAE* ae = CServiceBroker::GetActiveAE();
   if (ae)
     ae->SetVolume(m_volumeLevel);
+}
+
+void CApplicationVolumeHandling::StoreVolumeForCurrentDevice()
+{
+  if (!m_audioDevice.empty() && !IsAmlAudioDevice(m_audioDevice))
+  {
+    m_userVolumeLevel = m_volumeLevel;
+    m_deviceVolumes[m_audioDevice] = m_userVolumeLevel;
+  }
 }
 
 void CApplicationVolumeHandling::VolumeChanged()
@@ -132,8 +157,45 @@ void CApplicationVolumeHandling::SetVolume(float iValue, bool isPercentage)
   if (isPercentage)
     hardwareVolume /= 100.0f;
 
+  if (IsAmlAudioDevice(m_audioDevice) &&
+      CServiceBroker::GetPeripherals().IsCECVolumeControlActive())
+  {
+    SetHardwareVolume(VOLUME_MAXIMUM);
+    VolumeChanged();
+    return;
+  }
+
   SetHardwareVolume(hardwareVolume);
+  m_userVolumeLevel = m_volumeLevel;
+  StoreVolumeForCurrentDevice();
   VolumeChanged();
+}
+
+void CApplicationVolumeHandling::SetAudioDevice(const std::string& device)
+{
+  if (device == m_audioDevice)
+    return;
+
+  StoreVolumeForCurrentDevice();
+  m_audioDevice = device;
+
+  if (IsAmlAudioDevice(device) && CServiceBroker::GetPeripherals().IsCECVolumeControlActive())
+  {
+    IAE* ae = CServiceBroker::GetActiveAE();
+    if (ae)
+      ae->SetMute(false);
+    m_muted = false;
+    SetHardwareVolume(VOLUME_MAXIMUM);
+    VolumeChanged();
+    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_VOLUME_SHOW, ACTION_VOLUME_UP);
+    return;
+  }
+
+  const auto it = m_deviceVolumes.find(device);
+  SetHardwareVolume(it != m_deviceVolumes.end() ? it->second : m_userVolumeLevel);
+  m_userVolumeLevel = m_volumeLevel;
+  VolumeChanged();
+  CServiceBroker::GetAppMessenger()->PostMsg(TMSG_VOLUME_SHOW, ACTION_VOLUME_DOWN);
 }
 
 void CApplicationVolumeHandling::CacheReplayGainSettings(const CSettings& settings)
@@ -159,6 +221,29 @@ bool CApplicationVolumeHandling::Load(const TiXmlNode* settings)
     if (!XMLUtils::GetFloat(audioElement, "fvolumelevel", m_volumeLevel, VOLUME_MINIMUM,
                             VOLUME_MAXIMUM))
       m_volumeLevel = VOLUME_MAXIMUM;
+    m_userVolumeLevel = m_volumeLevel;
+
+    const TiXmlElement* deviceVolumesElement = audioElement->FirstChildElement("devicevolumes");
+    if (deviceVolumesElement)
+    {
+      for (const TiXmlElement* deviceElement = deviceVolumesElement->FirstChildElement(AUDIO_DEVICE_VOLUME_NODE);
+           deviceElement != nullptr;
+           deviceElement = deviceElement->NextSiblingElement(AUDIO_DEVICE_VOLUME_NODE))
+      {
+        const char* name = deviceElement->Attribute(AUDIO_DEVICE_VOLUME_NAME);
+        if (name == nullptr || IsAmlAudioDevice(name))
+          continue;
+
+        const char* value = deviceElement->Attribute(AUDIO_DEVICE_VOLUME_VALUE);
+        if (value == nullptr)
+          continue;
+
+        char* end = nullptr;
+        const float volume = strtof(value, &end);
+        if (end != value && volume >= VOLUME_MINIMUM && volume <= VOLUME_MAXIMUM)
+          m_deviceVolumes[name] = volume;
+      }
+    }
   }
 
   return true;
@@ -175,7 +260,27 @@ bool CApplicationVolumeHandling::Save(TiXmlNode* settings) const
     return false;
 
   XMLUtils::SetBoolean(audioNode, "mute", m_muted);
-  XMLUtils::SetFloat(audioNode, "fvolumelevel", m_volumeLevel);
+  XMLUtils::SetFloat(audioNode, "fvolumelevel", m_userVolumeLevel);
+
+  if (!m_deviceVolumes.empty())
+  {
+    TiXmlElement deviceVolumesNode("devicevolumes");
+    TiXmlNode* deviceVolumesElement = audioNode->InsertEndChild(deviceVolumesNode);
+    if (!deviceVolumesElement)
+      return false;
+
+    for (const auto& [device, volume] : m_deviceVolumes)
+    {
+      if (IsAmlAudioDevice(device))
+        continue;
+
+      TiXmlElement deviceNode(AUDIO_DEVICE_VOLUME_NODE);
+      deviceNode.SetAttribute(AUDIO_DEVICE_VOLUME_NAME, device.c_str());
+      const std::string volumeText = std::to_string(volume);
+      deviceNode.SetAttribute(AUDIO_DEVICE_VOLUME_VALUE, volumeText.c_str());
+      deviceVolumesElement->InsertEndChild(deviceNode);
+    }
+  }
 
   return true;
 }
