@@ -201,6 +201,7 @@ public:
    * @return True when at least one peripheral reports to be muted, false otherwise.
    */
   bool IsMuted();
+  bool IsCECVolumeControlActive();
 
   /*!
    * @brief Try to toggle the mute status via a peripheral.

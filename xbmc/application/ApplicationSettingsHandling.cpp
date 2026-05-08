@@ -24,12 +24,19 @@
 #include "settings/SettingsComponent.h"
 #include "settings/lib/Setting.h"
 #include "settings/lib/SettingsManager.h"
+#include "utils/XMLUtils.h"
 #if defined(TARGET_DARWIN_OSX)
 #include "utils/StringUtils.h"
 #endif
 
 namespace
 {
+constexpr const char* AUDIO_RESTORE_PASSTHROUGH_TAG = "restorepassthroughonaml";
+constexpr const char* AUDIO_AML_CHANNELS_TAG = "amlchannels";
+constexpr const char* AML_PASSTHROUGH_DEVICE =
+    "ALSA:hdmi:CARD=AMLAUGESOUND,DEV=0|AML-AUGESOUND";
+constexpr int STEREO_CHANNELS_SETTING = 1; // AE_CH_LAYOUT_2_0
+
 bool IsPlaying(const std::string& condition,
                const std::string& value,
                const SettingConstPtr& setting,
@@ -47,6 +54,8 @@ void CApplicationSettingsHandling::RegisterSettings()
   settingsMgr->RegisterSettingsHandler(this);
 
   settingsMgr->RegisterCallback(this, {CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH,
+                                       CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE,
+                                       CSettings::SETTING_AUDIOOUTPUT_CHANNELS,
                                        CSettings::SETTING_LOOKANDFEEL_SKIN,
                                        CSettings::SETTING_LOOKANDFEEL_SKINSETTINGS,
                                        CSettings::SETTING_LOOKANDFEEL_FONT,
@@ -132,7 +141,94 @@ void CApplicationSettingsHandling::OnSettingChanged(const std::shared_ptr<const 
   }
   else if (settingId == CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH)
   {
+    if (m_ignoreNextPassthroughChange)
+      m_ignoreNextPassthroughChange = false;
+    else
+    {
+      const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+      if (settings != nullptr &&
+          CApplicationVolumeHandling::IsAmlAudioDevice(
+              settings->GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE)))
+      {
+        m_restorePassthroughOnAml =
+            std::static_pointer_cast<const CSettingBool>(setting)->GetValue();
+      }
+    }
+
     CServiceBroker::GetAppMessenger()->PostMsg(TMSG_MEDIA_RESTART);
+  }
+  else if (settingId == CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE)
+  {
+    const auto audioDevice = std::static_pointer_cast<const CSettingString>(setting)->GetValue();
+    appVolume->SetAudioDevice(audioDevice);
+
+    const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    if (settings != nullptr)
+    {
+      const bool passthroughEnabled = settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH);
+      const bool isAmlAudioDevice = CApplicationVolumeHandling::IsAmlAudioDevice(audioDevice);
+
+      if (!isAmlAudioDevice)
+      {
+        bool saveSettings = false;
+        const int channels = settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_CHANNELS);
+        if (channels != STEREO_CHANNELS_SETTING)
+        {
+          m_amlChannels = channels;
+          m_hasAmlChannels = true;
+          settings->SetInt(CSettings::SETTING_AUDIOOUTPUT_CHANNELS, STEREO_CHANNELS_SETTING);
+          saveSettings = true;
+        }
+
+        if (passthroughEnabled)
+        {
+          m_restorePassthroughOnAml = true;
+          m_ignoreNextPassthroughChange = true;
+          settings->SetBool(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH, false);
+          saveSettings = true;
+        }
+
+        if (saveSettings)
+          settings->Save();
+      }
+      else
+      {
+        if (m_hasAmlChannels &&
+            settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_CHANNELS) != m_amlChannels)
+        {
+          settings->SetInt(CSettings::SETTING_AUDIOOUTPUT_CHANNELS, m_amlChannels);
+        }
+
+        if (m_restorePassthroughOnAml)
+        {
+          if (settings->GetString(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGHDEVICE) !=
+              AML_PASSTHROUGH_DEVICE)
+          {
+            settings->SetString(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGHDEVICE,
+                                AML_PASSTHROUGH_DEVICE);
+          }
+
+          if (!passthroughEnabled)
+          {
+            m_ignoreNextPassthroughChange = true;
+            settings->SetBool(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH, true);
+          }
+        }
+
+        settings->Save();
+      }
+    }
+  }
+  else if (settingId == CSettings::SETTING_AUDIOOUTPUT_CHANNELS)
+  {
+    const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    if (settings != nullptr &&
+        CApplicationVolumeHandling::IsAmlAudioDevice(
+            settings->GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE)))
+    {
+      m_amlChannels = std::static_pointer_cast<const CSettingInt>(setting)->GetValue();
+      m_hasAmlChannels = true;
+    }
   }
 }
 
@@ -204,12 +300,37 @@ bool CApplicationSettingsHandling::Load(const TiXmlNode* settings)
 {
   auto& components = CServiceBroker::GetAppComponents();
   const auto appVolume = components.GetComponent<CApplicationVolumeHandling>();
-  return appVolume->Load(settings);
+  const bool loaded = appVolume->Load(settings);
+
+  if (settings != nullptr)
+  {
+    const TiXmlElement* audioElement = settings->FirstChildElement("audio");
+    if (audioElement != nullptr)
+    {
+      XMLUtils::GetBoolean(audioElement, AUDIO_RESTORE_PASSTHROUGH_TAG, m_restorePassthroughOnAml);
+      m_hasAmlChannels = XMLUtils::GetInt(audioElement, AUDIO_AML_CHANNELS_TAG, m_amlChannels);
+    }
+  }
+
+  return loaded;
 }
 
 bool CApplicationSettingsHandling::Save(TiXmlNode* settings) const
 {
   const auto& components = CServiceBroker::GetAppComponents();
   const auto appVolume = components.GetComponent<CApplicationVolumeHandling>();
-  return appVolume->Save(settings);
+  if (!appVolume->Save(settings))
+    return false;
+
+  if (settings == nullptr)
+    return false;
+
+  TiXmlElement* audioElement = settings->FirstChildElement("audio");
+  if (audioElement == nullptr)
+    return false;
+
+  XMLUtils::SetBoolean(audioElement, AUDIO_RESTORE_PASSTHROUGH_TAG, m_restorePassthroughOnAml);
+  if (m_hasAmlChannels)
+    XMLUtils::SetInt(audioElement, AUDIO_AML_CHANNELS_TAG, m_amlChannels);
+  return true;
 }
