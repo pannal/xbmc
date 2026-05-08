@@ -65,6 +65,8 @@ using namespace XBMCAddon;
 
 /* time in seconds to suppress source activation after receiving OnStop */
 #define CEC_SUPPRESS_ACTIVATE_SOURCE_AFTER_ON_STOP 2
+/* time in seconds to suppress source activation after the TV changes routing */
+#define CEC_SUPPRESS_ACTIVATE_SOURCE_AFTER_ROUTING_CHANGE 10
 
 CPeripheralCecAdapter::CPeripheralCecAdapter(CPeripherals& manager,
                                              const PeripheralScanResult& scanResult,
@@ -127,6 +129,7 @@ void CPeripheralCecAdapter::ResetMembers(void)
   m_bPowerOffScreensaver = false;
   m_bPowerOffScreensaverPaused = false;
   m_bShutdownOnStandby = false;
+  m_preventActivateSourceOnRoutingChange.SetValid(false);
 
   m_currentButton.iButton = 0;
   m_currentButton.iDuration = 0;
@@ -164,7 +167,8 @@ void CPeripheralCecAdapter::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
         CLog::Log(LOGDEBUG, "{} - ignoring OnScreensaverDeactivated for power action",
                   __FUNCTION__);
     }
-    if (m_bPowerOnScreensaver && !bIgnoreDeactivate && m_configuration.bActivateSource)
+    if (m_bPowerOnScreensaver && !bIgnoreDeactivate && m_configuration.bActivateSource &&
+        !IsActivateSourceSuppressed())
     {
       ActivateSource();
     }
@@ -204,17 +208,11 @@ void CPeripheralCecAdapter::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
            message == "OnWake")
   {
     std::unique_lock<CCriticalSection> lock(m_critSection);
-    if (m_bStarted)
-    {
-      CLog::Log(LOGDEBUG, "{} - reuse open CEC adapter connection after standby mode", __FUNCTION__);
-      bool bActivate(false);
-      {
-        bActivate = m_bActiveSourceBeforeStandby;
-        m_bActiveSourceBeforeStandby = false;
-      }
-      if (bActivate)
-        ActivateSource();
-    }
+    CLog::Log(LOGDEBUG, "{} - restoring CEC active source after standby mode", __FUNCTION__);
+    const bool bActivate = m_bActiveSourceBeforeStandby;
+    m_bActiveSourceBeforeStandby = false;
+    if (bActivate && !IsActivateSourceSuppressed())
+      ActivateSource();
   }
   else if (flag == ANNOUNCEMENT::Player && sender == CAnnouncementManager::ANNOUNCEMENT_SENDER &&
            message == "OnStop")
@@ -232,6 +230,7 @@ void CPeripheralCecAdapter::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
       std::unique_lock<CCriticalSection> lock(m_critSection);
       bActivateSource = (m_configuration.bActivateSource && !m_bOnPlayReceived &&
                          !m_cecAdapter->IsLibCECActiveSource() &&
+                         !IsActivateSourceSuppressed() &&
                          (!m_preventActivateSourceOnPlay.IsValid() ||
                           CDateTime::GetCurrentDateTime() - m_preventActivateSourceOnPlay >
                               CDateTimeSpan(0, 0, 0, CEC_SUPPRESS_ACTIVATE_SOURCE_AFTER_ON_STOP)));
@@ -240,6 +239,34 @@ void CPeripheralCecAdapter::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
     if (bActivateSource)
       ActivateSource();
   }
+}
+
+void CPeripheralCecAdapter::ActivateSourceAfterRoutingChange(uint16_t newAddress)
+{
+  if (newAddress == m_configuration.iPhysicalAddress)
+  {
+    m_preventActivateSourceOnRoutingChange.SetValid(false);
+    return;
+  }
+
+  CLog::Log(LOGDEBUG,
+            "{} - CEC routed away from us to {:04x}, suppressing active source for {} seconds",
+            __FUNCTION__, newAddress, CEC_SUPPRESS_ACTIVATE_SOURCE_AFTER_ROUTING_CHANGE);
+  m_preventActivateSourceOnRoutingChange = CDateTime::GetCurrentDateTime();
+  m_bActiveSourcePending = false;
+
+  if (m_cecAdapter->IsLibCECActiveSource())
+  {
+    CLog::Log(LOGDEBUG, "{} - sending inactive source after routing change", __FUNCTION__);
+    m_cecAdapter->SetInactiveView();
+  }
+}
+
+bool CPeripheralCecAdapter::IsActivateSourceSuppressed(void) const
+{
+  return m_preventActivateSourceOnRoutingChange.IsValid() &&
+         CDateTime::GetCurrentDateTime() - m_preventActivateSourceOnRoutingChange <
+             CDateTimeSpan(0, 0, 0, CEC_SUPPRESS_ACTIVATE_SOURCE_AFTER_ROUTING_CHANGE);
 }
 
 bool CPeripheralCecAdapter::InitialiseFeature(const PeripheralFeature feature)
@@ -642,6 +669,30 @@ void CPeripheralCecAdapter::CecCommand(void* cbParam, const cec_command* command
   {
     switch (command->opcode)
     {
+      case CEC_OPCODE_SET_STREAM_PATH:
+        if (command->initiator == CECDEVICE_TV && command->parameters.size >= 2)
+        {
+          uint16_t iStreamAddress = ((uint16_t)command->parameters[0] << 8) |
+                                    ((uint16_t)command->parameters[1]);
+          adapter->ActivateSourceAfterRoutingChange(iStreamAddress);
+        }
+        break;
+      case CEC_OPCODE_ROUTING_CHANGE:
+        if (command->initiator == CECDEVICE_TV && command->parameters.size >= 4)
+        {
+          uint16_t iNewAddress = ((uint16_t)command->parameters[2] << 8) |
+                                 ((uint16_t)command->parameters[3]);
+          adapter->ActivateSourceAfterRoutingChange(iNewAddress);
+        }
+        break;
+      case CEC_OPCODE_ACTIVE_SOURCE:
+        if (command->parameters.size >= 2)
+        {
+          uint16_t iActiveAddress = ((uint16_t)command->parameters[0] << 8) |
+                                    ((uint16_t)command->parameters[1]);
+          adapter->ActivateSourceAfterRoutingChange(iActiveAddress);
+        }
+        break;
       case CEC_OPCODE_STANDBY:
         if (command->initiator == CECDEVICE_TV &&
             (!adapter->m_standbySent.IsValid() ||
@@ -1772,7 +1823,16 @@ void CPeripheralCecAdapter::ProcessActivateSource(void)
   }
 
   if (bActivate)
+  {
+    if (IsActivateSourceSuppressed())
+    {
+      CLog::Log(LOGDEBUG, "{} - suppressing pending active source after TV route change",
+                __FUNCTION__);
+      return;
+    }
+
     m_cecAdapter->SetActiveSource();
+  }
 }
 
 void CPeripheralCecAdapter::UnregisterDevice(void)
