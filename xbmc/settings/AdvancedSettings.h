@@ -439,6 +439,8 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     int GetLimitCDPrevVal() const;
     int m_limitCDPrevVal{0};
 
+    std::string m_dvCustomVsvdb; // Pour stocker "EB0146D0..."
+
   private:
     void Initialize();
     void Clear();

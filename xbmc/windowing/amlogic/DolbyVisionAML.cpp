@@ -26,6 +26,7 @@
 #include "utils/log.h"
 #include "interfaces/AnnouncementManager.h"
 #include "cores/DataCacheCore.h"
+#include "settings/AdvancedSettings.h"
 
 using namespace KODI;
 
@@ -38,13 +39,14 @@ static void set_visible(const std::string& id, bool visible) {
   if (auto setting = settings()->GetSetting(id)) setting->SetVisible(visible);
 }
 
-
 // Dolby VSVDB Color space data
-static double colour_space_data[3][6] = {
+// Dolby VSVDB Color space data - Add index 10 for Epson
+static double colour_space_data[4][6] = {
     // Rx--[5/8]-------  Ry--[1/4]------  Gx--[1]-  Gy--[1/2]-----  Bx--[1/8]-------  By--[1/32]--------
-      {(0.6800 - 0.625), (0.3200 - 0.25), (0.2650), (0.6900 - 0.5), (0.1500 - 0.125), (0.0600 - 0.03125)}, // DCI-P3  - https://en.wikipedia.org/wiki/DCI-P3
-      {(0.7080 - 0.625), (0.2920 - 0.25), (0.1700), (0.7970 - 0.5), (0.1310 - 0.125), (0.0460 - 0.03125)}, // BT.2020 - https://en.wikipedia.org/wiki/Rec._2020
-      {(0.6400 - 0.625), (0.3300 - 0.25), (0.3000), (0.6000 - 0.5), (0.1500 - 0.125), (0.0600 - 0.03125)}  // BT.709  - https://en.wikipedia.org/wiki/Rec._709
+    {(0.6800 - 0.625), (0.3200 - 0.25), (0.2650), (0.6900 - 0.5), (0.1500 - 0.125), (0.0600 - 0.03125)}, //  0: DCI-P3
+    {(0.7080 - 0.625), (0.2920 - 0.25), (0.1700), (0.7970 - 0.5), (0.1310 - 0.125), (0.0460 - 0.03125)}, //  1: BT.2020
+    {(0.6400 - 0.625), (0.3300 - 0.25), (0.3000), (0.6000 - 0.5), (0.1500 - 0.125), (0.0600 - 0.03125)}, //  2: BT.709
+    {(0.6670 - 0.625), (0.3310 - 0.25), (0.3140), (0.6720 - 0.5), (0.1480 - 0.125), (0.0420 - 0.03125)}  // 10: EPSON LS12000
 };
 
 static inline int find_closest_lut_index(int value, const int *lut, int lut_size)
@@ -370,19 +372,76 @@ void CalculateVSVDBPayload_2()
       byte[6] = (xbmc_dv_cap::dv_ry_i << 3) |
                 (xbmc_dv_cap::dv_by_i << 0);
   }
-  else
+  else // Mode manual (0, 1, 2 ou 10)
   {
-    byte[3] = (static_cast<int>(colour_space_data[cs][2] / one_256) << 1) | // Gx in 7-1
-              (dv_12b_444_bits << 0);                                       // 12b 444 in 0
+    double r_x, r_y, g_x, g_y, b_x, b_y;
+    bool rawBytesParsed = false;
 
-    byte[4] = (static_cast<int>(colour_space_data[cs][3] / one_256) << 1) | // Gy in 7-1
-              (0 << 0);                                                     // 10b 444 in 0
+    if (cs == 10)
+    {
+      // Getting string from advancedsettings.xml
+      // Format from XML : "Rx,Ry,Gx,Gy,Bx,By" (ex: "0.042,0.081,0.314,0.172,0.023,0.011")
+      std::string customVsvdbCoords = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_dvCustomVsvdb;
 
-    byte[5] = (static_cast<int>(colour_space_data[cs][0] / one_256) << 3) | // Rx in 7-3
-              (static_cast<int>(colour_space_data[cs][4] / one_256) << 0);  // Bx in 2-0
+      if (!customVsvdbCoords.empty())
+      {
+        unsigned int v[12];
+        CLog::Log(LOGINFO, "CDolbyVisionAML - Found XML Payload: {}", customVsvdbCoords);
 
-    byte[6] = (static_cast<int>(colour_space_data[cs][1] / one_256) << 3) | // Ry in 7-3
-              (static_cast<int>(colour_space_data[cs][5] / one_256) << 0);  // By in 2-0
+        if (sscanf(customVsvdbCoords.c_str(), "%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x:%x", 
+                   &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10], &v[11]) == 12)
+        {
+          byte[3] = static_cast<unsigned char>(v[8]);
+          byte[4] = static_cast<unsigned char>(v[9]);
+          byte[5] = static_cast<unsigned char>(v[10]);
+          byte[6] = static_cast<unsigned char>(v[11]);
+          rawBytesParsed = true;
+          CLog::Log(LOGINFO, "CDolbyVisionAML - XML Payload parsed successfully!");
+        }
+        else
+        {
+          CLog::Log(LOGERROR, "CDolbyVisionAML - Failed to parse XML Payload format!");
+        }
+      }
+      else 
+      {
+        CLog::Log(LOGDEBUG, "CDolbyVisionAML - XML Payload is empty, using hardcoded Epson values");
+      }
+
+      if (!rawBytesParsed)
+      {
+        r_x = 0.6670 - 0.625;
+        r_y = 0.3310 - 0.25;
+        g_x = 0.3140;
+        g_y = 0.6720 - 0.5;
+        b_x = 0.1480 - 0.125;
+        b_y = 0.0420 - 0.03125;
+      }
+    }
+    else
+    {
+      r_x = colour_space_data[cs][0];
+      r_y = colour_space_data[cs][1];
+      g_x = colour_space_data[cs][2];
+      g_y = colour_space_data[cs][3];
+      b_x = colour_space_data[cs][4];
+      b_y = colour_space_data[cs][5];
+    }
+
+    if (!rawBytesParsed)
+    {
+      byte[3] = (static_cast<int>(g_x / one_256) << 1) | // Gx in 7-1
+                (dv_12b_444_bits << 0);                  // 12b 444 in 0
+
+      byte[4] = (static_cast<int>(g_y / one_256) << 1) | // Gy in 7-1
+                (0 << 0);                                // 10b 444 in 0
+
+      byte[5] = (static_cast<int>(r_x / one_256) << 3) | // Rx in 7-3
+                (static_cast<int>(b_x / one_256) << 0);  // Bx in 2-0
+
+      byte[6] = (static_cast<int>(r_y / one_256) << 3) | // Ry in 7-3
+              (static_cast<int>(b_y / one_256) << 0);  // By in 2-0
+    }
   }
 
   std::stringstream ss;
@@ -544,6 +603,7 @@ void vsvdb_colour_space_filler(const SettingConstPtr& setting, std::vector<Integ
   list.emplace_back(g_localizeStrings.Get(60081), 0); // DCI-P3
   list.emplace_back(g_localizeStrings.Get(60082), 1); // BT.2020
   list.emplace_back(g_localizeStrings.Get(60083), 2); // BT.709
+  list.emplace_back("EPSON LS12000", 10);             // ID 10
 
   enum DV_TYPE dv_type(static_cast<DV_TYPE>(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE)));
   CLog::Log(LOGDEBUG, "CDolbyVisionAML - vsvdb_colour_space_filler: DV Type actuel = {}", (int)dv_type);

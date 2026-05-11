@@ -585,12 +585,19 @@ std::string aml_dv_type_to_string(enum DV_TYPE type)
 
 void set_vsvdb_payload_ver(enum DV_TYPE dv_type, int max_lum_nits_value, int source_max_pq)
 {
-  if ((dv_type == DV_TYPE_DISPLAY_LED) ||
-      (max_lum_nits_value < 400) ||
+  int cs(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_CS));
+
+  if (cs == 10 || 
+      (dv_type == DV_TYPE_DISPLAY_LED) || 
+      (max_lum_nits_value < 400) || 
       ((max_lum_nits_value > 6450) && (source_max_pq == 4095)))
+  {
     CalculateVSVDBPayload_2();
+  }
   else
+  {
     CalculateVSVDBPayload();
+  }
 }
 
 // Static flag for kernel-side 422 forcing during DV/HDR10+ playback
