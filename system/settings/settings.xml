@@ -2935,7 +2935,7 @@
         </setting>
         <setting id="coreelec.amlogic.disableguiscaling" type="boolean" parent="videoscreen.screen" label="14290" help="14291">
           <requirement>HAVE_4K_GUI</requirement>
-          <default>false</default>
+          <default>true</default>
           <control type="toggle" />
         </setting>
         <setting id="coreelec.amlogic.limitcd" type="integer" parent="videoscreen.screen" label="14286" help="14287">

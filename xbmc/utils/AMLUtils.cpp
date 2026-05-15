@@ -2706,8 +2706,11 @@ void aml_enable_freeScale(const RESOLUTION_INFO &res)
   sprintf(fsaxis_str, "0 0 %d %d", res.iWidth-1, res.iHeight-1);
   char waxis_str[256] = {0};
   sprintf(waxis_str, "0 0 %d %d", res.iScreenWidth-1, res.iScreenHeight-1);
+  char target_str[64] = {0};
+  sprintf(target_str, "%d %d", res.iScreenWidth, res.iScreenHeight);
 
   CSysfsPath("/sys/class/graphics/fb0/free_scale", 0);
+  CSysfsPath("/sys/class/graphics/fb0/fix_target_size", target_str);
   CSysfsPath("/sys/class/graphics/fb0/free_scale_axis", fsaxis_str);
   CSysfsPath("/sys/class/graphics/fb0/window_axis", waxis_str);
   CSysfsPath("/sys/class/graphics/fb0/free_scale", 0x10001);

@@ -9,6 +9,8 @@
 #include "DisplaySettings.h"
 
 #include "ServiceBroker.h"
+#include "application/ApplicationComponents.h"
+#include "application/ApplicationPlayer.h"
 #include "cores/VideoPlayer/VideoRenderers/ColorManager.h"
 #include "dialogs/GUIDialogFileBrowser.h"
 #include "guilib/GUIComponent.h"
@@ -440,6 +442,40 @@ bool CDisplaySettings::OnSettingChanging(const std::shared_ptr<const CSetting>& 
   {
     const RESOLUTION_INFO res_info = GetResolutionInfo(GetCurrentResolution());
     write_resolution_ini(res_info);
+
+    if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING)
+    {
+      // write_resolution_ini above has already persisted the new value so it
+      // takes effect on next boot regardless of what happens below. The live
+      // switch tears down the EGL surface and resolution list — anything that
+      // can leave Kodi in a half-torn-down state must short-circuit here.
+      auto winSystem = CServiceBroker::GetWinSystem();
+      auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+      const bool playerBusy = appPlayer && appPlayer->IsPlaying();
+      if (!winSystem || playerBusy)
+      {
+        CLog::Log(LOGINFO,
+          "CDisplaySettings: deferring live disableguiscaling switch ({}); "
+          "change takes effect on next Kodi restart",
+          playerBusy ? "player active" : "no window system");
+        return true;
+      }
+
+      Clear();
+      winSystem->UpdateResolutions();
+      const RESOLUTION newRes = GetResolutionForScreen();
+      if (newRes <= RES_INVALID ||
+          (size_t)newRes >= CDisplaySettings::GetInstance().ResolutionInfoSize())
+      {
+        CLog::Log(LOGWARNING,
+          "CDisplaySettings: live disableguiscaling switch aborted — "
+          "GetResolutionForScreen returned invalid resolution {}",
+          static_cast<int>(newRes));
+        return true;
+      }
+      SetCurrentResolution(newRes, false);
+      winSystem->GetGfxContext().SetVideoResolution(newRes, true);
+    }
   }
 
   return true;
