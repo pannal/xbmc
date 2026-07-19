@@ -172,6 +172,10 @@ void CAdvancedSettings::Initialize()
 
   m_hasVideoDefaultLatency = false;
   m_videoDefaultLatency = 0.0;
+  // Load() runs on every profile switch; without these the latency tables
+  // accumulate a fresh copy of the defaults and user entries per load.
+  m_videoRefreshLatency.clear();
+  m_audioPassthroughLatency.clear();
 
   m_videoDecoderTimeout = 5;
   m_videoDecoderDrainTimeout = 5;
@@ -536,19 +540,39 @@ void CAdvancedSettings::DefaultVideoLatency() {
 
   if (!m_hasVideoDefaultLatency) m_videoDefaultLatency = 165;
 
+  // The 165ms global default is calibrated for film-rate output (23.976/24Hz).
+  // Display chains run lower-latency pipelines at 50/60Hz, so the film-mode
+  // value overcompensates there and pushes audio ~165ms ahead of video; the
+  // 2160p entries below follow the same pattern (70/90 < 165). Verified on
+  // multiple setups; override per-chain via advancedsettings.xml <refresh>.
+  std::vector<RefreshVideoLatency> defaults;
+
   RefreshVideoLatency videolatency = {};
+  videolatency.resolution = 0;
+  videolatency.refreshmin = 49;
+  videolatency.refreshmax = 61;
+  videolatency.delay = 0;
+  defaults.push_back(videolatency);
+
+  videolatency = {};
   videolatency.resolution = 2160;
   videolatency.refreshmin = 25;
   videolatency.refreshmax = 25;
   videolatency.delay = 70;
-  m_videoRefreshLatency.push_back(videolatency);
+  defaults.push_back(videolatency);
 
   videolatency = {};
   videolatency.resolution = 2160;
   videolatency.refreshmin = 50;
   videolatency.refreshmax = 60;
   videolatency.delay = 90;
-  m_videoRefreshLatency.push_back(videolatency);
+  defaults.push_back(videolatency);
+
+  // Prepend rather than append: user <refresh> entries from advancedsettings.xml
+  // are already in the vector, and GetLatencyTweak() takes the LAST match, so
+  // defaults must sit in front of them to remain user-overridable.
+  m_videoRefreshLatency.insert(m_videoRefreshLatency.begin(), defaults.begin(),
+                               defaults.end());
 }
 
 void CAdvancedSettings::ParseSettingsFile(const std::string &file)
