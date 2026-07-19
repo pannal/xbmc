@@ -2692,8 +2692,16 @@ void CVideoPlayer::HandlePlaySpeed()
           }
           else
           {
-            // Sync to the later start time to avoid desync
-            clock = std::max(clock, videoClock);
+            // Video's presentable start is at or after the audio-anchored clock.
+            // Keep the audio clock unchanged: audio is the sync master and clock
+            // already accounts for its output delay (cachetime). Pulling the clock
+            // UP to videoClock (the old std::max) discards that delay and presents
+            // audio late by (audio.cachetime - video.cachetotal) — a fixed lipsync
+            // error, worst on decoded PCM where cachetime is large (~0.5-0.6s).
+            // Passthrough's cachetime is tiny so max() barely moved it, which hid
+            // the bug. This is the same reason the live-stream branch above refuses
+            // max(). The video renderer holds its first frame until the clock reaches
+            // it — a one-time startup beat, not a persistent desync.
           }
         }
       }
