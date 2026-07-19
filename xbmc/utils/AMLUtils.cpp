@@ -453,6 +453,33 @@ int aml_get_cpufamily_id()
   return aml_cpufamily_id;
 }
 
+bool aml_display_is_widescreen()
+{
+  bool is_widescreen = true;
+  CSysfsPath edid{"/sys/class/amhdmitx/amhdmitx0/edid"};
+
+  if (edid.Exists())
+  {
+    std::string valstr = edid.Get<std::string>().value();
+    size_t pos = valstr.find("Physical size(mm):");
+    if (pos != std::string::npos)
+    {
+      int width_mm = 0, height_mm = 0;
+      sscanf(valstr.c_str() + pos, "Physical size(mm): %d x %d", &width_mm, &height_mm);
+      if (width_mm > 0 && height_mm > 0)
+      {
+          float ratio = static_cast<float>(width_mm) / height_mm;
+          // 16:9 range (with some tolerance)
+          is_widescreen = (ratio > 1.65f) ? 1 : 0;
+          CLog::Log(LOGDEBUG, "AMLUtils: display {} wide screen ({}x{}mm)",
+            is_widescreen ? "is" : "is not", width_mm, height_mm);
+      }
+    }
+  }
+
+  return is_widescreen;
+}
+
 bool aml_display_support_hdr_pq()
 {
   bool support = false;
@@ -3193,7 +3220,16 @@ bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res)
 
   res->bFullScreen   = true;
   res->iSubtitles    = (int)(0.965 * res->iHeight);
-  res->fPixelRatio   = 1.0f;
+  // SD CEA modes on a widescreen display are anamorphic — the box signals the
+  // 16:9 VICs (3/18), so the 720-wide raster carries non-square pixels. A
+  // ratio of 1.0 makes the renderer letterbox 16:9 content into ~400 lines,
+  // which the display then stretches back to 16:9. HD/UHD and VESA modes are
+  // square-pixel; on a 4:3 display SD pixels are near enough square too.
+  if (res->iScreenWidth == 720 && (res->iScreenHeight == 480 || res->iScreenHeight == 576) &&
+      aml_display_is_widescreen())
+    res->fPixelRatio = (16.0f / 9.0f) * res->iScreenHeight / res->iScreenWidth;
+  else
+    res->fPixelRatio = 1.0f;
   res->strId         = fromMode;
   res->strMode       = StringUtils::Format("{:d}x{:d} @ {:.2f}{} - Full Screen", res->iScreenWidth, res->iScreenHeight, res->fRefreshRate,
     res->dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "");

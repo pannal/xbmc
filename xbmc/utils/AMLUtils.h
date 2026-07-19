@@ -97,6 +97,7 @@ enum DV_COLORIMETRY : int
 #define DOLBY_VISION_OUTPUT_MODE_BYPASS     (unsigned int)(5)
 
 int  aml_get_cpufamily_id();
+bool aml_display_is_widescreen();
 bool aml_display_support_hdr_pq();
 bool aml_display_support_hdr_hlg();
 bool aml_display_support_hdr10plus();
