@@ -106,17 +106,42 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     // If only fps changed, update it without full reconfigure to avoid
     // destroying/recreating the renderer mid-playback. The display mode
     // switch (if needed) is handled by UpdateResolution() in FrameMove().
+    // Only valid while the whitelist keeps the current screen geometry: this
+    // path rebuilds neither the renderer view nor the codec dst rect, so a
+    // switch to a mode with different dimensions or pixel ratio (e.g. GUI
+    // 1080p -> anamorphic 576p50 after fps re-detection on a badly muxed
+    // file) would present with stale geometry and skip the AV resync.
     if (m_pRenderer != nullptr && m_fps != fps &&
         m_picture.IsSameParams(picture) && m_orientation == orientation &&
         m_NumberBuffers == buffers && !m_pRenderer->ConfigChanged(picture))
     {
+      bool sameScreen = true;
+      if (fps > 0.0f &&
+          CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+              CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF)
+      {
+        CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+        const RESOLUTION_INFO curInfo = gfx.GetResInfo(gfx.GetVideoResolution());
+        const RESOLUTION_INFO newInfo = gfx.GetResInfo(CResolutionUtils::ChooseBestResolution(
+            fps, picture.iWidth, picture.iHeight, !picture.stereoMode.empty()));
+        sameScreen = curInfo.iScreenWidth == newInfo.iScreenWidth &&
+                     curInfo.iScreenHeight == newInfo.iScreenHeight &&
+                     curInfo.fPixelRatio == newInfo.fPixelRatio;
+      }
+      if (sameScreen)
+      {
+        CLog::Log(LOGDEBUG,
+                  "CRenderManager::Configure - fps change only ({:4.2f} -> {:4.2f}), "
+                  "updating without full reconfigure",
+                  m_fps, fps);
+        m_fps = fps;
+        m_bTriggerUpdateResolution = true;
+        return true;
+      }
       CLog::Log(LOGDEBUG,
-                "CRenderManager::Configure - fps change only ({:4.2f} -> {:4.2f}), "
-                "updating without full reconfigure",
+                "CRenderManager::Configure - fps change ({:4.2f} -> {:4.2f}) moves display to a "
+                "different screen geometry, doing full reconfigure",
                 m_fps, fps);
-      m_fps = fps;
-      m_bTriggerUpdateResolution = true;
-      return true;
     }
   }
 
