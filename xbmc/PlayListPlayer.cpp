@@ -964,10 +964,6 @@ void PLAYLIST::CPlayListPlayer::OnApplicationMessage(KODI::MESSAGING::ThreadMess
 
       CLog::Log(LOGINFO, "CPlayListPlayer::OnApplicationMessage - Video screensaver is active. Deferring playback until python script cleanly exits.");
       wakeScreensaver();
-      
-      // Explicitly stop the player natively so the hardware decoder teardown begins immediately,
-      // rather than waiting for the Python script's xbmc.Player().stop() to hit the queue.
-      appPlayer->ClosePlayer();
 
       // We capture the original payload to safely delay it, and remove it from the current message
       // so the current pass doesn't delete it before the delay thread can use it.
