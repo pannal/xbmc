@@ -20068,6 +20068,18 @@ msgctxt "#60627"
 msgid "For Player-Led output on projectors whose automatic dynamic-range detection flip-flops between SDR and HDR. Re-applies the Dolby Vision / VS10 output after the resolution switches at playback start (the same effect as manually toggling the VS10 mode). May cause a brief blip at playback start, so leave this off unless you actually see SDR/HDR flickering."
 msgstr "Für Player-Led-Ausgabe an Projektoren, deren automatische Dynamikumfang-Erkennung zwischen SDR und HDR hin- und herspringt. Wendet die Dolby Vision-/VS10-Ausgabe nach dem Auflösungswechsel beim Wiedergabestart erneut an (gleicher Effekt wie das manuelle Umschalten des VS10-Modus). Kann zu einem kurzen Aussetzer beim Wiedergabestart führen – nur aktivieren, wenn tatsächlich SDR/HDR-Flackern auftritt."
 
+#. "Dolby Vision HDR Bypass"
+#: system/settings/settings.xml
+msgctxt "#60644"
+msgid "Disable DV black screen when starting or stopping playback"
+msgstr "DV-Schwarzbild beim Starten oder Stoppen der Wiedergabe deaktivieren"
+
+#. "Dolby Vision HDR Bypass"
+#: system/settings/settings.xml
+msgctxt "#60645"
+msgid "Skips the HDMI mode switch when entering or leaving Dolby Vision playback. Avoids black screens during transitions, but some TVs need the mode switch to pick up the Dolby Vision signalling correctly."
+msgstr "Überspringt den HDMI-Moduswechsel beim Starten oder Beenden der Dolby Vision-Wiedergabe. Verhindert schwarze Bildschirme bei Übergängen, aber einige Fernseher benötigen den Moduswechsel, um das Dolby Vision-Signal korrekt zu erkennen."
+
 msgctxt "#69196"
 msgid "Convert DV Profile 7 FEL to MEL or to Profile 8.1"
 msgstr "DV Profil 7 umwandeln"
