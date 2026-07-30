@@ -86,7 +86,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   if (aml_has_frac_rate_policy())
   {
     CSysfsPath amhdmitx0_frac_rate_policy{"/sys/class/amhdmitx/amhdmitx0/frac_rate_policy"};
-    cur_fractional_rate = amhdmitx0_frac_rate_policy.Get<int>().value();
+    cur_fractional_rate = amhdmitx0_frac_rate_policy.Get<int>().value_or(0);
   }
 
   // If changing in or out of Dolby Vision and it is on then make sure we do a mode swtich - TODO: combine with DV InfoFrame?
@@ -182,6 +182,42 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   if (!CWinSystemAmlogic::CreateNewWindow(name, fullScreen, res))
   {
     return false;
+  }
+
+  // Init the value set in the DV settings for DV_MODE_ON_DEMAND on Kodi startup
+  if (aml_dv_mode() == DV_MODE_ON_DEMAND && m_firstStartGUI)
+  {
+    m_firstStartGUI = false; // Always clear flag so it only runs once at startup
+
+    // Opt-in: under On Demand the GUI is otherwise meant to stay out of DV
+    // entirely until content asks for it. This engages the DV core early
+    // instead, trading that for a display that's slow to re-sync (some
+    // projectors take up to 15s) not having to do it on every play/stop.
+    if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_ENGAGE_AT_STARTUP))
+    {
+      // DOLBY_VISION_OUTPUT_MODE_IPT:        mode_string = "0-IPT";
+      // DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL: mode_string = "1-IPT Tunnel";
+      // DOLBY_VISION_OUTPUT_MODE_HDR10:      mode_string = "2-HDR10";
+      // DOLBY_VISION_OUTPUT_MODE_SDR10:      mode_string = "3-SDR10";
+      // DOLBY_VISION_OUTPUT_MODE_BYPASS:     mode_string = "5-Bypass";
+
+      int configured_mode = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
+
+      CSysfsPath dolby_vision_mode{"/sys/module/amdolby_vision/parameters/dolby_vision_mode"};
+      std::optional<unsigned int> existing_mode = dolby_vision_mode.Get<unsigned int>();
+
+      // No amdolby_vision module (or the node can't be read) means there is no DV
+      // core to set a mode on -- skip rather than falling back to a sentinel that
+      // would never match configured_mode and fire aml_dv_on() on every boot on
+      // hardware that has no DV support at all.
+      if (existing_mode && *existing_mode != static_cast<unsigned int>(configured_mode))
+      {
+        aml_dv_on(configured_mode);
+
+        CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: Set mode from settings: [{}] (existing_mode [{}])",
+                  __FUNCTION__, configured_mode, *existing_mode);
+      }
+    }
   }
 
   // Wait for any in-progress DV pipeline restoration to complete before
