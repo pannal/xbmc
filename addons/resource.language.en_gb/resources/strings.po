@@ -26944,6 +26944,18 @@ msgctxt "#60627"
 msgid "For Player-Led output on projectors whose automatic dynamic-range detection flip-flops between SDR and HDR. Re-applies the Dolby Vision / VS10 output after the resolution switches at playback start (the same effect as manually toggling the VS10 mode). May cause a brief blip at playback start, so leave this off unless you actually see SDR/HDR flickering."
 msgstr ""
 
+#. "Keep SDR state on stop"
+#: system/settings/settings.xml
+msgctxt "#60646"
+msgid "Keep SDR output state on playback stop"
+msgstr ""
+
+#. "Keep SDR output state on playback stop"
+#: system/settings/settings.xml
+msgctxt "#60647"
+msgid "Prevents shutting down the Dolby Vision pipeline on playback stop when outputting SDR under On Demand mode, avoiding screen blinks when returning to the GUI."
+msgstr ""
+
 #. Title of Dolby Vision RPU conversion setting
 #: system/settings/settings.xml
 msgctxt "#69196"
