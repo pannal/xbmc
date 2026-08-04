@@ -14618,6 +14618,10 @@ msgctxt "#36059"
 msgid "Wake-Up by active route"
 msgstr "Aufwecken durch aktive Route"
 
+msgctxt "#36060"
+msgid "Switch source to this device on activity"
+msgstr "Bei Aktivität Quelle auf dieses Gerät umschalten"
+
 msgctxt "#36061"
 msgid "When manual CEC standby is triggered"
 msgstr "Wenn manueller CEC-Standby ausgelöst wird"
