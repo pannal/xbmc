@@ -1591,6 +1591,15 @@ void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries 
 
 void aml_dv_close()
 {
+  // Stop the auto-letterbox watcher unconditionally, before the DV_MODE_ON
+  // early-return below: it's normally only reached as a side effect of
+  // aml_dv_off(), which that branch deliberately skips (see comment below),
+  // leaving the watcher thread running past a playback that has already
+  // closed. Called outside CDVCoreGuard here: the watcher's poll loop
+  // doesn't need the DV-core lock, and joining a thread under that lock
+  // risks deadlock if it ever did.
+  aml_dv_auto_letterbox_watch_stop();
+
   CDVCoreGuard dvlock(__FUNCTION__);
   aml_dv_dump_state("dv_close/pre");
   s_dvPlaybackActive = false;
@@ -2198,6 +2207,15 @@ static void _auto_letterbox_watch_run(int w, int h)
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     if (s_autoLbWatchCancel.load())
+      return;
+    /* Nothing stops this thread on a full application quit while DV is still
+     * engaged (only aml_dv_close() on a normal playback stop does, via
+     * aml_dv_auto_letterbox_watch_stop()), so it can still be sleeping here
+     * after CServiceBroker has already torn down the services that
+     * aml_dv_auto_letterbox_active() and _auto_letterbox_duplicate_sample()
+     * below reach into (CSettingsComponent, CDataCacheCore). Bail out rather
+     * than dereference an already-destroyed singleton. */
+    if (!CServiceBroker::IsServiceManagerUp())
       return;
     /* Settings / override can change mid-playback — stop once we're not the
      * ones driving the override any more. */

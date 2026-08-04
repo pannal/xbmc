@@ -2124,6 +2124,16 @@ bool CApplication::Stop(int exitCode)
   const auto appPlayer = GetComponent<CApplicationPlayer>();
   appPlayer->ClosePlayer();
 
+  // Safety net independent of the above: aml_dv_close() (and the
+  // auto-letterbox watcher stop nested under it) only runs via the normal
+  // video-close chain, which a player stuck mid-open may never reach. Left
+  // running, that background thread survives until CServiceBroker services
+  // are torn down (SIGSEGV touching them) or, if it happened to already exit
+  // cleanly, until its own static std::thread handle's destructor runs still
+  // joinable (SIGABRT via std::terminate()). Stop it here unconditionally so
+  // every quit path is covered, not just a clean player teardown.
+  aml_dv_auto_letterbox_watch_stop();
+
   {
     // close inbound port
     CServiceBroker::UnregisterAppPort();
