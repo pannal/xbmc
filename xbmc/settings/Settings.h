@@ -536,6 +536,7 @@ public:
   static constexpr auto SETTING_COREELEC_VIDEOPLAYER_DETECT_BROKEN_FILES = "coreelec.videoplayer.detectbrokenfiles";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS = "coreelec.amlogic.dolbyvision.handshake_bypass";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_KEEP_SDR_STATE = "coreelec.amlogic.dolbyvision.keep_sdr_state";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_ENGAGE_AT_STARTUP = "coreelec.amlogic.dolbyvision.engage_at_startup";
   static constexpr auto SETTING_CACHE_HARDDISK = "cache.harddisk";
   static constexpr auto SETTING_CACHEVIDEO_DVDROM = "cachevideo.dvdrom";
   static constexpr auto SETTING_CACHEVIDEO_LAN = "cachevideo.lan";

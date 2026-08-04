@@ -708,6 +708,7 @@ static void set_dv_settings_visible(bool show)
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_FORCE_MODES, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_KEEP_SDR_STATE, show);
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_ENGAGE_AT_STARTUP, show);
 }
 
 enum TV_PRESET : int

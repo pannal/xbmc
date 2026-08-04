@@ -26994,6 +26994,18 @@ msgctxt "#60647"
 msgid "Prevents shutting down the Dolby Vision pipeline on playback stop when outputting SDR under On Demand mode, avoiding screen blinks when returning to the GUI."
 msgstr ""
 
+#. "Engage Dolby Vision at startup"
+#: system/settings/settings.xml
+msgctxt "#60648"
+msgid "Engage Dolby Vision at startup"
+msgstr ""
+
+#. "Engage Dolby Vision at startup"
+#: system/settings/settings.xml
+msgctxt "#60649"
+msgid "Initialises the DV core to the configured VS10 output mode when the GUI starts, so playback start and stop don't need a mode switch. Useful if your display is slow to re-sync -- some projectors take up to 15 seconds per switch. Means the GUI is no longer outside Dolby Vision under On Demand."
+msgstr ""
+
 #. Title of Dolby Vision RPU conversion setting
 #: system/settings/settings.xml
 msgctxt "#69196"
