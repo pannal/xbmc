@@ -131,6 +131,8 @@ void CPeripheralCecAdapter::ResetMembers(void)
   m_bIsMuted = false;
 
   m_bGoingToStandby = false;
+  m_bBypassWakeCooldown = false;
+  m_bExplicitStandbyPending = false;
   m_bIsRunning = false;
   m_bDeviceRemoved = false;
   m_bActiveSourcePending = false;
@@ -197,6 +199,13 @@ void CPeripheralCecAdapter::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
     }
     if (m_bPowerOnScreensaver && !bIgnoreDeactivate)
     {
+      // Clear the explicit-standby flag and wake the TV. ProcessActivateSource
+      // has the STANDBY_WAKE_COOLDOWN guard (5s) that protects against the
+      // screensaver video crash waking the TV during standby transition.
+      {
+        std::unique_lock<CCriticalSection> lock(m_critSection);
+        m_bGoingToStandby = false;
+      }
       ActivateSource();
     }
   }
@@ -1294,6 +1303,14 @@ void CPeripheralCecAdapter::CecSourceActivated(void* cbParam,
   // wake up the screensaver, so the user doesn't switch to a black screen
   if (activated == 1)
   {
+    // TV has woken up — clear the standby flag so ActivateSource isn't blocked.
+    // This covers cases where the TV wakes on its own (SimpLink, HDMI-CEC
+    // re-initialization) rather than from a user button press through OnActionPre.
+    {
+      std::unique_lock<CCriticalSection> lock(adapter->m_critSection);
+      adapter->m_bGoingToStandby = false;
+    }
+
     auto& components = CServiceBroker::GetAppComponents();
     const auto appPower = components.GetComponent<CApplicationPowerHandling>();
     appPower->WakeUpScreenSaverAndDPMS();
@@ -1925,12 +1942,16 @@ void CPeripheralCecAdapter::ProcessActivateSource(void)
     bActivate = m_bActiveSourcePending;
     m_bActiveSourcePending = false;
 
+    bool bBypass = m_bBypassWakeCooldown;
+    m_bBypassWakeCooldown = false;
+
     // If a standby is currently queued to be sent, or if a standby was just triggered in the last STANDBY_WAKE_COOLDOWN seconds,
     // silently swallow any queued ActivateSource commands (such as those generated blindly by OnActionPre)
     // because they will conflict with the standby request and wake the TV back up.
-    if (m_bStandbyPending || 
-        (m_standbySent.IsValid() && (CDateTime::GetCurrentDateTime() - m_standbySent < CDateTimeSpan(0, 0, 0, STANDBY_WAKE_COOLDOWN))) ||
-        (m_tvStandbyReceived.IsValid() && (CDateTime::GetCurrentDateTime() - m_tvStandbyReceived < CDateTimeSpan(0, 0, 0, STANDBY_WAKE_COOLDOWN))))
+    if (!bBypass &&
+        (m_bStandbyPending || 
+         (m_standbySent.IsValid() && (CDateTime::GetCurrentDateTime() - m_standbySent < CDateTimeSpan(0, 0, 0, STANDBY_WAKE_COOLDOWN))) ||
+         (m_tvStandbyReceived.IsValid() && (CDateTime::GetCurrentDateTime() - m_tvStandbyReceived < CDateTimeSpan(0, 0, 0, STANDBY_WAKE_COOLDOWN)))))
     {
       if (bActivate)
       {
@@ -2000,58 +2021,78 @@ void CPeripheralCecAdapter::StandbyDevices(bool bBypassTimer /* = false */)
   m_bStandbyPending = true;
   if (bBypassTimer)
     m_ScreensaverStandbySent.SetValid(false);
-  else
+  // Only set the screensaver delay timer if there's no explicit standby pending.
+  // An explicit standby (CECStandby) bypasses the timer, and the screensaver's
+  // own StandbyDevices() call must not re-enable it.
+  else if (!m_bExplicitStandbyPending)
     m_ScreensaverStandbySent = CDateTime::GetCurrentDateTime();
 }
 
 void CPeripheralCecAdapter::ProcessStandbyDevices(void)
 {
-  std::unique_lock<CCriticalSection> lock(m_critSection);
-  if (m_bStandbyPending)
+  bool bExplicitStandby(false);
+  bool bSendInactiveSource(false);
+  bool bHasPowerOffDevices(false);
+
   {
+    std::unique_lock<CCriticalSection> lock(m_critSection);
+    if (!m_bStandbyPending)
+      return;
+
     int iScreensaverDelay = GetSettingInt("screensaver_delay_standby");
 
     if ((iScreensaverDelay > 0) && m_ScreensaverStandbySent.IsValid())
       if (CDateTime::GetCurrentDateTime() - m_ScreensaverStandbySent < CDateTimeSpan(0, 0, iScreensaverDelay, 0))
-          return;
+        return;
 
     m_bStandbyPending = false;
     m_ScreensaverStandbySent.SetValid(false);
-
-    if (!m_cecAdapter->IsLibCECActiveSource())
-      return;
-
-    m_bGoingToStandby = true;
-
-    if (!m_configuration.powerOffDevices.IsEmpty())
-    {
-      m_standbySent = CDateTime::GetCurrentDateTime();
-      m_cecAdapter->StandbyDevices(CECDEVICE_BROADCAST);
-    }
-    // Also mark ourselves inactive when standby commands were sent: the standby
-    // broadcast never clears libcec's active-source flag, and a stale "we are
-    // active source" swallows the next deliberate wake in ProcessActivateSource()
-    // and flips CECToggleState the wrong way. Same sequential pattern as
-    // UnregisterDevice().
-    if (m_bSendInactiveSource == 1)
-    {
-      CLog::Log(LOGDEBUG, "{} - sending inactive source commands", __FUNCTION__);
-      m_cecAdapter->SetInactiveView();
-    }
+    bExplicitStandby = m_bExplicitStandbyPending;
+    m_bExplicitStandbyPending = false;
+    bSendInactiveSource = (m_bSendInactiveSource == 1);
+    bHasPowerOffDevices = !m_configuration.powerOffDevices.IsEmpty();
   }
-}
+  // lock released — safe to call into libCEC (which fires callbacks on another thread)
 
-bool CPeripheralCecAdapter::ToggleDeviceState(CecStateChange mode /*= STATE_SWITCH_TOGGLE */,
-                                              bool forceType /*= false */)
-{
-  if (!IsRunning())
-    return false;
-  if (m_cecAdapter->IsLibCECActiveSource() &&
-      (mode == STATE_SWITCH_TOGGLE || mode == STATE_STANDBY))
+  // For screensaver-triggered standbys, skip if we're not the active source.
+  // For explicit standbys (user pressed a button), always proceed.
+  if (!bExplicitStandby && !m_cecAdapter->IsLibCECActiveSource())
+    return;
+
   {
-    CLog::Log(LOGDEBUG, "{} - putting CEC device on standby...", __FUNCTION__);
-    StandbyDevices(true);
+    std::unique_lock<CCriticalSection> lock(m_critSection);
+    m_bGoingToStandby = true;
+  }
 
+  CLog::Log(LOGDEBUG, "{} - bHasPowerOffDevices={}, bSendInactiveSource={}, bExplicitStandby={}",
+            __FUNCTION__, bHasPowerOffDevices, bSendInactiveSource, bExplicitStandby);
+
+  if (bHasPowerOffDevices)
+  {
+    {
+      std::unique_lock<CCriticalSection> lock(m_critSection);
+      m_standbySent = CDateTime::GetCurrentDateTime();
+    }
+    CLog::Log(LOGDEBUG, "{} - calling StandbyDevices(CECDEVICE_BROADCAST)", __FUNCTION__);
+    m_cecAdapter->StandbyDevices(CECDEVICE_BROADCAST);
+    CLog::Log(LOGDEBUG, "{} - StandbyDevices completed", __FUNCTION__);
+  }
+  // Also mark ourselves inactive when standby commands were sent: the standby
+  // broadcast never clears libcec's active-source flag, and a stale "we are
+  // active source" swallows the next deliberate wake in ProcessActivateSource()
+  // and flips CECToggleState the wrong way. Same sequential pattern as
+  // UnregisterDevice().
+  if (bSendInactiveSource)
+  {
+    CLog::Log(LOGDEBUG, "{} - sending inactive source commands", __FUNCTION__);
+    m_cecAdapter->SetInactiveView();
+  }
+
+  // The configured action for explicit standby fires here on the CEC thread, after 
+  // any queue delays and after the standby broadcast has been sent to the bus. 
+  // This ensures the TV processes the standby command before Kodi shuts down.
+  if (bExplicitStandby)
+  {
     int iActionOnExplicitStandby = GetSettingInt("action_on_explicit_standby");
     switch (iActionOnExplicitStandby)
     {
@@ -2081,10 +2122,37 @@ bool CPeripheralCecAdapter::ToggleDeviceState(CecStateChange mode /*= STATE_SWIT
       case LOCALISED_ID_IGNORE:
         break;
       default:
-        CLog::Log(LOGERROR, "{} - Unexpected [action_on_explicit_standby] setting value", __FUNCTION__);
+        CLog::Log(LOGERROR, "{} - Unexpected [action_on_explicit_standby] setting value",
+                  __FUNCTION__);
         break;
     }
+  }
+}
 
+bool CPeripheralCecAdapter::ToggleDeviceState(CecStateChange mode /*= STATE_SWITCH_TOGGLE */,
+                                              bool forceType /*= false */)
+{
+  if (!IsRunning())
+    return false;
+
+  // For explicit standby, skip the IsLibCECActiveSource() check entirely.
+  // On fresh boot, libCEC may not have established active source yet, but the
+  // user's intent is clear: they asked for standby, so just do it.
+  if (mode == STATE_STANDBY)
+  {
+    CLog::Log(LOGDEBUG, "{} - putting CEC device on standby (explicit)...", __FUNCTION__);
+    {
+      std::unique_lock<CCriticalSection> lock(m_critSection);
+      m_bExplicitStandbyPending = true;
+    }
+    StandbyDevices(true);
+    return false;
+  }
+
+  if (m_cecAdapter->IsLibCECActiveSource() && mode == STATE_SWITCH_TOGGLE)
+  {
+    CLog::Log(LOGDEBUG, "{} - putting CEC device on standby (toggle)...", __FUNCTION__);
+    StandbyDevices(true);
     return false;
   }
   else if (mode == STATE_SWITCH_TOGGLE || mode == STATE_ACTIVATE_SOURCE)
@@ -2115,6 +2183,37 @@ void CPeripheralCecAdapter::OnActionPre(const CAction& action)
       return;
 
     m_lastCheckTime = now;
+
+    // Fast-path guard: if a standby command is currently queued but hasn't been
+    // processed yet by the CEC thread, don't queue an activate that would
+    // conflict. ProcessActivateSource has its own cooldown check for the wider
+    // window after standby completes.
+    bool bExplicitWake = false;
+    {
+      std::unique_lock<CCriticalSection> lock(m_critSection);
+      if (m_bStandbyPending || m_bExplicitStandbyPending)
+      {
+        CLog::Log(LOGDEBUG, "{} - ignoring OnActionPre because standby is pending", __FUNCTION__);
+        return;
+      }
+
+      // If we're in explicit standby, the user is intentionally trying to wake.
+      // Bypass all cooldowns — this is not noise, it's a deliberate wake request.
+      if (m_bGoingToStandby)
+      {
+        bExplicitWake = true;
+        m_bGoingToStandby = false;
+        m_bBypassWakeCooldown = true;
+      }
+    }
+
+    if (bExplicitWake)
+    {
+      CLog::Log(LOGDEBUG, "{} - waking from explicit standby", __FUNCTION__);
+      m_lastActivateSourceTime = now;
+      ActivateSource();
+      return;
+    }
 
     const auto& components = CServiceBroker::GetAppComponents();
     const auto appPower = components.GetComponent<CApplicationPowerHandling>();

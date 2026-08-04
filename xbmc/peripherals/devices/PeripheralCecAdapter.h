@@ -201,6 +201,7 @@ private:
   int m_iExitCode;
   bool m_bIsMuted;
   bool m_bGoingToStandby;
+  bool m_bBypassWakeCooldown;
   bool m_bIsRunning;
   bool m_bDeviceRemoved;
   CPeripheralCecAdapterUpdateThread* m_queryThread;
@@ -209,6 +210,7 @@ private:
   CEC::libcec_configuration m_configuration;
   bool m_bActiveSourcePending;
   bool m_bStandbyPending;
+  bool m_bExplicitStandbyPending;
   bool m_bInactiveViewPending;
   CDateTime m_preventActivateSourceOnPlay;
   CDateTime m_tvStandbyReceived;
