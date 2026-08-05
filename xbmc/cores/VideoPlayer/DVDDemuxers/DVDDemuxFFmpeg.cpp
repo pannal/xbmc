@@ -1931,7 +1931,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
           double bestDiff = 0.01; // snap tolerance: 1% relative
           for (const AVRational& rate : standardRates)
           {
-            double diff = std::abs(fps - av_q2d(rate)) / av_q2d(rate);
+            double diff = std::abs(static_cast<double>(fps) - av_q2d(rate)) / av_q2d(rate);
             if (diff < bestDiff)
             {
               bestDiff = diff;
