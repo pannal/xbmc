@@ -6878,18 +6878,6 @@ msgctxt "#14299"
 msgid "Drive the playback reference clock from real HDMI vsync events instead of the system clock. Improves timing accuracy and reduces micro-hitches. Disable to fall back to the legacy system-clock based timing. The clock runs only during playback; toggling while playing may cause a brief A/V glitch."
 msgstr "Steuert den Wiedergabe-Referenztakt anhand echter HDMI-VSync-Ereignisse statt der Systemuhr. Verbessert die Genauigkeit der Frame-Synchronisation und reduziert kleine Ruckler. Deaktivieren, um auf das ältere systemuhrbasierte Timing zurückzufallen. Der Takt läuft nur während der Wiedergabe; ein Umschalten während laufender Wiedergabe kann einen kurzen A/V-Aussetzer verursachen."
 
-msgctxt "#14280"
-msgid "Maintenance"
-msgstr "Wartung"
-
-msgctxt "#14281"
-msgid "Clean image cache"
-msgstr "Bildercache bereinigen"
-
-msgctxt "#14282"
-msgid "Immediately remove unused images from the cache - images not associated with an item in the media library nor viewed recently. Kodi does this over time in the background."
-msgstr "Bilder, die weder mit einem Eintrag in der Medienbibliothek verknüpft sind, noch kürzlich angesehen wurden, sofort aus dem Cache entfernen. Ansonsten passiert das über die Zeit auch automatisch."
-
 msgctxt "#14301"
 msgid "Channels"
 msgstr "Sender"
@@ -12811,8 +12799,8 @@ msgid "Enable MKV Editions selection"
 msgstr "Auswahl von MKV-Editionen aktivieren"
 
 msgctxt "#29807"
-msgid "Show a selection dialog when an MKV with multiple editions or ordered chapters is detected."
-msgstr "Zeigt einen Auswahldialog an, wenn eine MKV-Datei mit mehreren Editionen oder geordneten Kapiteln erkannt wird."
+msgid "Show a selection dialog when an MKV file containing more than one edition is opened. Every .mkv is opened once extra to check for editions, so leave this off unless you have multi-edition files."
+msgstr "Zeigt einen Auswahldialog an, wenn eine MKV-Datei mit mehr als einer Edition geöffnet wird. Jede .mkv-Datei wird dafür einmal zusätzlich geöffnet, daher diese Option deaktiviert lassen, sofern keine Dateien mit mehreren Editionen vorhanden sind."
 
 msgctxt "#29808"
 msgid "Select MKV edition"
@@ -14618,9 +14606,13 @@ msgctxt "#36059"
 msgid "Wake-Up by active route"
 msgstr "Aufwecken durch aktive Route"
 
+msgctxt "#36060"
+msgid "Switch source to this device on activity"
+msgstr "Bei Aktivität die Quelle auf dieses Gerät umschalten"
+
 msgctxt "#36061"
-msgid "When manual CEC standby is triggered"
-msgstr "Wenn manueller CEC-Standby ausgelöst wird"
+msgid "When CEC standby is triggered from Kodi"
+msgstr "Wenn CEC-Standby aus Kodi ausgelöst wird"
 
 msgctxt "#36096"
 msgid "Use system HDR/SDR brightness balance"
@@ -17019,8 +17011,8 @@ msgid "Correct 50/60Hz audio sync"
 msgstr "Audiosynchronität bei 50/60 Hz korrigieren"
 
 msgctxt "#38089"
-msgid "Removes the built-in audio delay compensation for 50Hz and 60Hz display output modes below 4K. This build's default audio latency of 165ms (stock Kodi uses 0ms) is calibrated for film-rate output of 24Hz and below; at 50/60Hz the display pipeline runs with lower latency, so on some setups the full value overcompensates and pushes audio ahead of video. When enabled, the compensation for 49-61Hz output is 0ms. 4K/2160p output is unchanged. On by default; takes effect on the next playback start."
-msgstr "Entfernt die eingebaute Audioverzögerungskompensation für 50-Hz- und 60-Hz-Anzeigemodi unterhalb von 4K. Die Standard-Audiolatenz dieses Builds von 165 ms (Standard-Kodi verwendet 0 ms) ist auf Ausgabe mit Filmbildraten von 24 Hz und darunter abgestimmt; bei 50/60 Hz arbeitet die Anzeige-Pipeline mit geringerer Latenz, sodass der volle Wert bei manchen Konfigurationen überkompensiert und den Ton dem Bild vorauseilen lässt. Wenn aktiviert, beträgt die Kompensation für die Ausgabe mit 49–61 Hz 0 ms. Die 4K-/2160p-Ausgabe bleibt unverändert. Standardmäßig aktiviert; wird beim nächsten Wiedergabestart wirksam."
+msgid "Removes the built-in audio delay compensation for 49-61Hz display output modes below 4K. This build's default audio latency of 165ms (stock Kodi uses 0ms) is calibrated for film-rate output of 24Hz and below; at 50/60Hz the display pipeline runs with lower latency, so on some setups the full value overcompensates and pushes audio ahead of video. 4K/2160p output keeps its own values. On by default; takes effect on the next playback start."
+msgstr "Entfernt die eingebaute Audioverzögerungskompensation für Anzeigemodi mit 49–61 Hz unterhalb von 4K. Die Standard-Audiolatenz dieses Builds von 165 ms (Standard-Kodi verwendet 0 ms) ist auf Ausgabe mit Filmbildraten von 24 Hz und darunter abgestimmt; bei 50/60 Hz arbeitet die Anzeige-Pipeline mit geringerer Latenz, sodass der volle Wert bei manchen Konfigurationen überkompensiert und den Ton dem Bild vorauseilen lässt. Die 4K-/2160p-Ausgabe behält ihre eigenen Werte. Standardmäßig aktiviert; wird beim nächsten Wiedergabestart wirksam."
 
 msgctxt "#38023"
 msgid "Set my rating"
@@ -17976,7 +17968,7 @@ msgstr "Untertitel mit erklärendem Text nur für Hörgeschädigte kennzeichnen"
 
 msgctxt "#39205"
 msgid "By enabling it, CC subtitles will be labeled for the hearing impaired; this will affect the automatic selection of subtitles, which unless otherwise specified will not be displayed by default."
-msgstr "Wenn aktiviert, werden Untertitel mit erklärendem Text für Hörgeschädigte gekennzeichnet. Das beeinflusst die automatische Auswahl von Untertiteln, welche, wenn nicht anders angegeben, nicht standardmässig angezeigt werden."
+msgstr "Wenn aktiviert, werden Untertitel mit erklärendem Text für Hörgeschädigte gekennzeichnet. Das beeinflusst die automatische Auswahl von Untertiteln, welche, wenn nicht anders angegeben, nicht standardmäßig angezeigt werden."
 
 msgctxt "#39206"
 msgid "CC"
@@ -19871,8 +19863,8 @@ msgstr "Für Player-Led-Ausgabe an Projektoren, deren automatische Dynamikumfang
 #. "Dolby Vision HDR Bypass"
 #: system/settings/settings.xml
 msgctxt "#60644"
-msgid "Disable DV black screen when starting or stopping playback"
-msgstr "DV-Schwarzbild beim Starten oder Stoppen der Wiedergabe deaktivieren"
+msgid "Skip HDMI mode switch for Dolby Vision"
+msgstr "HDMI-Moduswechsel für Dolby Vision überspringen"
 
 #. "Dolby Vision HDR Bypass"
 #: system/settings/settings.xml
@@ -19889,8 +19881,8 @@ msgstr "SDR-Ausgabeformat beim Stoppen der Wiedergabe beibehalten"
 #. "Keep SDR output state on playback stop"
 #: system/settings/settings.xml
 msgctxt "#60647"
-msgid "Prevents shutting down the Dolby Vision pipeline on playback stop when outputting SDR under On Demand mode, avoiding screen blinks when returning to the GUI."
-msgstr "Verhindert das Herunterfahren der Dolby Vision-Pipeline beim Stoppen der Wiedergabe im On-Demand-Modus, wenn SDR ausgegeben wird, und vermeidet so Bildschirmflackern bei der Rückkehr zur Benutzeroberfläche."
+msgid "Prevents shutting down the VS10 engine on playback stop when outputting SDR under On Demand mode, avoiding screen blinks when returning to the GUI."
+msgstr "Verhindert das Herunterfahren der VS10-Engine beim Stoppen der Wiedergabe im On-Demand-Modus, wenn SDR ausgegeben wird, und vermeidet so Bildschirmflackern bei der Rückkehr zur Benutzeroberfläche."
 
 #. "Engage Dolby Vision at startup"
 #: system/settings/settings.xml

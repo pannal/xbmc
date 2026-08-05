@@ -16812,7 +16812,7 @@ msgid "Enable MKV Editions selection"
 msgstr ""
 
 msgctxt "#29807"
-msgid "Show a selection dialog when an MKV with multiple editions or ordered chapters is detected."
+msgid "Show a selection dialog when an MKV file containing more than one edition is opened. Every .mkv is opened once extra to check for editions, so leave this off unless you have multi-edition files."
 msgstr ""
 
 #. Heading of the MKV edition selection dialog
@@ -22820,7 +22820,7 @@ msgstr ""
 #. Description for the setting with label #38088 "Correct 50/60Hz audio sync"
 #: system/settings/settings.xml
 msgctxt "#38089"
-msgid "Removes the built-in audio delay compensation for 50Hz and 60Hz display output modes below 4K. This build's default audio latency of 165ms (stock Kodi uses 0ms) is calibrated for film-rate output of 24Hz and below; at 50/60Hz the display pipeline runs with lower latency, so on some setups the full value overcompensates and pushes audio ahead of video. When enabled, the compensation for 49-61Hz output is 0ms. 4K/2160p output is unchanged. On by default; takes effect on the next playback start."
+msgid "Removes the built-in audio delay compensation for 49-61Hz display output modes below 4K. This build's default audio latency of 165ms (stock Kodi uses 0ms) is calibrated for film-rate output of 24Hz and below; at 50/60Hz the display pipeline runs with lower latency, so on some setups the full value overcompensates and pushes audio ahead of video. 4K/2160p output keeps its own values. On by default; takes effect on the next playback start."
 msgstr ""
 
 #. Used for the rating selection
@@ -26973,7 +26973,7 @@ msgstr ""
 #. "Dolby Vision HDR Bypass"
 #: system/settings/settings.xml
 msgctxt "#60644"
-msgid "Disable DV black screen when starting or stopping playback"
+msgid "Skip HDMI mode switch for Dolby Vision"
 msgstr ""
 
 #. "Dolby Vision HDR Bypass"
@@ -26991,7 +26991,7 @@ msgstr ""
 #. "Keep SDR output state on playback stop"
 #: system/settings/settings.xml
 msgctxt "#60647"
-msgid "Prevents shutting down the Dolby Vision pipeline on playback stop when outputting SDR under On Demand mode, avoiding screen blinks when returning to the GUI."
+msgid "Prevents shutting down the VS10 engine on playback stop when outputting SDR under On Demand mode, avoiding screen blinks when returning to the GUI."
 msgstr ""
 
 #. "Engage Dolby Vision at startup"
@@ -27143,5 +27143,5 @@ msgid "Switch source to this device on activity"
 msgstr ""
 
 msgctxt "#36061"
-msgid "When manual CEC standby is triggered"
+msgid "When CEC standby is triggered from Kodi"
 msgstr ""
