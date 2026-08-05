@@ -11,7 +11,7 @@ VERSION_MINOR 3
 VERSION_TAG p3i
 VERSION_CODE 21.3.0
 ADDON_API 21.3.0
-ADDON_REPOS repository.xbmc.org|https://addons.coreelec.org,@ADDON_REPO_ID@|@ADDON_SERVER_URL@
+ADDON_REPOS repository.xbmc.org|https://addons.coreelec.org,repository.p3i|https://raw.githubusercontent.com/pannal/p3i_repo/,repository.dontpanic|https://raw.githubusercontent.com/pannal/dontpanickodi/,@ADDON_REPO_ID@|@ADDON_SERVER_URL@
 APP_PACKAGE org.xbmc.kodi
 PACKAGE_IDENTITY XBMCFoundation.Kodi
 PACKAGE_PUBLISHER C62BD90A-CDD8-477F-96C3-B25992247B97
