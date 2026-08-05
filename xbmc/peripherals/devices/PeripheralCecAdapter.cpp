@@ -185,8 +185,13 @@ void CPeripheralCecAdapter::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
            message == "OnScreensaverDeactivated" && m_bIsReady)
   {
     bool bIgnoreDeactivate(false);
-    m_ScreensaverStandbySent.SetValid(false);
-    m_bStandbyPending = false;
+    {
+      std::unique_lock<CCriticalSection> lock(m_critSection);
+      m_ScreensaverStandbySent.SetValid(false);
+      m_bStandbyPending = false;
+      // Keep the explicit marker in sync when screensaver deactivation cancels standby.
+      m_bExplicitStandbyPending = false;
+    }
     if (data["shuttingdown"].isBoolean())
     {
       // don't respond to the deactivation if we are just going to suspend/shutdown anyway
