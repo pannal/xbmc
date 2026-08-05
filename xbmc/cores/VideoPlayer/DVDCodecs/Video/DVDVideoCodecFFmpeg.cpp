@@ -37,6 +37,7 @@ extern "C" {
 #include <libavfilter/avfilter.h>
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
+#include <libavutil/dovi_meta.h>
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
@@ -1146,6 +1147,53 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
   {
     pVideoPicture->lightMetadata = *m_hints.contentLightMetadata.get();
     pVideoPicture->hasLightMetadata = true;
+  }
+
+  // Dolby Vision enhancement layer type - a dual layer stream carries an RPU with
+  // spatial resampling; only a FEL additionally carries a non-trivial NLQ mapping
+  pVideoPicture->strDVELType.clear();
+  if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
+  {
+    sd = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_DOVI_METADATA);
+    if (sd)
+    {
+      const AVDOVIMetadata* dovi = reinterpret_cast<const AVDOVIMetadata*>(sd->data);
+      const AVDOVIRpuDataHeader* hdr = av_dovi_get_header(dovi);
+      const AVDOVIDataMapping* mapping = av_dovi_get_mapping(dovi);
+
+      if (hdr && hdr->el_spatial_resampling_filter_flag == 1 && hdr->disable_residual_flag == 0)
+      {
+        // A minimal enhancement layer leaves the non-linear inverse quantisation at its
+        // neutral setting; anything else means residuals are actually carried, i.e. a full
+        // enhancement layer. 2^23 is the neutral vdr_in_max.
+        static constexpr uint64_t DOVI_NLQ_VDR_IN_MAX_NEUTRAL = 8388608;
+
+        pVideoPicture->strDVELType = "MEL";
+        for (int i = 0; mapping && i < 3; i++)
+        {
+          if (mapping->nlq[i].nlq_offset != 0 ||
+              mapping->nlq[i].vdr_in_max != DOVI_NLQ_VDR_IN_MAX_NEUTRAL ||
+              mapping->nlq[i].linear_deadzone_slope != 0 ||
+              mapping->nlq[i].linear_deadzone_threshold != 0)
+          {
+            pVideoPicture->strDVELType = "FEL";
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // HDR10+ dynamic metadata, either on its own or alongside Dolby Vision. Only reported,
+  // never promoted into hdrType: that field drives the renderer and the AML DV path, and
+  // side data is per frame, so flipping it here would flap. CBitstreamConverter already
+  // promotes the stream hints once, on the first frame, for playback.
+  pVideoPicture->hasHdr10Plus = false;
+  if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
+      pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
+  {
+    if (av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_DYNAMIC_HDR_PLUS))
+      pVideoPicture->hasHdr10Plus = true;
   }
 
   if (pVideoPicture->iRepeatPicture)

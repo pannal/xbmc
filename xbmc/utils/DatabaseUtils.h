@@ -149,6 +149,8 @@ typedef enum
   FieldAlbumStatus,
   FieldAlbumDuration,
   FieldHdrType,
+  FieldHdrTypeAlt,
+  FieldDvProfile,
   FieldProvider,
   FieldUserPreference,
   FieldMax

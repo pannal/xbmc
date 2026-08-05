@@ -2113,6 +2113,12 @@
             },
             "hdrtype": {
               "type": "string"
+            },
+            "hdrtypealt": {
+              "type": "string"
+            },
+            "dvprofile": {
+              "type": "string"
             }
           },
           "additionalProperties": false

@@ -54,6 +54,8 @@ void VideoPicture::Reset()
   pict_type = 0;
 
   hdrType = StreamHdrType::HDR_TYPE_NONE;
+  strDVELType.clear();
+  hasHdr10Plus = false;
 
   hasDisplayMetadata = false;
   hasLightMetadata = false;

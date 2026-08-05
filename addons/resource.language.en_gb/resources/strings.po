@@ -14347,7 +14347,21 @@ msgctxt "#20474"
 msgid "HDR type"
 msgstr ""
 
-#empty strings from id 20475 to 21329
+#empty strings from id 20475 to 20477
+
+#. Used in smart playlists to select items by Dolby Vision profile (5.0, 7.6 FEL, 8.1)
+#: xbmc/playlists/SmartPlayList.cpp
+msgctxt "#20478"
+msgid "Dolby Vision profile"
+msgstr ""
+
+#. Used in smart playlists to select items by the second HDR type of a stream (HDR10+, HLG)
+#: xbmc/playlists/SmartPlayList.cpp
+msgctxt "#20479"
+msgid "Alternative HDR type"
+msgstr ""
+
+#empty strings from id 20480 to 21329
 #up to 21329 is reserved for the video db !! !
 
 #: system/settings/settings.xml
@@ -22316,7 +22330,18 @@ msgctxt "#37004"
 msgid "stereo"
 msgstr ""
 
-#empty strings from id 37005 to 37013
+#: system/settings/settings.xml
+msgctxt "#37005"
+msgid "Detect HDR10+ during scan"
+msgstr ""
+
+#. Description of setting with label #37005 "Detect HDR10+ during scan"
+#: system/settings/settings.xml
+msgctxt "#37006"
+msgid "Decode a frame of each HDR10 video while scanning to find out whether it also carries HDR10+ dynamic metadata. Dolby Vision files are always examined, because the enhancement layer type cannot be determined any other way. Leaving this off avoids a decode per HDR10 file, which is noticeable on network storage."
+msgstr ""
+
+#empty strings from id 37007 to 37013
 
 #: xbmc/GUIInfoManager.cpp
 msgctxt "#37014"

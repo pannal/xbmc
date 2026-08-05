@@ -70,6 +70,8 @@ public:
   int pict_type;
 
   StreamHdrType hdrType;
+  std::string strDVELType; //< Dolby Vision enhancement layer type, "MEL" or "FEL"
+  bool hasHdr10Plus = false; //< HDR10+ dynamic metadata present in the stream
 
   bool hasDisplayMetadata = false;
   AVMasteringDisplayMetadata displayMetadata;

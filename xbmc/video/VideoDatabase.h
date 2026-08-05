@@ -1200,6 +1200,21 @@ private:
   void CreateLinkIndex(const char *table);
   void CreateForeignLinkIndex(const char *table, const char *foreignkey);
 
+  /*! \brief Add any column that was introduced within a schema version to an existing database.
+     UpdateTables() is only called when the stored version is lower than GetSchemaVersion(),
+     so columns added without a bump have to be applied here instead.
+   */
+  void AddMissingColumns();
+
+  /*! \brief Append a column to a table if it is not already there.
+   \param table the table to alter
+   \param column the column name
+   \param type the column type, e.g. "text"
+   */
+  void AddMissingColumn(const std::string& table,
+                        const std::string& column,
+                        const std::string& type);
+
   /*! \brief (Re)Create the generic database views for movies, tvshows,
      episodes and music videos
    */

@@ -1260,6 +1260,14 @@
           <default>true</default>
           <control type="toggle" />
         </setting>
+        <setting id="myvideos.extracthdr10plus" type="boolean" label="37005" help="37006">
+          <level>2</level>
+          <default>true</default>
+          <dependencies>
+            <dependency type="enable" setting="myvideos.extractflags" operator="is">true</dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
         <setting id="myvideos.extractchapterthumbs" type="boolean" label="37044" help="37045">
           <level>2</level>
           <default>true</default>

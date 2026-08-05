@@ -16,6 +16,7 @@
 #include "guilib/Texture.h"
 #include "pictures/Picture.h"
 #include "settings/AdvancedSettings.h"
+#include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/MemUtils.h"
 #include "utils/URIUtils.h"
@@ -42,6 +43,8 @@
 
 #include <cstdlib>
 #include <memory>
+#include <string>
+#include <vector>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -353,6 +356,108 @@ bool CDVDFileInfo::DemuxerToStreamDetails(const std::shared_ptr<CDVDInputStream>
   return result;
 }
 
+/* Decodes a frame to pick up the details that are only visible in the elementary stream:
+   the Dolby Vision enhancement layer type (MEL/FEL) and HDR10+ dynamic metadata.
+   Returns true if a frame was decoded. */
+static bool GetHdrDetailsFromFrame(CDemuxStreamVideo* stream,
+                                   CDVDDemux* demuxer,
+                                   CStreamDetailVideo& vDetail)
+{
+  std::unique_ptr<CProcessInfo> pProcessInfo(CProcessInfo::CreateInstance());
+  std::vector<AVPixelFormat> pixFmts;
+  pixFmts.push_back(AV_PIX_FMT_YUV420P);
+  pProcessInfo->SetPixFormats(pixFmts);
+
+  CDVDStreamInfo hint(*stream, true);
+  hint.codecOptions = CODEC_FORCE_SOFTWARE;
+
+  std::unique_ptr<CDVDVideoCodec> pVideoCodec =
+      CDVDFactoryCodec::CreateVideoCodec(hint, *pProcessInfo);
+  if (!pVideoCodec)
+  {
+    CLog::LogF(LOGERROR, "unable to create video codec to retrieve HDR details");
+    return false;
+  }
+
+  int nTotalLen = demuxer->GetStreamLength();
+  int nSeekTo = nTotalLen / 5;
+
+  CLog::LogF(LOGDEBUG, "seeking to pos {}ms (total: {}ms) for HDR details", nSeekTo, nTotalLen);
+
+  if (!demuxer->SeekTime(static_cast<double>(nSeekTo), true))
+  {
+    CLog::LogF(LOGERROR, "unable to seek to pos {}ms", nSeekTo);
+    return false;
+  }
+
+  CDVDVideoCodec::VCReturn iDecoderState = CDVDVideoCodec::VC_NONE;
+  VideoPicture picture;
+  picture.Reset();
+
+  // num streams * 160 frames, should get a valid frame, if not abort.
+  int abort_index = demuxer->GetNrOfStreams() * 160;
+  do
+  {
+    DemuxPacket* pPacket = demuxer->Read();
+
+    if (!pPacket)
+      break;
+
+    // the enhancement layer of a dual track stream cannot be fed to the base layer decoder
+    if (pPacket->iStreamId != stream->uniqueId || pPacket->isELPackage)
+    {
+      CDVDDemuxUtils::FreeDemuxPacket(pPacket);
+      continue;
+    }
+
+    pVideoCodec->AddData(*pPacket);
+    CDVDDemuxUtils::FreeDemuxPacket(pPacket);
+
+    iDecoderState = CDVDVideoCodec::VC_NONE;
+    int maxTries = 50;
+    while (maxTries-- > 0 && iDecoderState == CDVDVideoCodec::VC_NONE)
+    {
+      picture.Reset();
+      iDecoderState = pVideoCodec->GetPicture(&picture);
+    }
+
+    if (iDecoderState == CDVDVideoCodec::VC_PICTURE)
+    {
+      if (!(picture.iFlags & DVP_FLAG_DROPPED))
+        break;
+    }
+
+  } while (abort_index--);
+
+  if (iDecoderState != CDVDVideoCodec::VC_PICTURE || (picture.iFlags & DVP_FLAG_DROPPED))
+  {
+    CLog::LogF(LOGDEBUG, "decoder couldn't find a valid picture for HDR details");
+    picture.Reset();
+    return false;
+  }
+
+  // the frame resolved which kind of enhancement layer it is, so refine "EL"
+  if (!picture.strDVELType.empty() && !vDetail.m_strDvProfile.empty())
+  {
+    const size_t el = vDetail.m_strDvProfile.rfind(" EL");
+    if (el != std::string::npos && el == vDetail.m_strDvProfile.size() - 3)
+      vDetail.m_strDvProfile.erase(el);
+    vDetail.m_strDvProfile += " " + picture.strDVELType;
+  }
+
+  if (picture.hasHdr10Plus)
+  {
+    if (vDetail.m_strHdrType == "dolbyvision")
+      // dynamic metadata actually present in the stream outranks the base layer type
+      vDetail.m_strHdrTypeAlt = CStreamDetails::HdrTypeToString(StreamHdrType::HDR_TYPE_HDR10PLUS);
+    else
+      vDetail.m_strHdrType = CStreamDetails::HdrTypeToString(StreamHdrType::HDR_TYPE_HDR10PLUS);
+  }
+
+  picture.Reset();
+  return true;
+}
+
 /* returns true if details have been added */
 bool CDVDFileInfo::DemuxerToStreamDetails(const std::shared_ptr<CDVDInputStream>& pInputStream,
                                           CDVDDemux* pDemux,
@@ -379,6 +484,42 @@ bool CDVDFileInfo::DemuxerToStreamDetails(const std::shared_ptr<CDVDInputStream>
       p->m_strStereoMode = vstream->stereo_mode;
       p->m_strLanguage = vstream->language;
       p->m_strHdrType = CStreamDetails::HdrTypeToString(vstream->hdr_type);
+
+      if (vstream->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION && vstream->dovi.dv_profile != 0)
+      {
+        // profile.compatibility, e.g. "5.0", "7.6", "8.1" (HDR10 base), "8.4" (HLG base)
+        p->m_strDvProfile =
+            std::to_string(static_cast<int>(vstream->dovi.dv_profile)) + "." +
+            std::to_string(static_cast<int>(vstream->dovi.dv_bl_signal_compatibility_id));
+
+        // an enhancement layer is stated by the configuration record; whether it is a
+        // minimal or a full one only shows in the elementary stream, so mark it plainly
+        // here and let the frame probe below refine "EL" into "MEL" or "FEL"
+        if (vstream->dovi.el_present_flag)
+          p->m_strDvProfile += " EL";
+
+        if (vstream->dovi.dv_bl_signal_compatibility_id == 4)
+          p->m_strHdrTypeAlt = CStreamDetails::HdrTypeToString(StreamHdrType::HDR_TYPE_HLG);
+      }
+
+      // The enhancement layer type and HDR10+ are only visible in the elementary stream, so
+      // finding either costs a frame decode. Dolby Vision is always examined: profile 5 is
+      // single layer IPT-PQ and has nothing to find, but for the rest MEL/FEL is not
+      // obtainable any other way. Plain HDR10 is examined as well, but can be turned off -
+      // it is the common case and HDR10+ is comparatively rare, so on a large library over
+      // network storage that is a lot of decoding for comparatively few hits.
+      const bool probeDolbyVision = vstream->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+                                    vstream->dovi.dv_profile != 5;
+      const bool probeHdr10 =
+          vstream->hdr_type == StreamHdrType::HDR_TYPE_HDR10 &&
+          CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+              CSettings::SETTING_MYVIDEOS_EXTRACTHDR10PLUS);
+
+      if (probeDolbyVision || probeHdr10)
+      {
+        if (!GetHdrDetailsFromFrame(vstream, pDemux, *p))
+          CLog::LogF(LOGDEBUG, "no additional HDR details found");
+      }
 
       // stack handling
       if (URIUtils::IsStack(path))
