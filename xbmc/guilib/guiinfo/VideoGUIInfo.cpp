@@ -528,6 +528,12 @@ bool CVideoGUIInfo::GetLabel(std::string& value, const CFileItem *item, int cont
       case LISTITEM_VIDEO_HDR_TYPE:
         value = tag->m_streamDetails.GetVideoHdrType();
         return true;
+      case LISTITEM_VIDEO_HDR_TYPE_ALT:
+        value = tag->m_streamDetails.GetVideoHdrTypeAlt();
+        return true;
+      case LISTITEM_VIDEO_DV_PROFILE:
+        value = tag->m_streamDetails.GetVideoDvProfile();
+        return true;
       case LISTITEM_LABEL:
       {
         //! @todo get rid of "videos with versions as folder" hack!

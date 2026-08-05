@@ -10862,6 +10862,14 @@ msgctxt "#20476"
 msgid "Has video extras"
 msgstr "Hat Videoextras"
 
+msgctxt "#20478"
+msgid "Dolby Vision profile"
+msgstr "Dolby-Vision-Profil"
+
+msgctxt "#20479"
+msgid "Alternative HDR type"
+msgstr "Alternativer HDR-Typ"
+
 msgctxt "#21330"
 msgid "Show hidden files and directories"
 msgstr "Versteckte Dateien und Verzeichnisse anzeigen"
@@ -16653,6 +16661,14 @@ msgstr "Mono"
 msgctxt "#37004"
 msgid "stereo"
 msgstr "Stereo"
+
+msgctxt "#37005"
+msgid "Detect HDR10+ during scan"
+msgstr "HDR10+ beim Scannen erkennen"
+
+msgctxt "#37006"
+msgid "Decode a frame of each HDR10 video while scanning to find out whether it also carries HDR10+ dynamic metadata. Dolby Vision files are always examined, because the enhancement layer type cannot be determined any other way. Leaving this off avoids a decode per HDR10 file, which is noticeable on network storage."
+msgstr "Beim Scannen ein Einzelbild jedes HDR10-Videos dekodieren, um festzustellen, ob es zusätzlich dynamische HDR10+-Metadaten enthält. Dolby-Vision-Dateien werden immer untersucht, da sich der Typ des Enhancement Layers nicht anders bestimmen lässt. Bleibt diese Option aus, entfällt das Dekodieren pro HDR10-Datei, was sich bei Netzwerkspeicher deutlich bemerkbar macht."
 
 msgctxt "#37014"
 msgid "Last used profile"

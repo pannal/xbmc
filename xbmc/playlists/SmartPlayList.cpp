@@ -131,6 +131,8 @@ static const translateField fields[] = {
   { "albumstatus",       FieldAlbumStatus,             CDatabaseQueryRule::TEXT_FIELD,     NULL,                                 false, 38081 },
   { "albumduration",     FieldAlbumDuration,           CDatabaseQueryRule::SECONDS_FIELD,  StringValidation::IsTime,             false, 180 },
   { "hdrtype",           FieldHdrType,                 CDatabaseQueryRule::TEXTIN_FIELD,   NULL,                                 false, 20474 },
+  { "hdrtypealt",        FieldHdrTypeAlt,              CDatabaseQueryRule::TEXTIN_FIELD,   NULL,                                 false, 20479 },
+  { "dvprofile",         FieldDvProfile,               CDatabaseQueryRule::TEXTIN_FIELD,   NULL,                                 false, 20478 },
 };
 // clang-format on
 
@@ -509,6 +511,8 @@ std::vector<Field> CSmartPlaylistRule::GetFields(const std::string &type)
     fields.push_back(FieldSubtitleLanguage);
     fields.push_back(FieldVideoAspectRatio);
     fields.push_back(FieldHdrType);
+    fields.push_back(FieldHdrTypeAlt);
+    fields.push_back(FieldDvProfile);
   }
   fields.push_back(FieldPlaylist);
   fields.push_back(FieldVirtualFolder);
@@ -1054,6 +1058,10 @@ std::string CSmartPlaylistRule::FormatWhereClause(const std::string &negate, con
     query = db.PrepareSQL(negate + " EXISTS (SELECT 1 FROM streamdetails WHERE streamdetails.idFile = " + table + ".idFile AND streamdetails.iStreamType = %i GROUP BY streamdetails.idFile HAVING COUNT(streamdetails.iStreamType) " + parameter + ")",CStreamDetail::SUBTITLE);
   else if (m_field == FieldHdrType)
     query = negate + " EXISTS (SELECT 1 FROM streamdetails WHERE streamdetails.idFile = " + table + ".idFile AND strHdrType " + parameter + ")";
+  else if (m_field == FieldHdrTypeAlt)
+    query = negate + " EXISTS (SELECT 1 FROM streamdetails WHERE streamdetails.idFile = " + table + ".idFile AND strHdrTypeAlt " + parameter + ")";
+  else if (m_field == FieldDvProfile)
+    query = negate + " EXISTS (SELECT 1 FROM streamdetails WHERE streamdetails.idFile = " + table + ".idFile AND strDvProfile " + parameter + ")";
   if (m_field == FieldPlaycount && strType != "songs" && strType != "albums" && strType != "tvshows")
   { // playcount IS stored as NULL OR number IN video db
     if ((m_operator == OPERATOR_EQUALS && param == "0") ||

@@ -48,6 +48,8 @@ void CStreamDetailVideo::Archive(CArchive& ar)
     ar << m_strStereoMode;
     ar << m_strLanguage;
     ar << m_strHdrType;
+    ar << m_strHdrTypeAlt;
+    ar << m_strDvProfile;
   }
   else
   {
@@ -59,6 +61,8 @@ void CStreamDetailVideo::Archive(CArchive& ar)
     ar >> m_strStereoMode;
     ar >> m_strLanguage;
     ar >> m_strHdrType;
+    ar >> m_strHdrTypeAlt;
+    ar >> m_strDvProfile;
   }
 }
 void CStreamDetailVideo::Serialize(CVariant& value) const
@@ -71,6 +75,8 @@ void CStreamDetailVideo::Serialize(CVariant& value) const
   value["stereomode"] = m_strStereoMode;
   value["language"] = m_strLanguage;
   value["hdrtype"] = m_strHdrType;
+  value["hdrtypealt"] = m_strHdrTypeAlt;
+  value["dvprofile"] = m_strDvProfile;
 }
 
 bool CStreamDetailVideo::IsWorseThan(const CStreamDetail &that) const
@@ -417,6 +423,26 @@ std::string CStreamDetails::GetVideoHdrType( int idx) const
     return "";
 }
 
+std::string CStreamDetails::GetVideoHdrTypeAlt( int idx) const
+{
+  const CStreamDetailVideo* item =
+      dynamic_cast<const CStreamDetailVideo*>(GetNthStream(CStreamDetail::VIDEO, idx));
+  if (item)
+    return item->m_strHdrTypeAlt;
+  else
+    return "";
+}
+
+std::string CStreamDetails::GetVideoDvProfile( int idx) const
+{
+  const CStreamDetailVideo* item =
+      dynamic_cast<const CStreamDetailVideo*>(GetNthStream(CStreamDetail::VIDEO, idx));
+  if (item)
+    return item->m_strDvProfile;
+  else
+    return "";
+}
+
 int CStreamDetails::GetVideoDuration(int idx) const
 {
   const CStreamDetailVideo* item =
@@ -668,7 +694,8 @@ std::string CStreamDetails::HdrTypeToString(StreamHdrType hdrType)
     case StreamHdrType::HDR_TYPE_HDR10:
       return "hdr10";
     case StreamHdrType::HDR_TYPE_HDR10PLUS:
-      return "hdr10+";
+      // no '+' - the skin info expression parser reads it as the AND operator
+      return "hdr10plus";
     case StreamHdrType::HDR_TYPE_HLG:
       return "hlg";
     case StreamHdrType::HDR_TYPE_NONE:

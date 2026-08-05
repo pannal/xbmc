@@ -80,7 +80,83 @@ CVideoDatabase::~CVideoDatabase(void) = default;
 //********************************************************************************************************************************
 bool CVideoDatabase::Open()
 {
-  return CDatabase::Open(CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_databaseVideo);
+  if (!CDatabase::Open(
+          CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_databaseVideo))
+    return false;
+
+  AddMissingColumns();
+  return true;
+}
+
+void CVideoDatabase::AddMissingColumns()
+{
+  // Columns added within a schema version rather than by bumping it. UpdateTables() only runs
+  // when the stored version is lower than GetSchemaVersion(), so it never fires for these and
+  // an existing database has to be brought up to date here instead. Adding a column in future
+  // is a matter of appending one line below. Always append - a build without these columns
+  // reads streamdetails positionally up to strHdrType, so nothing may be inserted before it.
+  //
+  // Done once per run rather than once per CVideoDatabase, but keyed on the profile database
+  // folder so switching to a profile with its own older database still gets checked.
+  static std::string s_checkedDatabase;
+  static CCriticalSection s_checkedSection;
+
+  const std::string databaseFolder = m_profileManager.GetDatabaseFolder();
+
+  std::unique_lock<CCriticalSection> lock(s_checkedSection);
+  if (s_checkedDatabase == databaseFolder)
+    return;
+
+  if (nullptr == m_pDB || nullptr == m_pDS)
+    return;
+
+  AddMissingColumn("streamdetails", "strHdrTypeAlt", "text");
+  AddMissingColumn("streamdetails", "strDvProfile", "text");
+
+  // HdrTypeToString() used to return "hdr10+", which a skin expression can never match
+  // because '+' is the AND operator. No build could store that by scanning - detecting
+  // HDR10+ at all is new here - but an NFO or a Python addon can set stream details
+  // directly, so settle any that exist rather than leave them silently unmatchable.
+  try
+  {
+    m_pDS->exec("UPDATE streamdetails SET strHdrType='hdr10plus' WHERE strHdrType='hdr10+'");
+  }
+  catch (...)
+  {
+    CLog::Log(LOGERROR, "{} unable to migrate hdr10+ stream details", __FUNCTION__);
+  }
+
+  s_checkedDatabase = databaseFolder;
+}
+
+void CVideoDatabase::AddMissingColumn(const std::string& table,
+                                      const std::string& column,
+                                      const std::string& type)
+{
+  try
+  {
+    if (nullptr == m_pDB || nullptr == m_pDS)
+      return;
+
+    m_pDS->query(PrepareSQL("SELECT %s FROM %s LIMIT 1", column.c_str(), table.c_str()));
+    m_pDS->close();
+    return;
+  }
+  catch (...)
+  {
+    // the column is not there yet, fall through and add it
+  }
+
+  try
+  {
+    CLog::Log(LOGINFO, "{} adding column {} to the {} table", __FUNCTION__, column, table);
+    m_pDS->exec(PrepareSQL("ALTER TABLE %s ADD %s %s", table.c_str(), column.c_str(),
+                           type.c_str()));
+  }
+  catch (...)
+  {
+    CLog::Log(LOGERROR, "{} unable to add column {} to the {} table", __FUNCTION__, column, table);
+  }
 }
 
 void CVideoDatabase::CreateTables()
@@ -179,7 +255,7 @@ void CVideoDatabase::CreateTables()
     "strVideoCodec text, fVideoAspect float, iVideoWidth integer, iVideoHeight integer, "
     "strAudioCodec text, iAudioChannels integer, strAudioLanguage text, "
     "strSubtitleLanguage text, iVideoDuration integer, strStereoMode text, strVideoLanguage text, "
-    "strHdrType text)");
+    "strHdrType text, strHdrTypeAlt text, strDvProfile text)");
 
   CLog::Log(LOGINFO, "create sets table");
   m_pDS->exec("CREATE TABLE sets ( idSet integer primary key, strSet text, strOverview text)");
@@ -3232,14 +3308,16 @@ void CVideoDatabase::SetStreamDetailsForFileId(const CStreamDetails& details, in
       m_pDS->exec(PrepareSQL("INSERT INTO streamdetails "
                              "(idFile, iStreamType, strVideoCodec, fVideoAspect, iVideoWidth, "
                              "iVideoHeight, iVideoDuration, strStereoMode, strVideoLanguage,  "
-                             "strHdrType)"
-                             "VALUES (%i,%i,'%s',%f,%i,%i,%i,'%s','%s','%s')",
+                             "strHdrType, strHdrTypeAlt, strDvProfile)"
+                             "VALUES (%i,%i,'%s',%f,%i,%i,%i,'%s','%s','%s','%s','%s')",
                              idFile, (int)CStreamDetail::VIDEO, details.GetVideoCodec(i).c_str(),
                              static_cast<double>(details.GetVideoAspect(i)),
                              details.GetVideoWidth(i), details.GetVideoHeight(i),
                              details.GetVideoDuration(i), details.GetStereoMode(i).c_str(),
                              details.GetVideoLanguage(i).c_str(),
-                             details.GetVideoHdrType(i).c_str()));
+                             details.GetVideoHdrType(i).c_str(),
+                             details.GetVideoHdrTypeAlt(i).c_str(),
+                             details.GetVideoDvProfile(i).c_str()));
     }
     for (int i=1; i<=details.GetAudioStreamCount(); i++)
     {
@@ -4224,6 +4302,13 @@ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag) const
     std::string strSQL = PrepareSQL("SELECT * FROM streamdetails WHERE idFile = %i", tag.m_iFileId);
     pDS->query(strSQL);
 
+    // Resolved by name, once for the result set: these columns were appended later, so
+    // neither their index nor their presence is guaranteed - an ALTER TABLE can fail on a
+    // MySQL user without the rights. fieldIndex() returns -1 rather than throwing, so a
+    // database that never got them yields empty fields instead of failing every read.
+    const int idxHdrTypeAlt = pDS->fieldIndex("strHdrTypeAlt");
+    const int idxDvProfile = pDS->fieldIndex("strDvProfile");
+
     while (!pDS->eof())
     {
       CStreamDetail::StreamType e = (CStreamDetail::StreamType)pDS->fv(1).get_asInt();
@@ -4240,6 +4325,10 @@ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag) const
           p->m_strStereoMode = pDS->fv(11).get_asString();
           p->m_strLanguage = pDS->fv(12).get_asString();
           p->m_strHdrType = pDS->fv(13).get_asString();
+          if (idxHdrTypeAlt >= 0)
+            p->m_strHdrTypeAlt = pDS->fv(idxHdrTypeAlt).get_asString();
+          if (idxDvProfile >= 0)
+            p->m_strDvProfile = pDS->fv(idxDvProfile).get_asString();
           details.AddStream(p);
           retVal = true;
           break;
