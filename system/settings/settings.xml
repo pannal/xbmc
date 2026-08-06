@@ -4165,16 +4165,6 @@
           <visible>false</visible>
           <control type="toggle" />
         </setting>
-        <setting id="coreelec.amlogic.dolbyvision.engage_at_startup" type="boolean" label="60648" help="60649">
-          <level>2</level>
-          <default>false</default>
-          <requirement>HAVE_AMCODEC</requirement>
-          <dependencies>
-            <dependency type="visible" setting="coreelec.amlogic.dolbyvision.mode" operator="is">1</dependency>
-          </dependencies>
-          <visible>false</visible>
-          <control type="toggle" />
-        </setting>
         <setting id="coreelec.amlogic.dolbyvision.video.processor" type="integer" label="60501" help="60502">
           <requirement>HAVE_AMCODEC</requirement>
           <visible>false</visible>

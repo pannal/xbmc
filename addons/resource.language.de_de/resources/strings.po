@@ -19900,18 +19900,6 @@ msgctxt "#60647"
 msgid "Prevents shutting down the VS10 engine on playback stop when outputting SDR under On Demand mode, avoiding screen blinks when returning to the GUI."
 msgstr "Verhindert das Herunterfahren der VS10-Engine beim Stoppen der Wiedergabe im On-Demand-Modus, wenn SDR ausgegeben wird, und vermeidet so Bildschirmflackern bei der Rückkehr zur Benutzeroberfläche."
 
-#. "Engage Dolby Vision at startup"
-#: system/settings/settings.xml
-msgctxt "#60648"
-msgid "Engage Dolby Vision at startup"
-msgstr "Dolby Vision beim Start aktivieren"
-
-#. "Engage Dolby Vision at startup"
-#: system/settings/settings.xml
-msgctxt "#60649"
-msgid "Initialises the DV core to the configured VS10 output mode when the GUI starts, so playback start and stop don't need a mode switch. Useful if your display is slow to re-sync -- some projectors take up to 15 seconds per switch. Means the GUI is no longer outside Dolby Vision under On Demand."
-msgstr "Initialisiert den DV-Kern beim Start der Benutzeroberfläche auf den konfigurierten VS10-Ausgabemodus, sodass beim Start und Stoppen der Wiedergabe kein Moduswechsel nötig ist. Nützlich, wenn das Display langsam neu synchronisiert – manche Projektoren benötigen bis zu 15 Sekunden pro Wechsel. Bedeutet, dass die Benutzeroberfläche im On-Demand-Modus nicht mehr außerhalb von Dolby Vision bleibt."
-
 msgctxt "#69196"
 msgid "Convert DV Profile 7 FEL to MEL or to Profile 8.1"
 msgstr "DV Profil 7 umwandeln"
