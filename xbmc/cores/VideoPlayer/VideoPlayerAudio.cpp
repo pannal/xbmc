@@ -18,6 +18,7 @@
 #include "settings/Settings.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
+#include "settings/lib/SettingsManager.h"
 #include "utils/MathUtils.h"
 #include "utils/log.h"
 
@@ -27,6 +28,7 @@
 
 #include <algorithm>
 #include <mutex>
+#include <set>
 
 #ifdef TARGET_RASPBERRY_PI
 #include "platform/linux/RBP.h"
@@ -101,19 +103,43 @@ CVideoPlayerAudio::CVideoPlayerAudio(
   m_messageQueue.SetMaxTimeSize(messageQueueTimeSize);
 
   m_disconAdjustTimeMs = processInfo.GetMaxPassthroughOffSyncDuration();
+
+  // react to mid-playback changes of the passthrough codec toggles
+  // (override.ini / JSON-RPC / GUI) by re-evaluating the codec choice
+  std::set<std::string> settingSet = {CSettings::SETTING_AUDIOOUTPUT_AC3PASSTHROUGH,
+                                      CSettings::SETTING_AUDIOOUTPUT_AC3TRANSCODE,
+                                      CSettings::SETTING_AUDIOOUTPUT_EAC3PASSTHROUGH,
+                                      CSettings::SETTING_AUDIOOUTPUT_DTSPASSTHROUGH,
+                                      CSettings::SETTING_AUDIOOUTPUT_DTSHDPASSTHROUGH,
+                                      CSettings::SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH,
+                                      CSettings::SETTING_AUDIOOUTPUT_DTSHDCOREFALLBACK};
+  CServiceBroker::GetSettingsComponent()->GetSettings()->GetSettingsManager()->RegisterCallback(
+      this, settingSet);
 }
 
 CVideoPlayerAudio::~CVideoPlayerAudio()
 {
+  CServiceBroker::GetSettingsComponent()->GetSettings()->GetSettingsManager()->UnregisterCallback(
+      this);
+
   StopThread();
 
   // close the stream, and don't wait for the audio to be finished
   // CloseStream(true);
 }
 
+void CVideoPlayerAudio::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
+{
+  // only registered for the passthrough codec toggles - any of them changing
+  // warrants a codec re-evaluation on the player thread
+  if (setting)
+    m_audioSettingsChanged = true;
+}
+
 bool CVideoPlayerAudio::OpenStream(CDVDStreamInfo hints)
 {
   CLog::Log(LOGINFO, "Finding audio codec for: {}", hints.codec);
+  m_audioSettingsChanged = false;
   bool allowpassthrough = true;
 
   CAEStreamInfo::DataType streamType =
@@ -812,6 +838,17 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     // Display reset event has occurred
     // See if we should enable passthrough
     if (m_displayReset)
+    {
+      if (SwitchCodecIfNeeded())
+      {
+        audioframe.nb_frames = 0;
+        return false;
+      }
+    }
+
+    // Passthrough codec toggles changed mid-playback (override.ini / JSON-RPC /
+    // GUI) - re-evaluate the decode-vs-passthrough choice with the new settings
+    if (m_audioSettingsChanged.exchange(false))
     {
       if (SwitchCodecIfNeeded())
       {

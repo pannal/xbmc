@@ -114,6 +114,8 @@ protected:
   bool m_fillPackets = false;
   bool m_normalize = true;
   float m_mixSubLevel = 0.0f;
+  double m_boostCenter = 0.0;
+  int m_lfeMixTo = 0;
   bool m_changeResampler = false;
   bool m_forceResampler = false;
   AEQuality m_resampleQuality;

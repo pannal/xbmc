@@ -16,10 +16,12 @@
 #include "IVideoPlayer.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
+#include "settings/lib/ISettingCallback.h"
 #include "threads/SystemClock.h"
 #include "threads/Thread.h"
 #include "utils/BitstreamStats.h"
 
+#include <atomic>
 #include <chrono>
 #include <list>
 #include <mutex>
@@ -30,7 +32,7 @@ class CVideoPlayer;
 class CDVDAudioCodec;
 class CDVDAudioCodec;
 
-class CVideoPlayerAudio : public CThread, public IDVDStreamPlayerAudio
+class CVideoPlayerAudio : public CThread, public IDVDStreamPlayerAudio, public ISettingCallback
 {
 public:
   CVideoPlayerAudio(
@@ -78,6 +80,9 @@ public:
 
   bool IsStalled() const override { return m_stalled;  }
   bool IsPassthrough() const override;
+
+  // ISettingCallback - passthrough codec toggles changed (e.g. override.ini)
+  void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;
 
 protected:
 
@@ -133,6 +138,7 @@ protected:
   SInfo            m_info;
 
   bool m_displayReset = false;
+  std::atomic<bool> m_audioSettingsChanged{false};
   unsigned int m_disconAdjustTimeMs = 30; // maximum sync-off before adjusting
   int m_disconAdjustCounter = 0;
   // LAV Full smoothing active on the current codec path (passthrough codec

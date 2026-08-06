@@ -2920,35 +2920,50 @@ void CActiveAE::OnSettingsChange()
 
 bool CActiveAE::SupportsRaw(AEAudioFormat &format)
 {
+  // read the format toggles live from the settings instead of m_settings:
+  // m_settings is only refreshed on the engine thread (RECONFIGURE), which
+  // races callers reacting to a settings change (e.g. SwitchCodecIfNeeded)
+  const std::shared_ptr<CSettings> settings =
+      CServiceBroker::GetSettingsComponent()->GetSettings();
+
   // check if passthrough is enabled
-  if (!CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH))
+  if (!settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH))
     return false;
 
   // fixed config disabled passthrough
-  if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) == AE_CONFIG_FIXED)
+  if (settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG) == AE_CONFIG_FIXED)
     return false;
 
   // check if the format is enabled in settings
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_AC3 && !m_settings.ac3passthrough)
+  const bool ac3passthrough = settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_AC3PASSTHROUGH);
+  const bool dtspassthrough = settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSPASSTHROUGH);
+  const bool eac3passthrough =
+      settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_EAC3PASSTHROUGH);
+  const bool truehdpassthrough =
+      settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH);
+  const bool dtshdpassthrough =
+      settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSHDPASSTHROUGH);
+
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_AC3 && !ac3passthrough)
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTS_512 && !m_settings.dtspassthrough)
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTS_512 && !dtspassthrough)
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTS_1024 && !m_settings.dtspassthrough)
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTS_1024 && !dtspassthrough)
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTS_2048 && !m_settings.dtspassthrough)
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTS_2048 && !dtspassthrough)
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE && !m_settings.dtspassthrough)
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE && !dtspassthrough)
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_EAC3 && !m_settings.eac3passthrough)
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_EAC3 && !eac3passthrough)
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD && !m_settings.truehdpassthrough)
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD && !truehdpassthrough)
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD && !m_settings.dtshdpassthrough)
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD && !dtshdpassthrough)
     return false;
-  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_MA && !m_settings.dtshdpassthrough)
+  if (format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_MA && !dtshdpassthrough)
     return false;
 
-  if (!m_sink.SupportsFormat(CServiceBroker::GetSettingsComponent()->GetSettings()->GetString(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGHDEVICE), format))
+  if (!m_sink.SupportsFormat(settings->GetString(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGHDEVICE), format))
     return false;
 
   return true;
@@ -2956,7 +2971,9 @@ bool CActiveAE::SupportsRaw(AEAudioFormat &format)
 
 bool CActiveAE::UsesDtsCoreFallback()
 {
-  return m_settings.usesdtscorefallback;
+  // live read - see SupportsRaw for the rationale
+  return CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+      CSettings::SETTING_AUDIOOUTPUT_DTSHDCOREFALLBACK);
 }
 
 bool CActiveAE::SupportsSilenceTimeout()

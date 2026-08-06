@@ -10,8 +10,11 @@
 
 #include "ActiveAE.h"
 #include "ActiveAEFilter.h"
+#include "ServiceBroker.h"
 #include "cores/AudioEngine/AEResampleFactory.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
+#include "settings/Settings.h"
+#include "settings/SettingsComponent.h"
 
 #include <memory>
 
@@ -153,6 +156,13 @@ bool CActiveAEBufferPoolResample::Create(
   m_remap = remap;
   m_stereoUpmix = upmix;
   m_mixSubLevel = sublevel;
+
+  // snapshot the settings the resampler reads internally (see
+  // CActiveAEResampleFFMPEG::Init) so ConfigureResampler can detect changes
+  const std::shared_ptr<CSettings> settings =
+      CServiceBroker::GetSettingsComponent()->GetSettings();
+  m_boostCenter = settings->GetNumber(CSettings::SETTING_AUDIOOUTPUT_BOOSTCENTER);
+  m_lfeMixTo = settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_LFEMIXTO);
 
   m_normalize = true;
   if ((m_format.m_channelLayout.Count() < m_inputFormat.m_channelLayout.Count() && !normalize))
@@ -365,13 +375,26 @@ void CActiveAEBufferPoolResample::ConfigureResampler(bool normalizelevels,
     normalize = false;
   }
 
-  if (m_normalize != normalize || m_resampleQuality != quality)
+  // boostcenter/lfemixto are read from settings inside the resampler's Init,
+  // so a recreate is enough to pick them up - but only if we detect the change
+  const std::shared_ptr<CSettings> settings =
+      CServiceBroker::GetSettingsComponent()->GetSettings();
+  double boostCenter = settings->GetNumber(CSettings::SETTING_AUDIOOUTPUT_BOOSTCENTER);
+  int lfeMixTo = settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_LFEMIXTO);
+
+  if (m_normalize != normalize || m_resampleQuality != quality ||
+      m_stereoUpmix != stereoupmix || m_mixSubLevel != sublevel ||
+      m_boostCenter != boostCenter || m_lfeMixTo != lfeMixTo)
   {
     m_changeResampler = true;
   }
 
   m_resampleQuality = quality;
   m_normalize = normalize;
+  m_stereoUpmix = stereoupmix;
+  m_mixSubLevel = sublevel;
+  m_boostCenter = boostCenter;
+  m_lfeMixTo = lfeMixTo;
 }
 
 float CActiveAEBufferPoolResample::GetDelay()
