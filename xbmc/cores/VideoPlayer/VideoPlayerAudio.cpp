@@ -1051,6 +1051,7 @@ bool CVideoPlayerAudio::AcceptsData() const
 
 bool CVideoPlayerAudio::SwitchCodecIfNeeded()
 {
+  const bool wasDisplayReset = m_displayReset;
   if (m_displayReset)
     CLog::Log(LOGINFO, "CVideoPlayerAudio: display reset occurred, checking for passthrough");
   else
@@ -1081,15 +1082,38 @@ bool CVideoPlayerAudio::SwitchCodecIfNeeded()
   bool passthroughStateChanged = (codec->NeedPassthrough() != m_pAudioCodec->NeedPassthrough());
   bool isPassthrough = codec->NeedPassthrough();
 
-  // LAV: On display reset, we DON'T need a new codec and we DON'T reset sync state.
-  // Display reset is just TV mode switching - the audio stream is continuous.
-  // Settling was already done in OpenStream when the file was opened.
+  // LAV: On display reset the codec is kept - the audio stream is continuous.
   if (!passthroughStateChanged)
   {
-    // Passthrough state has not changed - don't create new codec, don't reset state
+    // Passthrough state has not changed - don't create new codec
     if (lavFullEnabled && m_pAudioCodec->NeedPassthrough())
     {
       CLog::Log(LOGDEBUG, "CVideoPlayerAudio::SwitchCodecIfNeeded - LAV Full: keeping existing codec (display reset, passthrough unchanged)");
+
+      // The display reset tore down and reopened the audio sink underneath
+      // (ActiveAE reinitializes it before this message arrives): its latency
+      // chain changed, while the LAV internal clock keeps labeling output
+      // against the sink delay measured at the original RESYNC anchor. The
+      // mismatch surfaces as a sync error that ErrorAdjust can only correct
+      // in whole video-frame steps, parking the residual anywhere inside its
+      // +20/-27ms window for the rest of playback. Re-anchor the baseline
+      // against the reopened sink - the same clock+delay anchor the RESYNC
+      // handler establishes at playback start.
+      if (wasDisplayReset && m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
+      {
+        CDVDAudioCodecPassthrough* passthroughCodec =
+            dynamic_cast<CDVDAudioCodecPassthrough*>(m_pAudioCodec.get());
+        if (passthroughCodec && passthroughCodec->IsLavStyleSyncEnabled())
+        {
+          const double anchor = m_pClock->GetClock() + m_audioSink.GetDelay();
+          passthroughCodec->ResetLavSyncState();
+          passthroughCodec->SyncToResyncPts(anchor);
+          CLog::Log(LOGDEBUG,
+                    "CVideoPlayerAudio::SwitchCodecIfNeeded - LAV Full: re-anchored sync to "
+                    "{:.3f}s after display reset (sink was reopened)",
+                    anchor / DVD_TIME_BASE);
+        }
+      }
     }
     return false;
   }
