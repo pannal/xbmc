@@ -41,6 +41,8 @@
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -1912,42 +1914,51 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
           st->bInterlaced = true;
         }
 
-        // Some muxes carry a slightly-off frame rate: a Matroska DefaultDuration
-        // rounded to whole milliseconds (42ms -> 500/21 = 23.810fps) for real
-        // 23.976 content. The wrong rate misses the resolution whitelist at
-        // playback start, and the later CalcFrameRate correction then forces a
-        // display mode switch (blackout, sink reopen) minutes into playback.
-        // When the container asserts a single constant near-standard rate
-        // (avg == r), snap it to the standard one; CalcFrameRate remains the
-        // backstop if the snap were ever wrong.
-        if (!st->bInterlaced && !st->bVFR && st->iFpsScale && fps > 1.0f && fps < 500.0f &&
-            pStream->avg_frame_rate.num == r_frame_rate.num &&
-            pStream->avg_frame_rate.den == r_frame_rate.den)
+        // mkvmerge derives DefaultDuration as the modal frame duration when
+        // the source provides no exact rate, and Matroska block timestamps
+        // are stored at the default TimestampScale of 1ms. Real 23.976
+        // content then declares 42ms -> 500/21 = 23.810fps (29.97 -> 33ms ->
+        // 30.303, 59.94 -> 17ms -> 58.824). The wrong rate misses the
+        // resolution whitelist at playback start and the later measured-rate
+        // correction (CalcFrameRate) forces a display mode switch seconds
+        // into playback. Snap such millisecond-quantised declarations back
+        // to the standard rate; rates quantising to the same duration
+        // (23.976 vs 24) are resolved with the muxer's own statistics tags,
+        // or by preferring the fractional rate when no statistics exist (PAL
+        // rates quantise exactly and never enter this path). CalcFrameRate
+        // remains the backstop if a snap were ever wrong.
+        if (m_bMatroska && !st->bInterlaced && !st->bVFR)
         {
-          static const AVRational standardRates[] = {{24000, 1001}, {24, 1},         {25, 1},
-                                                     {30000, 1001}, {30, 1},         {50, 1},
-                                                     {60000, 1001}, {60, 1}};
-          const AVRational* best = nullptr;
-          double bestDiff = 0.01; // snap tolerance: 1% relative
-          for (const AVRational& rate : standardRates)
+          double statsFps = 0.0;
+          const AVDictionaryEntry* statFrames =
+              av_dict_get(pStream->metadata, "NUMBER_OF_FRAMES", nullptr, AV_DICT_IGNORE_SUFFIX);
+          const AVDictionaryEntry* statDuration =
+              av_dict_get(pStream->metadata, "DURATION", nullptr, AV_DICT_IGNORE_SUFFIX);
+          if (statFrames && statDuration)
           {
-            double diff = std::abs(static_cast<double>(fps) - av_q2d(rate)) / av_q2d(rate);
-            if (diff < bestDiff)
+            int hours = 0;
+            int minutes = 0;
+            double seconds = 0.0;
+            const int64_t frameCount = std::atoll(statFrames->value);
+            if (sscanf(statDuration->value, "%d:%d:%lf", &hours, &minutes, &seconds) == 3)
             {
-              bestDiff = diff;
-              best = &rate;
+              const double totalSeconds = hours * 3600.0 + minutes * 60.0 + seconds;
+              if (frameCount > 0 && totalSeconds > 0.0)
+                statsFps = static_cast<double>(frameCount) / totalSeconds;
             }
           }
-          // only rewrite genuinely wrong rates - leave exact (or float-rounded
-          // exact, e.g. 23976/1000) declarations alone
-          if (best && bestDiff > 0.0001)
+
+          const int declaredRate = st->iFpsRate;
+          const int declaredScale = st->iFpsScale;
+          if (CDVDDemuxUtils::SnapMsQuantisedFrameRate(st->iFpsRate, st->iFpsScale, statsFps))
           {
             CLog::Log(LOGINFO,
-                      "DVDDemuxFFmpeg::{} - snapping non-standard container fps {:f} ({:d}/{:d}) to {:d}/{:d}",
-                      __FUNCTION__, fps, st->iFpsRate, st->iFpsScale, best->num, best->den);
-            st->iFpsRate = best->num;
-            st->iFpsScale = best->den;
-            fps = static_cast<float>(av_q2d(*best));
+                      "CDVDDemuxFFmpeg::AddStream - stream {}: snapping ms-quantised container "
+                      "fps {:.3f} ({}/{}) to {}/{} (statistics fps: {:.3f})",
+                      pStream->index,
+                      static_cast<double>(declaredRate) / declaredScale, declaredRate,
+                      declaredScale, st->iFpsRate, st->iFpsScale, statsFps);
+            fps = static_cast<float>(st->iFpsRate) / static_cast<float>(st->iFpsScale);
           }
         }
 
