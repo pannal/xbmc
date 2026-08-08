@@ -164,6 +164,7 @@ private:
   int m_menuFboHeight = 0;
   bool m_menuFboHasContent = false;
   bool m_menuScissor = false;
+  bool m_firstStartGUI = true;
 };
 
 }

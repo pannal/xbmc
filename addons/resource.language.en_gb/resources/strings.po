@@ -27275,6 +27275,18 @@ msgctxt "#60627"
 msgid "For Player-Led output on projectors whose automatic dynamic-range detection flip-flops between SDR and HDR. Re-applies the Dolby Vision / VS10 output after the resolution switches at playback start (the same effect as manually toggling the VS10 mode). May cause a brief blip at playback start, so leave this off unless you actually see SDR/HDR flickering."
 msgstr ""
 
+#. "Engage Dolby Vision at startup"
+#: system/settings/settings.xml
+msgctxt "#60648"
+msgid "Engage Dolby Vision at startup"
+msgstr ""
+
+#. "Engage Dolby Vision at startup"
+#: system/settings/settings.xml
+msgctxt "#60649"
+msgid "Initialises the DV core to the configured VS10 output mode when the GUI starts, so playback start and stop don't need a mode switch. Useful if your display is slow to re-sync -- some projectors take up to 15 seconds per switch. Means the GUI is no longer outside Dolby Vision under On Demand."
+msgstr ""
+
 #. Title of Dolby Vision RPU conversion setting
 #: system/settings/settings.xml
 msgctxt "#69196"
