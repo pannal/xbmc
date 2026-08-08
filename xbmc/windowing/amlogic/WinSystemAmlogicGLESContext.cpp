@@ -407,6 +407,18 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
       {
         aml_dv_on(configured_mode);
 
+        // aml_dv_on() alone flips the DV core's internal mode but doesn't push
+        // the new signaling (colorimetry/EOTF) out over HDMI on its own -- at
+        // this point in startup there's no resolution/mode switch happening
+        // that would otherwise carry it. Without this, Display-LED output
+        // stayed on stale SDR signaling despite the DV core reporting
+        // engaged, until something else (e.g. a manual resync) forced a real
+        // re-assert. Same call used elsewhere (aml_dv_restore_gui_ipt()'s
+        // caller) after a DV mode change; its round-trip covers every output
+        // mode, and its Player-LED-only reassert-after-modeswitch extra step
+        // already excludes Display-LED/IPT_TUNNEL on its own.
+        aml_dv_display_trigger();
+
         CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: Set mode from settings: [{}] (existing_mode [{}])",
                   __FUNCTION__, configured_mode, *existing_mode);
       }
