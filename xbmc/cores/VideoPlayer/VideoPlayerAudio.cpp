@@ -1625,6 +1625,26 @@ bool CVideoPlayerAudio::SwitchCodecIfNeeded()
 
   CAEStreamInfo::DataType streamType = m_audioSink.GetPassthroughStreamType(
       probeHints.codec, probeHints.samplerate, probeHints.profile);
+
+  // Whether the factory would hand back a passthrough codec turns on these two
+  // and nothing else, so ask them rather than building a codec to look at it.
+  // Construction is not free for every codec - the object-audio codec forks a
+  // helper process and loads an HRTF engine in its Open() - and on a display
+  // reset the answer is nearly always "no change", so the whole thing was built
+  // and thrown away mid-playback. Where the answer really has changed we still
+  // build below, exactly as before.
+  const bool wouldPassthrough = allowpassthrough && streamType != CAEStreamInfo::STREAM_TYPE_NULL;
+  if (wouldPassthrough == m_pAudioCodec->NeedPassthrough())
+  {
+    // the display reset's sink reopen is the disturbance the anchor epoch
+    // exists for - restart settle tracking so it measures the post-churn
+    // state, not the calm before it (applies to the PCM path as well)
+    if (wasDisplayReset)
+      ArmAnchorTrim(true);
+
+    return false;
+  }
+
   std::unique_ptr<CDVDAudioCodec> codec = CDVDFactoryCodec::CreateAudioCodec(
       probeHints, m_processInfo, allowpassthrough, m_processInfo.AllowDTSHDDecode(), streamType);
 
