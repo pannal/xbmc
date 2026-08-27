@@ -12,6 +12,7 @@
 #include "cores/IPlayer.h"
 
 #include <atomic>
+#include <cstdint>
 #include <string.h>
 #include <string>
 
@@ -65,7 +66,11 @@ public:
 
     // subtitle related messages
     SUBTITLE_CLUTCHANGE,
-    SUBTITLE_ADDFILE
+    SUBTITLE_ADDFILE,
+
+    // Amlogic decoder recovery messages. Keep appended to preserve existing message values.
+    PLAYER_VIDEO_RECOVERY,          // request a generation-checked parent recovery seek
+    PLAYER_VIDEO_RECOVERY_SEEK      // execute a tagged parent recovery seek
   };
   // clang-format on
 
@@ -201,10 +206,12 @@ public:
     bool sync = true;
     bool restore = true;
     bool trickplay = false;
+    bool videoRecovery = false;
+    uint64_t videoRecoveryGeneration = 0;
   };
 
-  explicit CDVDMsgPlayerSeek(CDVDMsgPlayerSeek::CMode mode) : CDVDMsg(PLAYER_SEEK),
-    m_mode(mode)
+  explicit CDVDMsgPlayerSeek(CDVDMsgPlayerSeek::CMode mode)
+    : CDVDMsg(mode.videoRecovery ? PLAYER_VIDEO_RECOVERY_SEEK : PLAYER_SEEK), m_mode(mode)
   {}
   ~CDVDMsgPlayerSeek() override = default;
 
@@ -215,9 +222,25 @@ public:
   bool GetRestore() { return m_mode.restore; }
   bool GetTrickPlay() { return m_mode.trickplay; }
   bool GetSync() { return m_mode.sync; }
+  bool IsVideoRecovery() { return m_mode.videoRecovery; }
+  uint64_t GetVideoRecoveryGeneration() { return m_mode.videoRecoveryGeneration; }
 
 private:
   CMode m_mode;
+};
+
+class CDVDMsgVideoRecoveryRequest : public CDVDMsg
+{
+public:
+  explicit CDVDMsgVideoRecoveryRequest(uint64_t generation)
+    : CDVDMsg(PLAYER_VIDEO_RECOVERY), m_generation(generation)
+  {
+  }
+
+  uint64_t GetGeneration() const { return m_generation; }
+
+private:
+  uint64_t m_generation;
 };
 
 class CDVDMsgPlayerSeekChapter : public CDVDMsg

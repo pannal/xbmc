@@ -13,15 +13,17 @@
 #include "DVDMessageQueue.h"
 #include "DVDOverlayContainer.h"
 #include "DVDStreamInfo.h"
+#include "DecoderFlushRecovery.h"
 #include "IVideoPlayer.h"
 #include "PTSTracker.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
-#include "threads/Thread.h"
 #include "threads/SystemClock.h"
+#include "threads/Thread.h"
 #include "utils/BitstreamStats.h"
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 
 #define DROP_DROPPED 1
 #define DROP_VERYLATE 2
@@ -58,7 +60,11 @@ public:
   bool OpenStream(CDVDStreamInfo hint) override;
   void CloseStream(bool bWaitForBuffers) override;
   void SetSpeed(int iSpeed) override;
-  void Flush(bool sync) override;
+  void SetRecoveryGeneration(uint64_t generation) override
+  {
+    m_nextRecoveryGeneration = generation;
+  }
+  void Flush(bool sync, uint64_t generation) override;
   bool AcceptsData() const override;
   bool HasData() const override;
   int  GetLevel() const override { return m_messageQueue.GetLevel(); }
@@ -105,7 +111,9 @@ protected:
 
   EOutputState OutputPicture(const VideoPicture* src);
   void ProcessOverlays(const VideoPicture* pSource, double pts);
-  void OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVideoCodec> codec);
+  void OpenStream(CDVDStreamInfo& hint,
+                  std::unique_ptr<CDVDVideoCodec> codec,
+                  uint64_t recoveryGeneration);
 
   void ResetFrameRateCalc();
   void CalcFrameRate();
@@ -139,6 +147,9 @@ protected:
   // Debounce for the corrupt-splice recovery reseek (DVP_FLAG_STREAM_CORRUPTION)
   std::chrono::steady_clock::time_point m_lastCorruptionRecovery{};
   int m_corruptionRecoveryCount = 0;
+  CDecoderFlushRecovery m_decoderFlushRecovery;
+  uint64_t m_nextRecoveryGeneration{0};
+  CVideoRecoveryGeneration m_recoveryGeneration;
 
   BitstreamStats m_videoStats;
 

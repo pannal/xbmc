@@ -3099,13 +3099,23 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
       return CDVDVideoCodec::VC_NONE;
     return CDVDVideoCodec::VC_EOF;
   }
-  // Decoder error or no frame produced within the timeout period.
-  else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
+  // Decoder error. Keep this distinct from the no-output watchdog so the
+  // player does not mistake an isolated dequeue failure for a liveness loop.
+  else if (ret != EAGAIN)
   {
-    CLog::Log(LOGERROR, "CAMLCodec::GetPicture: time elapsed since last frame: {:d}ms ({:d}:{})",
-      elapsed_since_last_frame.count(), ret, strerror(ret));
+    CLog::Log(LOGERROR, "CAMLCodec::GetPicture: decoder dequeue failed ({:d}:{})", ret,
+              strerror(ret));
     m_tp_last_frame = std::chrono::system_clock::now();
     return CDVDVideoCodec::VC_FLUSHED;
+  }
+  // No frame produced within the timeout period. VideoPlayerVideo tracks this
+  // reason separately so a failed local reset can escalate to a parent reseek.
+  else if (elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
+  {
+    CLog::Log(LOGERROR, "CAMLCodec::GetPicture: time elapsed since last frame: {:d}ms ({:d}:{})",
+              elapsed_since_last_frame.count(), ret, strerror(ret));
+    m_tp_last_frame = std::chrono::system_clock::now();
+    return CDVDVideoCodec::VC_FLUSHED_TIMEOUT;
   }
   // No output frame available (EAGAIN): if buffer is below the minimum level
   // and we're not approaching EOF, return VC_BUFFER to trigger the buffering

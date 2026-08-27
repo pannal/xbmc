@@ -38,15 +38,26 @@ using namespace std::chrono_literals;
 class CDVDMsgVideoCodecChange : public CDVDMsg
 {
 public:
-  CDVDMsgVideoCodecChange(const CDVDStreamInfo& hints, std::unique_ptr<CDVDVideoCodec> codec)
-    : CDVDMsg(GENERAL_STREAMCHANGE), m_codec(std::move(codec)), m_hints(hints)
+  CDVDMsgVideoCodecChange(const CDVDStreamInfo& hints,
+                          std::unique_ptr<CDVDVideoCodec> codec,
+                          uint64_t recoveryGeneration)
+    : CDVDMsg(GENERAL_STREAMCHANGE),
+      m_codec(std::move(codec)),
+      m_hints(hints),
+      m_recoveryGeneration(recoveryGeneration)
   {}
   ~CDVDMsgVideoCodecChange() override = default;
 
   std::unique_ptr<CDVDVideoCodec> m_codec;
-  CDVDStreamInfo  m_hints;
+  CDVDStreamInfo m_hints;
+  uint64_t m_recoveryGeneration;
 };
 
+struct VideoFlushMessage
+{
+  bool sync;
+  uint64_t generation;
+};
 
 CVideoPlayerVideo::CVideoPlayerVideo(CDVDClock* pClock
                                 ,CDVDOverlayContainer* pOverlayContainer
@@ -146,7 +157,9 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
       CLog::Log(LOGINFO, "CVideoPlayerVideo::OpenStream - could not open video codec");
     }
 
-    SendMessage(std::make_shared<CDVDMsgVideoCodecChange>(hint, std::move(codec)), 0);
+    SendMessage(
+        std::make_shared<CDVDMsgVideoCodecChange>(hint, std::move(codec), m_nextRecoveryGeneration),
+        0);
   }
   else
   {
@@ -160,7 +173,7 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
       return false;
     }
 
-    OpenStream(hint, std::move(codec));
+    OpenStream(hint, std::move(codec), m_nextRecoveryGeneration);
     CLog::Log(LOGINFO, "Creating video thread");
     m_messageQueue.Init();
     Create();
@@ -168,7 +181,9 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
   return true;
 }
 
-void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVideoCodec> codec)
+void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint,
+                                   std::unique_ptr<CDVDVideoCodec> codec,
+                                   uint64_t recoveryGeneration)
 {
   CLog::Log(LOGDEBUG, "CVideoPlayerVideo::OpenStream - open stream with codec id: {:d} fps:{:d}/{:d} options:{:02x}",
     hint.codec, hint.fpsrate, hint.fpsscale, hint.codecOptions);
@@ -260,9 +275,11 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
 
   m_pVideoCodec = std::move(codec);
   m_hints = hint;
+  m_recoveryGeneration.AdvanceTo(recoveryGeneration);
   m_stalled = m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET) == 0;
   m_rewindStalled = false;
   m_packets.clear();
+  m_decoderFlushRecovery.Reset();
   m_syncState = IDVDStreamPlayer::SYNC_STARTING;
   m_renderManager.ShowVideo(false);
 }
@@ -479,6 +496,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))
     {
+      m_decoderFlushRecovery.OnStreamFlush();
       if(m_pVideoCodec)
         m_pVideoCodec->Reset();
 
@@ -495,7 +513,9 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH)) // private message sent by (CVideoPlayerVideo::Flush())
     {
-      bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
+      m_decoderFlushRecovery.OnStreamFlush();
+      const auto& flush = std::static_pointer_cast<CDVDMsgType<VideoFlushMessage>>(pMsg)->m_value;
+      m_recoveryGeneration.AdvanceTo(flush.generation);
       if(m_pVideoCodec)
         m_pVideoCodec->Reset();
 
@@ -515,7 +535,7 @@ void CVideoPlayerVideo::Process()
       m_droppingStats.Reset();
 
       m_stalled = true;
-      if (sync)
+      if (flush.sync)
       {
         m_syncState = IDVDStreamPlayer::SYNC_STARTING;
         m_renderManager.ShowVideo(false);
@@ -526,6 +546,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
+      m_decoderFlushRecovery.OnStreamFlush();
       m_speed = std::static_pointer_cast<CDVDMsgInt>(pMsg)->m_value;
       if (m_pVideoCodec)
         m_pVideoCodec->SetSpeed(m_speed);
@@ -545,7 +566,7 @@ void CVideoPlayerVideo::Process()
           break;
       }
 
-      OpenStream(msg->m_hints, std::move(msg->m_codec));
+      OpenStream(msg->m_hints, std::move(msg->m_codec), msg->m_recoveryGeneration);
       msg->m_codec = NULL;
       if (m_picture.videoBuffer)
       {
@@ -564,6 +585,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
+      m_decoderFlushRecovery.OnStreamFlush();
       m_paused = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_PAUSE: {}", m_paused);
     }
@@ -695,9 +717,20 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   }
 
   // if decoder was flushed, we need to seek back again to resume rendering
-  if (decoderState == CDVDVideoCodec::VC_FLUSHED)
+  if (decoderState == CDVDVideoCodec::VC_FLUSHED ||
+      decoderState == CDVDVideoCodec::VC_FLUSHED_TIMEOUT)
   {
     CLog::Log(LOGDEBUG, "CVideoPlayerVideo - video decoder was flushed");
+    bool requestRecovery = false;
+    if (decoderState == CDVDVideoCodec::VC_FLUSHED_TIMEOUT && m_speed == DVD_PLAYSPEED_NORMAL &&
+        !m_paused)
+    {
+      requestRecovery = m_decoderFlushRecovery.OnNoOutputTimeout(std::chrono::steady_clock::now());
+    }
+    else
+    {
+      m_decoderFlushRecovery.OnStreamFlush();
+    }
     while (!m_packets.empty())
     {
       auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.front().message);
@@ -710,6 +743,15 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
     m_packets.clear();
     //picture.iFlags &= ~DVP_FLAG_ALLOCATED;
     m_renderManager.DiscardBuffer();
+
+    if (requestRecovery)
+    {
+      CLog::Log(LOGWARNING,
+                "CVideoPlayerVideo - Amlogic decoder produced no frame after its flush/reset; "
+                "requesting generation-checked parent recovery");
+      m_messageParent.Put(
+          std::make_shared<CDVDMsgVideoRecoveryRequest>(m_recoveryGeneration.Get()));
+    }
     return false;
   }
 
@@ -752,6 +794,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   // check for a new picture
   if (decoderState == CDVDVideoCodec::VC_PICTURE)
   {
+    m_decoderFlushRecovery.OnDecoderOutput();
     bool hasTimestamp = true;
 
     // Corrupt-splice recovery: the decoder flagged a frame whose pts stepped
@@ -979,14 +1022,16 @@ void CVideoPlayerVideo::SetSpeed(int speed)
     m_speed = speed;
 }
 
-void CVideoPlayerVideo::Flush(bool sync)
+void CVideoPlayerVideo::Flush(bool sync, uint64_t generation)
 {
   /* flush using message as this get's called from VideoPlayer thread */
   /* and any demux packet that has been taken out of queue need to */
   /* be disposed of before we flush */
   if (m_pVideoCodec)
     m_pVideoCodec->Abort();
-  SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_FLUSH, sync), 1);
+  SendMessage(std::make_shared<CDVDMsgType<VideoFlushMessage>>(CDVDMsg::GENERAL_FLUSH,
+                                                               VideoFlushMessage{sync, generation}),
+              1);
   m_bAbortOutput = true;
 }
 

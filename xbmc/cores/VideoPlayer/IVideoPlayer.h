@@ -12,6 +12,7 @@
 #include "ServiceBroker.h"
 #include "cores/DataCacheCore.h"
 
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -83,7 +84,9 @@ public:
   ~IDVDStreamPlayerVideo() override = default;
   bool OpenStream(CDVDStreamInfo hint) override = 0;
   void CloseStream(bool bWaitForBuffers) override = 0;
-  virtual void Flush(bool sync) = 0;
+  // Tag the next opened stream so recovery requests cannot cross stream boundaries.
+  virtual void SetRecoveryGeneration(uint64_t generation) = 0;
+  virtual void Flush(bool sync, uint64_t generation) = 0;
   bool AcceptsData() const override = 0;
   virtual bool HasData() const = 0;
   virtual int  GetLevel() const = 0;
