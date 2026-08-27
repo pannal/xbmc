@@ -531,6 +531,34 @@ int CDataCacheCore::GetAudioBitsPerSample()
   return m_playerAudioInfo.bitsPerSample;
 }
 
+void CDataCacheCore::SetAudioObjectCount(int objectCount)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  m_playerAudioInfo.objectCount = objectCount;
+}
+
+int CDataCacheCore::GetAudioObjectCount()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  return m_playerAudioInfo.objectCount;
+}
+
+void CDataCacheCore::SetAudioElementCount(int elementCount)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  m_playerAudioInfo.elementCount = elementCount;
+}
+
+int CDataCacheCore::GetAudioElementCount()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  return m_playerAudioInfo.elementCount;
+}
+
 void CDataCacheCore::SetAudioLiveBitRate(double bitRate)
 {
   std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);

@@ -68,6 +68,18 @@ public:
   void ResetAudioCodecInfo();
   void SetAudioDecoderName(const std::string &name);
   std::string GetAudioDecoderName();
+  //! \brief Dynamic objects in the TrueHD Atmos presentation, -1 when unknown.
+  //! Zero is a real answer - a bed-only presentation - and is kept distinct.
+  //! Routed through here rather than written straight to the data cache so that
+  //! ResetAudioCodecInfo clears it alongside everything else it clears; the
+  //! player republishes it per frame, so a codec swap corrects it either way.
+  void SetAudioObjectCount(int objectCount);
+  int GetAudioObjectCount();
+  //! \brief Elements in the TrueHD Atmos 16-channel presentation - bed channels
+  //! and dynamic objects together, the wider figure the count above excludes the
+  //! bed from. -1 is not Atmos, 0 is Atmos that declared no element count.
+  void SetAudioElementCount(int elementCount);
+  int GetAudioElementCount();
   void SetAudioChannels(const std::string &channels);
   std::string GetAudioChannels();
   void SetAudioSampleRate(int sampleRate);
@@ -152,6 +164,8 @@ protected:
   std::string m_audioChannels;
   int m_audioSampleRate;
   int m_audioBitsPerSample;
+  int m_audioObjectCount = -1;
+  int m_audioElementCount = -1;
   CCriticalSection m_audioCodecSection;
 
   // render info

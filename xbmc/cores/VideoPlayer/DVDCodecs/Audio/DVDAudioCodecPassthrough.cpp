@@ -187,6 +187,7 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
         m_jitterThreshold = JITTER_THRESHOLD_DEFAULT;
 
       m_isEAC3JOC = (hints.profile == AV_PROFILE_EAC3_DDP_ATMOS);
+      m_parser.SetEAC3JOC(m_isEAC3JOC);
       if (!m_isEAC3JOC || m_defeatEAC3AtmosDialNorm.load())
         m_parser.SetDefeatAC3DialNorm(m_defeatAC3DialNorm.load());
       break;
