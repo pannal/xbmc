@@ -10,6 +10,7 @@
 
 #include "DVDClock.h"
 #include "DVDMessageQueue.h"
+#include "DecoderFlushRecovery.h"
 #include "Edl.h"
 #include "FileItem.h"
 #include "IVideoPlayer.h"
@@ -27,6 +28,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <unordered_map>
@@ -469,6 +471,8 @@ protected:
 
   void FlushBuffers(double pts, bool accurate, bool sync);
 
+  CVideoSeekQueueState GetVideoSeekQueueState();
+  CVideoRecoveryGate::Conditions GetVideoRecoveryConditions(uint64_t generation);
   void HandleMessages();
   void HandlePlaySpeed();
   bool IsInMenuInternal() const;
@@ -646,6 +650,9 @@ protected:
   int64_t m_brokenFileStallBytes = -1;
   bool m_brokenFileNotified = false;
   bool m_brokenFileStallStarveLogged = false;
+
+  uint64_t m_videoRecoveryGeneration{0};
+  CVideoRecoveryGate m_videoRecoveryGate;
 
   // Video feed/drain wedge recovery (see HandlePlaySpeed): the render pts last
   // seen while the video input byte-buffer was full, and when it froze.

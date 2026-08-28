@@ -121,19 +121,24 @@ class CDVDCodecOptions;
 class CDVDVideoCodec
 {
 public:
-
   enum VCReturn
   {
     VC_NONE = 0,
-    VC_ERROR,           //< an error occurred, no other messages will be returned
-    VC_FATAL,           //< non recoverable error
-    VC_BUFFER,          //< the decoder needs more data
-    VC_PICTURE,         //< the decoder got a picture, call Decode(NULL, 0) again to parse the rest of the data
-    VC_FLUSHED,         //< the decoder lost it's state, we need to restart decoding again
-    VC_NOBUFFER,        //< last FFmpeg GetBuffer failed
-    VC_REOPEN,          //< decoder request to re-open
-    VC_EOF              //< EOF
+    VC_ERROR, //< an error occurred, no other messages will be returned
+    VC_FATAL, //< non recoverable error
+    VC_BUFFER, //< the decoder needs more data
+    VC_PICTURE, //< the decoder got a picture, call Decode(NULL, 0) again to parse the rest of the data
+    VC_FLUSHED, //< the decoder lost it's state, we need to restart decoding again
+    VC_NOBUFFER, //< last FFmpeg GetBuffer failed
+    VC_REOPEN, //< decoder request to re-open
+    VC_EOF, //< EOF
+    VC_FLUSHED_TIMEOUT //< the decoder lost its state after producing no output before its timeout
   };
+
+  static_assert(VC_NONE == 0 && VC_ERROR == 1 && VC_FATAL == 2 && VC_BUFFER == 3 &&
+                    VC_PICTURE == 4 && VC_FLUSHED == 5 && VC_NOBUFFER == 6 && VC_REOPEN == 7 &&
+                    VC_EOF == 8 && VC_FLUSHED_TIMEOUT == 9,
+                "VCReturn values are part of the decoder contract");
 
   explicit CDVDVideoCodec(CProcessInfo &processInfo) : m_processInfo(processInfo), 
                                                        m_dataCacheCore(CServiceBroker::GetDataCacheCore()) {
