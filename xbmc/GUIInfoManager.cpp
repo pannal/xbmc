@@ -1355,7 +1355,11 @@ const infomap player_process[] = {{"videodecoder", PLAYER_PROCESS_VIDEODECODER},
                                   {"amlogic.video.fps.drop", PLAYER_PROCESS_AML_VIDEO_FPS_DROP },
                                   {"video.vpmode", PLAYER_PROCESS_AML_VP_MODE },
                                   
-                                  {"av.change", PLAYER_PROCESS_AV_CHANGE }};
+                                  {"av.change", PLAYER_PROCESS_AV_CHANGE },
+
+                                  {"omniphony.input", PLAYER_PROCESS_OMNIPHONY_INPUT },
+                                  {"omniphony.render", PLAYER_PROCESS_OMNIPHONY_RENDER },
+                                  {"omniphony.sofa", PLAYER_PROCESS_OMNIPHONY_SOFA }};
 
 /// \page modules__infolabels_boolean_conditions
 /// \subsection modules__infolabels_boolean_conditions_Weather Weather

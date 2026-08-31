@@ -22,10 +22,18 @@
 #include "Video/AddonVideoCodec.h"
 #include "Video/DVDVideoCodec.h"
 #include "Video/DVDVideoCodecFFmpeg.h"
+#include "ServiceBroker.h"
 #include "addons/AddonProvider.h"
 #include "cores/VideoPlayer/DVDCodecs/DVDCodecs.h"
+#include "settings/Settings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/StringUtils.h"
 #include "utils/log.h"
+
+#if defined(TARGET_LINUX) && !defined(TARGET_ANDROID)
+// Built for Linux only - see Audio/CMakeLists.txt.
+#include "Audio/DVDAudioCodecOmniphony.h"
+#endif
 
 #include <mutex>
 #include <utility>
@@ -192,6 +200,30 @@ std::unique_ptr<CDVDAudioCodec> CDVDFactoryCodec::CreateAudioCodec(
       return pCodec;
     }
   }
+
+  // Object audio rendered to headphones, decoded and rendered in a helper
+  // process. Tried ahead of passthrough, but only when passthrough is not
+  // actually going to happen: the two are mutually exclusive, and a listener
+  // with an amplifier decoding for them is on speakers, not headphones. That
+  // exclusion is enforced here rather than as a settings dependency, because
+  // whether passthrough really applies depends on the stream as well as on the
+  // setting - the same reason the branch below is guarded the same way.
+  //
+  // Open() also refuses unless the helper is installed beside kodi.bin, so on
+  // an image without it this costs one access() and falls through.
+#if defined(TARGET_LINUX) && !defined(TARGET_ANDROID)
+  const bool passthroughWins = allowpassthrough && ptStreamType != CAEStreamInfo::STREAM_TYPE_NULL;
+  if (!passthroughWins && CServiceBroker::GetSettingsComponent() &&
+      CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+          CSettings::SETTING_AUDIOOUTPUT_OMNIPHONY))
+  {
+    auto omni = std::make_unique<CDVDAudioCodecOmniphony>(processInfo);
+    if (omni->Open(hint, options))
+    {
+      return omni;
+    }
+  }
+#endif
 
   // we don't use passthrough if "sync playback to display" is enabled
   if (allowpassthrough && ptStreamType != CAEStreamInfo::STREAM_TYPE_NULL)

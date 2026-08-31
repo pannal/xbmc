@@ -419,6 +419,15 @@ public:
   static constexpr auto SETTING_AUDIOOUTPUT_GUISOUNDMODE = "audiooutput.guisoundmode";
   static constexpr auto SETTING_AUDIOOUTPUT_GUISOUNDVOLUME = "audiooutput.guisoundvolume";
   static constexpr auto SETTING_AUDIOOUTPUT_PASSTHROUGH = "audiooutput.passthrough";
+  static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONY = "audiooutput.omniphony";
+  static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYROOM = "audiooutput.omniphonyroom";
+  static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYLEVEL = "audiooutput.omniphonylevel";
+  static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYLFE = "audiooutput.omniphonylfe";
+  static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYDISTANCE = "audiooutput.omniphonydistance";
+  static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYREVERB = "audiooutput.omniphonyreverb";
+  static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYHRTFMODE = "audiooutput.omniphonyhrtfmode";
+  static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYHRTF = "audiooutput.omniphonyhrtf";
+  static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYCASCADE = "audiooutput.omniphonycascade";
   static constexpr auto SETTING_AUDIOOUTPUT_PASSTHROUGHDEVICE = "audiooutput.passthroughdevice";
   static constexpr auto SETTING_AUDIOOUTPUT_AC3PASSTHROUGH = "audiooutput.ac3passthrough";
   static constexpr auto SETTING_AUDIOOUTPUT_AC3TRANSCODE = "audiooutput.ac3transcode";

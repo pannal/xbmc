@@ -97,6 +97,20 @@ public:
   int GetAudioSampleRate();
   void SetAudioBitsPerSample(int bitsPerSample);
   int GetAudioBitsPerSample();
+  /*!
+   * \brief What the object audio renderer is doing, for the player screen.
+   *
+   * Routed through here rather than written straight to the data cache so that
+   * ResetAudioCodecInfo clears them alongside everything else it clears. A
+   * stale "15 Objects + LFE" outliving the film it described would be worse
+   * than no line at all, and only the reset knows when that moment is.
+   *
+   * All three are empty whenever the binaural renderer is not what is being
+   * heard - including after a mid-stream fall back to the software decoder.
+   */
+  void SetOmniphonyInput(const std::string& input);
+  void SetOmniphonyRender(const std::string& render);
+  void SetOmniphonySofa(const std::string& sofa);
   virtual bool AllowDTSHDDecode();
   virtual bool WantsRawPassthrough() { return false; }
 

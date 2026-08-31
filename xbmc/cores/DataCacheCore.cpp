@@ -503,6 +503,48 @@ std::string CDataCacheCore::GetAudioChannels()
   return m_playerAudioInfo.channels;
 }
 
+void CDataCacheCore::SetOmniphonyInput(std::string input)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  m_playerAudioInfo.omniphonyInput = std::move(input);
+}
+
+std::string CDataCacheCore::GetOmniphonyInput()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  return m_playerAudioInfo.omniphonyInput;
+}
+
+void CDataCacheCore::SetOmniphonyRender(std::string render)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  m_playerAudioInfo.omniphonyRender = std::move(render);
+}
+
+std::string CDataCacheCore::GetOmniphonyRender()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  return m_playerAudioInfo.omniphonyRender;
+}
+
+void CDataCacheCore::SetOmniphonySofa(std::string sofa)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  m_playerAudioInfo.omniphonySofa = std::move(sofa);
+}
+
+std::string CDataCacheCore::GetOmniphonySofa()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  return m_playerAudioInfo.omniphonySofa;
+}
+
 void CDataCacheCore::SetAudioSampleRate(int sampleRate)
 {
   std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);

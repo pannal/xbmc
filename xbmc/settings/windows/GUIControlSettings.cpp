@@ -41,6 +41,7 @@
 #include "storage/MediaManager.h"
 #include "utils/FileExtensionProvider.h"
 #include "utils/StringUtils.h"
+#include "utils/URIUtils.h"
 #include "utils/Variant.h"
 #include "utils/log.h"
 
@@ -1098,7 +1099,18 @@ void CGUIControlButtonSetting::Update(bool fromControl, bool updateDisplayOnly)
           else
           {
             std::string strValue = std::static_pointer_cast<CSettingString>(setting)->GetValue();
-            if (controlFormat == "path" || controlFormat == "file" || controlFormat == "image")
+            if (controlFormat == "file")
+            {
+              // MakeShortenPath elides directories from the front and then cuts
+              // whatever still does not fit off the end, which is the file name
+              // - the one part that says which file was chosen. Keep the path
+              // while it fits, and drop to the name rather than to a name with
+              // its end missing.
+              strText = strValue;
+              if (strText.size() > 30)
+                strText = URIUtils::GetFileName(strValue);
+            }
+            else if (controlFormat == "path" || controlFormat == "image")
             {
               std::string shortPath;
               if (CUtil::MakeShortenPath(strValue, shortPath, 30))

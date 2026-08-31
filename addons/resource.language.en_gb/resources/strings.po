@@ -24311,6 +24311,208 @@ msgctxt "#39213"
 msgid "Apply a 25% volume boost when using Bluetooth (A2DP) audio output. This can help improve volume levels with quieter Bluetooth devices."
 msgstr ""
 
+#. Binaural headphone settings category
+#: system/settings/settings.xml
+msgctxt "#39309"
+msgid "Binaural Headphones"
+msgstr ""
+
+#. Omniphony: label of the setting that renders Atmos/DTS:X objects to headphones
+#: system/settings/settings.xml
+msgctxt "#39310"
+msgid "Atmos/DTS:X for binaural headphones"
+msgstr ""
+
+#. Omniphony: help text for the setting
+#: system/settings/settings.xml
+msgctxt "#39311"
+msgid "Render Dolby Atmos and DTS:X to headphones, placing each sound around you, instead of folding the soundtrack to stereo. It is not used while passthrough to an amplifier is active. Falls back to normal decoding if the renderer is unavailable."
+msgstr ""
+
+#. Omniphony: label of the room simulation setting
+#: system/settings/settings.xml
+msgctxt "#39312"
+msgid "- Room simulation"
+msgstr ""
+
+#. Omniphony: help text for the room simulation setting
+#: system/settings/settings.xml
+msgctxt "#39313"
+msgid "Place the render inside a simulated room. Its early reflections are what make sound seem to come from around you rather than from inside your head, the most audible control here. A room is never smaller than the scene, so the smaller presets converge as distance rises; off is the driest."
+msgstr ""
+
+#. Omniphony: label of the level setting
+msgctxt "#39314"
+msgid "- Binaural level"
+msgstr ""
+
+#. Omniphony: help text for the level setting
+msgctxt "#39315"
+msgid "How loud the rendered soundtrack is. The default matches Kodi's own stereo downmix of the same film, so turning this on does not change the volume. Raise it if it sounds too quiet, lower it if loud scenes sound strained. It follows \"Maintain original volume\" on its own."
+msgstr ""
+
+#. Room simulation preset: no room at all
+#: system/settings/settings.xml
+msgctxt "#39316"
+msgid "Off"
+msgstr ""
+
+#. Room simulation preset
+#: system/settings/settings.xml
+msgctxt "#39317"
+msgid "Small room"
+msgstr ""
+
+#. Room simulation preset
+#: system/settings/settings.xml
+msgctxt "#39318"
+msgid "Medium room"
+msgstr ""
+
+#. Room simulation preset
+#: system/settings/settings.xml
+msgctxt "#39319"
+msgid "Large room"
+msgstr ""
+
+#. label for setting audiooutput.omniphonydistance
+#: system/settings/settings.xml
+msgctxt "#39320"
+msgid "- Speaker distance"
+msgstr ""
+
+#. help text for setting audiooutput.omniphonydistance
+#: system/settings/settings.xml
+msgctxt "#39321"
+msgid "How far away the rendered sound is placed. Larger values push the scene out and make it wider; smaller values bring it closer. The direct sound keeps its level, but reflections and reverb grow with distance, so raising this raises overall loudness. Little effect with room simulation off."
+msgstr ""
+
+#. label for setting audiooutput.omniphonyreverb
+#: system/settings/settings.xml
+msgctxt "#39322"
+msgid "- Reverb amount"
+msgstr ""
+
+#. help text for setting audiooutput.omniphonyreverb
+#: system/settings/settings.xml
+msgctxt "#39323"
+msgid "How much reverberation tail the simulated room adds after its early reflections. Raise it for a more spacious, distant sound, lower it for a drier and more direct one. Has no effect when room simulation is off."
+msgstr ""
+
+#. label for setting audiooutput.omniphonyhrtf
+#: system/settings/settings.xml
+msgctxt "#39324"
+msgid "- Head-related transfer function"
+msgstr ""
+
+#. help text for setting audiooutput.omniphonyhrtf
+#: system/settings/settings.xml
+msgctxt "#39325"
+msgid "Whether to use the measurements built into the engine, which suit most listeners, or a SOFA file of your own. These describe how your head and ears colour sound from each direction, so your own can place sounds more convincingly. \"Built-in\" also removes the copy held in your profile."
+msgstr ""
+
+#. Head-related transfer function: the engine's own measurements
+#: system/settings/settings.xml
+msgctxt "#39326"
+msgid "Built-in"
+msgstr ""
+
+#. Head-related transfer function: a SOFA file the listener supplies
+#: system/settings/settings.xml
+msgctxt "#39327"
+msgid "Personal"
+msgstr ""
+
+#. label for setting audiooutput.omniphonyhrtf
+#: system/settings/settings.xml
+msgctxt "#39328"
+msgid "- Personal HRTF file (SOFA)"
+msgstr ""
+
+#. help text for setting audiooutput.omniphonyhrtf
+#: system/settings/settings.xml
+msgctxt "#39329"
+msgid "Choose the SOFA file to use. It is checked and copied into your profile the first time a film plays with it selected; one that cannot be used is refused and the built-in set used instead. It must be a free-field HRIR measurement (SimpleFreeFieldHRIR), whatever it is named."
+msgstr ""
+
+#. label for setting audiooutput.omniphonycascade
+#: system/settings/settings.xml
+msgctxt "#39330"
+msgid "- Cascade mode (12 virtual speakers)"
+msgstr ""
+
+#. help text for setting audiooutput.omniphonycascade
+#: system/settings/settings.xml
+msgctxt "#39331"
+msgid "Render the objects onto twelve virtual loudspeakers and place those around you, instead of placing every object individually. Normally chosen automatically for soundtracks with more objects than direct placement can afford. Turning it on costs less CPU, worth having if the sound breaks up, for slightly less precise placement."
+msgstr ""
+
+#. heading for the personal HRTF file browser and its result dialog
+#: xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESettings.cpp
+msgctxt "#39332"
+msgid "Personal HRTF file"
+msgstr ""
+
+#. HRTF file check: accepted
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+msgctxt "#39333"
+msgid "This file can be used. It has been copied into your profile and will be used from the next thing you play."
+msgstr ""
+
+#. HRTF file check: could not be opened
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+msgctxt "#39334"
+msgid "The file could not be opened."
+msgstr ""
+
+#. HRTF file check: far too small
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+msgctxt "#39335"
+msgid "The file is far too small to hold a set of measurements. It may be an incomplete download."
+msgstr ""
+
+#. HRTF file check: not a SOFA container
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+msgctxt "#39336"
+msgid "This is not a SOFA file. The name ends in .sofa but the contents are something else."
+msgstr ""
+
+#. HRTF file check: unsupported HDF5 revision
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+msgctxt "#39337"
+msgid "This SOFA file was written in a newer format than the spatial audio engine can read. Re-saving it with an older tool may help."
+msgstr ""
+
+#. HRTF file check: no impulse responses
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+msgctxt "#39338"
+msgid "This SOFA file holds no impulse responses. Filter coefficients and frequency-domain measurements cannot be used; the file must contain Data.IR."
+msgstr ""
+
+#. HRTF file check: wrong SOFA convention
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+msgctxt "#39339"
+msgid "This SOFA file is not a free-field HRIR measurement. Look for a file whose convention is SimpleFreeFieldHRIR - room responses and loudspeaker measurements will not work here."
+msgstr ""
+
+#. HRTF file check: could not be copied
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+msgctxt "#39340"
+msgid "The file could not be copied into your profile. Check there is space left on the device."
+msgstr ""
+
+#. label for setting audiooutput.omniphonylfe
+#: system/settings/settings.xml
+msgctxt "#39341"
+msgid "- LFE boost"
+msgstr ""
+
+#. help text for setting audiooutput.omniphonylfe
+#: system/settings/settings.xml
+msgctxt "#39342"
+msgid "Raise the level of the low-frequency effects channel, the one a cinema sends to its subwoofer. On headphones there is no subwoofer to turn up, so this is the only way to change it. It affects that channel alone, so a soundtrack with little in it will barely move. Raising it uses headroom, and enough will make the limiter quieten everything."
+msgstr ""
+
 #. Dolby Vision RPU Conversion
 #: system/settings/settings.xml
 msgctxt "#39300"

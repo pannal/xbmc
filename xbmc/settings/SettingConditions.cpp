@@ -499,6 +499,11 @@ void CSettingConditions::Initialize()
   m_simpleConditions.emplace("has_xbmchelper");
 #endif
 
+  // Where the binaural codec is built - see DVDCodecs/Audio/CMakeLists.txt.
+#if defined(TARGET_LINUX) && !defined(TARGET_ANDROID)
+  m_simpleConditions.emplace("has_omniphony");
+#endif
+
   // add complex conditions
   m_complexConditions.emplace("addonhassettings", AddonHasSettings);
   m_complexConditions.emplace("checkmasterlock", CheckMasterLock);

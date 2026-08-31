@@ -31,6 +31,7 @@ public:
   CActiveAESettings(CActiveAE &ae);
   ~CActiveAESettings() override;
 
+  bool OnSettingChanging(const std::shared_ptr<const CSetting>& setting) override;
   void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;
 
   static void SettingOptionsAudioDevicesFiller(const std::shared_ptr<const CSetting>& setting,
@@ -68,6 +69,16 @@ protected:
 
   CActiveAE &m_audioEngine;
   CCriticalSection m_cs;
+  /*!
+   * \brief React to the object-audio head model being switched.
+   *
+   * Choosing a personal measurement asks for the file there and then, because
+   * "Personal" with no file is not a state worth keeping; choosing the
+   * built-in set discards the copy held in the profile. Both of those are
+   * settings writes that re-enter this class, so it is called outside the lock.
+   */
+  static void OnOmniphonyHrtfModeChanged(int mode);
+
   static CActiveAESettings* m_instance;
 };
 };

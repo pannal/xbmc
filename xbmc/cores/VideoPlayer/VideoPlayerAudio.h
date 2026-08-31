@@ -51,7 +51,11 @@ public:
 
   // waits until all available data has been rendered
   bool AcceptsData() const override;
-  bool HasData() const override { return m_messageQueue.GetDataSize() > 0; }
+  // Demux packets still queued, and after GENERAL_EOF whatever the codec held
+  // back when the demuxer ran dry: CVideoPlayer ends playback once this is
+  // false, and a decoder that answers later than it is asked can still be
+  // holding the last second or two of the soundtrack.
+  bool HasData() const override { return m_messageQueue.GetDataSize() > 0 || m_eofPending; }
   void SetMaxTimeSize(double seconds, bool timeBound = false) override
   {
     m_messageQueue.SetMaxTimeSize(seconds, timeBound);
@@ -61,9 +65,16 @@ public:
   bool IsInited() const override { return m_messageQueue.IsInited(); }
   void SendMessage(std::shared_ptr<CDVDMsg> pMsg, int priority = 0) override
   {
+    // Before it is queued, so that HasData cannot read false in between.
+    if (pMsg->IsType(CDVDMsg::GENERAL_EOF))
+      m_eofPending = true;
     m_messageQueue.Put(pMsg, priority);
   }
-  void FlushMessages() override { m_messageQueue.Flush(); }
+  void FlushMessages() override
+  {
+    m_messageQueue.Flush();
+    m_eofPending = false;
+  }
 
   void SetDynamicRangeCompression(long drc) override { m_audioSink.SetDynamicRangeCompression(drc); }
   float GetDynamicRangeAmplification() const override { return 0.0f; }
@@ -151,6 +162,13 @@ protected:
 
   bool m_displayReset = false;
   std::atomic<bool> m_audioSettingsChanged{false};
+
+  // GENERAL_EOF is queued, or the codec is still handing over what it asked
+  // for - see HasData. Written from both threads.
+  std::atomic<bool> m_eofPending{false};
+  // The audio thread has passed GENERAL_EOF on to the codec, and clears this
+  // with m_eofPending once the codec has nothing left.
+  bool m_eofDraining = false;
 
   // anchor epoch state (see SYNC_DISCON block): clock stepping is held after
   // a resync/unpause until the AE error average has settled

@@ -363,7 +363,37 @@ void CProcessInfo::ResetAudioCodecInfo()
     m_dataCache->SetAudioChannels(m_audioChannels);
     m_dataCache->SetAudioSampleRate(m_audioSampleRate);
     m_dataCache->SetAudioBitsPerSample(m_audioBitsPerSample);
+    // Empty rather than "unknown": these describe a renderer that is either
+    // running or not, and a skin hides the row when it is not. "unknown" would
+    // put a word on screen for a stream that has no object audio in it at all.
+    m_dataCache->SetOmniphonyInput({});
+    m_dataCache->SetOmniphonyRender({});
+    m_dataCache->SetOmniphonySofa({});
   }
+}
+
+void CProcessInfo::SetOmniphonyInput(const std::string& input)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
+
+  if (m_dataCache)
+    m_dataCache->SetOmniphonyInput(input);
+}
+
+void CProcessInfo::SetOmniphonyRender(const std::string& render)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
+
+  if (m_dataCache)
+    m_dataCache->SetOmniphonyRender(render);
+}
+
+void CProcessInfo::SetOmniphonySofa(const std::string& sofa)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
+
+  if (m_dataCache)
+    m_dataCache->SetOmniphonySofa(sofa);
 }
 
 void CProcessInfo::SetAudioDecoderName(const std::string &name)

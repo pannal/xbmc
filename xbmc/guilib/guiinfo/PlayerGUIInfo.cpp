@@ -602,6 +602,15 @@ bool CPlayerGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
     case PLAYER_PROCESS_AUDIOBITSPERSAMPLE:
       value = StringUtils::FormatNumber(CServiceBroker::GetDataCacheCore().GetAudioBitsPerSample());
       return true;
+    case PLAYER_PROCESS_OMNIPHONY_INPUT:
+      value = CServiceBroker::GetDataCacheCore().GetOmniphonyInput();
+      return true;
+    case PLAYER_PROCESS_OMNIPHONY_RENDER:
+      value = CServiceBroker::GetDataCacheCore().GetOmniphonyRender();
+      return true;
+    case PLAYER_PROCESS_OMNIPHONY_SOFA:
+      value = CServiceBroker::GetDataCacheCore().GetOmniphonySofa();
+      return true;
 
     case PLAYER_PROCESS_AUDIO_LIVE_BIT_RATE:
       value = std::to_string(CServiceBroker::GetDataCacheCore().GetAudioLiveBitRate());

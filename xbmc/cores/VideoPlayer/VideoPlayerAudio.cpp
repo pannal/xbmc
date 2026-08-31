@@ -438,6 +438,12 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
   // shut down the adio_decode thread and wait for it
   StopThread(); // will set this->m_bStop to true
 
+  // Whatever an end of stream was still waiting for goes with the stream.
+  // CVideoPlayer keeps this player for the next file, and one that has no
+  // audio would otherwise never see HasData go false at its end.
+  m_eofDraining = false;
+  m_eofPending = false;
+
   // destroy audio device
   CLog::Log(LOGINFO, "Closing audio device");
   if (bWait)
@@ -573,10 +579,29 @@ void CVideoPlayerAudio::Process()
     }
     else if (ret == MSGQ_TIMEOUT)
     {
-      if (ProcessDecoderOutput(audioframe))
+      // Not into a sink paused for a speed it cannot play at - the same test
+      // the packet path uses to drop packets. A decoder that holds a reserve
+      // would otherwise go on handing blocks over until the sink is full, and
+      // then park this thread in AddPackets until it times out. CloseStream
+      // does not abort that wait, so stopping from pause would hang for the
+      // length of it. What stays in the decoder is served on resume.
+      const bool sinkPaused =
+          !m_processInfo.IsTempoAllowed(static_cast<float>(m_speed) / DVD_PLAYSPEED_NORMAL) &&
+          m_syncState == IDVDStreamPlayer::SYNC_INSYNC;
+      if (!sinkPaused && ProcessDecoderOutput(audioframe))
       {
         onlyPrioMsgs = true;
         continue;
+      }
+
+      // Everything GENERAL_EOF asked the codec for has reached the sink - or
+      // cannot, at a speed the sink does not play, where the packet path drops
+      // audio too - so as far as CVideoPlayer's HasData is concerned this
+      // stream has ended.
+      if (m_eofDraining)
+      {
+        m_eofDraining = false;
+        m_eofPending = false;
       }
 
       // if we only wanted priority messages, this isn't a stall
@@ -686,6 +711,9 @@ void CVideoPlayerAudio::Process()
 
       if (m_pAudioCodec)
         m_pAudioCodec->Reset();
+      // Nothing is left to drain, and an end of stream sent after the flush
+      // must not be taken for this one - see Flush.
+      m_eofDraining = false;
 
       // LAV: Reset PCM jitter tracking on GENERAL_FLUSH
       if (m_lavStylePcmSyncEnabled)
@@ -698,6 +726,19 @@ void CVideoPlayerAudio::Process()
     else if (pMsg->IsType(CDVDMsg::GENERAL_EOF))
     {
       CLog::Log(LOGDEBUG, "CVideoPlayerAudio - CDVDMsg::GENERAL_EOF");
+      if (m_pAudioCodec)
+      {
+        m_pAudioCodec->Drain();
+
+        // Drain() may have made delayed output available without another demux
+        // packet. The priority-only pass serves it until the codec reports that
+        // nothing remains, and it is also the pass that keeps it out of a sink
+        // paused for a speed it cannot play at.
+        m_eofDraining = true;
+        onlyPrioMsgs = true;
+      }
+      else
+        m_eofPending = false;
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
@@ -1485,6 +1526,9 @@ void CVideoPlayerAudio::SetSpeed(int speed)
 
 void CVideoPlayerAudio::Flush(bool sync)
 {
+  // A queued GENERAL_EOF goes with the rest, and what one already asked the
+  // codec for goes in the reset GENERAL_FLUSH makes - see HasData.
+  m_eofPending = false;
   m_messageQueue.Flush();
   m_messageQueue.Put(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_FLUSH, sync), 1);
 

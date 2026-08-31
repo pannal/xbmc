@@ -8,6 +8,7 @@ set(SOURCES AEResampleFactory.cpp
             Engines/ActiveAE/ActiveAEStream.cpp
             Engines/ActiveAE/ActiveAESound.cpp
             Engines/ActiveAE/ActiveAESettings.cpp
+            Omniphony/OmniphonyHrtf.cpp
             Utils/AEBitstreamPacker.cpp
             Utils/AEChannelInfo.cpp
             Utils/AEDeviceInfo.cpp
@@ -27,6 +28,7 @@ set(HEADERS AEResampleFactory.h
             Engines/ActiveAE/ActiveAESound.h
             Engines/ActiveAE/ActiveAEStream.h
             Engines/ActiveAE/ActiveAESettings.h
+            Omniphony/OmniphonyHrtf.h
             Interfaces/AE.h
             Interfaces/AEEncoder.h
             Interfaces/AEResample.h

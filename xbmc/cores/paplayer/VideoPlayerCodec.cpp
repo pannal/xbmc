@@ -276,6 +276,13 @@ bool VideoPlayerCodec::Init(const CFileItem &file, unsigned int filecache)
 
 void VideoPlayerCodec::DeInit()
 {
+  if (m_pRefusedPacket)
+  {
+    CDVDDemuxUtils::FreeDemuxPacket(m_pRefusedPacket);
+    m_pRefusedPacket = nullptr;
+  }
+  m_drained = false;
+
   if (m_pDemuxer != NULL)
   {
     delete m_pDemuxer;
@@ -289,6 +296,9 @@ void VideoPlayerCodec::DeInit()
   m_pAudioCodec.reset();
 
   m_pResampler.reset();
+  m_pReformatter.reset();
+  m_reformatted.clear();
+  m_frameReformatted = false;
 
   // cleanup format information
   m_TotalTime = 0;
@@ -313,6 +323,14 @@ bool VideoPlayerCodec::Seek(int64_t iSeekTime)
   m_pAudioCodec->Reset();
 
   m_nDecodedLen = 0;
+  if (m_pRefusedPacket)
+  {
+    CDVDDemuxUtils::FreeDemuxPacket(m_pRefusedPacket);
+    m_pRefusedPacket = nullptr;
+  }
+  m_drained = false;
+  // What it holds is from before the seek.
+  m_pReformatter.reset();
 
   return ret;
 }
@@ -323,7 +341,7 @@ int VideoPlayerCodec::ReadPCM(uint8_t* pBuffer, size_t size, size_t* actualsize)
   {
     size_t nLen = (size < m_nDecodedLen) ? size : m_nDecodedLen;
     *actualsize = nLen;
-    if (m_needConvert)
+    if (m_needConvert && !m_frameReformatted)
     {
       int samples = *actualsize / (m_bitsPerSample>>3);
       int frames = samples / m_channels;
@@ -343,47 +361,66 @@ int VideoPlayerCodec::ReadPCM(uint8_t* pBuffer, size_t size, size_t* actualsize)
   }
 
   m_nDecodedLen = 0;
-  m_pAudioCodec->GetData(m_audioFrame);
-  int bytes = m_audioFrame.nb_frames * m_audioFrame.framesize;
+  int bytes = FetchFrame();
 
   if (!bytes)
   {
-    DemuxPacket* pPacket = nullptr;
-    do
-    {
-      if (pPacket)
-        CDVDDemuxUtils::FreeDemuxPacket(pPacket);
-      pPacket = m_pDemuxer->Read();
-    } while (pPacket && pPacket->iStreamId != m_nAudioStream);
-
+    // AddData's false means "not taken, offer it again", which is how a codec
+    // holding a reserve says it is full. Freed here, the packet's audio was
+    // lost.
+    DemuxPacket* pPacket = m_pRefusedPacket;
+    m_pRefusedPacket = nullptr;
     if (!pPacket)
+    {
+      do
+      {
+        if (pPacket)
+          CDVDDemuxUtils::FreeDemuxPacket(pPacket);
+        pPacket = m_pDemuxer->Read();
+      } while (pPacket && pPacket->iStreamId != m_nAudioStream);
+
+      if (pPacket)
+      {
+        pPacket->pts = DVD_NOPTS_VALUE;
+        pPacket->dts = DVD_NOPTS_VALUE;
+      }
+    }
+
+    if (pPacket)
+    {
+      if (m_pAudioCodec->AddData(*pPacket))
+        CDVDDemuxUtils::FreeDemuxPacket(pPacket);
+      else
+        m_pRefusedPacket = pPacket;
+    }
+    else if (m_drained)
     {
       return READ_EOF;
     }
-
-    pPacket->pts = DVD_NOPTS_VALUE;
-    pPacket->dts = DVD_NOPTS_VALUE;
-
-    int ret = m_pAudioCodec->AddData(*pPacket);
-    CDVDDemuxUtils::FreeDemuxPacket(pPacket);
-    if (ret < 0)
+    else
     {
-      return READ_ERROR;
+      // The demuxer is dry, but a decoder that answers later than it is asked
+      // can still be holding the end of the track. Told once; what it gives
+      // back is read out by the calls that follow, and EOF is reported once it
+      // has nothing left.
+      m_drained = true;
+      m_pAudioCodec->Drain();
     }
 
-    m_pAudioCodec->GetData(m_audioFrame);
-    bytes = m_audioFrame.nb_frames * m_audioFrame.framesize;
+    bytes = FetchFrame();
+    if (!bytes && !pPacket)
+      return READ_EOF;
   }
 
   m_nDecodedLen = bytes;
   // scale decoded bytes to destination format
-  if (m_needConvert)
+  if (m_needConvert && !m_frameReformatted)
     m_nDecodedLen *= (m_bitsPerSample>>3) / (m_srcFormat.m_frameSize / m_channels);
 
   *actualsize = (m_nDecodedLen <= size) ? m_nDecodedLen : size;
   if (*actualsize > 0)
   {
-    if (m_needConvert)
+    if (m_needConvert && !m_frameReformatted)
     {
       int samples = *actualsize / (m_bitsPerSample>>3);
       int frames = samples / m_channels;
@@ -402,6 +439,90 @@ int VideoPlayerCodec::ReadPCM(uint8_t* pBuffer, size_t size, size_t* actualsize)
   }
 
   return READ_SUCCESS;
+}
+
+int VideoPlayerCodec::FetchFrame()
+{
+  m_pAudioCodec->GetData(m_audioFrame);
+  m_frameReformatted = m_audioFrame.nb_frames > 0 && Reformat();
+  return m_audioFrame.nb_frames * m_audioFrame.framesize;
+}
+
+bool VideoPlayerCodec::Reformat()
+{
+  /*
+   * PAPlayer takes the format once, from Init(), and has no way to be told
+   * another: ReadPCM() goes on sizing and copying every frame by that one. A
+   * codec can still change what it hands over - the binaural one switches to
+   * the software decoder when its helper stops, and re-opens at the rate its
+   * engine reports - and a frame read as the old format is at best the wrong
+   * speed: planar six-channel audio copied as interleaved stereo reads six
+   * planes' worth out of the first. So such a frame is converted to the format
+   * PAPlayer was given, and every other frame goes the way it always has.
+   */
+  const AEAudioFormat& from = m_audioFrame.format;
+  if (from.m_dataFormat == m_srcFormat.m_dataFormat &&
+      from.m_sampleRate == m_srcFormat.m_sampleRate &&
+      from.m_channelLayout.Count() == static_cast<unsigned int>(m_channels))
+    return false;
+
+  // Nothing to convert from or to: Init() has not settled yet, or the frame
+  // does not say what it is.
+  if (m_channels <= 0 || m_format.m_sampleRate == 0 || from.m_sampleRate == 0 ||
+      from.m_channelLayout.Count() == 0 || from.m_dataFormat == AE_FMT_INVALID ||
+      from.m_dataFormat == AE_FMT_RAW || from.m_dataFormat >= AE_FMT_MAX)
+    return false;
+
+  if (!m_pReformatter || from.m_dataFormat != m_reformatFrom.m_dataFormat ||
+      from.m_sampleRate != m_reformatFrom.m_sampleRate ||
+      from.m_channelLayout != m_reformatFrom.m_channelLayout)
+  {
+    SampleConfig dstConfig, srcConfig;
+    srcConfig.channel_layout = CAEUtil::GetAVChannelLayout(from.m_channelLayout);
+    srcConfig.channels = from.m_channelLayout.Count();
+    srcConfig.sample_rate = from.m_sampleRate;
+    srcConfig.fmt = CAEUtil::GetAVSampleFormat(from.m_dataFormat);
+    srcConfig.bits_per_sample = CAEUtil::DataFormatToUsedBits(from.m_dataFormat);
+    srcConfig.dither_bits = CAEUtil::DataFormatToDitherBits(from.m_dataFormat);
+
+    dstConfig.channel_layout = CAEUtil::GetAVChannelLayout(m_srcFormat.m_channelLayout);
+    dstConfig.channels = m_channels;
+    dstConfig.sample_rate = m_format.m_sampleRate;
+    dstConfig.fmt = CAEUtil::GetAVSampleFormat(m_format.m_dataFormat);
+    dstConfig.bits_per_sample = CAEUtil::DataFormatToUsedBits(m_format.m_dataFormat);
+    dstConfig.dither_bits = CAEUtil::DataFormatToDitherBits(m_format.m_dataFormat);
+
+    // Normalised: a fold from more channels to fewer must not clip.
+    m_pReformatter = ActiveAE::CAEResampleFactory::Create();
+    if (!m_pReformatter->Init(dstConfig, srcConfig, false, true, M_SQRT1_2, M_SQRT1_2, nullptr,
+                              AE_QUALITY_HIGH, false, 0.0f))
+    {
+      CLog::Log(LOGERROR, "{}: cannot convert the codec's new output format; dropping it",
+                __FUNCTION__);
+      m_pReformatter.reset();
+      m_audioFrame.nb_frames = 0;
+      return true;
+    }
+    m_reformatFrom = from;
+  }
+
+  // Sized as COmniphonyPcmSource sizes its own: this frame at the new rate,
+  // plus whatever the resampler is still holding.
+  const int frameSize = (m_bitsPerSample >> 3) * m_channels;
+  const int capacity = m_pReformatter->CalcDstSampleCount(
+                           m_audioFrame.nb_frames, m_format.m_sampleRate, from.m_sampleRate) +
+                       m_pReformatter->GetBufferedSamples();
+  m_reformatted.resize(static_cast<size_t>(capacity) * frameSize);
+  uint8_t* dst[1]{m_reformatted.data()};
+  const int written =
+      m_pReformatter->Resample(dst, capacity, m_audioFrame.data, m_audioFrame.nb_frames, 1.0);
+
+  for (auto& plane : m_audioFrame.data)
+    plane = nullptr;
+  m_audioFrame.data[0] = m_reformatted.data();
+  m_audioFrame.nb_frames = written > 0 ? static_cast<unsigned int>(written) : 0;
+  m_audioFrame.framesize = frameSize;
+  return true;
 }
 
 int VideoPlayerCodec::ReadRaw(uint8_t **pBuffer, int *bufferSize)

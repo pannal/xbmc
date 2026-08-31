@@ -9,10 +9,16 @@
 
 #include "ActiveAESettings.h"
 
+#include "FileItem.h"
 #include "ServiceBroker.h"
 #include "cores/AudioEngine/Engines/ActiveAE/ActiveAE.h"
 #include "cores/AudioEngine/Interfaces/AE.h"
+#include "cores/AudioEngine/Omniphony/OmniphonyHrtf.h"
+#include "dialogs/GUIDialogFileBrowser.h"
+#include "dialogs/GUIDialogOK.h"
 #include "guilib/LocalizeStrings.h"
+#include "storage/MediaManager.h"
+#include "utils/Variant.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "settings/lib/SettingDefinitions.h"
@@ -60,6 +66,12 @@ CActiveAESettings::CActiveAESettings(CActiveAE &ae) : m_audioEngine(ae)
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_BOOSTCENTER);
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_MAINTAINORIGINALVOLUME);
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_DTSHDCOREFALLBACK);
+  // Not for the audio engine's sake - object audio is a codec, not a sink
+  // format - but because these two are the only settings in the group that
+  // have to do something the moment they are touched rather than at the next
+  // stream. See OnOmniphonyHrtfModeChanged.
+  settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTF);
+  settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTFMODE);
   settings->GetSettingsManager()->RegisterCallback(this, settingSet);
 
   settings->GetSettingsManager()->RegisterSettingOptionsFiller("aequalitylevels", SettingOptionsAudioQualityLevelsFiller);
@@ -83,8 +95,74 @@ CActiveAESettings::~CActiveAESettings()
   m_instance = nullptr;
 }
 
+bool CActiveAESettings::OnSettingChanging(const std::shared_ptr<const CSetting>& setting)
+{
+  if (setting->GetId() != CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTF)
+    return true;
+
+  const std::string path = std::static_pointer_cast<const CSettingString>(setting)->GetValue();
+  const COmniphonyHrtf::Result result = COmniphonyHrtf::Stage(path);
+
+  // Clearing the setting is how the listener goes back to the engine's own
+  // measurements, and cannot fail; say nothing and let the empty control speak.
+  if (path.empty())
+    return true;
+
+  // Checked and answered here rather than when a film next starts, because a
+  // .sofa file that the engine cannot read is refused silently otherwise - it
+  // would simply render with the built-in set and never say why. 39332 rather
+  // than the setting's own label, which carries the dash that marks it as one
+  // of the object-audio children and reads badly as a heading.
+  CGUIDialogOK::ShowAndGetInput(CVariant{39332}, CVariant{COmniphonyHrtf::Explain(result)});
+  return result == COmniphonyHrtf::Result::Ok;
+}
+
+void CActiveAESettings::OnOmniphonyHrtfModeChanged(int mode)
+{
+  const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+
+  if (mode != OMNI_HRTF_PERSONAL)
+  {
+    // Going back is what discards the copy, so the profile holds a file only
+    // while a personal one is selected. Emptying the control matters as much:
+    // a name left behind describes a file no longer in use, and the browser
+    // would refuse to reopen on it.
+    COmniphonyHrtf::Clear();
+    settings->SetString(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTF, "");
+    return;
+  }
+
+  // Nothing to ask for if a file is already staged - the listener is switching
+  // back to one they chose earlier in this same visit.
+  if (COmniphonyHrtf::IsStaged())
+    return;
+
+  // "Personal" with no file is not a state worth keeping, so ask for the file
+  // now rather than leaving a mode that describes nothing. SetString runs the
+  // check in OnSettingChanging above, which reports the outcome and refuses a
+  // file it cannot use; either way, no file means back to the built-in set.
+  std::string path;
+  VECSOURCES shares;
+  CServiceBroker::GetMediaManager().GetLocalDrives(shares);
+  CServiceBroker::GetMediaManager().GetNetworkLocations(shares);
+
+  const bool chosen =
+      CGUIDialogFileBrowser::ShowAndGetFile(shares, "*.sofa", g_localizeStrings.Get(39332), path);
+
+  if (!chosen || path.empty() ||
+      !settings->SetString(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTF, path))
+    settings->SetInt(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTFMODE, OMNI_HRTF_BUILTIN);
+}
+
 void CActiveAESettings::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
 {
+  if (setting->GetId() == CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTFMODE)
+  {
+    // Deliberately outside the lock below: this opens a dialog and writes
+    // settings, which re-enters this class.
+    OnOmniphonyHrtfModeChanged(std::static_pointer_cast<const CSettingInt>(setting)->GetValue());
+  }
+
   std::unique_lock<CCriticalSection> lock(m_cs);
 
   // Handle Bluetooth codec changes
