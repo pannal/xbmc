@@ -1195,6 +1195,27 @@ const infomap player_times[] =   {{ "seektime",         PLAYER_SEEKTIME },
 ///     @skinning_v17 **[New Infolabel]** \link Player_Process_videohdrtype `Player.Process(videohdrtype)`\endlink
 ///     <p>
 ///   }
+///   \table_row3{   <b>`Player.Process(audio.object.count)`</b>,
+///                  \anchor Player_Process_audio_object_count
+///                  _string_,
+///     @return The number of Dolby Atmos dynamic objects in the currently playing item.
+///     A bed-only presentation carries none and returns `0`. Empty when the stream
+///     declares no count at all.
+///     <p><hr>
+///     @skinning_v21 **[New Infolabel]** \link Player_Process_audio_object_count `Player.Process(audio.object.count)`\endlink
+///     <p>
+///   }
+///   \table_row3{   <b>`Player.Process(audio.object.description)`</b>,
+///                  \anchor Player_Process_audio_object_description
+///                  _string_,
+///     @return The Dolby Atmos presentation of the currently playing item as text -
+///     for example `Atmos [16 ch\, 15 obj]`. The channel figure counts the elements of
+///     the 16-channel presentation - bed channels and objects together - and is absent
+///     for codecs that carry no such presentation.
+///     <p><hr>
+///     @skinning_v21 **[New Infolabel]** \link Player_Process_audio_object_description `Player.Process(audio.object.description)`\endlink
+///     <p>
+///   }
 /// \table_end
 ///
 /// -----------------------------------------------------------------------------
@@ -1212,6 +1233,8 @@ const infomap player_process[] = {{"videodecoder", PLAYER_PROCESS_VIDEODECODER},
                                   {"audiosamplerate", PLAYER_PROCESS_AUDIOSAMPLERATE},
                                   {"audio.sample.rate", PLAYER_PROCESS_AUDIO_SAMPLE_RATE},
                                   {"audiobitspersample", PLAYER_PROCESS_AUDIOBITSPERSAMPLE},
+                                  {"audio.object.count", PLAYER_PROCESS_AUDIO_OBJECT_COUNT},
+                                  {"audio.object.description", PLAYER_PROCESS_AUDIO_OBJECT_DESCRIPTION},
                                   {"audio.live.bit.rate", PLAYER_PROCESS_AUDIO_LIVE_BIT_RATE},
                                   {"audio.live.kibit.rate", PLAYER_PROCESS_AUDIO_LIVE_KIBIT_RATE},
                                   {"audio.live.mibit.rate", PLAYER_PROCESS_AUDIO_LIVE_MIBIT_RATE},

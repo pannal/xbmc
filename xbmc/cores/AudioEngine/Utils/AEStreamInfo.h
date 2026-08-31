@@ -50,7 +50,17 @@ public:
   unsigned int m_dtsSamplesPerFrame = 0;
   int m_dialNorm = 0; // Dialog Normalization in dB (TrueHD Atmos 16ch)
   bool m_hasAtmos = false; // TrueHD Atmos (16-channel presentation)
-  unsigned int m_atmosChannels = 0; // Atmos 16ch channel/object count
+  // Encoded elements in the 16-channel presentation: bed/static channels plus
+  // dynamic objects, from 16ch_channel_count. Not an object count on its own -
+  // program_assignment() below is what separates the two.
+  unsigned int m_atmosChannels = 0;
+  // Dynamic objects only, from program_assignment(): the presentation's element
+  // total less its bed (static) and ISF objects. Set for TrueHD out of the major
+  // sync and for E-AC-3 JOC out of the dependent substream's object metadata, so
+  // it means the same thing whichever codec is playing. -1 when the stream did
+  // not declare it or the block could not be parsed, which is not the same as 0
+  // (a bed-only Atmos program that genuinely carries no dynamic objects).
+  int m_atmosObjects = -1;
 };
 
 class CAEStreamParser
@@ -86,6 +96,10 @@ public:
   void SetDefeatTrueHDDialNorm(bool value) { m_defeatTrueHDDialNorm = value; }
   void SetDefeatAC3DialNorm(bool value) { m_defeatAC3DialNorm = value; }
   void SetDefeatDTSDialNorm(bool value) { m_defeatDTSDialNorm = value; }
+  //! \brief Tell the parser the demuxer typed this E-AC-3 track as DD+ Atmos.
+  //! Only a hint: the object scan is bounded on its own, so a stream this is
+  //! never set for still gets read, it just spends its budget doing so.
+  void SetEAC3JOC(bool value) { m_eac3IsJOC = value; }
   unsigned int IsValid() const { return m_hasSync; }
   unsigned int GetSampleRate() const { return m_info.m_sampleRate; }
   unsigned int GetChannels() const { return m_info.m_channels; }
@@ -97,6 +111,7 @@ public:
   int GetDialNorm() const { return m_info.m_dialNorm; }
   bool HasAtmos() const { return m_info.m_hasAtmos; }
   unsigned int GetAtmosChannels() const { return m_info.m_atmosChannels; }
+  int GetAtmosObjects() const { return m_info.m_atmosObjects; }
   bool IsLittleEndian() const { return m_info.m_dataIsLE; }
   unsigned int GetBufferSize() const { return m_bufferSize; }
   CAEStreamInfo& GetStreamInfo() { return m_info; }
@@ -116,6 +131,22 @@ private:
   bool m_defeatTrueHDDialNorm = false;
   bool m_defeatAC3DialNorm = false;
   bool m_defeatDTSDialNorm = false;
+  /* E-AC-3 JOC object metadata is looked for in dependent substream frames and
+     latched: once found, or once the budget is spent, the scan stops for the
+     rest of the stream. A seek re-arms both through Reset(). */
+  bool m_eac3IsJOC = false;
+  bool m_eac3ObjectsLatched = false;
+  unsigned int m_eac3ScanAttempts = 0;
+  /* How long to keep looking. The larger budget applies when the demuxer typed
+     the track as Atmos, because then the metadata is known to be in there
+     somewhere and giving up early would report nothing for a stream that has
+     something. Where it did not, a short budget is enough to be sure. */
+  static constexpr unsigned int EAC3_OBJECT_SCANS_UNTYPED = 64;
+  static constexpr unsigned int EAC3_OBJECT_SCANS_TYPED_ATMOS = 512;
+  unsigned int EAC3ObjectScanBudget() const
+  {
+    return m_eac3IsJOC ? EAC3_OBJECT_SCANS_TYPED_ATMOS : EAC3_OBJECT_SCANS_UNTYPED;
+  }
   unsigned int m_needBytes = 0;
   ParseFunc m_syncFunc;
   bool m_hasSync = false;

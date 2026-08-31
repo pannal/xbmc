@@ -505,6 +505,55 @@ bool CPlayerGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
     case PLAYER_PROCESS_VIDEOSCANTYPE:
       value = CServiceBroker::GetDataCacheCore().IsVideoInterlaced() ? "i" : "p";
       return true;
+    case PLAYER_PROCESS_AUDIO_OBJECT_COUNT:
+    {
+      // A declared zero is an answer - a bed-only Atmos presentation really does
+      // carry no dynamic objects - so it is reported as "0". Only -1, meaning
+      // the stream never declared a count, resolves to empty. A skin that would
+      // rather not show a "0" row can filter on the value it now gets.
+      const int objectCount = CServiceBroker::GetDataCacheCore().GetAudioObjectCount();
+      if (objectCount >= 0)
+      {
+        value = std::to_string(objectCount);
+        return true;
+      }
+      break;
+    }
+    case PLAYER_PROCESS_AUDIO_OBJECT_DESCRIPTION:
+    {
+      // Prose form of the Atmos presentation, for skins that want a phrase
+      // rather than a figure. Both figures are named because neither implies the
+      // other: the element count measures bed channels and objects together, the
+      // object count only the dynamic ones. Spelling them "ch" and "obj" keeps
+      // that distinction on screen instead of leaving one to be inferred.
+      //
+      // Either figure alone still describes a stream, so either alone fills the
+      // label rather than suppressing it. Which one is missing says which codec
+      // is playing: a TrueHD stream whose program_assignment() would not parse
+      // has no object count, and DD+ Atmos has no 16-channel presentation for
+      // VideoPlayerAudio to take an element count from.
+      const int elementCount = CServiceBroker::GetDataCacheCore().GetAudioElementCount();
+      const int objectCount = CServiceBroker::GetDataCacheCore().GetAudioObjectCount();
+      if (elementCount > 0)
+      {
+        value = objectCount >= 0
+                    ? StringUtils::Format("Atmos [{} ch, {} obj]", elementCount, objectCount)
+                    : StringUtils::Format("Atmos [{} ch]", elementCount);
+        return true;
+      }
+      if (objectCount >= 0)
+      {
+        value = StringUtils::Format("Atmos [{} obj]", objectCount);
+        return true;
+      }
+      if (elementCount == 0)
+      {
+        // Atmos, but the stream declared no element count to qualify it with.
+        value = "Atmos";
+        return true;
+      }
+      break;
+    }
     case PLAYER_PROCESS_AUDIODECODER:
       value = CServiceBroker::GetDataCacheCore().GetAudioDecoderName();
       return true;

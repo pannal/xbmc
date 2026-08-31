@@ -107,6 +107,32 @@ public:
   // player audio info
   void SetAudioDecoderName(std::string name);
   std::string GetAudioDecoderName();
+  /*!
+   * @brief Dynamic objects in the TrueHD Atmos presentation, or -1 when unknown.
+   *
+   * Bed channels are excluded - this is the count the stream declares in
+   * program_assignment(), not the wider element count that also covers the
+   * static bed.
+   *
+   * Zero and -1 are different answers and both are kept: zero is a bed-only
+   * presentation that really carries no dynamic objects, -1 is a stream that
+   * never declared a count at all. Only the latter reaches skins as empty.
+   */
+  void SetAudioObjectCount(int objectCount);
+  int GetAudioObjectCount();
+  /*!
+   * @brief Encoded elements in the TrueHD Atmos 16-channel presentation.
+   *
+   * The companion to the object count above, and deliberately the wider figure:
+   * bed (static) channels and dynamic objects together, straight from
+   * 16ch_channel_count. Skins get it as prose rather than as a number, so it is
+   * kept numeric here and only rendered at the point of display.
+   *
+   * -1 is not an Atmos stream at all; 0 is Atmos that declared no element count
+   * (the presentation exists but carries no extra_channel_meaning block).
+   */
+  void SetAudioElementCount(int elementCount);
+  int GetAudioElementCount();
   void SetAudioChannels(std::string channels);
   std::string GetAudioChannels();
   void SetAudioSampleRate(int sampleRate);
@@ -303,6 +329,8 @@ protected:
     int queueLevel = 0;
     int queueDataLevel = 0;
     double pts = 0;
+    int objectCount = -1;
+    int elementCount = -1;
   } m_playerAudioInfo;
 
   mutable CCriticalSection m_contentSection;

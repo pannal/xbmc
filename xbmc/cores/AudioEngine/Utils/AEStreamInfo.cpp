@@ -123,6 +123,11 @@ void CAEStreamParser::Reset()
   // re-log the TrueHD major sync fields after a flush/seek
   m_thdFieldsValid = false;
   m_thdFieldChanges = 0;
+
+  // re-arm the E-AC-3 object scan: a seek can land on a stretch of the stream
+  // whose dependent frames carry metadata the last stretch's did not
+  m_eac3ObjectsLatched = false;
+  m_eac3ScanAttempts = 0;
 }
 
 int CAEStreamParser::AddData(uint8_t* data,
@@ -753,6 +758,355 @@ void CAEStreamParser::DefeatDTSDialNorm(uint8_t* data, unsigned int size)
   eb[headerSize - 1] = crc & 0xFF;
 }
 
+/* Bounded MSB-first bit reader shared by the Atmos metadata parsers. Any read
+   that would pass the block's declared end is refused and latches the failure,
+   so a short or malformed block reports "unknown" instead of a plausible wrong
+   number - the one outcome that would be worse than no number at all. */
+struct AtmosBitReader
+{
+  const uint8_t* data;
+  unsigned int pos;   /* absolute bit index into data */
+  unsigned int limit; /* one past the last readable bit index */
+  bool ok = true;
+
+  bool Skip(unsigned int n)
+  {
+    if (!ok || n > limit || pos > limit - n)
+    {
+      ok = false;
+      return false;
+    }
+    pos += n;
+    return true;
+  }
+
+  /* At most 32 bits; anything longer is a skip, never a value. */
+  uint32_t Read(unsigned int n)
+  {
+    if (n > 32 || !Skip(n))
+    {
+      ok = false;
+      return 0;
+    }
+
+    uint32_t v = 0;
+    for (unsigned int bit = pos - n; bit < pos; ++bit)
+      v = (v << 1) | ((data[bit >> 3] >> (7 - (bit & 7))) & 1);
+    return v;
+  }
+};
+
+/* Channels each bit of bed_channel_assignment_mask stands for, and the object
+   counts of the intermediate spatial formats. Both tables are transcribed from
+   harletty-bridge (eac3/src/eac3dec/metadata.rs STANDARD_BED_CHANNELS and
+   ISF_OBJECT_COUNT), a decoder that positions these objects for real. */
+static const uint8_t ATMOS_STD_BED_WIDTH[10] = {2, 1, 1, 2, 2, 2, 2, 2, 2, 1};
+static const uint8_t ATMOS_ISF_OBJECTS[6] = {4, 8, 10, 14, 15, 30};
+
+/* program_assignment(), the block that says how a Dolby Atmos presentation is
+   laid out. Field layout and, crucially, the object arithmetic follow
+   harletty-bridge (eac3/src/eac3dec/metadata.rs parse_program_assignment).
+
+   Returns the number of bed (static) and ISF objects the program carries, or -1
+   if the block could not be parsed. The caller subtracts that from the total
+   element count to get the dynamic objects, which is the one model this format
+   uses in every branch: the presentation declares how many elements it holds,
+   the bed is the static part of them, and the remainder move.
+
+   MediaInfoLib reads the content_description bit 2 field as an explicit
+   num_dynamic_objects and reports zero when the bit is clear. harletty reads the
+   same five bits as room_or_screen_anchored_objects and derives the count by
+   subtraction instead. They cannot both be right, and harletty is followed here:
+   its model is the same in both branches where MediaInfo's switches, it accounts
+   for ISF objects that MediaInfo ignores, and it is what a renderer that places
+   these objects audibly depends on. */
+static int Atmos_ParseProgramAssignment(AtmosBitReader& br)
+{
+  if (br.Read(1)) /* b_dyn_object_only_program */
+  {
+    const bool lfePresent = br.Read(1) != 0;
+    if (!br.ok)
+      return -1;
+
+    /* the LFE is the only bed channel such a program can carry */
+    return lfePresent ? 1 : 0;
+  }
+
+  const uint32_t contentDescription = br.Read(4);
+  int bedOrIsfObjects = 0;
+
+  if (contentDescription & 0x1) /* bed instance(s) present */
+  {
+    br.Read(1); /* b_bed_object_chan_distribute */
+    uint32_t bedInstances = 1;
+    if (br.Read(1)) /* b_multiple_bed_instances_present */
+      bedInstances = br.Read(3) + 2;
+
+    for (uint32_t bed = 0; bed < bedInstances && br.ok; ++bed)
+    {
+      if (br.Read(1)) /* b_lfe_only */
+      {
+        ++bedOrIsfObjects;
+        continue;
+      }
+
+      /* The mask arrives most significant bit first, and its most significant
+         bit is the LAST entry of the channel table, not the first: harletty
+         fills its bit vector back to front (metadata.rs read_bit_vec, index
+         counts down) before indexing STANDARD_BED_CHANNELS. Walking the table
+         backwards as the bits arrive is the same mapping without the vector. */
+      if (br.Read(1)) /* b_standard_chan_assign */
+      {
+        for (unsigned int i = 0; i < 10; ++i)
+          if (br.Read(1))
+            bedOrIsfObjects += ATMOS_STD_BED_WIDTH[9 - i];
+      }
+      else
+      {
+        for (unsigned int i = 0; i < 17; ++i)
+          if (br.Read(1))
+            ++bedOrIsfObjects;
+      }
+    }
+  }
+
+  if (contentDescription & 0x2) /* intermediate spatial format */
+  {
+    const uint32_t isfIndex = br.Read(3);
+    if (!br.ok || isfIndex >= 6)
+      return -1;
+    bedOrIsfObjects += ATMOS_ISF_OBJECTS[isfIndex];
+  }
+
+  if (contentDescription & 0x4)
+  {
+    /* room_or_screen_anchored_objects: already inside the element total, so it
+       is stepped over rather than counted. */
+    if (br.Read(5) == 0x1F)
+      br.Read(7);
+  }
+
+  if (contentDescription & 0x8)
+  {
+    const uint32_t reservedBytes = br.Read(4) + 1;
+    br.Skip(reservedBytes * 8);
+  }
+
+  return br.ok ? bedOrIsfObjects : -1;
+}
+
+/* Dynamic objects in a presentation holding elementCount elements in total. */
+static int Atmos_DynamicObjects(AtmosBitReader& br, int elementCount)
+{
+  const int bedOrIsfObjects = Atmos_ParseProgramAssignment(br);
+  if (bedOrIsfObjects < 0 || elementCount < 0)
+    return -1;
+
+  return std::max(0, elementCount - bedOrIsfObjects);
+}
+
+/* The escape-coded integer emdf uses for every variable-width field. Reading
+   past the end latches failure in the reader, which ends the loop. */
+static uint32_t Atmos_VariableBits(AtmosBitReader& br, unsigned int n)
+{
+  uint32_t value = 0;
+  for (unsigned int guard = 0; guard < 8 && br.ok; ++guard)
+  {
+    value += br.Read(n);
+    if (!br.Read(1))
+      return value;
+    value <<= n;
+    value += (1u << n);
+  }
+  br.ok = false;
+  return 0;
+}
+
+/* emdf_payload_config(). Returns false on the one field whose value is fixed -
+   a set codecdatae means this is not a container we understand, which is also
+   what makes it useful for rejecting a chance syncword match. */
+static bool Atmos_SkipEmdfPayloadConfig(AtmosBitReader& br)
+{
+  const bool smpOffsetPresent = br.Read(1) != 0;
+  if (smpOffsetPresent)
+    br.Skip(12);
+
+  if (br.Read(1)) /* duration present */
+    Atmos_VariableBits(br, 11);
+  if (br.Read(1)) /* group id present */
+    Atmos_VariableBits(br, 2);
+  if (br.Read(1)) /* codec data present - must not be */
+    return false;
+
+  if (!br.Read(1)) /* discard_unknown_payload */
+  {
+    bool frameAligned = false;
+    if (!smpOffsetPresent)
+    {
+      frameAligned = br.Read(1) != 0;
+      if (frameAligned)
+        br.Skip(2);
+    }
+    if (smpOffsetPresent || frameAligned)
+      br.Skip(7);
+  }
+
+  return br.ok;
+}
+
+/* object_audio_metadata_payload(), as far as the object count. Everything past
+   program_assignment() describes where the objects are, which we do not need. */
+static int Atmos_ParseOamdObjects(AtmosBitReader& br)
+{
+  uint32_t version = br.Read(2);
+  if (version == 3)
+    version += br.Read(3);
+  if (!br.ok || version != 0)
+    return -1;
+
+  int objectCount = static_cast<int>(br.Read(5)) + 1;
+  if (objectCount == 32)
+    objectCount += static_cast<int>(br.Read(7));
+  if (!br.ok)
+    return -1;
+
+  return Atmos_DynamicObjects(br, objectCount);
+}
+
+/* Try to read a whole emdf container starting at syncBit, and return the object
+   count of its OAMD payload.
+ 
+   The container is walked to its end even after the OAMD payload is found,
+   because reaching the terminator coherently is what distinguishes a real
+   container from a chance match on a sixteen bit syncword - which, over a frame
+   of a few thousand bit positions, is otherwise close to certain to occur. */
+static int Atmos_TryEmdfContainerAt(const uint8_t* data,
+                                    unsigned int syncBit,
+                                    unsigned int limitBit)
+{
+  AtmosBitReader br{data, syncBit, limitBit};
+
+  br.Skip(16); /* syncword, already matched */
+  const uint32_t containerLength = br.Read(16);
+  if (!br.ok)
+    return -1;
+
+  /* emdf_container_length counts the bytes that follow the 32 bits of syncword
+     and length, so the container ends that far past where the reader now sits
+     (harletty-bridge syncframe.rs parse_emdf_block: position() + length * 8).
+     Everything downstream trusts this bound, so it is computed without wrapping
+     and clamped to the window we were given - a length field is attacker
+     controlled in the sense that it is whatever the bit pattern happened to
+     hold, and a container end past the frame would let a payload reader run off
+     the end of the buffer. */
+  const uint64_t containerEnd64 = static_cast<uint64_t>(br.pos) + containerLength * 8ull;
+  if (containerEnd64 > limitBit)
+    return -1;
+  const unsigned int containerEnd = static_cast<unsigned int>(containerEnd64);
+
+  if (br.Read(2) != 0) /* emdf_version */
+    return -1;
+  if (br.Read(3) == 0x7) /* key_id */
+    Atmos_VariableBits(br, 3);
+
+  int objects = -1;
+
+  for (unsigned int payload = 0; payload < 32; ++payload)
+  {
+    uint32_t payloadId = br.Read(5);
+    if (payloadId == 0x1F)
+      payloadId += Atmos_VariableBits(br, 5);
+    if (!br.ok)
+      return -1;
+    if (payloadId == 0) /* terminator: the container closed cleanly */
+      return objects;
+
+    if (!Atmos_SkipEmdfPayloadConfig(br))
+      return -1;
+
+    const uint64_t payloadBits = static_cast<uint64_t>(Atmos_VariableBits(br, 8)) * 8ull;
+    /* br.pos can already sit past containerEnd if a field ran long, so compare
+       the two ends directly rather than subtracting them. */
+    const unsigned int payloadStart = br.pos;
+    if (!br.ok || payloadStart > containerEnd ||
+        payloadBits > static_cast<uint64_t>(containerEnd - payloadStart))
+      return -1;
+
+    const unsigned int payloadEnd = payloadStart + static_cast<unsigned int>(payloadBits);
+    if (payloadId == 11 && objects < 0) /* object_audio_metadata_payload */
+    {
+      /* bounded by the payload and by the frame, whichever comes first */
+      AtmosBitReader payloadReader{data, payloadStart, std::min(payloadEnd, limitBit)};
+      objects = Atmos_ParseOamdObjects(payloadReader);
+    }
+
+    br.pos = payloadStart;
+    if (!br.Skip(static_cast<unsigned int>(payloadBits)))
+      return -1;
+  }
+
+  return -1; /* never terminated - not a container we can trust */
+}
+
+/* Search a window for an emdf container carrying object metadata. */
+static int Atmos_ScanWindowForOamd(const uint8_t* data,
+                                   unsigned int startBit,
+                                   unsigned int endBit)
+{
+  if (endBit < 16 || startBit > endBit - 16)
+    return -1;
+
+  for (unsigned int bit = startBit; bit <= endBit - 16; ++bit)
+  {
+    const unsigned int hi = (data[bit >> 3] >> (7 - (bit & 7))) & 1;
+    if (hi != 0) /* 0x5838 starts with a zero bit - cheapest possible reject */
+      continue;
+
+    AtmosBitReader peek{data, bit, endBit};
+    if (peek.Read(16) != 0x5838)
+      continue;
+
+    const int objects = Atmos_TryEmdfContainerAt(data, bit, endBit);
+    if (objects >= 0)
+      return objects;
+  }
+
+  return -1;
+}
+
+/* Dynamic objects declared by an E-AC-3 dependent substream carrying JOC.
+ 
+   Where the metadata sits is looked for the way harletty-bridge looks for it
+   (eac3/src/eac3dec/syncframe.rs): the frame's trailing auxdata first, because
+   that is where the container belongs and the window is small, then the whole
+   frame as a fallback. harletty carries a note that decoders disagree on the
+   auxdata length unit, which is exactly why it keeps the fallback, and so do we.
+ 
+   Returns the object count, or -1 if this frame carries none we can read. */
+static int Atmos_ParseEAC3Objects(const uint8_t* data, unsigned int frameBytes)
+{
+  const unsigned int frameBits = frameBytes * 8;
+  if (frameBits < 32)
+    return -1;
+
+  const unsigned int trailerStart = frameBits - 32;
+  AtmosBitReader footer{data, trailerStart, frameBits};
+  const unsigned int auxLength = footer.Read(14);
+  const bool auxPresent = footer.Read(1) != 0;
+
+  if (auxPresent && footer.ok)
+  {
+    const unsigned int auxBits = auxLength * 8;
+    if (auxBits <= trailerStart)
+    {
+      const int objects = Atmos_ScanWindowForOamd(data, trailerStart - auxBits, trailerStart);
+      if (objects >= 0)
+        return objects;
+    }
+  }
+
+  return Atmos_ScanWindowForOamd(data, 0, frameBits);
+}
 bool CAEStreamParser::TrySyncAC3(uint8_t* data,
                                  unsigned int size,
                                  bool resyncing,
@@ -921,6 +1275,43 @@ bool CAEStreamParser::TrySyncAC3(uint8_t* data,
     {
       uint8_t dialNormRaw = ((data[5] & 0x07) << 2) | ((data[6] >> 6) & 0x03);
       m_info.m_dialNorm = static_cast<int>(dialNormRaw) - 31;
+    }
+
+    // DD+ Atmos object metadata is not confined to the dependent substream:
+    // harletty's own Dolby Atmos regression frame carries its OAMD in an
+    // independent one (eac3/tests/data/short_packet_independent_joc.bin, whose
+    // header comment records stream type 0). Gating on the dependent frame
+    // would leave exactly that stream reporting nothing, so both are read.
+    //
+    // Bounded twice over: the result latches once found, and the attempts are
+    // capped, so a stream carrying none costs a fixed amount of work rather
+    // than a cost per frame. The demuxer's Atmos typing only widens that budget
+    // - it is not relied on, because it comes from a decoder pass that
+    // passthrough playback may never have run.
+    if (!m_eac3ObjectsLatched && m_eac3ScanAttempts < EAC3ObjectScanBudget() &&
+        size >= m_fsize && m_fsize > 0)
+    {
+      ++m_eac3ScanAttempts;
+
+      const int objects = Atmos_ParseEAC3Objects(data, m_fsize);
+      if (objects >= 0)
+      {
+        m_info.m_hasAtmos = true;
+        m_info.m_atmosObjects = objects;
+        m_eac3ObjectsLatched = true;
+        CLog::Log(LOGINFO,
+                  "CAEStreamParser::TrySyncAC3 - E-AC3 JOC object metadata found, atmosObjects: {}"
+                  " (after {} frame{})",
+                  objects, m_eac3ScanAttempts, m_eac3ScanAttempts == 1 ? "" : "s");
+      }
+      else if (m_eac3ScanAttempts == EAC3ObjectScanBudget())
+      {
+        m_eac3ObjectsLatched = true;
+        CLog::Log(LOGINFO,
+                  "CAEStreamParser::TrySyncAC3 - E-AC3 no object metadata in {} dependent frames, "
+                  "giving up for this stream{}",
+                  m_eac3ScanAttempts, m_eac3IsJOC ? " (demuxer typed it Atmos)" : "");
+      }
     }
 
     // EAC3 can have a dependent stream too
@@ -1377,6 +1768,7 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
       bool hasExtChannelMeaning = hasAtmos && extChannelMeaningPresent && extension_count >= 1;
       int origDialNorm = 0;
       int atmosChannels = 0;
+      int atmosObjects = -1;
 
       TrueHDMajorSyncFields fields{};
       fields.ratebits = static_cast<uint8_t>(rate);
@@ -1400,6 +1792,16 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
 
         origDialNorm = fields.dialNorm16ch - 31;
         atmosChannels = fields.channelCount16ch + 1;
+
+        // program_assignment() runs on from the bit after 16ch_channel_count to
+        // the end of extra_channel_meaning. The block starts at data[30] (bit
+        // 240) and extra_channel_meaning_length declares its size in 16-bit
+        // units, the same figure major_sync_size was computed from above - so
+        // these bytes are inside the range already length-checked and CRC
+        // verified, and the reader's own limit covers the rest.
+        const unsigned int extChannelMeaningEndBit = 240 + (extension_count + 1) * 16;
+        AtmosBitReader br{data, 260, extChannelMeaningEndBit};
+        atmosObjects = Atmos_DynamicObjects(br, atmosChannels);
       }
 
       // Log the field set once per stream and again whenever anything changes
@@ -1456,7 +1858,17 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
       m_substreams = (data[20] & 0xF0) >> 4;
       m_fsize = length;
 
-      if (!m_hasSync) 
+      // What this major sync says about the presentation, refreshed on every one
+      // of them rather than only the first. A seamless branch can hand us a
+      // different presentation without ever losing sync, and the block below
+      // runs once per stream - leaving these there meant the first branch's
+      // figures described the whole disc.
+      m_info.m_hasAtmos = hasAtmos;
+      m_info.m_dialNorm = dialNormDefeated ? 0 : origDialNorm;
+      m_info.m_atmosChannels = atmosChannels;
+      m_info.m_atmosObjects = atmosObjects;
+
+      if (!m_hasSync)
       {
         // Looks like cannot understand the original bit depth - can only asuume it is (up-to) 24 bit!
         // DTS-MA has the original bit depth from the PCM for example.
@@ -1476,10 +1888,6 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
           channel_map = (data[9] << 1) | (data[10] >> 7);
         m_info.m_channels = CAEStreamParser::GetTrueHDChannels(channel_map);
 
-        m_info.m_hasAtmos = hasAtmos;
-        m_info.m_dialNorm = dialNormDefeated ? 0 : origDialNorm;
-        m_info.m_atmosChannels = atmosChannels;
-
         std::string atmosStr;
         if (hasAtmos)
         {
@@ -1488,9 +1896,20 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
             atmosStr += " (defeated from " + std::to_string(origDialNorm) + " dB)";
           if (atmosChannels)
             atmosStr += ", atmosChannels: " + std::to_string(atmosChannels);
+          // the pair is the whole point: elements are bed + objects together,
+          // objects are what program_assignment() separated back out of them
+          if (atmosObjects >= 0)
+            atmosStr += ", atmosObjects: " + std::to_string(atmosObjects);
         }
-        CLog::Log(LOGINFO, "CAEStreamParser::SyncTrueHD - TrueHD stream detected channels{}, {}Hz, {}-bit)",
-                  m_info.m_channels, m_info.m_sampleRate, m_info.m_bitDepth, hasAtmos ? ", Atmos" : "", atmosStr);
+        // Five arguments need five placeholders: the format string carried three,
+        // and fmt drops the surplus silently, so the Atmos marker and the whole
+        // of atmosStr - dialNorm included - have never reached the log. Shape
+        // matches the AC3/E-AC3 lines above.
+        CLog::Log(LOGINFO,
+                  "CAEStreamParser::SyncTrueHD - TrueHD stream detected ({} channels, {}Hz, "
+                  "{}-bit{}{})",
+                  m_info.m_channels, m_info.m_sampleRate, m_info.m_bitDepth,
+                  hasAtmos ? ", Atmos" : "", atmosStr);
 
         m_hasSync = true;
         m_info.m_type = CAEStreamInfo::STREAM_TYPE_TRUEHD;

@@ -293,6 +293,12 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
   m_messageParent.Put(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_AVCHANGE));
   m_syncState = IDVDStreamPlayer::SYNC_STARTING;
 
+  // This overload also serves a codec change mid-playback, which reaches us
+  // without a CloseStream, so retire the outgoing stream's figures here too
+  // rather than let them describe the incoming one until its first frame lands.
+  m_processInfo.SetAudioObjectCount(-1);
+  m_processInfo.SetAudioElementCount(-1);
+
   // LAV: Reset PCM jitter tracking on stream open
   if (m_lavStylePcmSyncEnabled)
   {
@@ -353,6 +359,11 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
   { std::unique_lock<CCriticalSection> lock(m_info_section);
     m_info = info;
   }
+
+  // No frames will arrive to say otherwise once the codec is gone, so the last
+  // figures this stream published have to be retired here.
+  m_processInfo.SetAudioObjectCount(-1);
+  m_processInfo.SetAudioElementCount(-1);
 }
 
 void CVideoPlayerAudio::OnStartup()
@@ -1113,6 +1124,28 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     audioframe.pts / DVD_TIME_BASE, m_info.pts / DVD_TIME_BASE, m_pClock->GetClock() / DVD_TIME_BASE, GetLevel());
 
   int framesOutput = m_audioSink.AddPackets(audioframe);
+
+  // Published per frame rather than from the SYNC_STARTING block below, because
+  // SwitchCodecIfNeeded() swaps the codec without returning the player to
+  // SYNC_STARTING: a mid-playback passthrough toggle would otherwise leave the
+  // count of whichever codec happened to start the title standing for the rest
+  // of it - empty after PCM to TrueHD, stale after TrueHD to PCM. Reading it off
+  // the frame means whichever codec produced this frame is the one described.
+  //
+  // Only the passthrough path runs the stream parser that reads this metadata,
+  // so every other path publishes -1 rather than let an earlier stream's figures
+  // stand. The object count is codec agnostic - TrueHD carries it in the major
+  // sync, DD+ in its dependent substream, and m_hasAtmos is set by whichever
+  // parser found it. The element count stays TrueHD only: it counts a 16-channel
+  // presentation, which is a TrueHD structure that DD+ has no equivalent of.
+  const CAEStreamInfo& streamInfo = audioframe.format.m_streamInfo;
+  const bool haveAtmosInfo = audioframe.passthrough && streamInfo.m_hasAtmos;
+  const bool haveTrueHDPresentation =
+      haveAtmosInfo && streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD;
+
+  m_processInfo.SetAudioObjectCount(haveAtmosInfo ? streamInfo.m_atmosObjects : -1);
+  m_processInfo.SetAudioElementCount(
+      haveTrueHDPresentation ? static_cast<int>(streamInfo.m_atmosChannels) : -1);
 
   // guess next pts
   m_audioClock += audioframe.duration * ((double)framesOutput / audioframe.nb_frames);
