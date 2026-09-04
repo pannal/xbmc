@@ -420,6 +420,7 @@ public:
   static constexpr auto SETTING_AUDIOOUTPUT_GUISOUNDVOLUME = "audiooutput.guisoundvolume";
   static constexpr auto SETTING_AUDIOOUTPUT_PASSTHROUGH = "audiooutput.passthrough";
   static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONY = "audiooutput.omniphony";
+  static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYOBJECTS = "audiooutput.omniphonyobjects";
   static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYROOM = "audiooutput.omniphonyroom";
   static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYLEVEL = "audiooutput.omniphonylevel";
   static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYLFE = "audiooutput.omniphonylfe";

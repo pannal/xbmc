@@ -79,6 +79,25 @@ protected:
    */
   static void OnOmniphonyHrtfModeChanged(int mode);
 
+  /*!
+   * \brief Keep passthrough and binaural rendering from both being on.
+   *
+   * They are answers to the same question - where the sound is going - and only
+   * one of them can be true: passthrough sends the bitstream to an amplifier to
+   * decode, and binaural rendering makes a two-channel image for headphones. A
+   * listener who has one is not using the other.
+   *
+   * Turning either on therefore turns the other off, rather than leaving it on
+   * and inert. Greying the loser out would hide the reason and leave a toggle
+   * nobody could explain; letting the value move says what happened, on screen,
+   * at the moment it happens - the open settings dialog redraws the control
+   * because CGUIDialogSettingsBase listens for exactly this.
+   *
+   * \param changedId the setting that was just written, which must be one of
+   *                  the two
+   */
+  static void EnforceExclusiveOutput(const std::string& changedId);
+
   static CActiveAESettings* m_instance;
 };
 };

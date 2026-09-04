@@ -1069,9 +1069,24 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
       }
     }
 
-    // demuxer reads metatags that influence channel layout
+    // demuxer reads metatags that influence channel layout, but only where the
+    // tag still describes what came out of the decoder.
+    //
+    // The tag names the positions of the channels the file was encoded with,
+    // which is worth having when the decoder could not name them. It says
+    // nothing about how many channels the decoder produced, and a codec that
+    // renders to a different count - the binaural one turns any layout into a
+    // stereo pair - was being relabelled with the file's layout while its
+    // samples stayed as they were. ActiveAE sizes a frame from the layout, so a
+    // mono tag on a stereo render made it read half of every block and take the
+    // two ears for successive mono samples, which is audible as distortion for
+    // the whole film; a 5.1 tag made it ask for 192 bytes of a 64-byte block.
     if (m_streaminfo.codec == AV_CODEC_ID_FLAC && m_streaminfo.channellayout)
-      audioframe.format.m_channelLayout = CAEUtil::GetAEChannelLayout(m_streaminfo.channellayout);
+    {
+      const CAEChannelInfo tagged = CAEUtil::GetAEChannelLayout(m_streaminfo.channellayout);
+      if (tagged.Count() == audioframe.format.m_channelLayout.Count())
+        audioframe.format.m_channelLayout = tagged;
+    }
 
     // If we have a stream bits per sample set on the stream info bit depth.
     if (m_streaminfo.bitspersample)   

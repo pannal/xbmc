@@ -18051,12 +18051,12 @@ msgid "Binaural Headphones"
 msgstr "Binaurale Kopfhörer"
 
 msgctxt "#39310"
-msgid "Atmos/DTS:X for binaural headphones"
-msgstr "Atmos/DTS:X für binaurale Kopfhörer"
+msgid "- Dolby Atmos, DTS:X, and Auro-3D"
+msgstr "- Dolby Atmos, DTS:X und Auro-3D"
 
 msgctxt "#39311"
-msgid "Render Dolby Atmos and DTS:X to headphones, placing each sound around you, instead of folding the soundtrack to stereo. It is not used while passthrough to an amplifier is active. Falls back to normal decoding if the renderer is unavailable."
-msgstr "Dolby Atmos und DTS:X für Kopfhörer rendern und dabei jedes Geräusch rund um den Hörer platzieren, statt die Tonspur auf Stereo herunterzumischen. Wird nicht verwendet, solange Passthrough zu einem Verstärker aktiv ist. Ist der Renderer nicht verfügbar, wird wie gewohnt dekodiert."
+msgid "Place the individual sounds a Dolby Atmos or DTS:X soundtrack carries, and unfold the height layer of an Auro-3D one, rather than placing only the channels it was mixed into. If a device struggles with it, try Cascade mode under Advanced first - that keeps the heights, where turning this off loses them entirely."
+msgstr "Die einzelnen Klänge einer Dolby-Atmos- oder DTS:X-Tonspur platzieren und die Höhenebene einer Auro-3D-Tonspur entfalten, statt nur die Kanäle zu platzieren, in die sie gemischt wurde. Wenn ein Gerät damit überfordert ist, zuerst den Kaskadenmodus unter Fortgeschritten versuchen – er behält die Höhen bei, während sie beim Ausschalten ganz verloren gehen."
 
 msgctxt "#39312"
 msgid "- Room simulation"
@@ -18181,6 +18181,14 @@ msgstr "- LFE-Anhebung"
 msgctxt "#39342"
 msgid "Raise the level of the low-frequency effects channel, the one a cinema sends to its subwoofer. On headphones there is no subwoofer to turn up, so this is the only way to change it. It affects that channel alone, so a soundtrack with little in it will barely move. Raising it uses headroom, and enough will make the limiter quieten everything."
 msgstr "Den Pegel des Tieftoneffektkanals (LFE) anheben, den ein Kino an seinen Subwoofer schickt. Kopfhörer haben keinen Subwoofer, den man lauter stellen könnte, daher ist dies die einzige Möglichkeit, ihn zu ändern. Es betrifft nur diesen Kanal, eine Tonspur mit wenig Inhalt darin ändert sich also kaum. Eine Anhebung verbraucht Aussteuerungsreserve, und genug davon lässt den Limiter alles leiser machen."
+
+msgctxt "#39343"
+msgid "Binaural rendering for headphones"
+msgstr "Binaurales Rendering für Kopfhörer"
+
+msgctxt "#39344"
+msgid "Place the sound of anything you play around you on headphones, instead of folding it flat to stereo. It applies to every soundtrack that can be decoded, films and music alike. Turning it on turns passthrough off, and it is unused while the audio output is set to more than two channels."
+msgstr "Den Klang von allem, was abgespielt wird, auf Kopfhörern rund um den Hörer platzieren, statt ihn flach auf Stereo herunterzumischen. Gilt für jede dekodierbare Tonspur, Filme wie Musik. Das Einschalten deaktiviert Passthrough, und die Einstellung wird nicht verwendet, solange die Audioausgabe auf mehr als zwei Kanäle eingestellt ist."
 
 msgctxt "#40000"
 msgid "Versions"

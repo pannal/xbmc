@@ -3750,9 +3750,17 @@
       </group>
       <group id="4" label="39309">
         <requirement>HAS_OMNIPHONY</requirement>
-        <setting id="audiooutput.omniphony" type="boolean" label="39310" help="39311">
+        <setting id="audiooutput.omniphony" type="boolean" label="39343" help="39344">
           <level>1</level>
           <default>false</default>
+          <control type="toggle" />
+        </setting>
+        <setting id="audiooutput.omniphonyobjects" type="boolean" label="39310" help="39311">
+          <level>1</level>
+          <default>true</default>
+          <dependencies>
+            <dependency type="enable" setting="audiooutput.omniphony" operator="is">true</dependency>
+          </dependencies>
           <control type="toggle" />
         </setting>
         <setting id="audiooutput.omniphonyroom" type="integer" label="39312" help="39313">
@@ -3868,7 +3876,12 @@
           <level>2</level>
           <default>false</default>
           <dependencies>
-            <dependency type="enable" setting="audiooutput.omniphony" operator="is">true</dependency>
+            <dependency type="enable">
+              <and>
+                <condition on="setting" setting="audiooutput.omniphony" operator="is">true</condition>
+                <condition on="setting" setting="audiooutput.omniphonyobjects" operator="is">true</condition>
+              </and>
+            </dependency>
           </dependencies>
           <control type="toggle" />
         </setting>

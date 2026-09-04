@@ -67,11 +67,12 @@ CActiveAESettings::CActiveAESettings(CActiveAE &ae) : m_audioEngine(ae)
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_MAINTAINORIGINALVOLUME);
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_DTSHDCOREFALLBACK);
   // Not for the audio engine's sake - object audio is a codec, not a sink
-  // format - but because these two are the only settings in the group that
-  // have to do something the moment they are touched rather than at the next
-  // stream. See OnOmniphonyHrtfModeChanged.
+  // format - but because these are the only settings in the group that have to
+  // do something the moment they are touched rather than at the next stream.
+  // See OnOmniphonyHrtfModeChanged and EnforceExclusiveOutput.
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTF);
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTFMODE);
+  settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONY);
   settings->GetSettingsManager()->RegisterCallback(this, settingSet);
 
   settings->GetSettingsManager()->RegisterSettingOptionsFiller("aequalitylevels", SettingOptionsAudioQualityLevelsFiller);
@@ -154,6 +155,33 @@ void CActiveAESettings::OnOmniphonyHrtfModeChanged(int mode)
     settings->SetInt(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTFMODE, OMNI_HRTF_BUILTIN);
 }
 
+void CActiveAESettings::EnforceExclusiveOutput(const std::string& changedId)
+{
+  const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+
+  /*
+   * Only a turn-on excludes anything, and that asymmetry is what makes this
+   * terminate rather than ping-pong: the write below turns the other setting
+   * off, this handler is re-entered for it, sees a setting going off, and
+   * stops. Nothing here ever turns a setting on, so there is no cycle to break
+   * and no re-entry flag to keep.
+   */
+  if (!settings->GetBool(changedId))
+    return;
+
+  const char* other = changedId == CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH
+                          ? CSettings::SETTING_AUDIOOUTPUT_OMNIPHONY
+                          : CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH;
+  if (!settings->GetBool(other))
+    return;
+
+  CLog::Log(LOGINFO,
+            "CActiveAESettings: {} was turned on, so {} is turned off - a listener has "
+            "either an amplifier decoding for them or headphones, not both",
+            changedId, other);
+  settings->SetBool(other, false);
+}
+
 void CActiveAESettings::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
 {
   if (setting->GetId() == CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTFMODE)
@@ -162,6 +190,18 @@ void CActiveAESettings::OnSettingChanged(const std::shared_ptr<const CSetting>& 
     // settings, which re-enters this class.
     OnOmniphonyHrtfModeChanged(std::static_pointer_cast<const CSettingInt>(setting)->GetValue());
   }
+
+  // Outside the lock for the same reason - it writes a setting, and that write
+  // arrives back here as another change. Only where the binaural codec is built
+  // (see DVDCodecs/Audio/CMakeLists.txt): elsewhere its setting is hidden but
+  // can still be written, and must not take passthrough away for nothing.
+#if defined(TARGET_LINUX) && !defined(TARGET_ANDROID)
+  if (setting->GetId() == CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH ||
+      setting->GetId() == CSettings::SETTING_AUDIOOUTPUT_OMNIPHONY)
+  {
+    EnforceExclusiveOutput(setting->GetId());
+  }
+#endif
 
   std::unique_lock<CCriticalSection> lock(m_cs);
 

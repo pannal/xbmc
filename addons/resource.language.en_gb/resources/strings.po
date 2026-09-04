@@ -24317,16 +24317,16 @@ msgctxt "#39309"
 msgid "Binaural Headphones"
 msgstr ""
 
-#. Omniphony: label of the setting that renders Atmos/DTS:X objects to headphones
+#. Omniphony: label of the setting that decodes Atmos/DTS:X objects and Auro-3D heights for the renderer
 #: system/settings/settings.xml
 msgctxt "#39310"
-msgid "Atmos/DTS:X for binaural headphones"
+msgid "- Dolby Atmos, DTS:X, and Auro-3D"
 msgstr ""
 
 #. Omniphony: help text for the setting
 #: system/settings/settings.xml
 msgctxt "#39311"
-msgid "Render Dolby Atmos and DTS:X to headphones, placing each sound around you, instead of folding the soundtrack to stereo. It is not used while passthrough to an amplifier is active. Falls back to normal decoding if the renderer is unavailable."
+msgid "Place the individual sounds a Dolby Atmos or DTS:X soundtrack carries, and unfold the height layer of an Auro-3D one, rather than placing only the channels it was mixed into. If a device struggles with it, try Cascade mode under Advanced first - that keeps the heights, where turning this off loses them entirely."
 msgstr ""
 
 #. Omniphony: label of the room simulation setting
@@ -24511,6 +24511,18 @@ msgstr ""
 #: system/settings/settings.xml
 msgctxt "#39342"
 msgid "Raise the level of the low-frequency effects channel, the one a cinema sends to its subwoofer. On headphones there is no subwoofer to turn up, so this is the only way to change it. It affects that channel alone, so a soundtrack with little in it will barely move. Raising it uses headroom, and enough will make the limiter quieten everything."
+msgstr ""
+
+#. label for setting audiooutput.omniphony
+#: system/settings/settings.xml
+msgctxt "#39343"
+msgid "Binaural rendering for headphones"
+msgstr ""
+
+#. help text for setting audiooutput.omniphony
+#: system/settings/settings.xml
+msgctxt "#39344"
+msgid "Place the sound of anything you play around you on headphones, instead of folding it flat to stereo. It applies to every soundtrack that can be decoded, films and music alike. Turning it on turns passthrough off, and it is unused while the audio output is set to more than two channels."
 msgstr ""
 
 #. Dolby Vision RPU Conversion

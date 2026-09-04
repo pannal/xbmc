@@ -28,6 +28,7 @@
 #include <sys/types.h>
 
 class CProcessInfo;
+class COmniphonyPcmSource;
 
 /*!
  * \brief Word the engine's HRIR report for Player.Process(omniphony.sofa).
@@ -41,12 +42,21 @@ class CProcessInfo;
 std::string OmniphonyDescribeHrir(const std::string& selector);
 
 /*!
- * \brief Render Dolby Atmos and DTS:X objects to headphones, out of process.
+ * \brief Render audio to headphones binaurally, out of process.
  *
- * Objects exist only before decode, so this taps where Kodi already frames
- * encoded audio for passthrough: CAEStreamParser reassembles one complete
- * access unit across demux packet boundaries, and those bytes - before any MAT
- * or IEC packing - are exactly what the decoder bridge consumes.
+ * There are two ways in, and which one a stream takes is settled at open.
+ *
+ * Dolby Atmos and DTS:X carry objects, and objects exist only before decode -
+ * so that path taps where Kodi already frames encoded audio for passthrough:
+ * CAEStreamParser reassembles one complete access unit across demux packet
+ * boundaries, and those bytes - before any MAT or IEC packing - are exactly
+ * what the decoder bridge consumes.
+ *
+ * Everything else has to be decoded before it can be placed, and that is
+ * \ref COmniphonyPcmSource: an ordinary ffmpeg decoder whose PCM is converted
+ * to what the renderer's PCM bridge accepts and staged here rather than handed
+ * to the sink. The renderer, the helper process and everything downstream of
+ * them do not know which path fed them.
  *
  * The decode and the binaural render happen in a helper process rather than
  * here. CoreELEC runs a 32-bit userspace on a 64-bit kernel, and a shared
@@ -207,6 +217,33 @@ private:
 
   bool StartHelper(CDVDStreamInfo& hints);
   bool ReopenAs(RenderMode mode);
+
+  /*!
+   * \brief AddData for a stream being decoded here - see \ref m_pcm.
+   *
+   * Same contract as AddData itself, and the reason it is written out
+   * separately: false has to keep meaning "this packet was not consumed, offer
+   * it again", and on this path that is a much narrower claim than on the
+   * bitstream one. See the ordering argument at the definition.
+   */
+  bool AddPcmData(const DemuxPacket& packet);
+  //! \brief Convert everything the decoder will yield into \ref m_staging.
+  //! False means the stream cannot be rendered and the caller must fall back.
+  bool StagePcm();
+  //! \brief Send as much of \ref m_staging to the helper as it has room for.
+  //! False means the helper is gone.
+  bool DrainStaging();
+  /*!
+   * \brief Return the bridge to expecting a header, for a new geometry.
+   *
+   * The bridge parses one header and then streams until it is reset, so a
+   * stream that changes shape mid-film has to reset it to describe the new
+   * shape. OP_RESET restarts the engine's sample counter along with it, which
+   * is why the bank and the anchor go too - the same reason a seek does.
+   */
+  bool RestartBridge();
+  //! \brief Re-arm the no-output backstop. Called wherever the bridge is reset.
+  void ArmRecovery();
   //! \brief Tie the engine's clock to the demuxer's, once, off the first block
   //! appended since \p before.
   void AnchorNewBlocks(size_t before);
@@ -259,9 +296,39 @@ private:
   unsigned int m_dataSize{0};
 
   std::vector<uint8_t> m_backlog;
-  //! Bytes the parser has taken since it was last reset: where in the stream a
-  //! packet starts, for \ref m_timeline.
+  //! Bytes the parser has taken since it was last reset, or on the PCM path the
+  //! bytes of audio staged since the engine was: where in the stream a packet
+  //! starts, for \ref m_timeline.
   uint64_t m_parsed{0};
+
+  /*!
+   * \brief The decoder, for a stream whose audio has to be decoded to be placed.
+   *
+   * Null on the object path, and that null is what routes every branch below:
+   * the two paths share the helper, the bank, the clock and the limiter, and
+   * differ only in what they put into the pipe.
+   */
+  std::unique_ptr<COmniphonyPcmSource> m_pcm;
+
+  /*!
+   * \brief Converted PCM waiting for room in the helper's input queue.
+   *
+   * This exists because AddData's false means "the packet was not consumed,
+   * offer it again", and on this path the packet has already been through
+   * ffmpeg by the time there could be anything to refuse. Returning false then
+   * would replay it - duplicated audio on every bank-full event during normal
+   * playback, not only when something goes wrong. So what cannot be sent yet
+   * waits here, where it belongs to nobody's packet.
+   */
+  std::vector<uint8_t> m_staging;
+  //! \brief Whether the bridge has been given a header since it was last reset.
+  //! A second one arriving means the stream changed shape - see RestartBridge.
+  bool m_headerSent{false};
+  //! \brief Whether this helper has ever been given audio, and whether it has
+  //! ever handed any back. Only the two together mean anything: see the priming
+  //! backstop in GetData, which is all that reads them.
+  bool m_fed{false};
+  bool m_rendered{false};
 
   std::unique_ptr<CHelper> m_helper;
   CHelper::Rendered m_out;

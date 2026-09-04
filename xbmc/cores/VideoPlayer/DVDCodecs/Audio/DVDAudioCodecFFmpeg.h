@@ -39,7 +39,10 @@ public:
   int GetProfile() override;
 
 protected:
-  int GetData(uint8_t** dst);
+  // Virtual so a subclass can serve a frame it has already received rather
+  // than pull the next one off the decoder. GetData(DVDAudioFrame&) formats
+  // whatever this returns, so overriding it is enough to keep that path right.
+  virtual int GetData(uint8_t** dst);
   // (Re)apply the configured dynamic range compression to the open codec.
   // Must be called after every avcodec_flush_buffers(): the AC3/E-AC3
   // decoder's flush memsets drc_scale (it lives past frame_type in
