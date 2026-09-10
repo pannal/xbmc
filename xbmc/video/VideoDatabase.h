@@ -588,8 +588,19 @@ public:
   int SetDetailsForMusicVideo(CVideoInfoTag& details,
                               const std::map<std::string, std::string>& artwork,
                               int idMVideo = -1);
-  void SetStreamDetailsForFile(const CStreamDetails& details, const std::string &strFileNameAndPath);
-  void SetStreamDetailsForFileId(const CStreamDetails& details, int idFile);
+  /*! \brief Replace the stored stream details of a file.
+   \param partialDetails whether the caller could not determine every field. The player cannot: it
+          reads no elementary stream, so it knows no alternate HDR type and no Dolby Vision
+          profile, and it reports plain HDR10 where the scan found HDR10+. Those fields then keep
+          what was stored rather than being cleared or downgraded. A scan knows them and is
+          authoritative, so it leaves this false and its values stand, empty ones included.
+   */
+  void SetStreamDetailsForFile(const CStreamDetails& details,
+                               const std::string& strFileNameAndPath,
+                               bool partialDetails = false);
+  void SetStreamDetailsForFileId(const CStreamDetails& details,
+                                 int idFile,
+                                 bool partialDetails = false);
 
   bool SetSingleValue(VideoDbContentType type, int dbId, int dbField, const std::string& strValue);
   bool SetSingleValue(VideoDbContentType type,
@@ -1214,6 +1225,13 @@ private:
   void AddMissingColumn(const std::string& table,
                         const std::string& column,
                         const std::string& type);
+
+  /*! \brief Whether a table has a column, which another build may have added.
+   \param table the table to look in
+   \param column the column name
+   \return true only if the column can be read; false also when there is no open database
+   */
+  bool HasColumn(const std::string& table, const std::string& column);
 
   /*! \brief (Re)Create the generic database views for movies, tvshows,
      episodes and music videos
