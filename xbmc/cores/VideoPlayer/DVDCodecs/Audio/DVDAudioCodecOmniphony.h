@@ -42,6 +42,76 @@ class COmniphonyPcmSource;
 std::string OmniphonyDescribeHrir(const std::string& selector);
 
 /*!
+ * \brief Name the spatial bed the renderer was handed, e.g. "7.1.4 + 5
+ *        Objects" or, with nothing above it, "7.1 + 4 Heights".
+ *
+ * DTS:X hands the renderer a whole presentation rather than the sparse bed
+ * Atmos does: a full floor layout, a quartet of fixed heights above it, and
+ * the objects on top. "L, R, C, LFE, Ls, Rs, Lb, Rb, Tfl, Tfr, Tbl, Tbr + 12
+ * Objects" is all of that, and says none of it - the reader has to count the
+ * labels and know which ones are overhead. Naming the bed by its layout says
+ * the same thing in the words a listener already uses.
+ *
+ * Which of the two forms is used depends on whether objects arrived, because
+ * that decides what the row is really reporting. With objects the bed is the
+ * context: it is written as the one compact number, "7.1.4", and the count
+ * that matters follows it. With no objects the heights are the whole of the
+ * news, so they are spelled out - "7.1 + 4 Heights" says a quartet was placed,
+ * where "7.1.4" would read as a speaker layout the room is expected to have.
+ *
+ * A bed with no floor channel has no layout number to write; an Atmos mix's
+ * LFE-only bed is exactly that, so it returns empty and the caller keeps
+ * "LFE + 15 Objects", which is already the right sentence for a sparse bed.
+ * Every form puts the object count last, so the rows read the same way round.
+ *
+ * \param bed comma-separated channel labels: the engine's, as the helper packs
+ *        them, or Kodi's names for the same positions, as OmniphonyPcmDescribe
+ *        writes them for the PCM path. The two spell every overhead position
+ *        alike but for case - "Tfl" and "TFL" - and both are read.
+ * \param objectCount objects carried alongside, or <= 0 for a bed-only
+ *        presentation, whose heights are still worth naming.
+ * \return the description, or empty when \p bed has nothing overhead and there
+ *         are no objects over a floor to write its layout for: a plain channel
+ *         list, which says nothing a skin's own layout row does not.
+ */
+std::string OmniphonyDescribeSpatialBed(const std::string& bed, int objectCount);
+
+/*!
+ * \brief Turn the decoder's source label into the player-row description.
+ *
+ * The ABI label names the presentation the renderer actually decoded. Auro
+ * and DTS:X labels carry enough structure to say that more usefully than the
+ * raw bed does, so these recognized forms outrank
+ * OmniphonyDescribeSpatialBed(): "DTS-HD MA + DTS:X 7.1.4" becomes
+ * "7.1 + 4 Heights", and "DTS-HD MA + Auro-3D 11.1" becomes the
+ * "Auro 11.1" layout listeners know.
+ *
+ * Other source labels name only the codec Kodi already displays, so returning
+ * them here would duplicate that row. Malformed or future labels are likewise
+ * left to the bed-derived fallback rather than guessed at.
+ *
+ * \param sourceLabel the decoded presentation label exported by the ABI.
+ * \return the description, or empty when the label has no recognized spatial
+ *         form and the caller should use the bed-derived fallback.
+ */
+std::string OmniphonyDescribeSourceLabel(const std::string& sourceLabel);
+
+/*!
+ * \brief The Kodi log level for one line the helper wrote to stderr.
+ *
+ * The engine logs through env_logger's default layout, "[<time> LEVEL
+ * target] message". Its WARN and ERROR lines keep their weight, so a decoder
+ * that cannot read a stream's extension says so in kodi.log; INFO and below
+ * go to the debug log beside the helper's status lines. Anything else on
+ * stderr - a panic, a bridge writing without a host sink - was not meant to
+ * appear in normal running and is logged as a warning.
+ *
+ * \param line one line of stderr, without its newline.
+ * \return LOGERROR, LOGWARNING or LOGDEBUG.
+ */
+int OmniphonyHelperLogLevel(const std::string& line);
+
+/*!
  * \brief The rate used when the stream does not say what it is.
  *
  * Not a preference: the renderer builds its head model at whatever rate it is
@@ -244,6 +314,14 @@ private:
 
     void Process() override;
     bool ParseFrames();
+    /*!
+     * \brief Log what the helper wrote to stderr, one complete line at a time.
+     *
+     * The engine and its bridges report decode trouble - an extension they
+     * cannot read, a dropped layer, a panic - on stderr rather than in the
+     * status protocol. \p final logs a trailing partial line as well.
+     */
+    void DrainDiagnostics(bool final);
     void Reap();
 
     CCriticalSection m_lock;
@@ -252,6 +330,8 @@ private:
     pid_t m_pid{-1};
     int m_in{-1}; //!< our end of the helper's stdin
     int m_out{-1}; //!< our end of the helper's stdout
+    int m_err{-1}; //!< our end of the helper's stderr - see DrainDiagnostics
+    std::string m_errLine; //!< unterminated stderr text; the pump's, then Stop's once joined
     std::vector<uint8_t> m_pending; //!< queued for the helper
     size_t m_pendingSent{0}; //!< how much of m_pending has been written already
     std::vector<uint8_t> m_acc; //!< partial frames, only ever touched by Process
@@ -662,6 +742,21 @@ private:
    * clause instead of writing one.
    */
   std::string m_bed;
+
+  /*!
+   * \brief The decoded presentation label exported by the renderer ABI.
+   *
+   * Examples are "DTS-HD MA + Auro-3D 11.1" and
+   * "DTS-HD HRA + DTS:X 7.1.4". This is a description of what the decoder
+   * produced, not proof that every extension frame was understood; a decoder
+   * failure remains visible as a failure.
+   *
+   * An explicitly empty source_label clears the previous value because the
+   * field is live. It is also empty for an older engine or helper that cannot
+   * report it. Both mean "derive the description from the bed", not that the
+   * presentation has no spatial content.
+   */
+  std::string m_sourceLabel;
 
   /*!
    * \brief The head model the engine is convolving with, worded for the screen.

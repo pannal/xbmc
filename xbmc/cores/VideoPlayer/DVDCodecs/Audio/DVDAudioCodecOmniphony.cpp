@@ -22,6 +22,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "threads/SystemClock.h"
+#include "utils/StreamUtils.h"
 #include "utils/StringUtils.h"
 #include "utils/log.h"
 
@@ -68,6 +69,14 @@ constexpr const char* OMNI_RESET_MARK = "reset epoch=";
 
 //! The helper renders to stereo; anything else means we misunderstood it.
 constexpr unsigned int OMNI_OUT_CHANNELS = 2;
+
+//! Longest stderr line kept whole. A longer one is logged in pieces rather
+//! than buffered without bound.
+constexpr size_t OMNI_DIAG_LINE_MAX = 4096;
+
+//! Reads of the helper's stderr per pump pass, so a helper that writes a lot
+//! of it cannot keep the pump away from its audio.
+constexpr int OMNI_DIAG_READS_PER_PASS = 16;
 
 //! Beyond this the helper is not keeping up and we stop queueing for it rather
 //! than growing without bound.
@@ -484,6 +493,7 @@ bool CDVDAudioCodecOmniphony::CHelper::Start(const std::string& exe)
 {
   int toChild[2];
   int fromChild[2];
+  int errFromChild[2];
   // Close-on-exec from the moment they exist. Created without it these ends are
   // themselves inheritable, and setting the flag afterwards leaves a window in
   // which another thread's fork carries them off - this process forks from more
@@ -496,15 +506,30 @@ bool CDVDAudioCodecOmniphony::CHelper::Start(const std::string& exe)
     close(toChild[1]);
     return false;
   }
-
-  // Only the two ends the child re-homes onto stdin and stdout need this; the
-  // ends the parent keeps are never dup2()'d.
-  if (!MoveClearOfStdio(toChild[0]) || !MoveClearOfStdio(fromChild[1]))
+  // The helper's stderr, which is where the engine and its bridges report what
+  // they could not decode. Inherited, it would reach Kodi's own stderr - the
+  // journal on this image - and never kodi.log, where a listener asking why a
+  // DTS:X stream lost its heights would look.
+  if (pipe2(errFromChild, O_CLOEXEC) != 0)
   {
     close(toChild[0]);
     close(toChild[1]);
     close(fromChild[0]);
     close(fromChild[1]);
+    return false;
+  }
+
+  // Only the three ends the child re-homes onto stdin, stdout and stderr need
+  // this; the ends the parent keeps are never dup2()'d.
+  if (!MoveClearOfStdio(toChild[0]) || !MoveClearOfStdio(fromChild[1]) ||
+      !MoveClearOfStdio(errFromChild[1]))
+  {
+    close(toChild[0]);
+    close(toChild[1]);
+    close(fromChild[0]);
+    close(fromChild[1]);
+    close(errFromChild[0]);
+    close(errFromChild[1]);
     return false;
   }
 
@@ -517,14 +542,17 @@ bool CDVDAudioCodecOmniphony::CHelper::Start(const std::string& exe)
     close(toChild[1]);
     close(fromChild[0]);
     close(fromChild[1]);
+    close(errFromChild[0]);
+    close(errFromChild[1]);
     return false;
   }
 
   if (pid == 0)
   {
-    // dup2 clears FD_CLOEXEC on the descriptor it creates, so these two are the
-    // only ones that survive the exec below.
-    if (dup2(toChild[0], STDIN_FILENO) < 0 || dup2(fromChild[1], STDOUT_FILENO) < 0)
+    // dup2 clears FD_CLOEXEC on the descriptor it creates, so these three are
+    // the only ones that survive the exec below.
+    if (dup2(toChild[0], STDIN_FILENO) < 0 || dup2(fromChild[1], STDOUT_FILENO) < 0 ||
+        dup2(errFromChild[1], STDERR_FILENO) < 0)
       _exit(127);
 
     // Everything else this process inherited goes here, the pipe originals
@@ -550,11 +578,15 @@ bool CDVDAudioCodecOmniphony::CHelper::Start(const std::string& exe)
 
   close(toChild[0]);
   close(fromChild[1]);
+  close(errFromChild[1]);
   m_pid = pid;
   m_in = toChild[1];
   m_out = fromChild[0];
+  m_err = errFromChild[0];
+  m_errLine.clear();
   fcntl(m_in, F_SETFL, O_NONBLOCK);
   fcntl(m_out, F_SETFL, O_NONBLOCK);
+  fcntl(m_err, F_SETFL, O_NONBLOCK);
 
   // Last, so the loop cannot see a half-built helper. Everything it touches is
   // set above and nothing changes it again until Stop has joined the thread.
@@ -606,6 +638,11 @@ void CDVDAudioCodecOmniphony::CHelper::Stop()
     close(m_out);
     m_out = -1;
   }
+  // After Reap, so whatever the helper said on its way out - a panic, the
+  // reason it refused a stream - is already in the pipe and nothing can block.
+  // The final drain closes the descriptor.
+  if (m_err >= 0)
+    DrainDiagnostics(true);
   m_pending.clear();
   m_pendingSent = 0;
   m_acc.clear();
@@ -730,6 +767,65 @@ bool CDVDAudioCodecOmniphony::CHelper::ParseFrames()
   return true;
 }
 
+void CDVDAudioCodecOmniphony::CHelper::DrainDiagnostics(bool final)
+{
+  const auto logLine = [](std::string line)
+  {
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+    // The level is read once, from the start of the line, and kept for every
+    // piece of a line too long to log whole.
+    const int level = OmniphonyHelperLogLevel(line);
+    for (size_t at = 0; at < line.size(); at += OMNI_DIAG_LINE_MAX)
+      CLog::Log(level, "CDVDAudioCodecOmniphony: helper stderr: {}",
+                line.substr(at, OMNI_DIAG_LINE_MAX));
+  };
+
+  bool closed = false;
+  for (int reads = 0; reads < OMNI_DIAG_READS_PER_PASS || final; ++reads)
+  {
+    char buf[4096];
+    const ssize_t got = read(m_err, buf, sizeof(buf));
+    if (got < 0 && errno == EINTR)
+      continue;
+    if (got <= 0)
+    {
+      // End of file is the helper having exited; stdout reports that too, and
+      // is what marks the helper broken. Anything else but "nothing yet" is an
+      // error on a pipe that cannot recover either.
+      closed = got == 0 || (errno != EAGAIN && errno != EWOULDBLOCK);
+      break;
+    }
+
+    m_errLine.append(buf, static_cast<size_t>(got));
+    size_t start = 0;
+    for (size_t nl = m_errLine.find('\n'); nl != std::string::npos;
+         nl = m_errLine.find('\n', start))
+    {
+      logLine(m_errLine.substr(start, nl - start));
+      start = nl + 1;
+    }
+    m_errLine.erase(0, start);
+
+    // An unterminated line is held only up to the limit; past it, what has
+    // arrived is logged now and the rest follows as later pieces.
+    if (m_errLine.size() > OMNI_DIAG_LINE_MAX)
+    {
+      const size_t whole = m_errLine.size() - m_errLine.size() % OMNI_DIAG_LINE_MAX;
+      logLine(m_errLine.substr(0, whole));
+      m_errLine.erase(0, whole);
+    }
+  }
+
+  if (closed || final)
+  {
+    logLine(m_errLine);
+    m_errLine.clear();
+    close(m_err);
+    m_err = -1;
+  }
+}
+
 void CDVDAudioCodecOmniphony::CHelper::Process()
 {
   // Both directions every time round: the helper blocks on its own writes, so
@@ -744,8 +840,21 @@ void CDVDAudioCodecOmniphony::CHelper::Process()
       room = m_readyFrames < OMNI_PUMP_HOLD_FRAMES;
     }
 
-    struct pollfd fds[2];
+    struct pollfd fds[3];
     int n = 0;
+
+    // Read whenever there is anything, unlike stdout below. Diagnostics are
+    // never backpressure: a helper blocked on a full stderr pipe would stop
+    // decoding for a reason nobody could see.
+    int errIdx = -1;
+    if (m_err >= 0)
+    {
+      errIdx = n;
+      fds[n].fd = m_err;
+      fds[n].events = POLLIN;
+      fds[n].revents = 0;
+      n++;
+    }
 
     // Not reading is how the helper is told to stop: its pipe fills, its write
     // blocks, and it stops decoding until there is somewhere to put the result.
@@ -787,6 +896,9 @@ void CDVDAudioCodecOmniphony::CHelper::Process()
     }
     if (rc == 0)
       continue;
+
+    if (errIdx >= 0 && (fds[errIdx].revents & (POLLIN | POLLHUP | POLLERR)))
+      DrainDiagnostics(false);
 
     if (outIdx >= 0 && (fds[outIdx].revents & POLLIN))
     {
@@ -1234,9 +1346,14 @@ const char* CDVDAudioCodecOmniphony::CodecId(const CDVDStreamInfo& hints)
      * some of it can carry an object.
      *
      * DTS-HD MA remains here because the bridge decodes its lossless XLL asset
-     * and is also the only path that can discover and unfold an Auro carrier.
-     * HRA-carried DTS:X needs its own positive probe profile before it can be
-     * distinguished from ordinary HRA here.
+     * and is also the only path that can discover and unfold an Auro carrier,
+     * whose height layer is hidden in the lossless samples rather than named by
+     * its container. That it declares no objects is immaterial: only unfolding
+     * recovers those height channels.
+     * DTS:X may be carried by MA or HRA, however, and opening-time probing gives
+     * HRA with a detected spatial extension its own profile below. Detection is
+     * the routing fact: a form the bridge cannot yet decode must remain visible
+     * there as a decoder defect, not be silently relabelled and sent elsewhere.
      *
      * Plain HRA remains with ffmpeg. Its profile says only that a lossy HD
      * extension exists, not that it contains DTS:X, and ffmpeg handles HRA
@@ -1254,6 +1371,8 @@ const char* CDVDAudioCodecOmniphony::CodecId(const CDVDStreamInfo& hints)
         case AV_PROFILE_DTS_HD_MA:
         case AV_PROFILE_DTS_HD_MA_X:
         case AV_PROFILE_DTS_HD_MA_X_IMAX:
+        case AV_PROFILE_DTS_HD_HRA_X:
+        case AV_PROFILE_DTS_HD_MA_AURO3D:
           return "dts";
         default:
           return nullptr;
@@ -1425,10 +1544,10 @@ bool CDVDAudioCodecOmniphony::RateAgrees()
    * the major sync - 44100 or 48000 shifted by the rate field, so a 96 or 192
    * kHz master is reported as itself - and E-AC-3's fscod is the stream's own
    * rate too. DTS is deliberately not asked, because the parser cannot answer
-   * for it: SyncDTS reads the core's sync word, and the only DTS that reaches
-   * this path is an XLL presentation, whose output rate is the extension
-   * substream's. Comparing the two would call a correct 96 kHz DTS:X track a
-   * mismatch and drop exactly the soundtracks this exists for.
+   * for it: SyncDTS reads the core's sync word, while the MA and positively
+   * detected HRA DTS:X presentations that reach this path decode their
+   * extension substream. Comparing the two would call a correct extension rate
+   * a mismatch and drop exactly the soundtracks this exists for.
    */
   const auto type = m_parser.GetDataType();
   if (type != CAEStreamInfo::STREAM_TYPE_TRUEHD && type != CAEStreamInfo::STREAM_TYPE_EAC3)
@@ -1483,6 +1602,15 @@ bool CDVDAudioCodecOmniphony::DropRendered()
   // interleaved with the pump - see there. A caller with no helper has nothing
   // to reset and nothing to fail.
   const bool reset = m_helper ? m_helper->Resync() : true;
+
+  // These fields describe decoded frames from the discarded timeline. Clear
+  // the visible input row now; new frames will publish their own description.
+  m_objectCount = -1;
+  m_bed.clear();
+  m_sourceLabel.clear();
+  m_input.clear();
+  m_processInfo.SetOmniphonyInput({});
+  m_infoDirty = true;
 
   m_out = CHelper::Rendered{};
   m_pcmConsumed = 0;
@@ -1616,36 +1744,218 @@ void CDVDAudioCodecOmniphony::ReadHrirReport(const std::string& msg)
   }
 }
 
+namespace
+{
+/*
+ * The engine's own spelling of the overhead positions, as the helper packs
+ * them (CHANNEL_LABELS in omniphony-helper.c). Matching on the engine's names
+ * rather than translating into Kodi's enum keeps this row and the wire from
+ * disagreeing, which is the same reason the helper borrows those names in the
+ * first place.
+ *
+ * Without regard to case, because the PCM path names the same positions the
+ * way Kodi does - "TFL" for "Tfl" - and no floor position is spelled like a
+ * height in either.
+ */
+bool IsHeightLabel(const std::string& label)
+{
+  static constexpr const char* HEIGHTS[] = {"Tfl", "Tfr", "Tsl", "Tsr", "Tbl", "Tbr", "Tfc",
+                                            "Tc",  "Lh",  "Rh",  "Ch",  "Lhs", "Rhs"};
+  return std::any_of(std::begin(HEIGHTS), std::end(HEIGHTS), [&label](const char* height)
+                     { return StringUtils::EqualsNoCase(label, height); });
+}
+
+bool IsLfeLabel(const std::string& label)
+{
+  return label == "LFE" || label == "LFE2";
+}
+} // namespace
+
+std::string OmniphonyDescribeSpatialBed(const std::string& bed, int objectCount)
+{
+  unsigned int floor = 0;
+  unsigned int lfe = 0;
+  unsigned int heights = 0;
+  for (std::string& label : StringUtils::Split(bed, ","))
+  {
+    StringUtils::Trim(label);
+    if (label.empty())
+      continue;
+    if (IsHeightLabel(label))
+      heights++;
+    else if (IsLfeLabel(label))
+      lfe++;
+    else
+      floor++;
+  }
+
+  // A layout number has to sit on a floor: "7.1", and "7.1.4" once there are
+  // heights above it. A bed with no floor channel has no such number, and the
+  // LFE-only bed an Atmos mix hands over is exactly that - "0.1" is not a
+  // layout anyone writes.
+  const bool layout = floor > 0;
+
+  std::string out;
+  if (objectCount > 0 && layout)
+  {
+    // With objects the bed is the context and the count is the news, so the
+    // bed is written the compact way a layout is written everywhere else and
+    // the objects follow it: "7.1.4 + 5 Objects".
+    out = std::to_string(floor) + "." + std::to_string(lfe);
+    if (heights > 0)
+      out += "." + std::to_string(heights);
+  }
+  else
+  {
+    // Nothing overhead and no layout to write means there is nothing here the
+    // caller's plain label list does not already say - see the header.
+    if (heights == 0)
+      return {};
+
+    // Without objects the heights are the news, so they are spelled out rather
+    // than folded into a third number: "7.1 + 4 Heights" says a quartet was
+    // placed, where "7.1.4" reads as a speaker layout the room is expected to
+    // have. Also the form a floorless bed falls back to, which cannot be
+    // written as a layout at all.
+    if (layout)
+      out = std::to_string(floor) + "." + std::to_string(lfe) + " + ";
+    out += std::to_string(heights);
+    out += heights == 1 ? " Height" : " Heights";
+  }
+
+  if (objectCount > 0)
+  {
+    out += " + " + std::to_string(objectCount);
+    out += objectCount == 1 ? " Object" : " Objects";
+  }
+  return out;
+}
+
+std::string OmniphonyDescribeSourceLabel(const std::string& sourceLabel)
+{
+  const auto isLayout = [](const std::string& value, size_t minimumParts, size_t maximumParts) {
+    size_t parts = 1;
+    bool digit = false;
+    for (const char c : value)
+    {
+      if (c == '.')
+      {
+        if (!digit)
+          return false;
+        digit = false;
+        ++parts;
+      }
+      else if (c >= '0' && c <= '9')
+        digit = true;
+      else
+        return false;
+    }
+    return digit && parts >= minimumParts && parts <= maximumParts;
+  };
+
+  constexpr const char* auro = "DTS-HD MA + Auro-3D ";
+  if (StringUtils::StartsWith(sourceLabel, auro))
+  {
+    const std::string layout = sourceLabel.substr(std::strlen(auro));
+    return isLayout(layout, 2, 2) ? "Auro " + layout : std::string{};
+  }
+
+  constexpr const char* dtsx = " + DTS:X ";
+  const size_t dtsxAt = sourceLabel.find(dtsx);
+  if (dtsxAt == std::string::npos)
+    return {};
+
+  const std::string carrier = sourceLabel.substr(0, dtsxAt);
+  if (carrier != "DTS-HD MA" && carrier != "DTS-HD HRA")
+    return {};
+
+  const std::string layout = sourceLabel.substr(dtsxAt + std::strlen(dtsx));
+  const size_t plusAt = layout.find('+');
+  if (plusAt != std::string::npos)
+  {
+    const std::string bed = layout.substr(0, plusAt);
+    const std::string objects = layout.substr(plusAt + 1);
+    if (!isLayout(bed, 2, 3) || objects.empty() ||
+        !std::all_of(objects.begin(), objects.end(),
+                     [](char c) { return c >= '0' && c <= '9'; }))
+      return {};
+
+    if (std::all_of(objects.begin(), objects.end(), [](char c) { return c == '0'; }))
+      return {};
+    return bed + " + " + objects + (objects == "1" ? " Object" : " Objects");
+  }
+
+  if (!isLayout(layout, 3, 3))
+    return {};
+  const size_t heightAt = layout.rfind('.');
+  const std::string bed = layout.substr(0, heightAt);
+  const std::string heights = layout.substr(heightAt + 1);
+  if (std::all_of(heights.begin(), heights.end(), [](char c) { return c == '0'; }))
+    return {};
+
+  return bed + " + " + heights + (heights == "1" ? " Height" : " Heights");
+}
+
+int OmniphonyHelperLogLevel(const std::string& line)
+{
+  // "[2026-09-23T10:00:00Z WARN  harletty_bridge] ...": the level is the word
+  // after the timestamp, padded to five characters.
+  if (StringUtils::StartsWith(line, "["))
+  {
+    const size_t space = line.find(' ');
+    const size_t end = line.find(']');
+    if (space != std::string::npos && end != std::string::npos && space < end)
+    {
+      const std::string level = line.substr(space + 1, end - space - 1);
+      if (StringUtils::StartsWith(level, "ERROR"))
+        return LOGERROR;
+      if (StringUtils::StartsWith(level, "WARN"))
+        return LOGWARNING;
+      if (StringUtils::StartsWith(level, "INFO") || StringUtils::StartsWith(level, "DEBUG") ||
+          StringUtils::StartsWith(level, "TRACE"))
+        return LOGDEBUG;
+    }
+  }
+  return LOGWARNING;
+}
+
 std::string CDVDAudioCodecOmniphony::InputDescription() const
 {
   /*
-   * Objects, or nothing at all. Below zero means the helper has not reported
-   * yet and zero means the soundtrack carries no objects, and neither has an
-   * answer worth printing:
+   * Describe only what is spatial about what the renderer has actually
+   * decoded. Before its first report, a source label, spatial bed or object
+   * count would all be guesses; and a plain channel layout is already said by
+   * VideoPlayer.AudioChannels, which counts the source rather than the render.
+   * Empty in both cases lets a skin fall back to its ordinary codec/layout
+   * rows. Once a report arrives, a recognized source label is the most specific
+   * answer, then a height-carrying bed, then the live object count over a
+   * plain bed.
    *
-   *  - The count is only truthful once a frame has been decoded, so before that
-   *    anything said here would be a guess about the film that just started.
-   *  - For channel-based audio there is no layout to report. CAEStreamInfo
-   *    carries one unsigned int of channel information and it is a count, not a
-   *    map - which is why the passthrough codec builds its on-screen layout by
-   *    appending AE_CH_RAW once per channel and the screen reads "RAW, RAW,
-   *    RAW...". Printing "6 Channels" here would add nothing that
-   *    Player.Process(audiochannels) does not already say better.
-   *
-   * Empty rather than a placeholder so a skin can test IsEmpty and fall back to
-   * its own layout label. This row exists to say what the object renderer was
-   * handed; when it was handed no objects, it has nothing to say.
-   *
-   * On the PCM path there is a layout to report, and it is worth reporting for
-   * the reason the second bullet gives: the channel row Kodi already has counts
-   * the render's own two channels, so nothing on the screen would otherwise say
-   * whether the film arrived as 5.1 or as stereo. The labels are the ones sent
-   * to the bridge, in the order they were sent, so this row and the wire cannot
-   * disagree. Empty until the first frame, which is the earliest anything true
-   * can be said.
+   * The PCM path is held to the same rule. Its labels are the ones sent to the
+   * bridge, in wire order, and a layout with heights among them is named the
+   * way a bed is - "7.1 + 4 Heights" - while a 5.1 or a 7.1 says nothing, as
+   * the same soundtrack does on the bitstream path. They remain empty until
+   * the first frame, the earliest point at which they are truthful.
    */
   if (m_pcm)
-    return OmniphonyPcmDescribe(m_pcm->Labels());
+    return OmniphonyDescribeSpatialBed(OmniphonyPcmDescribe(m_pcm->Labels()), 0);
+
+  // A recognized decoded source label is more specific than arithmetic derived
+  // from the bed. Other labels name only the codec row Kodi already shows and
+  // deliberately fall through to the spatial-bed description.
+  const std::string named = OmniphonyDescribeSourceLabel(m_sourceLabel);
+  if (!named.empty())
+    return named;
+
+  // A bed with heights in it is a whole presentation and is worth naming on its
+  // own, objects or not: a DTS:X stream can carry a floor and a height quartet
+  // and no objects at all, and "nothing" is the wrong thing to say about twelve
+  // placed channels. A bed with nothing overhead has nothing of its own to add
+  // and still waits for a positive count, which is what the fall-through below
+  // is for.
+  const std::string spatial = OmniphonyDescribeSpatialBed(m_bed, m_objectCount);
+  if (!spatial.empty())
+    return spatial;
 
   if (m_objectCount <= 0)
     return {};
@@ -1654,16 +1964,22 @@ std::string CDVDAudioCodecOmniphony::InputDescription() const
   // English: it sits beside "om-truehd", "48000" and "RAW, RAW, RAW", and not
   // one of the Player.Process labels in CPlayerGUIInfo is translated. A
   // translated word here would be the only one on the panel.
-  std::string input = std::to_string(m_objectCount);
-  input += m_objectCount == 1 ? " Object" : " Objects";
+  std::string input;
   if (!m_bed.empty())
   {
-    // "15 Objects + LFE". The helper packs the bed without spaces so that it
+    // "LFE + 15 Objects". The helper packs the bed without spaces so that it
     // cannot be mistaken for the end of the status line; they go back in here.
+    //
+    // Bed first, objects last, which is the order the height form above reads
+    // in and the order the renderer lays the channels out. Both rows on the
+    // screen then end with the same word, and the count a listener is looking
+    // for sits in the same place whichever soundtrack is playing.
     std::string bed = m_bed;
     StringUtils::Replace(bed, ",", ", ");
-    input += " + " + bed;
+    input = bed + " + ";
   }
+  input += std::to_string(m_objectCount);
+  input += m_objectCount == 1 ? " Object" : " Objects";
   return input;
 }
 
@@ -1816,6 +2132,7 @@ bool CDVDAudioCodecOmniphony::Open(CDVDStreamInfo& hints, CDVDCodecOptions& opti
   m_modeForced = false;
   m_objectCount = -1;
   m_bed.clear();
+  m_sourceLabel.clear();
   m_parser.Reset();
   m_backlog.clear();
   m_rateChecked = false;
@@ -2438,6 +2755,53 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
     }
 
     /*
+     * The decoded presentation label. Read before the zero gate because Auro
+     * and bed-only DTS:X may report no objects for their whole length. It is a
+     * live ABI field: source_label= followed immediately by the next field
+     * explicitly clears a previous value rather than leaving stale metadata.
+     *
+     * The helper replaces spaces with underscores so this field can remain in
+     * the middle of the status line. An older helper omits it, which preserves
+     * the empty default and leaves the description to the bed below.
+     */
+    const size_t sourceLabelAt = msg.find("source_label=");
+    if (sourceLabelAt != std::string::npos)
+    {
+      const size_t from = sourceLabelAt + 13;
+      const size_t end = msg.find(' ', from);
+      std::string sourceLabel = msg.substr(from, end == std::string::npos ? end : end - from);
+      StringUtils::Replace(sourceLabel, '_', ' ');
+      if (sourceLabel != m_sourceLabel)
+      {
+        m_sourceLabel = std::move(sourceLabel);
+        m_infoDirty = true;
+      }
+    }
+
+    // Last on the line and free of spaces by construction, so the rest of the
+    // line is the whole value. Absent from an older helper, which is why its
+    // absence leaves m_bed empty rather than being treated as a broken message:
+    // the object count on its own is still worth showing.
+    //
+    // Read before the zero gate below, and kept across it. None of that gate's
+    // reasoning is about the bed: the two zeros it separates are both about
+    // whether a count can be trusted yet, and a bed the engine has laid out is
+    // equally true either way. A presentation that carries a floor and a height
+    // quartet and no objects reports zero forever, and its bed is the only
+    // thing there is to say about it.
+    const size_t bedAt = msg.find("bed=");
+    if (bedAt != std::string::npos)
+    {
+      std::string bed = msg.substr(bedAt + 4);
+      StringUtils::Trim(bed);
+      if (bed != m_bed)
+      {
+        m_bed = std::move(bed);
+        m_infoDirty = true;
+      }
+    }
+
+    /*
      * Zero is not "this soundtrack has no objects". It is "the frame just
      * rendered carried no object metadata", which the engine supports
      * deliberately - bed-only and pre-metadata frames render through the
@@ -2448,8 +2812,10 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
      * So a zero report is not evidence of anything and is passed over, for the
      * render mode as much as for the screen. A soundtrack that genuinely
      * carries no objects reports zero forever, m_objectCount stays -1, and
-     * InputDescription says nothing - which is the same outcome by a route
-     * that cannot be confused with "we asked too early".
+     * InputDescription says nothing about objects - which is the same outcome
+     * by a route that cannot be confused with "we asked too early". It may
+     * still name the bed, which was read above and is not what this gate is
+     * about.
      *
      * All of that holds only until objects have actually been seen. After that,
      * "we asked too early" has stopped being available as an explanation: the
@@ -2477,17 +2843,6 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
     }
 
     m_objectCount = objects;
-
-    // Last on the line and free of spaces by construction, so the rest of the
-    // line is the whole value. Absent from an older helper, which is why its
-    // absence leaves m_bed empty rather than being treated as a broken message:
-    // the object count on its own is still worth showing.
-    const size_t bedAt = msg.find("bed=");
-    if (bedAt != std::string::npos)
-    {
-      m_bed = msg.substr(bedAt + 4);
-      StringUtils::Trim(m_bed);
-    }
 
     m_infoDirty = true;
 
@@ -2939,23 +3294,70 @@ void CDVDAudioCodecOmniphony::Drain()
       }
 
       // A drain-only first frame can be the first truthful stream report.
-      // Preserve the same object/bed information AddData consumes so the tail
-      // is not rendered with an empty player description.
+      // Preserve the same live head-model, source-label, bed and object
+      // information AddData consumes so a short stream's tail has the right
+      // description.
       ReadHrirReport(msg);
       const size_t at = msg.find("objects=");
       if (at == std::string::npos)
         continue;
       const int objects = std::atoi(msg.c_str() + at + 8);
-      if (objects <= 0)
-        continue;
-      m_objectCount = objects;
+
+      // It can also be the first report of the decoded rate. AddData would
+      // re-open at a disagreeing one, but the input has ended and cannot be
+      // offered again, so the most this can do is say the tail is off speed.
+      const size_t rateAt = msg.find("rate=");
+      if (rateAt != std::string::npos)
+      {
+        const auto reported = static_cast<unsigned int>(std::atoi(msg.c_str() + rateAt + 5));
+        if (OmniphonyRateCheck(reported, m_rate, m_pcm != nullptr, m_formatPublished) !=
+            OmniphonyRateVerdict::Agrees)
+          CLog::Log(LOGWARNING,
+                    "CDVDAudioCodecOmniphony: the end of the stream decoded at {}Hz, but the "
+                    "render is at {}Hz and there is no input left to re-open with - the tail "
+                    "plays at the wrong speed",
+                    reported, m_rate);
+      }
+
+      const size_t sourceLabelAt = msg.find("source_label=");
+      if (sourceLabelAt != std::string::npos)
+      {
+        const size_t from = sourceLabelAt + 13;
+        const size_t end = msg.find(' ', from);
+        std::string sourceLabel = msg.substr(from, end == std::string::npos ? end : end - from);
+        StringUtils::Replace(sourceLabel, '_', ' ');
+        if (sourceLabel != m_sourceLabel)
+        {
+          m_sourceLabel = std::move(sourceLabel);
+          m_infoDirty = true;
+        }
+      }
+
       const size_t bedAt = msg.find("bed=");
       if (bedAt != std::string::npos)
       {
-        m_bed = msg.substr(bedAt + 4);
-        StringUtils::Trim(m_bed);
+        std::string bed = msg.substr(bedAt + 4);
+        StringUtils::Trim(bed);
+        if (bed != m_bed)
+        {
+          m_bed = std::move(bed);
+          m_infoDirty = true;
+        }
       }
-      m_infoDirty = true;
+
+      if (objects > 0)
+      {
+        if (objects != m_objectCount)
+        {
+          m_objectCount = objects;
+          m_infoDirty = true;
+        }
+      }
+      else if (m_objectCount > 0)
+      {
+        m_objectCount = -1;
+        m_infoDirty = true;
+      }
     }
 
     if (!alive && !acknowledged)
