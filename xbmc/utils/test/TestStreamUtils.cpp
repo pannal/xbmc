@@ -19,19 +19,22 @@ extern "C"
 TEST(TestStreamUtils, General)
 {
   EXPECT_EQ(0, StreamUtils::GetCodecPriority(""));
-  EXPECT_EQ(1, StreamUtils::GetCodecPriority("ac3"));
-  EXPECT_EQ(2, StreamUtils::GetCodecPriority("dca"));
-  EXPECT_EQ(3, StreamUtils::GetCodecPriority("eac3"));
-  EXPECT_EQ(4, StreamUtils::GetCodecPriority("eac3_ddp_atmos"));
-  EXPECT_EQ(5, StreamUtils::GetCodecPriority("dtshd_hra"));
-  EXPECT_EQ(5, StreamUtils::GetCodecPriority("dtshd_hra_x"));
-  EXPECT_EQ(6, StreamUtils::GetCodecPriority("dtshd_ma"));
-  EXPECT_EQ(7, StreamUtils::GetCodecPriority("truehd"));
-  EXPECT_EQ(8, StreamUtils::GetCodecPriority("flac"));
-  EXPECT_EQ(9, StreamUtils::GetCodecPriority("dtshd_ma_x"));
-  EXPECT_EQ(9, StreamUtils::GetCodecPriority("dtshd_ma_auro3d"));
-  EXPECT_EQ(10, StreamUtils::GetCodecPriority("dtshd_ma_x_imax"));
-  EXPECT_EQ(11, StreamUtils::GetCodecPriority("truehd_atmos"));
+  EXPECT_EQ(1, StreamUtils::GetCodecPriority("dts_express"));
+  EXPECT_EQ(2, StreamUtils::GetCodecPriority("ac3"));
+  EXPECT_EQ(3, StreamUtils::GetCodecPriority("dca"));
+  EXPECT_EQ(4, StreamUtils::GetCodecPriority("eac3"));
+  EXPECT_EQ(5, StreamUtils::GetCodecPriority("dts_es"));
+  EXPECT_EQ(5, StreamUtils::GetCodecPriority("dts_96_24"));
+  EXPECT_EQ(6, StreamUtils::GetCodecPriority("eac3_ddp_atmos"));
+  EXPECT_EQ(7, StreamUtils::GetCodecPriority("dtshd_hra"));
+  EXPECT_EQ(7, StreamUtils::GetCodecPriority("dtshd_hra_x"));
+  EXPECT_EQ(8, StreamUtils::GetCodecPriority("dtshd_ma"));
+  EXPECT_EQ(9, StreamUtils::GetCodecPriority("truehd"));
+  EXPECT_EQ(10, StreamUtils::GetCodecPriority("flac"));
+  EXPECT_EQ(11, StreamUtils::GetCodecPriority("dtshd_ma_x"));
+  EXPECT_EQ(11, StreamUtils::GetCodecPriority("dtshd_ma_auro3d"));
+  EXPECT_EQ(12, StreamUtils::GetCodecPriority("dtshd_ma_x_imax"));
+  EXPECT_EQ(13, StreamUtils::GetCodecPriority("truehd_atmos"));
 }
 
 TEST(TestStreamUtils, NamesTheDtsProfiles)
