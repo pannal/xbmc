@@ -8,6 +8,8 @@
 
 #include "StreamUtils.h"
 
+#include "utils/StringUtils.h"
+
 extern "C"
 {
 #include <libavcodec/avcodec.h>
@@ -39,6 +41,40 @@ constexpr int DTSX_LEVEL_KNOWN_BITS =
 // The heights DTS:X puts over its bed when it puts any: four, top front and top
 // back pairs, in every presentation read so far.
 constexpr int DTSX_HEIGHT_CHANNELS = 4;
+
+/*
+ * An Auro-3D level is the mask of streams its layout places. Stream 3 is the
+ * LFE and streams 9 through 14 are the heights, so everything else set is the
+ * floor - which is all it takes to count the channels and name the
+ * presentation.
+ */
+constexpr int AURO3D_LFE_STREAM_MASK = 1 << 3;
+constexpr int AURO3D_HEIGHT_STREAM_MASK = 0x3F << 9;
+
+int CountBits(int mask)
+{
+  int bits = 0;
+  for (unsigned int m = static_cast<unsigned int>(mask); m; m &= m - 1)
+    ++bits;
+  return bits;
+}
+
+/*
+ * The layout mask, or 0 when the stream named no Auro presentation.
+ *
+ * A level is only ever a layout when the profile says Auro-3D: every codec is
+ * free to report whatever it likes there, and DTS:X reports its object count in
+ * the same field. A layout with nothing overhead is rejected too - an
+ * Auro-Codec frame can carry an ordinary 5.1 with no height layer, and that is
+ * not a presentation to name.
+ */
+int Auro3DLayoutMask(int profile, int level)
+{
+  if (!StreamUtils::IsAuro3DProfile(profile) || level <= 0)
+    return 0;
+
+  return (level & AURO3D_HEIGHT_STREAM_MASK) ? level : 0;
+}
 } // unnamed namespace
 
 int StreamUtils::GetCodecPriority(const std::string &codec)
@@ -46,9 +82,14 @@ int StreamUtils::GetCodecPriority(const std::string &codec)
   /*
    * Technically flac, truehd, and dtshd_ma are equivalently good as they're all lossless. However,
    * ffmpeg can't decode dtshd_ma losslessy yet.
+   *
+   * Auro-3D and DTS:X are the same proposition over the same lossless carrier - a height layer on
+   * top of DTS-HD MA - and neither is the better stream, so they tie.
    */
   if (codec == "truehd_atmos") // Dolby TrueHD with Atmos
     return 11;
+  if (codec == "dtshd_ma_auro3d") // Auro-3D carried in DTS-HD MA
+    return 9;
   if (codec == "dtshd_ma_x_imax") // DTS:X IMAX Enhanced
     return 10;
   if (codec == "dtshd_ma_x") // DTS:X
@@ -84,6 +125,8 @@ std::string StreamUtils::GetCodecName(int codecId, int profile)
       codecName = "dtshd_ma_x";
     else if (profile == AV_PROFILE_DTS_HD_MA_X_IMAX)
       codecName = "dtshd_ma_x_imax";
+    else if (profile == AV_PROFILE_DTS_HD_MA_AURO3D)
+      codecName = "dtshd_ma_auro3d";
     else if (profile == AV_PROFILE_DTS_HD_HRA)
       codecName = "dtshd_hra";
     else
@@ -176,4 +219,30 @@ int StreamUtils::GetDTSXHeightCount(int profile, int level)
     return -1;
 
   return (level & DTSX_LEVEL_HEIGHTS) ? DTSX_HEIGHT_CHANNELS : 0;
+}
+
+bool StreamUtils::IsAuro3DProfile(int profile)
+{
+  return profile == AV_PROFILE_DTS_HD_MA_AURO3D;
+}
+
+int StreamUtils::GetAuro3DChannelCount(int profile, int level)
+{
+  const int mask = Auro3DLayoutMask(profile, level);
+
+  return mask ? CountBits(mask) : -1;
+}
+
+std::string StreamUtils::GetAuro3DLayoutName(int profile, int level)
+{
+  const int mask = Auro3DLayoutMask(profile, level);
+  if (!mask)
+    return {};
+
+  // Auro's number counts the speakers a room needs: the floor and the heights
+  // together before the dot, the LFE after it. So 5.1 with six heights is Auro
+  // 11.1, and so is 7.1 with four.
+  const int lfe = (mask & AURO3D_LFE_STREAM_MASK) ? 1 : 0;
+
+  return StringUtils::Format("Auro {}.{}", CountBits(mask) - lfe, lfe);
 }

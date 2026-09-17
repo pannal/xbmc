@@ -11,6 +11,23 @@
 #include <cstdint>
 #include <string>
 
+extern "C"
+{
+#include <libavcodec/defs.h>
+}
+
+/*
+ * Auro-3D writes its height layer into the low bits of an ordinary DTS-HD MA
+ * carrier, so ffmpeg can only name it after reconstructing the samples. The
+ * ffmpeg this runs against does that and reports the profile below; the ffmpeg
+ * Kodi pins for a standalone build does not, and has no value of its own to
+ * reuse. Defining it here lets both build, and a stream simply never arrives
+ * carrying it on the second.
+ */
+#ifndef AV_PROFILE_DTS_HD_MA_AURO3D
+#define AV_PROFILE_DTS_HD_MA_AURO3D 63
+#endif
+
 static constexpr int MP4_BOX_HEADER_SIZE = 8;
 
 class StreamUtils
@@ -106,4 +123,41 @@ public:
    *         leave the heights out rather than assume them
    */
   static int GetDTSXHeightCount(int profile, int level);
+
+  /*!
+   * \brief Whether a profile names an Auro-3D carrier
+   * \param profile The ffmpeg codec profile
+   * \return True for Auro-3D, false for everything else
+   */
+  static bool IsAuro3DProfile(int profile);
+
+  /*!
+   * \brief The channels the Auro-3D presentation places, bed and heights
+   *
+   * Auro states its layout in the block the ffmpeg this runs against validates,
+   * and reports it in the level as the mask of streams that layout places - bit
+   * 3 the LFE, bits 9 to 14 the heights, the rest the floor. So the channel
+   * count is that mask's population count, and no table is needed here.
+   *
+   * \param profile The ffmpeg codec profile
+   * \param level The ffmpeg codec level
+   * \return The channel count, or -1 when the stream named no layout
+   */
+  static int GetAuro3DChannelCount(int profile, int level);
+
+  /*!
+   * \brief What a listener calls the Auro-3D presentation - "Auro 11.1"
+   *
+   * Auro's number is the speakers the room needs: the floor and everything
+   * above it before the dot, the LFE after it. Counted off the same mask as the
+   * channel count, so the two rows can never disagree.
+   *
+   * Empty for a layout with nothing overhead, which is an ordinary speaker
+   * layout in an Auro-Codec frame rather than an Auro presentation.
+   *
+   * \param profile The ffmpeg codec profile
+   * \param level The ffmpeg codec level
+   * \return The presentation name, or empty when there is none to give
+   */
+  static std::string GetAuro3DLayoutName(int profile, int level);
 };

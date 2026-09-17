@@ -28,8 +28,27 @@ TEST(TestStreamUtils, General)
   EXPECT_EQ(7, StreamUtils::GetCodecPriority("truehd"));
   EXPECT_EQ(8, StreamUtils::GetCodecPriority("flac"));
   EXPECT_EQ(9, StreamUtils::GetCodecPriority("dtshd_ma_x"));
+  EXPECT_EQ(9, StreamUtils::GetCodecPriority("dtshd_ma_auro3d"));
   EXPECT_EQ(10, StreamUtils::GetCodecPriority("dtshd_ma_x_imax"));
   EXPECT_EQ(11, StreamUtils::GetCodecPriority("truehd_atmos"));
+}
+
+TEST(TestStreamUtils, NamesTheDtsProfiles)
+{
+  EXPECT_EQ("dtshd_ma", StreamUtils::GetCodecName(AV_CODEC_ID_DTS, AV_PROFILE_DTS_HD_MA));
+  EXPECT_EQ("dtshd_ma_x", StreamUtils::GetCodecName(AV_CODEC_ID_DTS, AV_PROFILE_DTS_HD_MA_X));
+  EXPECT_EQ("dtshd_ma_x_imax",
+            StreamUtils::GetCodecName(AV_CODEC_ID_DTS, AV_PROFILE_DTS_HD_MA_X_IMAX));
+
+  // Auro-3D reaches Kodi as a DTS-HD MA stream and is only told apart by the profile the patched
+  // ffmpeg reconstructs it from, so this is the one name that has no bitstream field behind it.
+  EXPECT_EQ("dtshd_ma_auro3d",
+            StreamUtils::GetCodecName(AV_CODEC_ID_DTS, AV_PROFILE_DTS_HD_MA_AURO3D));
+
+  // Every name above is one GetCodecPriority() scores; none may fall into the 0 meant for a codec
+  // nobody listed.
+  for (const auto& name : {"dtshd_ma", "dtshd_ma_x", "dtshd_ma_x_imax", "dtshd_ma_auro3d"})
+    EXPECT_GT(StreamUtils::GetCodecPriority(name), 0) << name;
 }
 
 TEST(TestStreamUtils, CountsTheObjectsTheDtsxSyncwordDeclares)
@@ -53,8 +72,8 @@ TEST(TestStreamUtils, CountsTheObjectsTheDtsxSyncwordDeclares)
   // A level is only ever read as a count when the profile says DTS:X. Auro-3D
   // will report its layout in the same field, and every other codec is free to
   // report whatever it likes there.
-  for (const int profile :
-       {AV_PROFILE_DTS_HD_MA, AV_PROFILE_DTS_HD_HRA, AV_PROFILE_DTS_EXPRESS})
+  for (const int profile : {AV_PROFILE_DTS_HD_MA, AV_PROFILE_DTS_HD_MA_AURO3D,
+                            AV_PROFILE_DTS_HD_HRA, AV_PROFILE_DTS_EXPRESS})
   {
     EXPECT_EQ(-1, StreamUtils::GetDTSXObjectCount(profile, 2)) << profile;
     EXPECT_FALSE(StreamUtils::IsDTSXProfile(profile)) << profile;
@@ -106,4 +125,49 @@ TEST(TestStreamUtils, ReadsTheDtsxHeightsFromTheLevelAndNotFromTheCount)
     EXPECT_EQ(-1, StreamUtils::GetDTSXHeightCount(profile, SETS_READ | HEIGHTS)) << profile;
     EXPECT_EQ(-1, StreamUtils::GetDTSXHeightCount(profile, AV_LEVEL_UNKNOWN)) << profile;
   }
+}
+
+TEST(TestStreamUtils, NamesTheLayoutAnAuro3DCarrierUnfoldsTo)
+{
+  // The level is the mask of streams the layout places, so both figures are
+  // counted off it and can never disagree. These are the masks the demo titles
+  // report: 32319 is 5.1 with five heights and a top, 26175 is 5.1 with four.
+  constexpr int auro3d = AV_PROFILE_DTS_HD_MA_AURO3D;
+
+  EXPECT_EQ(12, StreamUtils::GetAuro3DChannelCount(auro3d, 32319));
+  EXPECT_EQ("Auro 11.1", StreamUtils::GetAuro3DLayoutName(auro3d, 32319));
+  EXPECT_EQ(10, StreamUtils::GetAuro3DChannelCount(auro3d, 26175));
+  EXPECT_EQ("Auro 9.1", StreamUtils::GetAuro3DLayoutName(auro3d, 26175));
+
+  // 7.1 with four heights is Auro 11.1 too, by the same count; 7.1 with five
+  // and a top is Auro 13.1, and a bed with no LFE keeps the .0.
+  EXPECT_EQ("Auro 11.1", StreamUtils::GetAuro3DLayoutName(auro3d, 26559));
+  EXPECT_EQ("Auro 13.1", StreamUtils::GetAuro3DLayoutName(auro3d, 32703));
+  EXPECT_EQ("Auro 8.0", StreamUtils::GetAuro3DLayoutName(auro3d, 26163));
+  EXPECT_EQ(14, StreamUtils::GetAuro3DChannelCount(auro3d, 32703));
+
+  // An Auro-Codec frame can carry a layout with nothing overhead - the
+  // reference carrier is plain 5.1 - and that is not a presentation to name.
+  EXPECT_EQ("", StreamUtils::GetAuro3DLayoutName(auro3d, 63));
+  EXPECT_EQ(-1, StreamUtils::GetAuro3DChannelCount(auro3d, 63));
+
+  // A stream whose block announced no configuration leaves the level where it
+  // started, and says nothing rather than zero.
+  EXPECT_EQ(-1, StreamUtils::GetAuro3DChannelCount(auro3d, AV_LEVEL_UNKNOWN));
+  EXPECT_EQ("", StreamUtils::GetAuro3DLayoutName(auro3d, AV_LEVEL_UNKNOWN));
+
+  // A level is only a layout when the profile says Auro-3D. DTS:X reports an
+  // object count in the very same field, and must not be read as one here.
+  for (const int profile : {AV_PROFILE_DTS_HD_MA, AV_PROFILE_DTS_HD_MA_X,
+                            AV_PROFILE_DTS_HD_MA_X_IMAX, AV_PROFILE_DTS_HD_HRA})
+  {
+    EXPECT_EQ(-1, StreamUtils::GetAuro3DChannelCount(profile, 32319)) << profile;
+    EXPECT_EQ("", StreamUtils::GetAuro3DLayoutName(profile, 32319)) << profile;
+    EXPECT_FALSE(StreamUtils::IsAuro3DProfile(profile)) << profile;
+  }
+  EXPECT_TRUE(StreamUtils::IsAuro3DProfile(auro3d));
+
+  // And the codec name is what it was: the layout is a property of the stream,
+  // not a codec of its own.
+  EXPECT_EQ("dtshd_ma_auro3d", StreamUtils::GetCodecName(AV_CODEC_ID_DTS, auro3d));
 }

@@ -8,6 +8,7 @@
 
 #include "DVDDemux.h"
 
+#include "utils/StreamUtils.h"
 #include "utils/StringUtils.h"
 
 std::string CDemuxStreamAudio::GetStreamType()
@@ -53,6 +54,9 @@ std::string CDemuxStreamAudio::GetStreamType()
           break;
         case AV_PROFILE_DTS_HD_MA_X_IMAX:
           strInfo = "DTS-HD MA X (IMAX) ";
+          break;
+        case AV_PROFILE_DTS_HD_MA_AURO3D:
+          strInfo = "DTS-HD MA AURO-3D ";
           break;
         default:
           strInfo = "DTS ";

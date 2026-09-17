@@ -16,6 +16,7 @@
 #include "cores/AudioEngine/Utils/AEStreamData.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/StreamUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 
@@ -381,7 +382,7 @@ CAEStreamInfo::DataType CAudioSinkAE::GetPassthroughStreamType(AVCodecID codecId
       if (profile == AV_PROFILE_DTS_HD_HRA)
         format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_DTSHD;
       else if (profile == AV_PROFILE_DTS_HD_MA || profile == AV_PROFILE_DTS_HD_MA_X ||
-               profile == AV_PROFILE_DTS_HD_MA_X_IMAX)
+               profile == AV_PROFILE_DTS_HD_MA_X_IMAX || profile == AV_PROFILE_DTS_HD_MA_AURO3D)
         format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_DTSHD_MA;
       else
         format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_DTSHD_CORE;

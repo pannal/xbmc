@@ -1297,7 +1297,31 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
                      : -1;
   const bool haveDTSXInfo = dtsxObjects >= 0;
 
-  if (haveDTSXInfo)
+  // Auro-3D arrives by the same route and on the same terms: nothing decodes it
+  // on this path either, ffmpeg reports the layout in the level beside the
+  // profile, and only a frame still leaving as DTS-HD MA may carry the labels.
+  //
+  // Its element count is the layout's own channels rather than a bed plus a
+  // fixed number of heights, because the layout states them: Auro puts four,
+  // five or six heights over a 5.1 or 7.1 floor and the level says which. It
+  // declares no objects, so that figure stays empty and the description reads
+  // "Auro-3D [12 ch]".
+  const bool haveAuro3DStream = audioframe.passthrough &&
+                                streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_MA &&
+                                StreamUtils::IsAuro3DProfile(m_streaminfo.profile);
+  const int auro3DChannels =
+      haveAuro3DStream
+          ? StreamUtils::GetAuro3DChannelCount(m_streaminfo.profile, m_streaminfo.level)
+          : -1;
+  const bool haveAuro3DInfo = auro3DChannels > 0;
+
+  if (haveAuro3DInfo)
+  {
+    m_processInfo.SetAudioObjectCount(-1);
+    m_processInfo.SetAudioElementCount(auro3DChannels);
+    m_processInfo.SetAudioObjectFormat("Auro-3D");
+  }
+  else if (haveDTSXInfo)
   {
     m_processInfo.SetAudioObjectCount(dtsxObjects);
     m_processInfo.SetAudioElementCount(
@@ -1318,10 +1342,19 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   // ordinary one, and it still puts four heights over a bed. So it is published
   // on its own terms rather than alongside the figures - the counts stay empty
   // there, as they were, and the layout speaks.
-  m_processInfo.SetAudioObjectLayout(
-      haveDTSXStream
-          ? DescribeDTSXLayout(dtsxBedChannels, dtsxHeights, dtsxObjects)
-          : DescribeAtmosLayout(atmosElements, haveAtmosInfo ? streamInfo.m_atmosObjects : -1));
+  //
+  // Auro names itself the way the discs do, "Auro 11.1", because that is the
+  // room the mix was made for and what a listener is looking for. Counted off
+  // the same level as the channels above, so the two rows agree by
+  // construction.
+  if (haveAuro3DStream)
+    m_processInfo.SetAudioObjectLayout(
+        StreamUtils::GetAuro3DLayoutName(m_streaminfo.profile, m_streaminfo.level));
+  else
+    m_processInfo.SetAudioObjectLayout(
+        haveDTSXStream
+            ? DescribeDTSXLayout(dtsxBedChannels, dtsxHeights, dtsxObjects)
+            : DescribeAtmosLayout(atmosElements, haveAtmosInfo ? streamInfo.m_atmosObjects : -1));
 
   // guess next pts
   m_audioClock += audioframe.duration * ((double)framesOutput / audioframe.nb_frames);
