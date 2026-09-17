@@ -133,6 +133,32 @@ public:
    */
   void SetAudioElementCount(int elementCount);
   int GetAudioElementCount();
+  /*!
+   * @brief What the two counts above are counting - "Atmos", "DTS:X", "DTS:X
+   * IMAX" - or empty when neither is published.
+   *
+   * The counts alone cannot say. Atmos and DTS:X both describe a bed with
+   * objects over it, and the description label has to name one of them; without
+   * this it would have to guess from the figures, and call a DTS:X stream
+   * Atmos. Carried as the text to print rather than as a codec id, because
+   * naming the presentation is the only thing it is for.
+   */
+  void SetAudioObjectFormat(const std::string& format);
+  std::string GetAudioObjectFormat();
+  /*!
+   * @brief How the stream is laid out, in the words a listener uses - "7.1.4 +
+   * 5 Objects", "5.1 + 4 Heights", "LFE + 15 Objects" - or empty when the
+   * stream describes no spatial presentation.
+   *
+   * A different question to the two counts above, and it has an answer in a
+   * case where they do not: a DTS:X release that declares no objects still puts
+   * four heights over a bed, which is worth naming even though there is no
+   * figure to show. Carried as finished text because only the player holds
+   * everything it is built from - which format is playing, how many objects it
+   * declared, and the bed the demuxer reported.
+   */
+  void SetAudioObjectLayout(const std::string& layout);
+  std::string GetAudioObjectLayout();
   void SetAudioChannels(std::string channels);
   std::string GetAudioChannels();
   void SetAudioSampleRate(int sampleRate);
@@ -331,6 +357,8 @@ protected:
     double pts = 0;
     int objectCount = -1;
     int elementCount = -1;
+    std::string objectFormat;
+    std::string objectLayout;
   } m_playerAudioInfo;
 
   mutable CCriticalSection m_contentSection;

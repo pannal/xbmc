@@ -511,6 +511,12 @@ bool CPlayerGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
       // carry no dynamic objects - so it is reported as "0". Only -1, meaning
       // the stream never declared a count, resolves to empty. A skin that would
       // rather not show a "0" row can filter on the value it now gets.
+      //
+      // DTS:X reaches this as -1 rather than as a zero, and so as empty, which
+      // is why no rule is needed here for it: a release that declares no objects
+      // has not said it has none, it has said nothing, and that is nearly every
+      // DTS:X title. Only the alternate-profile syncwords declare a count, and
+      // every one of them declares at least one.
       const int objectCount = CServiceBroker::GetDataCacheCore().GetAudioObjectCount();
       if (objectCount >= 0)
       {
@@ -521,38 +527,63 @@ bool CPlayerGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
     }
     case PLAYER_PROCESS_AUDIO_OBJECT_DESCRIPTION:
     {
-      // Prose form of the Atmos presentation, for skins that want a phrase
-      // rather than a figure. Both figures are named because neither implies the
-      // other: the element count measures bed channels and objects together, the
-      // object count only the dynamic ones. Spelling them "ch" and "obj" keeps
-      // that distinction on screen instead of leaving one to be inferred.
+      // Prose form of the presentation, for skins that want a phrase rather than
+      // a figure. Both figures are named because neither implies the other: the
+      // element count measures bed channels and objects together, the object
+      // count only the dynamic ones. Spelling them "ch" and "obj" keeps that
+      // distinction on screen instead of leaving one to be inferred.
       //
       // Either figure alone still describes a stream, so either alone fills the
       // label rather than suppressing it: a stream whose program_assignment()
       // would not parse has an element total and no object count, and a DTS:X
       // stream that declares objects has a count with no total to set it
       // against.
+      //
+      // The format is named by the player rather than guessed here. Atmos and
+      // DTS:X both put objects over a bed, so the figures alone cannot say which
+      // is playing, and calling a DTS:X stream Atmos would be worse than saying
+      // nothing. An empty format means nothing was published, which is the same
+      // case as both figures being absent.
+      const std::string format = CServiceBroker::GetDataCacheCore().GetAudioObjectFormat();
+      if (format.empty())
+        break;
+
       const int elementCount = CServiceBroker::GetDataCacheCore().GetAudioElementCount();
       const int objectCount = CServiceBroker::GetDataCacheCore().GetAudioObjectCount();
       if (elementCount > 0)
       {
         value = objectCount >= 0
-                    ? StringUtils::Format("Atmos [{} ch, {} obj]", elementCount, objectCount)
-                    : StringUtils::Format("Atmos [{} ch]", elementCount);
+                    ? StringUtils::Format("{} [{} ch, {} obj]", format, elementCount, objectCount)
+                    : StringUtils::Format("{} [{} ch]", format, elementCount);
         return true;
       }
       if (objectCount >= 0)
       {
-        value = StringUtils::Format("Atmos [{} obj]", objectCount);
+        value = StringUtils::Format("{} [{} obj]", format, objectCount);
         return true;
       }
       if (elementCount == 0)
       {
-        // Atmos, but the stream declared no element count to qualify it with.
-        value = "Atmos";
+        // The format, but with no count the stream declared to qualify it with.
+        value = format;
         return true;
       }
       break;
+    }
+    case PLAYER_PROCESS_AUDIO_OBJECT_LAYOUT:
+    {
+      // Where the two labels above are figures, this is the sentence a listener
+      // would say - "7.1.4 + 5 Objects", "5.1 + 4 Heights", "LFE + 15 Objects".
+      // It is assembled by the player rather than here because only the player
+      // holds all of what it is built from: which format produced the frame, how
+      // many objects it declared, and the bed the demuxer reported. So this is a
+      // pass-through, and empty means there was no spatial presentation to name.
+      const std::string layout = CServiceBroker::GetDataCacheCore().GetAudioObjectLayout();
+      if (layout.empty())
+        break;
+
+      value = layout;
+      return true;
     }
     case PLAYER_PROCESS_AUDIODECODER:
       value = CServiceBroker::GetDataCacheCore().GetAudioDecoderName();

@@ -80,6 +80,17 @@ public:
   //! bed from. -1 is not Atmos, 0 is Atmos that declared no element count.
   void SetAudioElementCount(int elementCount);
   int GetAudioElementCount();
+  //! \brief What the two counts above describe - "Atmos", "DTS:X", "DTS:X IMAX"
+  //! - or empty when neither is published. The figures alone cannot say which,
+  //! and the description label has to name one.
+  void SetAudioObjectFormat(const std::string& format);
+  std::string GetAudioObjectFormat();
+  //! \brief How the stream is laid out in words - "7.1.4 + 5 Objects", "5.1 + 4
+  //! Heights", "LFE + 15 Objects" - or empty when there is no spatial
+  //! presentation to name. Answers where the counts above cannot: a DTS:X
+  //! release declaring no objects still has a bed and four heights.
+  void SetAudioObjectLayout(const std::string& layout);
+  std::string GetAudioObjectLayout();
   void SetAudioChannels(const std::string &channels);
   std::string GetAudioChannels();
   void SetAudioSampleRate(int sampleRate);
@@ -166,6 +177,8 @@ protected:
   int m_audioBitsPerSample;
   int m_audioObjectCount = -1;
   int m_audioElementCount = -1;
+  std::string m_audioObjectFormat;
+  std::string m_audioObjectLayout;
   CCriticalSection m_audioCodecSection;
 
   // render info
