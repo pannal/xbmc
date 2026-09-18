@@ -36,8 +36,8 @@ constexpr int OMNI_PCM_MAX_PLANES = 16;
  * The object path taps the stream before decode, because objects only exist
  * there. Everything else has to be decoded first, and that is what this is: an
  * ordinary CDVDAudioCodecFFmpeg whose PCM is converted to what the renderer's
- * PCM bridge accepts - 48 kHz, interleaved, one label per channel - instead of
- * being handed to the sink.
+ * PCM bridge accepts - interleaved, one label per channel, at the rate the
+ * codec settled on - instead of being handed to the sink.
  *
  * It derives from the ffmpeg codec rather than owning one, for two reasons.
  * The layout accessor below needs the decoder's own AVCodecContext, which is
@@ -48,7 +48,13 @@ constexpr int OMNI_PCM_MAX_PLANES = 16;
 class COmniphonyPcmSource : public CDVDAudioCodecFFmpeg
 {
 public:
-  explicit COmniphonyPcmSource(CProcessInfo& processInfo);
+  /*!
+   * \brief \param rate the rate to convert to, which the codec chose and the
+   * renderer was opened at. Not this component's decision: everything from the
+   * engine's config to the format handed to ActiveAE has to agree on one
+   * number, and the codec is where that number is settled.
+   */
+  COmniphonyPcmSource(CProcessInfo& processInfo, unsigned int rate);
   ~COmniphonyPcmSource() override;
 
   void Reset() override;
@@ -69,8 +75,8 @@ public:
   /*!
    * \brief Take one decoded frame, converted for the bridge.
    *
-   * \param pcm  cleared and filled with interleaved samples at
-   *             \ref OMNI_PCM_RATE, in the encoding \ref Header describes
+   * \param pcm  cleared and filled with interleaved samples at the rate this
+   *             source was constructed with, in the encoding \ref Header says
    * \param pts  the frame's timestamp in DVD time, or DVD_NOPTS_VALUE
    * \return false when the decoder has nothing ready, or when this stream
    *         cannot be rendered - see \ref Unsupported, which distinguishes the
@@ -143,7 +149,7 @@ public:
   size_t FrameSize() const { return static_cast<size_t>(m_channels) * sizeof(float); }
 
   //! \brief The rate Convert() delivers at.
-  int Rate() const;
+  int Rate() const { return m_rate; }
 
 private:
   /*!
@@ -177,6 +183,9 @@ private:
   //! Served once, by \ref GetData, so the ordinary path still delivers it.
   uint8_t* m_retainedPlanes[OMNI_PCM_MAX_PLANES]{};
   int m_retainedBytes{0};
+
+  //! The rate everything is converted to - see the constructor.
+  const int m_rate;
 
   std::unique_ptr<ActiveAE::IAEResample> m_resampler;
   std::vector<uint8_t> m_labels;

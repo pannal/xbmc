@@ -17,6 +17,7 @@ if(CORE_SYSTEM_NAME STREQUAL linux)
   list(APPEND SOURCES DVDAudioCodecOmniphony.cpp
                       OmniphonyPcmSource.cpp
                       OmniphonyPcmStream.cpp
+                      OmniphonyRateCheck.cpp
                       OmniphonyTimeline.cpp)
   list(APPEND HEADERS DVDAudioCodecOmniphony.h
                       OmniphonyPcmSource.h

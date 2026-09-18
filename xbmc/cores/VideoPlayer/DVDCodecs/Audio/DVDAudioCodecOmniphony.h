@@ -42,6 +42,72 @@ class COmniphonyPcmSource;
 std::string OmniphonyDescribeHrir(const std::string& selector);
 
 /*!
+ * \brief The rate used when the stream does not say what it is.
+ *
+ * Not a preference: the renderer builds its head model at whatever rate it is
+ * given - hrir_len() scales the kernel and the measured set resamples itself -
+ * so nothing here wants 48 kHz in particular. It is the rate almost all film
+ * audio arrives at, and therefore the least surprising thing to assume when
+ * the demuxer has not said.
+ */
+constexpr unsigned int OMNI_DEFAULT_RATE = 48000;
+
+/*!
+ * \brief The highest rate this will render at, above which a source is
+ * resampled down to it.
+ *
+ * The binaural convolution is a direct dot product whose kernel grows with the
+ * rate - 128 taps at 48 kHz, 256 at 96, 512 at 192 - so its cost is the rate
+ * times the kernel and rises with the square of the rate. Against a render
+ * already measured at a third to a half of one core, 96 kHz is roughly four
+ * times the work and 192 kHz sixteen, which this hardware does not have.
+ *
+ * The ceiling costs a listener nothing they can hear from the render itself:
+ * the head model is measured at 48 kHz and resampled upwards, so a higher rate
+ * carries no more spatial information. What it buys is one fewer conversion
+ * for a 88.2 or 96 kHz source, which is why the ceiling is here rather than at
+ * 48.
+ */
+constexpr unsigned int OMNI_MAX_RATE = 96000;
+
+//! The narrowest rate worth believing from a demuxer hint.
+constexpr unsigned int OMNI_MIN_RATE = 8000;
+
+//! \brief What the rate an engine reports means for the stream in progress.
+enum class OmniphonyRateVerdict
+{
+  Agrees, //!< it is the rate already being rendered at, or the engine has not said
+  NotOnPcmPath, //!< the two cannot disagree on that path, so this is a bug here
+  Midstream, //!< as Retune, after the format has been published - see m_formatPublished
+  Unrenderable, //!< a real rate, but outside what this path can open at
+  Retune, //!< re-open at it - the engine is decoding something else
+};
+
+/*!
+ * \brief Read the rate an engine reports against the one it was opened at.
+ *
+ * The counterpart to the parser check this class also makes. A parser reads a
+ * header, and a header is a prediction: for DTS it is the core's sync word, and
+ * a DTS-HD MA track carrying a 96 kHz XLL extension over a 48 kHz core decodes
+ * at 96 while its core says 48. An engine that has decoded a frame is not
+ * predicting anything, and it answers for every codec rather than for the two
+ * whose headers Kodi's parser can read.
+ *
+ * Free rather than a member so the decision can be tested on its own: it is
+ * five branches with an audible consequence, and the class around it needs a
+ * helper process to construct.
+ *
+ * \param reported        the engine's rate, or 0 for "it has not decoded yet"
+ * \param opened          the rate the engine was created at
+ * \param pcmPath         this codec decoded and resampled the audio itself
+ * \param formatPublished a block has been handed to ActiveAE
+ */
+OmniphonyRateVerdict OmniphonyRateCheck(unsigned int reported,
+                                        unsigned int opened,
+                                        bool pcmPath,
+                                        bool formatPublished);
+
+/*!
  * \brief Render audio to headphones binaurally, out of process.
  *
  * There are two ways in, and which one a stream takes is settled at open.
@@ -107,10 +173,10 @@ private:
    * work while the player was inside AddData or GetData, and the player spends
    * almost all of its time elsewhere - parked in CAudioSinkAE::AddPackets
    * waiting for the sink to take audio. Rendering is what should fill that
-   * time: sampled across whole films the render costs 0.42 of a core on Dolby
-   * Digital Plus and 0.47 on TrueHD, so what it needs is not more speed but
-   * somewhere to have put the surplus beforehand. A thread here turns the
-   * player's idle time into exactly that.
+   * time: sampled once a second across twenty-one TrueHD titles the render
+   * costs 0.67 of a core in the median title, so what it needs is not more
+   * speed but somewhere to have put the surplus beforehand. A thread here turns
+   * the player's idle time into exactly that.
    */
   class CHelper : private CThread
   {
@@ -151,20 +217,31 @@ private:
     //! \brief Bytes queued for the helper that it has not taken off us yet.
     size_t Queued();
 
+    //! \brief The rate in the latest stream report not yet taken, or 0 if
+    //! there is none. Leaves the reports where they are - see SettleRate.
+    unsigned int ReportedRate();
+
     /*!
-     * \brief Drop everything rendered before a seek.
+     * \brief Drop everything rendered before a seek, and reset the helper.
      *
      * The pipe can hold a second or more of audio that belongs to where the
      * film used to be, and OP_RESET does not flush it - the helper has already
-     * written it. Clearing what has arrived is only half the job, so this also
-     * arms \ref m_dropping for the rest.
+     * written it. This clears what has arrived; the rest, still in flight, is
+     * dropped as it is parsed - see \ref m_resets.
+     *
+     * The OP_RESET is sent from in here rather than by the caller afterwards,
+     * because emptying the bank and arming the drop have to be one operation
+     * against the pump thread. False means the helper is gone.
      */
-    void Resync();
+    bool Resync();
 
     //! \brief Status text the helper reported, drained by the caller for the log.
     std::vector<std::string> TakeMessages();
 
   private:
+    //! \brief \ref Send, for a caller that already holds \ref m_lock.
+    bool SendLocked(uint8_t op, const void* payload, size_t len);
+
     void Process() override;
     bool ParseFrames();
     void Reap();
@@ -183,16 +260,19 @@ private:
     std::vector<std::string> m_messages;
 
     /*!
-     * \brief The engine's clock, watched for the restart that OP_RESET causes.
+     * \brief Resets sent that the helper has not yet marked in its output.
      *
-     * It counts output samples since the stream began and a reset puts it back
-     * to zero, so the first block whose timestamp goes backwards is the first
-     * one rendered from the new position. That makes the boundary exact
-     * without adding anything to the protocol: everything before it is stale,
-     * everything from it on belongs to where the film now is.
+     * The pipe can hold a second of audio belonging to where the film used to
+     * be, so a seek needs a boundary in the stream rather than a moment in
+     * time. The helper draws one: it answers every OP_RESET with a status
+     * frame, having finished writing the audio before it and before writing
+     * any after it. So this counts up as resets go out and down as those
+     * frames are parsed, and audio is stale for exactly as long as it is not
+     * zero. A count rather than a flag because a listener scrubbing can
+     * outrun the helper, and the second seek's audio is no less stale than
+     * the first's while its own boundary is still to come.
      */
-    int64_t m_lastPts{-1};
-    bool m_dropping{false};
+    unsigned int m_resets{0};
 
     std::atomic<bool> m_broken{false};
   };
@@ -216,7 +296,17 @@ private:
   static constexpr int OBJECT_LIMIT_FOR_DIRECT = 24;
 
   bool StartHelper(CDVDStreamInfo& hints);
-  bool ReopenAs(RenderMode mode);
+
+  /*!
+   * \brief Restart the helper, optionally at a different rate.
+   *
+   * \param mode  the render mode the new helper opens in
+   * \param rate  the rate to render at; pass \ref m_rate to keep the current
+   *              one. A different value also moves the format, the limiter and
+   *              every duration derived from the rate, and is only safe before
+   *              the format has been published - see OmniphonyRateCheck.
+   */
+  bool ReopenAs(RenderMode mode, unsigned int rate);
 
   /*!
    * \brief AddData for a stream being decoded here - see \ref m_pcm.
@@ -244,6 +334,59 @@ private:
   bool RestartBridge();
   //! \brief Re-arm the no-output backstop. Called wherever the bridge is reset.
   void ArmRecovery();
+
+  /*!
+   * \brief Wait for the helper to report that the engine is built and open.
+   *
+   * The engine's head model is built at the rate it is opened at, and at any
+   * rate but 48 kHz that takes seconds - so this has to finish before anything
+   * downstream starts timing the renderer, or construction is charged against
+   * the priming budget and no stream off 48 kHz can ever fill it. False means
+   * the helper died, refused the open, or never answered.
+   */
+  bool AwaitOpen();
+
+  /*!
+   * \brief Whether the stream really is at the rate the engine was opened at.
+   *
+   * Asked once, of the first complete access unit, and only on the bitstream
+   * path: there the engine's rate comes from the demuxer while the bridge
+   * decodes at whatever the stream actually is, and nothing downstream would
+   * report the difference - it is heard rather than logged. False means fall
+   * back. See the definition for which codecs the parser can answer for.
+   */
+  bool RateAgrees();
+
+  /*!
+   * \brief Wait for the engine to say what rate it decoded at, and follow it.
+   *
+   * For a player that asks for the format once, after the first packets, and
+   * plays the whole stream at the answer. See the definition.
+   */
+  void SettleRate();
+
+  //! \brief Sample-frames of render in \p ms milliseconds, at the rate this
+  //! stream settled on. The bank and priming sizes are durations, not counts:
+  //! a second and a half of reserve has to stay a second and a half at 96 kHz.
+  int FramesFor(unsigned int ms) const;
+
+  /*!
+   * \brief Decide the rate this stream will be rendered at.
+   *
+   * The renderer works at any rate, so the only reason not to use the source's
+   * own is cost - see OMNI_MAX_RATE. A source at or below the ceiling is
+   * rendered at its own rate and never resampled; one above it is resampled
+   * down, which only the PCM path can do.
+   *
+   * \param hinted   the demuxer's sample rate, or 0 if it did not say
+   * \param objects  true for the bitstream path, which cannot resample: it is
+   *                 refused a rate it would have to change, because the engine
+   *                 would then be told one rate while the bridge decodes at
+   *                 another, and the render would play at the wrong speed
+   * \return the rate to open at, or 0 if this stream cannot be taken
+   */
+  static unsigned int ChooseRate(int hinted, bool objects);
+
   //! \brief Tie the engine's clock to the demuxer's, once, off the first block
   //! appended since \p before.
   void AnchorNewBlocks(size_t before);
@@ -257,8 +400,10 @@ private:
    * helper died and the caller must fall back.
    */
   bool AwaitRoom();
-  //! \brief Throw away rendered audio and the clock that described it.
-  void DropRendered();
+  //! \brief Throw away rendered audio and the clock that described it, and
+  //! reset the helper if there is one. False means the helper is gone; a caller
+  //! without one gets true, having nothing to reset and nothing to fail.
+  bool DropRendered();
   //! \brief Start banking \p frames of audio again - see \ref m_priming.
   void StartPriming(int frames);
   void FallBack(const char* why);
@@ -288,7 +433,39 @@ private:
   static std::string HelperPath();
   static std::string ConfigPath();
   static std::string LayoutPath();
-  static const char* CodecId(AVCodecID codec);
+  static const char* CodecId(const CDVDStreamInfo& hints);
+
+  /*!
+   * \brief The rate everything downstream of the helper runs at.
+   *
+   * The source's own wherever that is affordable, so a 96 kHz album is neither
+   * resampled here nor resampled back by the sink. Settled at open and moved
+   * only by ReopenAs, when the engine reports another, and always true of the
+   * config the helper was given, the format handed to ActiveAE, the limiter,
+   * the bank sizes and every duration below.
+   */
+  unsigned int m_rate{OMNI_DEFAULT_RATE};
+
+  //! \brief \ref RateAgrees has had its one look at the stream.
+  bool m_rateChecked{false};
+
+  //! \brief The engine has reported its rate, or \ref SettleRate has waited
+  //! for it once already.
+  bool m_rateSettled{false};
+
+  /*!
+   * \brief A block has been handed over, so \ref m_format is ActiveAE's now.
+   *
+   * What a change of rate costs. Before it, the engine can be re-opened at
+   * whatever the stream turns out to be and nothing downstream has seen a
+   * format yet. After it a re-open is a format change the player has to follow
+   * - CVideoPlayerAudio reopens its sink for one, as it does for any decoder
+   * whose output changes - and the reserve goes with the old helper, so it is
+   * a gap once rather than a rate that is wrong for the rest of the film.
+   * Latched for the life of the codec rather than per helper: what matters is
+   * whether anyone has been told, and a seek does not untell them.
+   */
+  bool m_formatPublished{false};
 
   CAEStreamParser m_parser;
   uint8_t* m_buffer{nullptr};
@@ -414,7 +591,7 @@ private:
    * "corrects" it by cutting audio out.
    *
    * This is the opening of the reserve rather than the whole of it: once
-   * playback is running the pump thread keeps filling to OMNI_BANK_FRAMES on
+   * playback is running the pump thread keeps filling to OMNI_BANK_MS on
    * its own. What priming adds is that the film does not start until the first
    * of it is in hand.
    *
@@ -463,12 +640,14 @@ private:
   //! \brief How long the mode decision stays open - see OMNI_MODE_WINDOW_MS.
   XbmcThreads::EndTime<> m_modeWindow;
   /*!
-   * \brief Objects in the last frame the engine reported on, or -1 for none yet.
+   * \brief Objects the stream is currently carrying, or -1 when it is not.
    *
    * Tracked rather than latched, because the ABI says the object state is live
-   * and "must not be latched": a report of zero means the frame just rendered
-   * carried no object metadata, not that the soundtrack has none. Only a report
-   * that actually carries objects reaches this.
+   * and "must not be latched". Which cuts both ways, and the two directions are
+   * not symmetrical: the first zeros of a stream mean only that nothing has
+   * been asked yet and are ignored, while a zero after objects have been seen
+   * is the stream having stopped carrying them and returns this to -1. The
+   * distinction is made by this member's own value - see AddData.
    */
   int m_objectCount{-1};
 
@@ -525,4 +704,26 @@ private:
   bool m_failed{false};
   //! True after the one end-of-stream FLUSH has been sent to this helper.
   bool m_drained{false};
+
+  /*!
+   * \brief Empty answers given since the last block reached the player.
+   *
+   * The one lever this codec has over how often CVideoPlayerAudio comes back
+   * to its message queue, and so over how much input arrives per block that
+   * leaves - see GetData, which explains what the ratio buys and what bounds
+   * it.
+   */
+  unsigned int m_yieldsSinceServe{0};
+
+  //! \brief When GetData may next report the reserve - see OMNI_RESERVE_LOG_MS.
+  XbmcThreads::EndTime<> m_reserveLogged;
+
+  /*!
+   * \brief Whether a packet arrived since the last empty answer.
+   *
+   * Whether the lever above is connected to anything: an empty answer only
+   * works if the player answers it with a packet. See GetData. Starts true so
+   * the first one is tried.
+   */
+  bool m_fedSinceYield{true};
 };

@@ -24,7 +24,6 @@
 #include "Video/DVDVideoCodecFFmpeg.h"
 #include "ServiceBroker.h"
 #include "addons/AddonProvider.h"
-#include "cores/AudioEngine/Interfaces/AE.h"
 #include "cores/VideoPlayer/DVDCodecs/DVDCodecs.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
@@ -210,38 +209,41 @@ std::unique_ptr<CDVDAudioCodec> CDVDFactoryCodec::CreateAudioCodec(
   // whether passthrough really applies depends on the stream as well as on the
   // setting - the same reason the branch below is guarded the same way.
   //
-  // The output has to be stereo for the same reason, and it is a stronger one:
-  // this codec declares a stereo format unconditionally, so on a 5.1 or 7.1
-  // output ActiveAE would take a render made for two ears and spread it back
-  // across the speakers. Asking the engine rather than reading the channel
-  // setting keeps the device type, the channel count and the fixed-configuration
-  // case in one answer instead of three tests here.
+  // The stream is the whole of the test, and deliberately so. An earlier
+  // version also asked IAE::HasStereoAudioChannelCount(), meaning to check that
+  // a render made for two ears would not be handed to a speaker layout - but
+  // that helper answers a different question than its name suggests. It is
+  // false whenever the audio output is configured for more than two channels
+  // AND false whenever the passthrough setting is on at all, because it exists
+  // to decide whether a decoder should downmix. Either half silently turned
+  // this feature off on an ordinary media-box profile: the listener switched
+  // binaural on, the setting read as on, every stream decoded to the speakers,
+  // and nothing anywhere said why.
   //
-  // It is answered when a codec is built and not again. CVideoPlayerAudio
-  // re-evaluates only when passthrough might have changed - it registers the
-  // six passthrough toggles and nothing else, and SwitchCodecIfNeeded returns
-  // early unless NeedPassthrough() differs, which it never does between this
-  // codec and the ffmpeg one. So changing the audio output from stereo to
-  // multichannel mid-playback does not take the render away, nor changing it
-  // back put the render there; the next stream gets it right. Making that live
-  // means registering audiooutput.channels in the player and teaching
-  // SwitchCodecIfNeeded a second reason to swap, which would change every
-  // codec's lifecycle, not just this one's.
+  // Neither half was load-bearing. The passthrough setting is settled twice
+  // over already - at the settings level, where turning either of the two on
+  // turns the other off (CActiveAESettings::EnforceExclusiveOutput), and here,
+  // per stream, which is the answer that actually matters because a track this
+  // sink cannot pass through is one the listener hears decoded whatever the
+  // setting says. And the channel count decides where stereo lands, not whether
+  // this may produce it: a stereo stream on a multichannel output plays through
+  // the front pair, as every stereo stream on that output already does.
   //
-  // That helper also refuses when the passthrough setting is on, which is now
-  // belt and braces rather than a rule of its own: the two settings exclude
-  // each other, so turning either on turns the other off - see
-  // CActiveAESettings::EnforceExclusiveOutput. The one state that can still
-  // reach here with both on is a profile written before that existed, and
-  // passthrough winning is the right answer for it.
+  // So the rule is the one the setting itself promises: switch it on and, on
+  // anything not actually being passed through, the render is binaural.
+  //
+  // Which leaves one state the settings-level exclusion cannot reach, because
+  // it only runs when a setting is changed: a profile that already had both on
+  // when the exclusion was added. That profile now gets binaural rather than
+  // speakers, and that is the better of the two guesses - passthrough is on by
+  // default and binaural is not, so the setting the listener actually went and
+  // switched on is this one. Turning it off restores the amplifier.
   //
   // Open() also refuses unless the helper is installed beside kodi.bin, so on
   // an image without it this costs one access() and falls through.
 #if defined(TARGET_LINUX) && !defined(TARGET_ANDROID)
   const bool passthroughWins = allowpassthrough && ptStreamType != CAEStreamInfo::STREAM_TYPE_NULL;
-  IAE* const ae = CServiceBroker::GetActiveAE();
-  if (!passthroughWins && ae && ae->HasStereoAudioChannelCount() &&
-      CServiceBroker::GetSettingsComponent() &&
+  if (!passthroughWins && CServiceBroker::GetSettingsComponent() &&
       CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
           CSettings::SETTING_AUDIOOUTPUT_OMNIPHONY))
   {
@@ -250,6 +252,10 @@ std::unique_ptr<CDVDAudioCodec> CDVDFactoryCodec::CreateAudioCodec(
     {
       return omni;
     }
+    // Open() logs why it refused; this says which decision led to asking, so a
+    // log that ends in "ff-aac" can be read for whether binaural was skipped
+    // before it was tried or gave up after.
+    CLog::Log(LOGDEBUG, "CDVDFactoryCodec: binaural is on but the codec did not open this stream");
   }
 #endif
 

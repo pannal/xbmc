@@ -23,18 +23,6 @@ extern "C"
 namespace
 {
 /*!
- * \brief The rate the renderer is opened at, and therefore the only rate it
- * will be fed.
- *
- * The helper builds its OrenderConfig with `sample_rate = 48000` and never
- * asks the stream, so a 44.1 or 96 kHz source is resampled here rather than
- * played at the wrong speed there. Holding the engine at one rate is also what
- * keeps the codec's bank sizes, limiter and output timestamps meaning one
- * thing.
- */
-constexpr int OMNI_PCM_RATE = 48000;
-
-/*!
  * \brief What the samples are sent as.
  *
  * Float is what the resampler produces most directly and what the renderer
@@ -72,8 +60,8 @@ static_assert(OMNI_PCM_MAX_PLANES <=
 static_assert(OMNI_PCM_MAX_PLANES <= static_cast<int>(RECEIVE_PLANES),
               "the receive array must hold every layout that can be accepted");
 
-COmniphonyPcmSource::COmniphonyPcmSource(CProcessInfo& processInfo)
-  : CDVDAudioCodecFFmpeg(processInfo)
+COmniphonyPcmSource::COmniphonyPcmSource(CProcessInfo& processInfo, unsigned int rate)
+  : CDVDAudioCodecFFmpeg(processInfo), m_rate(static_cast<int>(rate))
 {
 }
 
@@ -148,11 +136,6 @@ void COmniphonyPcmSource::OpenLayout(uint64_t& mask, int& channels) const
   // member is a pointer, not a mask. A count on its own is still worth having.
   if (layout.order == AV_CHANNEL_ORDER_NATIVE)
     mask = layout.u.mask;
-}
-
-int COmniphonyPcmSource::Rate() const
-{
-  return OMNI_PCM_RATE;
 }
 
 void COmniphonyPcmSource::Retain(uint8_t* const* planes, int bytes)
@@ -232,7 +215,7 @@ bool COmniphonyPcmSource::Configure(uint64_t mask, int channels, AVSampleFormat 
   // audio arrives at the renderer at exactly the level it left the decoder.
   SampleConfig dst = src;
   dst.fmt = AV_SAMPLE_FMT_FLT;
-  dst.sample_rate = OMNI_PCM_RATE;
+  dst.sample_rate = m_rate;
   dst.bits_per_sample = static_cast<int>(CAEUtil::DataFormatToUsedBits(AE_FMT_FLOAT));
   dst.dither_bits = static_cast<int>(CAEUtil::DataFormatToDitherBits(AE_FMT_FLOAT));
 
@@ -250,7 +233,7 @@ bool COmniphonyPcmSource::Configure(uint64_t mask, int channels, AVSampleFormat 
     return false;
   }
 
-  m_header = OmniphonyPcmHeader(labels, OMNI_PCM_RATE, OMNI_PCM_ENCODING);
+  m_header = OmniphonyPcmHeader(labels, static_cast<uint32_t>(m_rate), OMNI_PCM_ENCODING);
   if (m_header.empty())
   {
     GiveUp("the stream header could not be built");
@@ -272,7 +255,7 @@ bool COmniphonyPcmSource::Configure(uint64_t mask, int channels, AVSampleFormat 
 
   if (changed)
     CLog::Log(LOGINFO, "COmniphonyPcmSource: {} channels, {} Hz -> {} Hz for the renderer",
-              channels, sampleRate, OMNI_PCM_RATE);
+              channels, sampleRate, m_rate);
   return true;
 }
 
@@ -343,7 +326,7 @@ bool COmniphonyPcmSource::Convert(std::vector<uint8_t>& pcm, double& pts)
   // Include samples held by earlier calls as well as this frame's converted
   // length. Both terms are rounded up in destination frames; no assumed filter
   // delay or fixed amount of spare space is needed.
-  const int dstFrames = m_resampler->CalcDstSampleCount(srcFrames, OMNI_PCM_RATE, rate) +
+  const int dstFrames = m_resampler->CalcDstSampleCount(srcFrames, m_rate, rate) +
                         m_resampler->GetBufferedSamples();
   pcm.resize(static_cast<size_t>(dstFrames) * FrameSize());
 
@@ -383,7 +366,7 @@ bool COmniphonyPcmSource::DrainResampler(std::vector<uint8_t>& pcm)
 
   // A null input flushes delayed samples. Pull bounded chunks until an empty
   // result; the caller sends each one before the helper receives OP_FLUSH.
-  const int dstFrames = OMNI_PCM_RATE / 100;
+  const int dstFrames = m_rate / 100;
   pcm.resize(static_cast<size_t>(dstFrames) * FrameSize());
   uint8_t* dst[1]{pcm.data()};
   const int written = m_resampler->Resample(dst, dstFrames, nullptr, 0, 1.0);

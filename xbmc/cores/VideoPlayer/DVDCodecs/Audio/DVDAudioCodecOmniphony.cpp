@@ -34,6 +34,7 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -53,9 +54,20 @@ constexpr unsigned int OMNI_FLUSH_TIMEOUT_MS = 5000;
 
 constexpr size_t OMNI_HDR_LEN = 16;
 
+/*!
+ * \brief The helper's answer to OP_RESET, which is also the boundary in its
+ * output between the timeline being left and the one being joined.
+ *
+ * The helper writes a packet's audio in full before it reads the next command,
+ * so everything ahead of this status frame was rendered from where the film
+ * used to be and everything behind it from where it now is, with no overlap -
+ * it says so itself at the OP_RESET case. Matched by its text rather than by
+ * its status code, which every successful command shares.
+ */
+constexpr const char* OMNI_RESET_MARK = "reset epoch=";
+
 //! The helper renders to stereo; anything else means we misunderstood it.
 constexpr unsigned int OMNI_OUT_CHANNELS = 2;
-constexpr unsigned int OMNI_OUT_RATE = 48000;
 
 //! Beyond this the helper is not keeping up and we stop queueing for it rather
 //! than growing without bound.
@@ -79,15 +91,22 @@ constexpr int OMNI_PUMP_IDLE_MS = 20;
  * \brief How far ahead of the player the render is allowed to work.
  *
  * The reserve exists to cover the dips, and the dips are short. Sampling the
- * helper's own CPU once a second across two whole films puts the render at
- * 0.42 of a core on Dolby Digital Plus and 0.47 on TrueHD, never above 0.82
- * for more than the odd second, so the work always has somewhere to go. What
- * varies is whether it gets the chance: on Dolby Digital Plus the reserve
- * fills and this limit is what stops it, while on TrueHD it stays near empty
- * because the player only feeds at the speed it plays. Something over a second
- * covers the dips with room to refill afterwards. Larger would not cover more
- * - a renderer that is short on average empties any reserve eventually - and
- * it would put more audio between a seek and what is heard.
+ * helper's own CPU once a second across twenty-one TrueHD titles puts the
+ * render at 0.67 of a core in the median title and 0.72 at the ninetieth
+ * percentile, so on nearly all of them the work has somewhere to go. Two are
+ * the exception, sitting at or just past a whole core, and no size of reserve
+ * helps those: a renderer with nothing left over has nothing to refill with.
+ * Something over a second covers the dips with room to refill afterwards.
+ * Larger would not cover more - a renderer that is short on average empties
+ * any reserve eventually - and it would put more audio between a seek and what
+ * is heard.
+ *
+ * Wherever there is that surplus, this limit is what stops the reserve
+ * growing, on TrueHD as much as on Dolby Digital Plus. Of TrueHD that only
+ * became true with the refill in GetData. One packet in per block out merely
+ * matches the player's own rate, so it holds the reserve wherever it happens
+ * to land instead of filling it - and where it landed on TrueHD was near empty
+ * for the length of a film.
  *
  * Do not read the pump thread's own throughput as the render's cost. It sleeps
  * once the bank is full, so it reads about one times realtime whatever the
@@ -97,7 +116,7 @@ constexpr int OMNI_PUMP_IDLE_MS = 20;
  * Feeding stops here rather than rendering: the helper is left with nothing
  * queued, so it idles instead of running on into audio nobody has asked for.
  */
-constexpr int OMNI_BANK_FRAMES = static_cast<int>(OMNI_OUT_RATE) * 3 / 2;
+constexpr unsigned int OMNI_BANK_MS = 1500;
 
 /*!
  * \brief Input queued for a helper that has stopped taking it.
@@ -109,6 +128,36 @@ constexpr int OMNI_BANK_FRAMES = static_cast<int>(OMNI_OUT_RATE) * 3 / 2;
  * fatal limit is never the one that arrives first.
  */
 constexpr size_t OMNI_FEED_QUEUE_MAX = OMNI_MAX_PENDING / 10;
+
+/*!
+ * \brief Empty answers GetData may give between two served blocks.
+ *
+ * The ratio of input to output while the reserve is refilling: two empty
+ * answers per block puts in twice what goes out. Also the bound on how long
+ * the sink can be given nothing - see GetData.
+ */
+constexpr unsigned int OMNI_REFILL_YIELDS = 2;
+
+/*!
+ * \brief How far below OMNI_FEED_QUEUE_MAX counts as "the helper has room".
+ *
+ * A quarter of the feed threshold. Below it the helper is close to running out
+ * of input and can absorb more; at or above it, it already has a backlog and
+ * feeding harder would only wait in AwaitRoom.
+ */
+constexpr size_t OMNI_REFILL_ROOM_DIVISOR = 4;
+
+/*!
+ * \brief How often GetData reports the reserve to the debug log.
+ *
+ * Nothing outside this codec reads GetBufferSize, and the only other reading
+ * is the one priming prints, so between the start of a film and its end the
+ * reserve is otherwise invisible. What it is doing is the first question any
+ * report of stuttering asks - see the line itself for what the two numbers
+ * separate - and a second is slow enough to cost nothing against a stream that
+ * asks for a block twelve hundred times in one.
+ */
+constexpr unsigned int OMNI_RESERVE_LOG_MS = 1000;
 
 /*!
  * \brief Sample-frames of decoded PCM in one write to the helper.
@@ -129,13 +178,18 @@ constexpr size_t OMNI_PCM_WRITE_FRAMES = 1024;
 /*!
  * \brief The most the pump thread will hold before it stops reading the helper.
  *
- * Nothing should ever reach this: feeding stops at OMNI_BANK_FRAMES, so the
+ * Nothing should ever reach this: feeding stops at OMNI_BANK_MS, so the
  * helper runs out of work long before. It is here because the pump thread runs
  * whether or not anyone is collecting from it, and a codec that stopped
  * collecting - the player parked in the sink for several seconds is the case
  * that prompted all of this - must not be able to grow this without bound.
+ *
+ * A frame count rather than a duration, because the pump thread has no rate to
+ * consult: it is the one part of this that runs before and beneath the codec's
+ * choice. Ten seconds at 48 kHz and five at 96, both far past anything the
+ * feed limits allow to be reached.
  */
-constexpr size_t OMNI_PUMP_HOLD_FRAMES = static_cast<size_t>(OMNI_OUT_RATE) * 10;
+constexpr size_t OMNI_PUMP_HOLD_FRAMES = static_cast<size_t>(OMNI_DEFAULT_RATE) * 10;
 
 /*!
  * \brief Rendered audio to bank before letting the player have any.
@@ -152,7 +206,7 @@ constexpr size_t OMNI_PUMP_HOLD_FRAMES = static_cast<size_t>(OMNI_OUT_RATE) * 10
  * job - so the second half of that second was buying startup delay and not
  * much else.
  */
-constexpr int OMNI_PRIME_FRAMES = static_cast<int>(OMNI_OUT_RATE) / 2;
+constexpr unsigned int OMNI_PRIME_MS = 500;
 
 /*!
  * \brief The same, for a seek, where far less is needed.
@@ -166,11 +220,61 @@ constexpr int OMNI_PRIME_FRAMES = static_cast<int>(OMNI_OUT_RATE) / 2;
  * again with the sink's own 0.8 s counted: what a seek has to cover is the
  * moment before ActiveAE has refilled, not a warm-up.
  */
-constexpr int OMNI_PRIME_FRAMES_SEEK = static_cast<int>(OMNI_OUT_RATE) * 15 / 100;
+constexpr unsigned int OMNI_PRIME_MS_SEEK = 150;
 
 //! The longest priming may hold playback. A helper that cannot fill the bank in
 //! this long is not going to, and silence is worse than starting short.
 constexpr unsigned int OMNI_PRIME_TIMEOUT_MS = 2500;
+
+/*!
+ * \brief The longest GetFormat waits for the engine to report its rate.
+ *
+ * Once per stream at most, and only where the answer matters - see SettleRate.
+ * The report follows the first decoded frame, which is well inside this; the
+ * bound is for an engine too old to make it at all.
+ */
+constexpr unsigned int OMNI_RATE_SETTLE_MS = 1000;
+
+/*!
+ * \brief How long the helper is given to build the engine and answer OPEN.
+ *
+ * Separate from the priming timeout above, and much longer, because it bounds
+ * something else entirely: not how fast the renderer keeps up, but how long it
+ * takes to exist. The engine builds its head model at the rate it is opened at,
+ * and only 48 kHz is free - that is the rate the measured set is stored at, so
+ * resampling it is skipped. Every other rate resamples 836 directions and
+ * reconstructs each one's minimum phase, four transforms apiece. Measured on a
+ * desktop: 215 ms at 48 kHz against 502 at 44.1, 841 at 96 and 1518 at 192; an
+ * S922X is about five times slower again, which is the 1.1 s this takes there
+ * at 48 kHz and several seconds at anything else.
+ *
+ * Charged against the priming budget - which is what happened before this
+ * existed - the engine spent the whole of it being built, no audio was ever
+ * rendered inside it, and every stream that was not 48 kHz fell back to
+ * software decoding. Priming is armed after this returns, so what it measures
+ * is the renderer keeping up, which is what it is for.
+ *
+ * Ten seconds is not a target, it is the point at which a helper that has
+ * neither answered nor died is assumed hung. A stream pays this once, at open.
+ */
+constexpr unsigned int OMNI_OPEN_TIMEOUT_MS = 10000;
+
+//! How often that wait looks for the acknowledgement. Short enough not to add
+//! meaningfully to an open, long enough not to spin.
+constexpr int OMNI_OPEN_POLL_MS = 50;
+
+/*!
+ * \brief The helper's acknowledgement that the engine is built and the bridge
+ * is loaded - "open codec=... rate=... engine=...", which it writes only after
+ * orender_create has returned.
+ *
+ * Matched by text for the reason OMNI_RESET_MARK is: the status code is shared
+ * with every other successful command. The helper's own failure messages for
+ * this command begin "OPEN", capitalised, so they cannot be mistaken for it -
+ * and they do not need to be, because a helper that refuses an open exits, and
+ * the pipe closing is what ends the wait.
+ */
+constexpr const char* OMNI_OPEN_MARK = "open ";
 
 /*!
  * \brief How long the render mode stays open to what the stream turns out to be.
@@ -325,6 +429,42 @@ int64_t GetI64(const uint8_t* p)
   std::memcpy(&v, p, sizeof(v));
   return v;
 }
+
+// Move a descriptor clear of the standard range so the dup2() that installs it
+// as the helper's stdin or stdout cannot be asked to duplicate a descriptor onto
+// itself: dup2(fd, fd) reports success but does nothing, and in particular does
+// not clear FD_CLOEXEC, which would leave the helper execing with the stream we
+// meant to give it already closed. Only reachable when Kodi itself was started
+// with stdin or stdout closed, but it fails silently when it is.
+bool MoveClearOfStdio(int& fd)
+{
+  while (fd >= 0 && fd <= STDERR_FILENO)
+  {
+    const int moved = fcntl(fd, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+    if (moved < 0)
+      return false;
+    close(fd);
+    fd = moved;
+  }
+  return true;
+}
+
+// How far the child sweeps when closing what it inherited. Read here, in the
+// parent: between fork() and exec() in a process with other threads running,
+// only async-signal-safe calls are allowed, and getrlimit is not one of them
+// while close() is. The clamp bounds the sweep - it is one cheap syscall per
+// descriptor and the ceiling is the only thing deciding how many.
+int InheritedFdCeiling()
+{
+  constexpr rlim_t sweepLimit = 65536;
+  struct rlimit lim;
+  if (getrlimit(RLIMIT_NOFILE, &lim) == 0 && lim.rlim_cur != RLIM_INFINITY &&
+      lim.rlim_cur > static_cast<rlim_t>(STDERR_FILENO + 1))
+    return static_cast<int>(std::min<rlim_t>(lim.rlim_cur, sweepLimit));
+
+  return 4096;
+}
+
 } // namespace
 
 //==============================================================================
@@ -344,14 +484,31 @@ bool CDVDAudioCodecOmniphony::CHelper::Start(const std::string& exe)
 {
   int toChild[2];
   int fromChild[2];
-  if (pipe(toChild) != 0)
+  // Close-on-exec from the moment they exist. Created without it these ends are
+  // themselves inheritable, and setting the flag afterwards leaves a window in
+  // which another thread's fork carries them off - this process forks from more
+  // than one place.
+  if (pipe2(toChild, O_CLOEXEC) != 0)
     return false;
-  if (pipe(fromChild) != 0)
+  if (pipe2(fromChild, O_CLOEXEC) != 0)
   {
     close(toChild[0]);
     close(toChild[1]);
     return false;
   }
+
+  // Only the two ends the child re-homes onto stdin and stdout need this; the
+  // ends the parent keeps are never dup2()'d.
+  if (!MoveClearOfStdio(toChild[0]) || !MoveClearOfStdio(fromChild[1]))
+  {
+    close(toChild[0]);
+    close(toChild[1]);
+    close(fromChild[0]);
+    close(fromChild[1]);
+    return false;
+  }
+
+  const int fdCeiling = InheritedFdCeiling();
 
   const pid_t pid = fork();
   if (pid < 0)
@@ -365,12 +522,25 @@ bool CDVDAudioCodecOmniphony::CHelper::Start(const std::string& exe)
 
   if (pid == 0)
   {
-    dup2(toChild[0], STDIN_FILENO);
-    dup2(fromChild[1], STDOUT_FILENO);
-    close(toChild[0]);
-    close(toChild[1]);
-    close(fromChild[0]);
-    close(fromChild[1]);
+    // dup2 clears FD_CLOEXEC on the descriptor it creates, so these two are the
+    // only ones that survive the exec below.
+    if (dup2(toChild[0], STDIN_FILENO) < 0 || dup2(fromChild[1], STDOUT_FILENO) < 0)
+      _exit(127);
+
+    // Everything else this process inherited goes here, the pipe originals
+    // included. The helper decodes audio and speaks over stdin and stdout; it
+    // has no use for the rest, and holding any of it does real damage. Kodi
+    // opens the Amlogic video devices without close-on-exec, so a helper
+    // launched mid-playback - which is what an audio stream change does - keeps
+    // the running video decoder referenced. Kodi's own close then frees
+    // nothing, the decoder it builds to replace it waits two seconds for a
+    // resource the old one still owns, gives up with EBUSY, and every write to
+    // the half-built replacement fails: video stops while audio plays on.
+    // Sweeping the range is deliberate. Closing named devices instead would
+    // mean naming them, and the numbers move between launches.
+    for (int fd = STDERR_FILENO + 1; fd < fdCeiling; ++fd)
+      close(fd);
+
     // A helper that inherited Kodi's SIGPIPE disposition would survive us
     // closing the pipe; restore the default so it dies with the read end.
     signal(SIGPIPE, SIG_DFL);
@@ -446,7 +616,11 @@ void CDVDAudioCodecOmniphony::CHelper::Stop()
 bool CDVDAudioCodecOmniphony::CHelper::Send(uint8_t op, const void* payload, size_t len)
 {
   std::unique_lock<CCriticalSection> lock(m_lock);
+  return SendLocked(op, payload, len);
+}
 
+bool CDVDAudioCodecOmniphony::CHelper::SendLocked(uint8_t op, const void* payload, size_t len)
+{
   if (m_broken || m_in < 0)
     return false;
   if (m_pending.size() - m_pendingSent + OMNI_HDR_LEN + len > OMNI_MAX_PENDING)
@@ -469,6 +643,14 @@ bool CDVDAudioCodecOmniphony::CHelper::Send(uint8_t op, const void* payload, siz
     const uint8_t* p = static_cast<const uint8_t*>(payload);
     m_pending.insert(m_pending.end(), p, p + len);
   }
+
+  // Counted here, where a reset is queued, rather than at the seek that caused
+  // it: this is the only place that knows one actually went out. A reset the
+  // caller asked for but that was refused above must not arm the drop, or
+  // nothing would ever clear it - see ParseFrames.
+  if (op == OP_RESET)
+    ++m_resets;
+
   return true;
 }
 
@@ -492,23 +674,13 @@ bool CDVDAudioCodecOmniphony::CHelper::ParseFrames()
       if (frames)
       {
         const int64_t pts = GetI64(h + 8);
-        // See m_lastPts: the engine's clock going backwards is the seek, and
-        // everything up to it was rendered from where the film used to be.
-        //
-        // Not equal to it either, which is the case that bites. The clock
-        // restarts at exactly zero, so a seek taken while the only block ever
-        // rendered was the first one - pts zero - leaves nothing to step back
-        // from, and a strict comparison never fires: the drop stays armed and
-        // every block after it is discarded until the next seek happens to
-        // clear it. Two scrubs in quick succession reach the same state.
-        // Within a stream the clock is strictly increasing, since it counts
-        // output samples and a block of none never gets here, so equality can
-        // only mean it restarted.
-        if (m_dropping && pts <= m_lastPts)
-          m_dropping = false;
-        m_lastPts = pts;
 
-        if (!m_dropping)
+        // Stale exactly while a reset we sent has not been answered yet - see
+        // m_resets. The boundary is a mark in the stream rather than anything
+        // inferred from these timestamps, so a seek taken before the first
+        // block, or a second one taken before the first has been answered, is
+        // the same case as any other and needs no reasoning of its own.
+        if (m_resets == 0)
         {
           // Copy rather than cast: a status payload carries an arbitrary byte
           // count, so the block after one starts wherever that count leaves it
@@ -530,7 +702,16 @@ bool CDVDAudioCodecOmniphony::CHelper::ParseFrames()
       const uint32_t len = GetU32(h + 8);
       if (m_acc.size() - off < OMNI_HDR_LEN + len)
         break;
-      m_messages.emplace_back(reinterpret_cast<const char*>(h + OMNI_HDR_LEN), len);
+      std::string message(reinterpret_cast<const char*>(h + OMNI_HDR_LEN), len);
+
+      // Consume the boundary in the pump thread, before any new audio or
+      // metadata is accepted. Reports before the last pending RESET describe
+      // the discarded timeline just as surely as its audio blocks do.
+      if (m_resets && StringUtils::StartsWith(message, OMNI_RESET_MARK))
+        --m_resets;
+      if (m_resets == 0 || !StringUtils::StartsWith(message, "stream "))
+        m_messages.emplace_back(std::move(message));
+
       off += OMNI_HDR_LEN + len;
     }
     else
@@ -712,7 +893,20 @@ size_t CDVDAudioCodecOmniphony::CHelper::Queued()
   return m_pending.size() - m_pendingSent;
 }
 
-void CDVDAudioCodecOmniphony::CHelper::Resync()
+unsigned int CDVDAudioCodecOmniphony::CHelper::ReportedRate()
+{
+  // Read the way AddData reads it, from the same status line.
+  std::unique_lock<CCriticalSection> lock(m_lock);
+  for (auto msg = m_messages.rbegin(); msg != m_messages.rend(); ++msg)
+  {
+    const size_t rateAt = msg->find("rate=");
+    if (msg->find("objects=") != std::string::npos && rateAt != std::string::npos)
+      return static_cast<unsigned int>(std::atoi(msg->c_str() + rateAt + 5));
+  }
+  return 0;
+}
+
+bool CDVDAudioCodecOmniphony::CHelper::Resync()
 {
   std::unique_lock<CCriticalSection> lock(m_lock);
   m_ready.pcm.clear();
@@ -720,9 +914,20 @@ void CDVDAudioCodecOmniphony::CHelper::Resync()
   m_ready.enginePts.clear();
   m_readyFrames = 0;
   m_messages.clear();
-  // Only if there is a clock to have gone backwards from. Before the first
-  // block there is nothing stale in flight and nothing to recognise it by.
-  m_dropping = m_lastPts >= 0;
+
+  /*
+   * The queue and the arming happen here, under the lock that just emptied the
+   * bank, because the three are one operation and the pump thread is running.
+   *
+   * Sent separately - clear, drop the lock, then queue - there is a window in
+   * between where the bank is empty and m_resets is still zero, and the pump
+   * takes that lock every time it parses. A block arriving in that window is
+   * from the old position, is accepted because nothing is armed yet, and is
+   * still queued when the seek completes: the listener hears a fragment of
+   * where they just left. Small window, ordinary occurrence - the pump runs
+   * continuously and the caller does several things between the two.
+   */
+  return SendLocked(OP_RESET, nullptr, 0);
 }
 
 std::vector<std::string> CDVDAudioCodecOmniphony::CHelper::TakeMessages()
@@ -1009,18 +1214,51 @@ bool CDVDAudioCodecOmniphony::WriteConfig(const std::string& bridge) const
   return ok;
 }
 
-const char* CDVDAudioCodecOmniphony::CodecId(AVCodecID codec)
+const char* CDVDAudioCodecOmniphony::CodecId(const CDVDStreamInfo& hints)
 {
-  switch (codec)
+  switch (hints.codec)
   {
-    case AV_CODEC_ID_AC3:
-      return "ac3";
+    // AC-3 is deliberately absent. Dolby Atmos needs E-AC-3's joint object
+    // coding or TrueHD's object metadata, so plain Dolby Digital cannot carry
+    // an object for the bridge to find - and where the bridge can offer
+    // nothing ffmpeg cannot, ffmpeg is the decoder with twenty years of
+    // conformance testing behind it. Both paths reach the same renderer
+    // through the same call, so nothing about the placement changes either way.
     case AV_CODEC_ID_EAC3:
       return "eac3";
     case AV_CODEC_ID_TRUEHD:
       return "truehd";
+
+    /*
+     * DTS is the one where the codec is not enough to answer, because only
+     * some of it can carry an object.
+     *
+     * DTS-HD MA remains here because the bridge decodes its lossless XLL asset
+     * and is also the only path that can discover and unfold an Auro carrier.
+     * HRA-carried DTS:X needs its own positive probe profile before it can be
+     * distinguished from ordinary HRA here.
+     *
+     * Plain HRA remains with ffmpeg. Its profile says only that a lossy HD
+     * extension exists, not that it contains DTS:X, and ffmpeg handles HRA
+     * extension combinations more broadly. Core, ES, 96/24 and Express likewise
+     * have no detected spatial layer to justify choosing this decoder.
+     *
+     * The profile is the demuxer's, read from the extension substream's asset
+     * descriptor, and Kodi already trusts it for the "DTS-HD MA X" it puts on
+     * screen. An unknown profile stays with ffmpeg; absence of a detected
+     * spatial profile is not proof that no spatial extension exists.
+     */
     case AV_CODEC_ID_DTS:
-      return "dts";
+      switch (hints.profile)
+      {
+        case AV_PROFILE_DTS_HD_MA:
+        case AV_PROFILE_DTS_HD_MA_X:
+        case AV_PROFILE_DTS_HD_MA_X_IMAX:
+          return "dts";
+        default:
+          return nullptr;
+      }
+
     default:
       return nullptr;
   }
@@ -1033,7 +1271,7 @@ bool CDVDAudioCodecOmniphony::StartHelper(CDVDStreamInfo& hints)
   // exact channel labels in OPCM, while input_codec selects the upstream
   // Dolby/DTS/PCM placement family. Keep that fact in OPEN/configuration rather
   // than consuming OPCM's reserved byte or changing its wire format.
-  const char* codec = m_pcm ? OmniphonyPcmCodecId(hints.codec) : CodecId(hints.codec);
+  const char* codec = m_pcm ? OmniphonyPcmCodecId(hints.codec) : CodecId(hints);
   if (!m_pcm && !codec)
     return false;
 
@@ -1061,7 +1299,7 @@ bool CDVDAudioCodecOmniphony::StartHelper(CDVDStreamInfo& hints)
   }
 
   std::string open = "lib=" + dir + "/liborender.so\n" + "bridge=" + bridge + "\n" +
-                     "config=" + ConfigPath() + "\n";
+                      "config=" + ConfigPath() + "\n" + "rate=" + std::to_string(m_rate) + "\n";
   if (codec)
     open += "codec=" + std::string(codec) + "\n";
   if (m_mode == RenderMode::Cascade)
@@ -1074,7 +1312,7 @@ bool CDVDAudioCodecOmniphony::StartHelper(CDVDStreamInfo& hints)
   m_staging.clear();
 
   const size_t before = m_out.frames.size();
-  if (!m_helper->Send(OP_OPEN, open.data(), open.size()) || !m_helper->Collect(m_out, 0))
+  if (!m_helper->Send(OP_OPEN, open.data(), open.size()) || !AwaitOpen())
   {
     CLog::Log(LOGERROR, "CDVDAudioCodecOmniphony: the helper refused to open the stream");
     m_helper.reset();
@@ -1082,10 +1320,129 @@ bool CDVDAudioCodecOmniphony::StartHelper(CDVDStreamInfo& hints)
   }
   AnchorNewBlocks(before);
 
-  for (const auto& msg : m_helper->TakeMessages())
-    CLog::Log(LOGDEBUG, "CDVDAudioCodecOmniphony: helper: {}", msg);
-
+  // Only now, because until the engine exists there is nothing to prime and
+  // nothing that could have filled the bank - see OMNI_OPEN_TIMEOUT_MS. Callers
+  // that primed before starting the helper are re-armed rather than
+  // contradicted: this is the same size, measured from a sensible moment.
+  StartPriming(FramesFor(OMNI_PRIME_MS));
   return true;
+}
+
+bool CDVDAudioCodecOmniphony::AwaitOpen()
+{
+  /*
+   * Wait for the helper to say the engine is up, rather than assume it.
+   *
+   * Nothing here is impatient for its own sake: the wait exists because the
+   * thing after it is timed, and timing the engine's construction as though it
+   * were the renderer failing to keep up is what made every rate but 48 kHz
+   * unusable. See OMNI_OPEN_TIMEOUT_MS for the measurements.
+   *
+   * Collect is what does the waiting, because its event is the one the pump
+   * thread sets. It waits for audio rather than for a status frame, so this
+   * polls rather than blocks once - the acknowledgement is noticed within a
+   * poll interval of arriving, and any audio that came with it is collected on
+   * the way past rather than left for the next call.
+   */
+  // Braces, not parentheses: with parentheses this declares a function taking a
+  // std::chrono::milliseconds rather than a deadline, and the next line stops
+  // compiling. The rest of Kodi spells this form the same way.
+  XbmcThreads::EndTime<> deadline{std::chrono::milliseconds(OMNI_OPEN_TIMEOUT_MS)};
+  for (;;)
+  {
+    // False means the helper died or broke the protocol. A refused open is one
+    // of the ways that happens - the helper reports and exits - so this is the
+    // path a bad bridge path or an unreadable config arrives on, and the
+    // messages drained below are what say which.
+    const bool alive = m_helper->Collect(m_out, OMNI_OPEN_POLL_MS);
+
+    bool opened = false;
+    for (const auto& msg : m_helper->TakeMessages())
+    {
+      CLog::Log(LOGDEBUG, "CDVDAudioCodecOmniphony: helper: {}", msg);
+      if (StringUtils::StartsWith(msg, OMNI_OPEN_MARK))
+        opened = true;
+    }
+    // After the drain, not before: a helper that answered and then died still
+    // answered, and its message is worth having in the log either way.
+    if (opened)
+      return true;
+    if (!alive)
+      return false;
+
+    if (deadline.IsTimePast())
+    {
+      CLog::Log(LOGERROR,
+                "CDVDAudioCodecOmniphony: the helper has not opened the stream after {}ms",
+                OMNI_OPEN_TIMEOUT_MS);
+      return false;
+    }
+  }
+}
+
+int CDVDAudioCodecOmniphony::FramesFor(unsigned int ms) const
+{
+  return static_cast<int>(static_cast<uint64_t>(m_rate) * ms / 1000);
+}
+
+unsigned int CDVDAudioCodecOmniphony::ChooseRate(int hinted, bool objects)
+{
+  // A hint below the narrowest rate anything sane uses is the demuxer saying
+  // nothing, not saying something small.
+  const unsigned int rate = hinted >= static_cast<int>(OMNI_MIN_RATE)
+                                ? static_cast<unsigned int>(hinted)
+                                : OMNI_DEFAULT_RATE;
+  if (rate <= OMNI_MAX_RATE)
+    return rate;
+
+  // Above the ceiling only a path that can resample may take the stream. The
+  // object path cannot: it hands the bridge undecoded bitstream and has no
+  // opportunity to change the rate of what comes out.
+  return objects ? 0 : OMNI_MAX_RATE;
+}
+
+bool CDVDAudioCodecOmniphony::RateAgrees()
+{
+  if (m_rateChecked)
+    return true;
+  m_rateChecked = true;
+
+  /*
+   * The engine was opened at the demuxer's word and the bridge decodes at the
+   * stream's, so this is the one place the two can be compared - and it has to
+   * be, because a disagreement is not an error anywhere downstream. Nothing
+   * refuses it, nothing logs it; the film simply plays at the wrong speed, for
+   * its whole length, with no clue as to why. Falling back costs the listener
+   * the binaural render and gives them a film at the right speed, which is not
+   * a close call.
+   *
+   * Asked of the first complete access unit, which is the earliest the parser
+   * has read a header, and only then: a stream that changes rate mid-file
+   * would have to be re-opened rather than refused, and re-opening cannot
+   * change the format ActiveAE was already given.
+   *
+   * Only for the two the parser answers for. TrueHD is read straight out of
+   * the major sync - 44100 or 48000 shifted by the rate field, so a 96 or 192
+   * kHz master is reported as itself - and E-AC-3's fscod is the stream's own
+   * rate too. DTS is deliberately not asked, because the parser cannot answer
+   * for it: SyncDTS reads the core's sync word, and the only DTS that reaches
+   * this path is an XLL presentation, whose output rate is the extension
+   * substream's. Comparing the two would call a correct 96 kHz DTS:X track a
+   * mismatch and drop exactly the soundtracks this exists for.
+   */
+  const auto type = m_parser.GetDataType();
+  if (type != CAEStreamInfo::STREAM_TYPE_TRUEHD && type != CAEStreamInfo::STREAM_TYPE_EAC3)
+    return true;
+
+  const unsigned int actual = m_parser.GetSampleRate();
+  if (actual == 0 || actual == m_rate)
+    return true;
+
+  CLog::Log(LOGWARNING,
+            "CDVDAudioCodecOmniphony: the renderer was opened at {}Hz and the stream is {}Hz - the "
+            "render would run at the wrong speed",
+            m_rate, actual);
+  return false;
 }
 
 void CDVDAudioCodecOmniphony::ArmRecovery()
@@ -1117,13 +1474,15 @@ void CDVDAudioCodecOmniphony::AnchorNewBlocks(size_t before)
   m_pendingPts = DVD_NOPTS_VALUE;
 }
 
-void CDVDAudioCodecOmniphony::DropRendered()
+bool CDVDAudioCodecOmniphony::DropRendered()
 {
   // The pump thread holds a reserve of its own and keeps filling it, so
   // clearing only what has reached here would leave a second of the old
-  // position queued up behind it.
-  if (m_helper)
-    m_helper->Resync();
+  // position queued up behind it. Resync is also what sends the OP_RESET, so
+  // that emptying the bank and telling the helper to stop filling it cannot be
+  // interleaved with the pump - see there. A caller with no helper has nothing
+  // to reset and nothing to fail.
+  const bool reset = m_helper ? m_helper->Resync() : true;
 
   m_out = CHelper::Rendered{};
   m_pcmConsumed = 0;
@@ -1139,7 +1498,8 @@ void CDVDAudioCodecOmniphony::DropRendered()
   // Every caller has just emptied the renderer, so the bank has to be rebuilt
   // before the clock is allowed to run against it again. The cold-start size is
   // the safe default; Reset lowers it straight after, being the warm case.
-  StartPriming(OMNI_PRIME_FRAMES);
+  StartPriming(FramesFor(OMNI_PRIME_MS));
+  return reset;
 }
 
 void CDVDAudioCodecOmniphony::StartPriming(int frames)
@@ -1218,7 +1578,7 @@ void CDVDAudioCodecOmniphony::UpdateName()
   // failing to open one - so the fallbacks below cannot be reached in practice.
   // They are here because concatenating a null pointer onto a std::string is
   // undefined, which is too sharp an edge to leave unguarded.
-  const char* codec = decoder ? decoder->name : (m_hints ? CodecId(m_hints->codec) : nullptr);
+  const char* codec = decoder ? decoder->name : (m_hints ? CodecId(*m_hints) : nullptr);
   m_codecName = std::string("om-") + (codec ? codec : "?");
 }
 
@@ -1344,15 +1704,10 @@ void CDVDAudioCodecOmniphony::PublishRenderInfo()
   m_processInfo.SetOmniphonySofa(m_sofa);
 }
 
-bool CDVDAudioCodecOmniphony::ReopenAs(RenderMode mode)
+bool CDVDAudioCodecOmniphony::ReopenAs(RenderMode mode, unsigned int rate)
 {
   if (!m_hints)
     return false;
-
-  CLog::Log(LOGINFO,
-            "CDVDAudioCodecOmniphony: {} objects is more than direct rendering can carry; "
-            "restarting on the {}-speaker virtual layout",
-            m_objectCount, 12);
 
   if (m_helper)
   {
@@ -1364,6 +1719,46 @@ bool CDVDAudioCodecOmniphony::ReopenAs(RenderMode mode)
   m_backlog.clear();
 
   m_mode = mode;
+
+  /*
+   * Everything the rate is true of has to move with it.
+   *
+   * The helper is told it in the OPEN payload, and the other three are what the
+   * rest of this class derives from it: the format ActiveAE will be given, the
+   * limiter's idea of how long a millisecond is, and - through FramesFor - the
+   * bank and priming sizes. Leaving any of them behind would swap one
+   * wrong-speed bug for a subtler one.
+   *
+   * Before the format has been published nothing downstream has seen the old
+   * rate; after it, the next block carries the new one and CVideoPlayerAudio
+   * reopens its sink on the change. See OmniphonyRateCheck, which is the only
+   * route to a caller passing a different rate.
+   */
+  if (rate != m_rate)
+  {
+    CLog::Log(LOGINFO,
+              "CDVDAudioCodecOmniphony: the renderer was opened at {}Hz and the stream decodes at "
+              "{}Hz - restarting at the stream's own rate",
+              m_rate, rate);
+    m_rate = rate;
+    m_format.m_sampleRate = m_rate;
+    m_limiter.SetSamplerate(m_rate);
+    m_limiter.Reset();
+  }
+
+  /*
+   * RateAgrees keeps its answer across this, deliberately.
+   *
+   * It asks the parser about the stream, and neither of those changes when the
+   * helper restarts - so re-asking could only ever repeat itself, except in the
+   * one case where it would not: after a rate re-open the parser still reads
+   * the header it always read, and comparing that against the rate the engine
+   * has just corrected us to would call the corrected rate a mismatch and fall
+   * back. That is the two checks contradicting each other, and the engine wins
+   * it - a decoded frame beats a parsed header, which is the whole reason the
+   * engine is asked at all.
+   */
+
   if (!StartHelper(*m_hints))
     return false;
 
@@ -1389,14 +1784,27 @@ bool CDVDAudioCodecOmniphony::Open(CDVDStreamInfo& hints, CDVDCodecOptions& opti
    * says place the channels this soundtrack was mixed into and skip the objects
    * - which is the consistent reading of a master that is still on, and the
    * cheaper render for a device that cannot keep up with the objects.
+   *
+   * The rate is the third condition, and it belongs to the object path alone.
+   * Both paths reach the same renderer through the same call, so neither is
+   * better at placing sound; what differs is that only the PCM path can change
+   * a stream's rate. A source above the ceiling therefore has to come down
+   * here, where there is a resampler to bring it, rather than there, where the
+   * engine would be told one rate while the bridge decoded at another. Below
+   * it the object path starts at the demuxer's rate and verifies the decoder's
+   * reported rate before the format is published, reopening when necessary.
    */
   bool objects = true;
   if (const auto settings = CServiceBroker::GetSettingsComponent())
     objects = settings->GetSettings()->GetBool(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYOBJECTS);
 
-  if (!objects || !CodecId(hints.codec))
+  const bool objectCodec = objects && CodecId(hints) != nullptr;
+  m_rate = objectCodec ? ChooseRate(hints.samplerate, true) : 0;
+
+  if (m_rate == 0)
   {
-    auto pcm = std::make_unique<COmniphonyPcmSource>(m_processInfo);
+    m_rate = ChooseRate(hints.samplerate, false);
+    auto pcm = std::make_unique<COmniphonyPcmSource>(m_processInfo, m_rate);
     if (!pcm->Open(hints, options))
       return false;
     m_pcm = std::move(pcm);
@@ -1406,16 +1814,18 @@ bool CDVDAudioCodecOmniphony::Open(CDVDStreamInfo& hints, CDVDCodecOptions& opti
   m_mode = RenderMode::Direct;
   m_modeSettled = false;
   m_modeForced = false;
-  m_modeWindow.Set(std::chrono::milliseconds(OMNI_MODE_WINDOW_MS));
   m_objectCount = -1;
   m_bed.clear();
   m_parser.Reset();
   m_backlog.clear();
+  m_rateChecked = false;
+  m_rateSettled = false;
+  m_formatPublished = false;
   DropRendered();
   m_failed = false;
   m_drained = false;
   m_reportedFallback = false;
-  m_limiter.SetSamplerate(OMNI_OUT_RATE);
+  m_limiter.SetSamplerate(m_rate);
   m_limiter.Reset();
 
   if (const auto settings = CServiceBroker::GetSettingsComponent())
@@ -1487,8 +1897,17 @@ bool CDVDAudioCodecOmniphony::Open(CDVDStreamInfo& hints, CDVDCodecOptions& opti
   if (!StartHelper(hints))
     return false;
 
+  // After the helper is open, for the reason priming is armed there: the window
+  // bounds how long the render mode stays open to the object count, and the
+  // count cannot arrive until the engine exists. Armed before, a stream that
+  // took seconds to open - which off 48 kHz it does - would spend most of its
+  // window waiting for a renderer rather than listening to one. ReopenAs starts
+  // a helper too and deliberately does not come through here: by then the mode
+  // is settled and the window has done its work.
+  m_modeWindow.Set(std::chrono::milliseconds(OMNI_MODE_WINDOW_MS));
+
   m_format.m_dataFormat = AE_FMT_FLOAT;
-  m_format.m_sampleRate = OMNI_OUT_RATE;
+  m_format.m_sampleRate = m_rate;
   m_format.m_channelLayout = CAEChannelInfo(AE_CH_LAYOUT_2_0);
   m_format.m_frameSize = sizeof(float) * OMNI_OUT_CHANNELS;
 
@@ -1658,10 +2077,10 @@ bool CDVDAudioCodecOmniphony::RestartBridge()
   // The bank goes for the same reason a seek's does: OP_RESET restarts the
   // engine's sample counter, so every timestamp already banked describes a
   // clock that will not exist a moment from now, and the anchor with them.
-  DropRendered();
+  const bool reset = DropRendered();
   ArmRecovery();
   m_headerSent = false;
-  return m_helper->Send(OP_RESET, nullptr, 0);
+  return reset;
 }
 
 bool CDVDAudioCodecOmniphony::StagePcm()
@@ -1756,7 +2175,7 @@ bool CDVDAudioCodecOmniphony::AddPcmData(const DemuxPacket& packet)
   if (!m_staging.empty())
     return false;
 
-  if (!m_priming && GetBufferSize() >= OMNI_BANK_FRAMES)
+  if (!m_priming && GetBufferSize() >= FramesFor(OMNI_BANK_MS))
     return false;
 
   /*
@@ -1820,6 +2239,10 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
     return m_fallback ? m_fallback->AddData(packet) : false;
   }
 
+  // The player came back with something to give. GetData's empty answer is
+  // what sent it, and this is the answer to whether that worked - see there.
+  m_fedSinceYield = true;
+
   // Everything above is common to both paths - the fallback, the bank, the
   // clock. What a packet turns into is where they part.
   if (m_pcm)
@@ -1839,9 +2262,9 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
    * Not while priming, where nothing is handed over at all and refusing would
    * leave the player with neither audio nor anywhere to put the packet. The
    * bank cannot reach this while priming anyway: priming ends at
-   * OMNI_PRIME_FRAMES, which is the smaller number.
+   * OMNI_PRIME_MS, which is the smaller number.
    */
-  if (!m_priming && GetBufferSize() >= OMNI_BANK_FRAMES)
+  if (!m_priming && GetBufferSize() >= FramesFor(OMNI_BANK_MS))
     return false;
 
   /*
@@ -1893,6 +2316,11 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
 
     if (m_dataSize)
     {
+      if (!RateAgrees())
+      {
+        FallBack("the stream is not at the rate the renderer was opened at");
+        return m_fallback ? m_fallback->AddData(packet) : false;
+      }
       if (!m_helper->Send(OP_FEED, m_buffer, m_dataSize))
       {
         FallBack("the helper stopped accepting data");
@@ -1946,6 +2374,70 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
     const int objects = std::atoi(msg.c_str() + at + 8);
 
     /*
+     * The rate the engine actually decoded at, read before anything else on
+     * this line and acted on before anything else can skip it.
+     *
+     * Position is load-bearing. Everything below returns early for a report
+     * carrying no objects, and a report carrying no objects is exactly the
+     * shape of the stream this exists for: a DTS-HD MA track whose 96 kHz XLL
+     * extension is plain multichannel rather than DTS:X reports objects=0 for
+     * its whole length. Parsed after that early return, the rate on the one
+     * stream that most needs it would never be read.
+     *
+     * Absent from an older helper's line, which leaves the rate alone - the
+     * same way an absent bed= leaves m_bed empty rather than being treated as
+     * a broken message.
+     */
+    const size_t rateAt = msg.find("rate=");
+    if (rateAt != std::string::npos)
+    {
+      const auto reported = static_cast<unsigned int>(std::atoi(msg.c_str() + rateAt + 5));
+      if (reported != 0)
+        m_rateSettled = true;
+      switch (OmniphonyRateCheck(reported, m_rate, m_pcm != nullptr, m_formatPublished))
+      {
+        case OmniphonyRateVerdict::Agrees:
+          break;
+
+        case OmniphonyRateVerdict::NotOnPcmPath:
+          CLog::Log(LOGERROR,
+                    "CDVDAudioCodecOmniphony: the engine decoded {}Hz from PCM this codec "
+                    "resampled to {}Hz - the two cannot disagree, so this is a bug here",
+                    reported, m_rate);
+          break;
+
+        case OmniphonyRateVerdict::Unrenderable:
+          CLog::Log(LOGWARNING,
+                    "CDVDAudioCodecOmniphony: the stream decodes at {}Hz, outside the {}-{}Hz this "
+                    "path can render",
+                    reported, OMNI_MIN_RATE, OMNI_MAX_RATE);
+          FallBack("the stream decodes at a rate this path cannot render");
+          return m_fallback ? m_fallback->AddData(packet) : false;
+
+        case OmniphonyRateVerdict::Midstream:
+          // Re-opened exactly as below. The next block carries the new rate
+          // and CVideoPlayerAudio reopens its sink for it; the reserve goes
+          // with the old helper, which is heard as a gap once.
+          CLog::Log(LOGWARNING,
+                    "CDVDAudioCodecOmniphony: the stream moved to {}Hz after the render had "
+                    "started at {}Hz - re-opening at the new rate",
+                    reported, m_rate);
+          [[fallthrough]];
+
+        case OmniphonyRateVerdict::Retune:
+          // Same shape as the mode switch below: restart, then leave the rest
+          // of these messages to the helper that has just been replaced. They
+          // describe an engine that no longer exists.
+          if (!ReopenAs(m_mode, reported))
+          {
+            FallBack("could not restart the renderer at the stream's own rate");
+            return m_fallback ? m_fallback->AddData(packet) : false;
+          }
+          return true;
+      }
+    }
+
+    /*
      * Zero is not "this soundtrack has no objects". It is "the frame just
      * rendered carried no object metadata", which the engine supports
      * deliberately - bed-only and pre-metadata frames render through the
@@ -1958,9 +2450,31 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
      * carries no objects reports zero forever, m_objectCount stays -1, and
      * InputDescription says nothing - which is the same outcome by a route
      * that cannot be confused with "we asked too early".
+     *
+     * All of that holds only until objects have actually been seen. After that,
+     * "we asked too early" has stopped being available as an explanation: the
+     * engine has rendered objects, and a zero now is it saying it no longer is.
+     * A stream that drops back to a plain bed - a switch of presentation, or
+     * simply the object-free stretch of one - would otherwise leave the screen
+     * reporting the count from whenever objects were last carried, for as long
+     * as they are not. So the count is dropped, and the screen returns to
+     * saying nothing, which is what a bed-only stream should say.
+     *
+     * The one-shot below is not revisited: the mode decision is about what this
+     * soundtrack needs, and a stretch without objects does not make the film
+     * that carried fifteen of them a stereo one.
      */
     if (objects <= 0)
+    {
+      // Positive only when a report actually carried objects - see above, this
+      // is the whole difference between the two zeros.
+      if (m_objectCount > 0)
+      {
+        m_objectCount = -1;
+        m_infoDirty = true;
+      }
       continue;
+    }
 
     m_objectCount = objects;
 
@@ -2015,7 +2529,11 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
       // Still inside the opening blocks, so this is a restart at the start of
       // the stream rather than a switch part-way through a film. Settled first,
       // so a failure here cannot send us round again.
-      if (!ReopenAs(RenderMode::Cascade))
+      CLog::Log(LOGINFO,
+                "CDVDAudioCodecOmniphony: {} objects is more than direct rendering can carry; "
+                "restarting on the {}-speaker virtual layout",
+                m_objectCount, 12);
+      if (!ReopenAs(RenderMode::Cascade, m_rate))
       {
         FallBack("could not restart on the virtual layout");
         return m_fallback ? m_fallback->AddData(packet) : false;
@@ -2081,8 +2599,14 @@ void CDVDAudioCodecOmniphony::GetData(DVDAudioFrame& frame)
   // audio yet" and leaves the clock stopped, which is exactly the point.
   if (m_priming)
   {
+    // Empty answers too, and counted as such for the reason the refill below
+    // gives - priming that runs out of patience on a thin bank drops straight
+    // into that test, and it must not read a feed from before all this.
     if (GetBufferSize() < m_primeFrames && !m_primeDeadline.IsTimePast())
+    {
+      m_fedSinceYield = false;
       return;
+    }
     m_priming = false;
 
     /*
@@ -2112,17 +2636,143 @@ void CDVDAudioCodecOmniphony::GetData(DVDAudioFrame& frame)
     }
 
     CLog::Log(LOGDEBUG, "CDVDAudioCodecOmniphony: primed {}ms of render{}",
-              GetBufferSize() * 1000 / static_cast<int>(OMNI_OUT_RATE),
+              GetBufferSize() * 1000 / static_cast<int>(m_rate),
               m_primeDeadline.IsTimePast() ? " (gave up waiting for more)" : "");
   }
 
+  // What the reserve is doing, once a second - see OMNI_RESERVE_LOG_MS. The two
+  // numbers are the pair that tells the failure modes apart, and neither is
+  // much use without the other: a short reserve with an empty helper queue is a
+  // feed that is not keeping the renderer busy, where a short reserve with a
+  // full one is a renderer that cannot keep up with the feed. A reserve sitting
+  // at OMNI_BANK_MS is the healthy case and means AddData is refusing packets,
+  // which is what is meant to bound it.
+  //
+  // Above the early return below on purpose, so a reserve that has run dry
+  // still reports rather than going quiet exactly when it matters.
+  if (m_reserveLogged.IsTimePast())
+  {
+    m_reserveLogged.Set(std::chrono::milliseconds(OMNI_RESERVE_LOG_MS));
+    CLog::Log(LOGDEBUG, "CDVDAudioCodecOmniphony: reserve {}ms of {}, helper queue {}kB",
+              GetBufferSize() * 1000 / static_cast<int>(m_rate), OMNI_BANK_MS,
+              m_helper ? m_helper->Queued() / 1024 : 0);
+  }
+
+  // Nothing rendered yet - an empty answer all the same, and one the player
+  // cannot tell from a deliberate one, so it has to be recorded as one. Left
+  // unrecorded it would be the deliberate yield below that pays: that yield
+  // would find m_fedSinceYield still set from before this return and send the
+  // player back for a packet it has already been sent back for.
+  //
+  // Which is only free while the player has one to give. This return leaves
+  // CVideoPlayerAudio without a frame, so its next read of the message queue is
+  // the full-timeout, normal-priority one - the only shape whose MSGQ_TIMEOUT
+  // branch reaches the stall test, the others turning back at "if (priority)
+  // continue". A dry demux queue then times out, and the yield below would fire
+  // on the GetData that branch makes before the test, withholding the first
+  // block rendered since the drought began at exactly the moment the player is
+  // deciding whether the stream has stalled.
   if (m_out.frames.empty())
+  {
+    m_fedSinceYield = false;
     return;
+  }
+
+  /*
+   * Hand back nothing once, so the player goes and fetches a packet.
+   *
+   * CVideoPlayerAudio has one loop and two ways round it. A packet it takes
+   * off the message queue is fed here and then drained: ProcessDecoderOutput
+   * pushes what comes back into the sink, and while that keeps succeeding the
+   * loop sets onlyPrioMsgs, which means priority-only messages and a zero
+   * timeout - so it does not come back for another packet at all. It only
+   * returns to the queue once ProcessDecoderOutput answers false, which is to
+   * say once this codec hands out nothing.
+   *
+   * For a synchronous decoder that is exactly right: one packet in, one block
+   * out, and the false comes after every block. This one answers later than it
+   * is asked and holds a reserve, so the same loop drains the whole reserve
+   * into a sink that accepts it at the speed it plays, feeding the helper
+   * nothing for as long as that takes. It is a sawtooth, and it is in every
+   * instrumented playback there is, demos and films alike: the player empties
+   * its demux queue into the feed in one burst until AwaitRoom stops it, goes
+   * quiet for seconds - four of them, in one film, with the reserve falling
+   * from 539ms to 10ms across the gap - and comes back only once the reserve
+   * has run out. Nothing about the bank stopped it: a gap runs until the
+   * reserve is gone, so the reserve across one is falling towards empty rather
+   * than climbing to the OMNI_BANK_MS that would have made AddData refuse a
+   * packet. What held the feeding off was never this codec.
+   *
+   * So the codec has to send it back, and how often decides everything. An
+   * empty answer costs the sink nothing - the player fetches a packet, feeds
+   * it, and comes straight back for this block - so the ratio of empty answers
+   * to served blocks is the ratio of input rate to output rate.
+   *
+   * One for one only holds the reserve where it is. A TrueHD access unit and a
+   * rendered block are both 40 samples, so alternating puts in exactly what
+   * goes out: the reserve stops falling, and it can never grow. That is the
+   * mistake this had for a while, and AwaitRoom had already named it - matching
+   * the two rates "turned out to be the problem: it also stopped the renderer
+   * ever getting ahead, because the player only feeds at the speed it plays".
+   * Across seventeen instrumented playbacks the reserve reached OMNI_BANK_MS
+   * exactly seven times, every one of them the priming overshoot in the first
+   * seconds, and from there every playback was flat or falling. A title that
+   * primed high stayed clean; one knocked down to 700ms early sat at 700ms for
+   * the rest of the film and stuttered, the same file that had been faultless
+   * the run before.
+   *
+   * So while the reserve is short and the helper has room for more, more than
+   * one empty answer may follow a block: input then runs ahead of output and
+   * the reserve fills. OMNI_REFILL_YIELDS of them puts in twice what goes out.
+   * It is self-limiting from both ends. The helper only converts input into
+   * reserve as fast as it renders, so the surplus lands in its input queue, and
+   * once that is no longer low the allowance drops back to one and the reserve
+   * merely holds - which is the right answer for a renderer that is already
+   * flat out, since feeding it harder would only park the audio thread in
+   * AwaitRoom. At the other end the reserve reaches OMNI_BANK_MS, this stops
+   * firing, and AddData's refusal takes over.
+   *
+   * The allowance is also what bounds the starvation this had in its first
+   * shape. Answering empty on every call - which is what re-arming per feed
+   * did - trades a feed for an empty answer with no block in between, and the
+   * sink is given nothing at all until the reserve fills. Counting the empty
+   * answers since the last block caps that at OMNI_REFILL_YIELDS in a row.
+   *
+   * And none of it fires when the player has nothing to give. An empty answer
+   * only buys anything if the player answers it with a packet; if its demux
+   * queue is empty it instead waits on the message queue for as long as the
+   * sink has audio left - CVideoPlayerAudio passes GetCacheTime() as the
+   * timeout, which AwaitRoom relies on as the player's one throttle - and that
+   * is a wait for nothing while this codec sits on a reserve the sink could
+   * have had. m_fedSinceYield is the answer to "did the last empty answer bring
+   * a packet back": while it does, keep going; when it stops, serve, and let
+   * the reserve cover the drought it was banked for. It also keeps the empty
+   * answer out of the one path in CVideoPlayerAudio::Process that can mark the
+   * stream stalled, which is reached only on a message queue that timed out -
+   * that is to say only when nothing was fed. Which holds only if every empty
+   * answer clears the flag, the one above for an unrendered bank included:
+   * leave one uncounted and the next call reads a feed that arrived before it,
+   * and yields on a player that has since gone quiet.
+   */
+  const bool helperHasRoom =
+      m_helper && m_helper->Queued() < OMNI_FEED_QUEUE_MAX / OMNI_REFILL_ROOM_DIVISOR;
+  const unsigned int allowance = helperHasRoom ? OMNI_REFILL_YIELDS : 1;
+  if (m_yieldsSinceServe < allowance && m_fedSinceYield &&
+      GetBufferSize() < FramesFor(OMNI_BANK_MS))
+  {
+    ++m_yieldsSinceServe;
+    m_fedSinceYield = false;
+    return;
+  }
 
   const uint32_t frames = m_out.frames.front();
   const size_t samples = static_cast<size_t>(frames) * OMNI_OUT_CHANNELS;
   if (m_out.pcm.size() - m_pcmConsumed < samples)
     return;
+
+  // From here ActiveAE has been given a format, so a later change of rate is
+  // one the player has to follow. See m_formatPublished.
+  m_formatPublished = true;
 
   frame.passthrough = false;
   frame.format = m_format;
@@ -2131,7 +2781,7 @@ void CDVDAudioCodecOmniphony::GetData(DVDAudioFrame& frame)
   frame.framesOut = 0;
   frame.planes = 1;
   frame.bits_per_sample = CAEUtil::DataFormatToBits(m_format.m_dataFormat);
-  frame.duration = (static_cast<double>(frames) * DVD_TIME_BASE) / OMNI_OUT_RATE;
+  frame.duration = (static_cast<double>(frames) * DVD_TIME_BASE) / m_rate;
 
   /*
    * Copied out of the bank rather than pointed at inside it.
@@ -2197,6 +2847,9 @@ void CDVDAudioCodecOmniphony::GetData(DVDAudioFrame& frame)
     m_out.pcm.erase(m_out.pcm.begin(), m_out.pcm.begin() + m_pcmConsumed);
     m_pcmConsumed = 0;
   }
+
+  // A block reached the player, so the allowance above starts again.
+  m_yieldsSinceServe = 0;
 }
 
 void CDVDAudioCodecOmniphony::Drain()
@@ -2210,6 +2863,9 @@ void CDVDAudioCodecOmniphony::Drain()
     return;
 
   m_drained = true;
+  // GetData's deliberate empty answers exist only to solicit more demux input.
+  // EOF guarantees none is coming, so serve every drained block directly.
+  m_fedSinceYield = false;
   // A short stream may end before the normal reserve target is reached. EOF is
   // proof that no more input is coming, so withholding its tail for the
   // priming deadline would only add silence.
@@ -2271,9 +2927,7 @@ void CDVDAudioCodecOmniphony::Drain()
   bool acknowledged = false;
   while (!deadline.IsTimePast() && !acknowledged)
   {
-    const size_t before = m_out.frames.size();
-    const bool alive = m_helper->Collect(m_out, OMNI_PUMP_SLICE_MS);
-    AnchorNewBlocks(before);
+    const bool alive = Collect(OMNI_PUMP_SLICE_MS);
 
     for (const auto& msg : m_helper->TakeMessages())
     {
@@ -2340,30 +2994,84 @@ void CDVDAudioCodecOmniphony::Reset()
     m_headerSent = false;
   }
 
-  DropRendered();
-  StartPriming(OMNI_PRIME_FRAMES_SEEK);
-  // The OP_RESET below returns the bridge to expecting a header, so whether the
+  // Empties the bank and resets the helper as one operation - see Resync.
+  // Nothing is collected here on purpose: whatever the helper is still holding
+  // belongs to the old position, and the pump thread has already been told to
+  // throw it away as it arrives.
+  const bool reset = DropRendered();
+  StartPriming(FramesFor(OMNI_PRIME_MS_SEEK));
+  // The reset above returns the bridge to expecting a header, so whether the
   // renderer works is an open question again - see ArmRecovery.
   ArmRecovery();
   // A seek is a discontinuity: carrying the limiter's attack/hold/release
   // across it would attenuate the new position because of a peak in the old.
   m_limiter.Reset();
 
-  if (m_helper)
-  {
-    // Nothing is collected here on purpose. Whatever the helper is holding
-    // belongs to the old position, and DropRendered has already told the pump
-    // thread to throw it away as it arrives.
-    if (!m_helper->Send(OP_RESET, nullptr, 0))
-      FallBack("the helper did not survive a seek");
-  }
+  if (!reset)
+    FallBack("the helper did not survive a seek");
 }
 
 AEAudioFormat CDVDAudioCodecOmniphony::GetFormat()
 {
+  // Before the fallback is asked, because settling can be what creates it.
+  if (!m_fallback)
+    SettleRate();
   if (m_fallback)
     return m_fallback->GetFormat();
   return m_format;
+}
+
+void CDVDAudioCodecOmniphony::SettleRate()
+{
+  /*
+   * PAPlayer asks for the format once, after its first packets, and plays the
+   * whole track at the answer: unlike CVideoPlayerAudio it has no way to follow
+   * a change later. On the object path that answer is the demuxer's rate until
+   * the engine has decoded a frame and said otherwise, and for DTS-HD MA with a
+   * 96 kHz extension the demuxer's rate is the core's 48 - a track played at
+   * half speed. So once a packet has gone in, and before anything has come
+   * out, the question waits for the engine's report, and a rate that disagrees
+   * is followed here rather than in AddData, the same way.
+   *
+   * Nothing waits where nothing could be learned. Before any packet the engine
+   * has nothing to report - which is when CVideoPlayerAudio asks, at open -
+   * once a block has been handed over the player has had its answer, and the
+   * PCM path resamples to the rate it opened at.
+   */
+  if (m_rateSettled || m_formatPublished || m_pcm || !m_helper || !m_fed)
+    return;
+  // Once per stream: an engine too old to report a rate is not waited for twice.
+  m_rateSettled = true;
+
+  XbmcThreads::EndTime<> budget{std::chrono::milliseconds(OMNI_RATE_SETTLE_MS)};
+  unsigned int reported = 0;
+  while ((reported = m_helper->ReportedRate()) == 0 && !budget.IsTimePast())
+  {
+    // A helper that died is AddData's and GetData's to fall back from.
+    if (!Collect(OMNI_PUMP_SLICE_MS))
+      return;
+  }
+
+  // An agreeing report stays queued for AddData, which reads the rest of the
+  // line. One that disagrees belongs to an engine about to be replaced.
+  switch (OmniphonyRateCheck(reported, m_rate, m_pcm != nullptr, m_formatPublished))
+  {
+    case OmniphonyRateVerdict::Retune:
+      if (!ReopenAs(m_mode, reported))
+        FallBack("could not restart the renderer at the stream's own rate");
+      break;
+
+    case OmniphonyRateVerdict::Unrenderable:
+      CLog::Log(LOGWARNING,
+                "CDVDAudioCodecOmniphony: the stream decodes at {}Hz, outside the {}-{}Hz this "
+                "path can render",
+                reported, OMNI_MIN_RATE, OMNI_MAX_RATE);
+      FallBack("the stream decodes at a rate this path cannot render");
+      break;
+
+    default:
+      break;
+  }
 }
 
 int CDVDAudioCodecOmniphony::GetBufferSize()
