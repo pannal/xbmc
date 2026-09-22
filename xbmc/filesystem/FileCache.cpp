@@ -245,6 +245,8 @@ void CFileCache::Process()
 
   CWriteRate limiter;
   CWriteRate average;
+  auto nextRateLog = std::chrono::steady_clock::time_point::min();
+  uint32_t lastLoggedBaseRate = 0;
 
   while (!m_bStop)
   {
@@ -299,6 +301,29 @@ void CFileCache::Process()
       // cache level [0.0 - 1.0]
       const double level = static_cast<double>(m_writePos - m_readPos) / m_maxForward;
       readFactor = static_cast<float>(level * -2.5 + 4.0); // read factor [4.0x - 1.5x]
+    }
+
+    if (CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG))
+    {
+      const auto now = std::chrono::steady_clock::now();
+      const uint32_t baseRate = m_writeRate;
+      if (now >= nextRateLog || baseRate != lastLoggedBaseRate)
+      {
+        const auto forward = m_writePos - m_readPos;
+        const float targetRate = baseRate * readFactor;
+        const char* throttleState = baseRate == 0          ? "disabled"
+                                    : forward < targetRate ? "bypassed (low forward buffer)"
+                                                           : "enabled";
+        CLog::Log(LOGDEBUG,
+                  "CFileCache::Process - base rate {} B/s, read factor {:.2f}x ({}), "
+                  "throttle target {:.0f} B/s ({:.2f} Mbit/s), forward {} bytes "
+                  "(nominal capacity {} bytes), average cache write rate {} B/s, throttle {}",
+                  baseRate, readFactor, useAdaptativeReadFactor ? "adaptive" : "fixed", targetRate,
+                  targetRate * 8.0 / 1000000.0, forward, m_maxForward, m_writeRateActual,
+                  throttleState);
+        nextRateLog = now + 5s;
+        lastLoggedBaseRate = baseRate;
+      }
     }
 
     while (m_writeRate)
@@ -639,8 +664,9 @@ int CFileCache::IoControl(EIoControl request, void* param)
     m_processWait = std::chrono::milliseconds(wait);
 
     CLog::Log(LOGDEBUG,
-              "CFileCache::IoControl - setting maxRate to {:.2f} Mbit/s with processWait of {} ms",
-              mBits, wait);
+              "CFileCache::IoControl - setting base rate to {} B/s ({:.2f} Mbit/s), "
+              "before read factor, with processWait of {} ms",
+              m_writeRate, m_writeRate * 8.0 / 1000000.0, wait);
     return 0;
   }
 
