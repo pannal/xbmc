@@ -2070,7 +2070,7 @@ bool aml_dv_auto_letterbox_get(uint16_t& top, uint16_t& bottom,
  * same bars: the geometry gap is derived from the actual coded frame, so it
  * stays trustworthy even though the file's own L5 no longer is.
  *
- * Two tests, because neither is complete on its own:
+ * Complementary checks:
  *   - implausible aspect: read as coded-frame offsets (what the spec says they
  *     are), the source L5 implies an active area outside the aspect band the
  *     pixel detector already trusts (s_commonAR tops out at 2.76:1). Skipped
@@ -2078,16 +2078,23 @@ bool aml_dv_auto_letterbox_get(uint16_t& top, uint16_t& bottom,
  *     fire on every frame's real bars;
  *   - equality: the source offsets match the gap we synthesised. Needed for
  *     small gaps, where doubling stays plausible (3840x2024, gap 68, source 68
- *     -> 2.03:1, a perfectly real aspect).
- * A sample matching neither test resets the run, so the equality trip needs the
- * condition to hold across scene changes — variable-L5 content whose in-picture
- * bars merely coincide with the gap for one scene therefore never trips. An
- * impossible aspect acts on ~1 s, since nothing but a corrupt RPU can produce
- * one and waiting only prolongs the over-crop. The error is also
+ *     -> 2.03:1, a perfectly real aspect);
+ *   - crop-axis mismatch: a cropped frame near a common aspect has substantial
+ *     one-sided source offsets only on the axis with no player-added padding.
+ *     E.g. 1918x802 with R=464 still implies a plausible 1.81:1 area, but cuts
+ *     nearly a quarter of the uncropped width off one side.
+ * A plausible sample resets the run. Suspicious offsets need ~3 s of continuous
+ * agreement; this establishes persistence, not that a scene change occurred.
+ * An out-of-band aspect acts on ~1 s. These are heuristics, not proof that an
+ * authored active area is invalid. The error is
  * biased on purpose: dropping composition wrongly leaves in-picture bars
  * lift-grey (cosmetic), while composing wrongly crops picture. */
 static constexpr uint32_t AUTO_LB_AR_MAX = 2900; /* x1000, matches the detector band */
 static constexpr uint32_t AUTO_LB_AR_MIN = 1200;
+/* Common aspect ratios x1000, also used by the pixel detector for snapping. */
+static const uint32_t s_commonAR[] = {
+  1333, 1370, 1667, 1778, 1850, 1896, 2000, 2200, 2350, 2390, 2400, 2550, 2760
+};
 static constexpr int AUTO_LB_POLL_MS = 500;
 static constexpr int AUTO_LB_MAX_POLLS = 120; /* give up after ~60 s */
 static constexpr int AUTO_LB_TRIP_SAMPLES = 6; /* ~3 s of agreement before acting */
@@ -2101,10 +2108,9 @@ static std::mutex s_autoLbWatchMutex;
  * and returns how strongly this sample says the offsets cannot be describing
  * bars inside the coded picture:
  *   AUTO_LB_SAMPLE_OK       - plausible, composition stands;
- *   AUTO_LB_SAMPLE_SUSPECT  - the offsets match our gap. Real content can do
- *                             this by coincidence, so it needs corroboration;
- *   AUTO_LB_SAMPLE_IMPOSSIBLE - the offsets describe an aspect no frame has.
- *                             Only a corrupt RPU produces this transiently. */
+ *   AUTO_LB_SAMPLE_SUSPECT  - duplicate padding or a crop-axis mismatch;
+ *                             real content can do this, so require persistence;
+ *   AUTO_LB_SAMPLE_IMPOSSIBLE - empty area or an aspect outside our accepted band. */
 enum
 {
   AUTO_LB_SAMPLE_OK = 0,
@@ -2154,6 +2160,40 @@ static int _auto_letterbox_duplicate_sample(uint16_t gapTop, uint16_t gapBottom,
   {
     reason = "source L5 implies an impossibly narrow active area";
     return AUTO_LB_SAMPLE_IMPOSSIBLE;
+  }
+
+  // A cropped frame can still contain valid per-scene bars. Only distrust
+  // offsets on the unpadded axis when the frame is near a common aspect (1%),
+  // that pair is strongly one-sided, and the other source pair is zero.
+  // Keeping mixed-axis and symmetric source bars avoids discarding known
+  // variable-aspect content merely because its outer black bars were cropped.
+  bool commonAspect = false;
+  for (const uint32_t ar : s_commonAR)
+  {
+    const uint32_t distance = std::abs(static_cast<int>(codedAR) - static_cast<int>(ar));
+    if (distance * 100 <= ar)
+    {
+      commonAspect = true;
+      break;
+    }
+  }
+  auto oneSided = [](uint16_t a, uint16_t b, int dimension) {
+    const int larger = std::max(a, b);
+    const int smaller = std::min(a, b);
+    return larger > std::max(4, dimension * 2 / 100) &&
+           smaller <= std::max(4, larger / 10);
+  };
+  if (commonAspect && (gapTop || gapBottom) && !gapLeft && !gapRight &&
+      !src[0] && !src[1] && oneSided(src[2], src[3], w))
+  {
+    reason = "one-sided source L5 on the unpadded horizontal axis of cropped video";
+    return AUTO_LB_SAMPLE_SUSPECT;
+  }
+  if (commonAspect && (gapLeft || gapRight) && !gapTop && !gapBottom &&
+      !src[2] && !src[3] && oneSided(src[0], src[1], h))
+  {
+    reason = "one-sided source L5 on the unpadded vertical axis of cropped video";
+    return AUTO_LB_SAMPLE_SUSPECT;
   }
 
   /* Within 2% of the gap (min 4px) counts as "the same bars". */
@@ -2215,8 +2255,8 @@ static void _auto_letterbox_watch_run(int w, int h)
       agree = 0;
       continue;
     }
-    /* An impossible aspect needs only enough samples to rule out a corrupt
-     * RPU; a merely suspicious one has to survive scene changes. */
+    /* Out-of-band values use the shorter confirmation; a heuristic mismatch
+     * must persist longer before we discard source offsets for this stream. */
     const int needed = (verdict == AUTO_LB_SAMPLE_IMPOSSIBLE) ? AUTO_LB_IMPOSSIBLE_SAMPLES
                                                               : AUTO_LB_TRIP_SAMPLES;
     if (++agree < needed)
@@ -2328,11 +2368,6 @@ void aml_dv_detect_active_area_get(uint16_t& top, uint16_t& bottom, uint16_t& le
   left = s_detectedLeft.load();
   right = s_detectedRight.load();
 }
-
-/* Common aspect ratios × 1000 for snapping */
-static const uint32_t s_commonAR[] = {
-  1333, 1370, 1667, 1778, 1850, 1896, 2000, 2200, 2350, 2390, 2400, 2550, 2760
-};
 
 /* Cancel flag — set by stop(), checked by ffmpeg interrupt callback and
  * between seek positions.  Allows clean abort of slow network I/O. */
