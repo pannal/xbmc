@@ -169,21 +169,28 @@ public:
       return true;
     }
 
+    // Forced tracks remain eligible in the requested language, including when
+    // regular subtitles are disabled. A default flag must not bypass that language.
+    if (ss.flags & FLAG_FORCED)
+      return !isSameSubLang;
+
     if (m_isPrefOriginal)
     {
-      if ((ss.flags & FLAG_ORIGINAL))
+      // Preserve container-authored defaults, even for a translated subtitle.
+      if (ss.flags & (FLAG_ORIGINAL | FLAG_DEFAULT))
         return false;
+
+      // Do not enable unflagged embedded tracks just because the audio matches.
+      // External subtitles and CC retain their language-based fallback below.
+      if (!isExternal && !isCC)
+        return true;
     }
     else if (m_isPrefForced)
     {
-      if ((ss.flags & StreamFlags::FLAG_FORCED) && isSameSubLang)
-        return false;
-      else
-        return true;
+      return true;
     }
 
-    // can fall here only when "forced" and "impaired" are disabled,
-    // it always enable subs if language is unknown for external and CC
+    // Regular external/CC subtitles and explicit subtitle-language preferences.
     if ((isSameSubLang || (isCC && (ss.language.empty() || ss.language == "und"))) &&
         (ss.flags & FLAG_FORCED) == 0 && (ss.flags & FLAG_HEARING_IMPAIRED) == 0)
     {
@@ -263,9 +270,10 @@ public:
  *        If lh is 'better than' rh the return value is true, false otherwise.
  *        The priority sequence is exactly as shown by the code sequence of the operator() method.
  *
- *        NOTE: Dont exists a "default" setting for subtitles, as there is for audio (media default),
- *              so the default flag will give a priority over another only when two streams
- *              have same properties (e.g. same language with a same flag, but a different codec, author, etc...).
+ *        "Original" preserves container-default selection. Other language preferences
+ *        use the default flag to choose between matching tracks. After saved and
+ *        external-track preferences, eligible forced subtitles take precedence
+ *        when regular subtitles are disabled.
  */
 class PredicateSubtitlePriority
 {
@@ -275,12 +283,13 @@ private:
   bool m_isPrefOriginal;
   bool m_isPrefForced;
   bool m_isPrefHearingImp;
+  bool m_subtitlesOn;
   PredicateSubtitleFilter m_filter;
   int m_subStream;
 
 public:
-  explicit PredicateSubtitlePriority(const std::string& lang, int stream)
-    : m_playedAudioLang(lang), m_filter(lang, stream), m_subStream(stream)
+  explicit PredicateSubtitlePriority(const std::string& lang, int stream, bool subtitlesOn)
+    : m_playedAudioLang(lang), m_subtitlesOn(subtitlesOn), m_filter(lang, stream), m_subStream(stream)
   {
     auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
     const std::string subLangSetting =
@@ -310,12 +319,15 @@ public:
   {
     PREDICATE_RETURN(lh.type_index == m_subStream, rh.type_index == m_subStream);
 
+    // An ineligible track must not hide a usable internal/default/forced subtitle.
+    PREDICATE_RETURN(relevant(lh), relevant(rh));
+
     const bool isLexternal = STREAM_SOURCE_MASK(lh.source) == STREAM_SOURCE_DEMUX_SUB ||
                              STREAM_SOURCE_MASK(lh.source) == STREAM_SOURCE_TEXT;
     const bool isRexternal = STREAM_SOURCE_MASK(rh.source) == STREAM_SOURCE_DEMUX_SUB ||
                              STREAM_SOURCE_MASK(rh.source) == STREAM_SOURCE_TEXT;
 
-    // prefer external subs (note that this prevents any fallback to internal subs)
+    // Prefer external subtitles among equally relevant tracks.
     PREDICATE_RETURN(isLexternal, isRexternal);
 
     const bool isLSameSubLang = g_LangCodeExpander.CompareISO639Codes(lh.language, m_subLang);
@@ -349,8 +361,24 @@ public:
                        (rh.flags & checkFlags) == checkFlags && isRSameSubLang);
     }
 
+    if (!m_isPrefHearingImp && (m_isPrefOriginal || m_isPrefForced || !m_subtitlesOn))
+    {
+      const int checkFlags = FLAG_FORCED | FLAG_DEFAULT;
+      PREDICATE_RETURN((lh.flags & checkFlags) == checkFlags && isLSameSubLang,
+                       (rh.flags & checkFlags) == checkFlags && isRSameSubLang);
+      PREDICATE_RETURN((lh.flags & FLAG_FORCED) && isLSameSubLang,
+                       (rh.flags & FLAG_FORCED) && isRSameSubLang);
+    }
+
     if (m_isPrefOriginal)
     {
+      // Container defaults may describe translations or SDH tracks. Keep them
+      // ahead of unflagged/original-only tracks, after accessibility preferences.
+      const bool isLDefault = (lh.flags & FLAG_DEFAULT) && !(lh.flags & FLAG_FORCED);
+      const bool isRDefault = (rh.flags & FLAG_DEFAULT) && !(rh.flags & FLAG_FORCED);
+      PREDICATE_RETURN(isLDefault && isLSameSubLang, isRDefault && isRSameSubLang);
+      PREDICATE_RETURN(isLDefault, isRDefault);
+
       // try find original (default) in audio language
       const int checkFlags = FLAG_ORIGINAL | FLAG_DEFAULT;
       PREDICATE_RETURN(isLincluded && (lh.flags & checkFlags) == checkFlags && isLSameSubLang,
@@ -367,18 +395,6 @@ public:
       // try find original with any language
       PREDICATE_RETURN(isLincluded && (lh.flags & FLAG_ORIGINAL),
                        isRincluded && (rh.flags & FLAG_ORIGINAL));
-    }
-    else if (m_isPrefForced)
-    {
-      const int checkFlags = FLAG_FORCED | FLAG_DEFAULT;
-      PREDICATE_RETURN((lh.flags & checkFlags) == checkFlags && isLSameSubLang,
-                       (rh.flags & checkFlags) == checkFlags && isRSameSubLang);
-
-      PREDICATE_RETURN((lh.flags & FLAG_FORCED) && isLSameSubLang,
-                       (rh.flags & FLAG_FORCED) && isRSameSubLang);
-
-      // dont return false here, allow you to fallback on regular sub
-      // its just listitem pre-selection courtesy, in any case the sub will be not enabled
     }
 
     // try find regular (default)
@@ -1088,7 +1104,8 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
 
   // open subtitle stream
   SelectionStream as = m_SelectionStreams.Get(STREAM_AUDIO, GetAudioStream());
-  PredicateSubtitlePriority psp(as.language, m_processInfo->GetVideoSettings().m_SubtitleStream);
+  PredicateSubtitlePriority psp(as.language, m_processInfo->GetVideoSettings().m_SubtitleStream,
+                                visible);
   valid = false;
   // We need to close CC subtitles to avoid conflicts with external sub stream
   if (m_CurrentSubtitle.source == STREAM_SOURCE_VIDEOMUX)
@@ -1101,8 +1118,8 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
       valid = true;
       if(!psp.relevant(stream))
         visible = false;
-      //else if(stream.flags & StreamFlags::FLAG_FORCED)
-      //  visible = true;
+      else if(stream.flags & StreamFlags::FLAG_FORCED)
+        visible = true;
       break;
     }
   }
