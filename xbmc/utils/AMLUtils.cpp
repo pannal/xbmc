@@ -1119,8 +1119,7 @@ unsigned int aml_dv_on(unsigned int mode, bool force_hdmi)
       // still reflects the prior non-DV output so the kernel DV pipeline
       // activates while HDMI keeps sending the old signal -> colour
       // corruption (purple/green playback).  Write user's colour settings
-      // and trigger mode re-evaluation in one atomic attr write (separate
-      // writes don't work: "now" overwrites fmt_attr).
+      // and trigger mode re-evaluation in one atomic attr write.
       // Mirror the native path's 12-bit Deep Color logic (see
       // DisplaySettings::write_resolution_ini): toggle forces 12-bit on the
       // depth axis; injects 4:2:2 on chroma only when force_cs is Auto.
@@ -1145,8 +1144,9 @@ unsigned int aml_dv_on(unsigned int mode, bool force_hdmi)
         if (!fmt_attr.empty()) fmt_attr += ",";
         fmt_attr += limit_cd_str[limit_cd - 1];
       }
-      if (!fmt_attr.empty()) fmt_attr += ",";
-      fmt_attr += "now";
+      // An empty selection must explicitly reset to Auto: bare "now"
+      // only refreshes the existing HDMI attributes.
+      fmt_attr += ",now";
       CSysfsPath("/sys/class/amhdmitx/amhdmitx0/attr", fmt_attr);
     }
   }
@@ -1772,7 +1772,7 @@ void aml_hdr10plus_vsif_hold(bool hold)
 
 void aml_dv_display_auto_now()
 {
-  // hdmi tx store attr "now" - will trigger set_disp_mode_auto. 
+  // Refresh HDMI using the existing attributes and current DV transport policy.
   CSysfsPath attr{"/sys/class/amhdmitx/amhdmitx0/attr"};
   if (attr.Exists()) attr.Set("now");
 }
