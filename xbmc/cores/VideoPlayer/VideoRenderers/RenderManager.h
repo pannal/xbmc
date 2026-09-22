@@ -87,6 +87,7 @@ public:
    * \param save If true, the value will be saved to resolution info
    */
   void SetSubtitleVerticalPosition(const int value, bool save);
+  void SetSubtitleEnabled(bool enabled) { m_subtitleEnabled.store(enabled); }
 
   unsigned int AllocRenderCapture();
   void ReleaseRenderCapture(unsigned int captureId);
@@ -260,6 +261,7 @@ protected:
 private:
   void CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view, bool useActiveArea);
 
+  std::atomic_bool m_subtitleEnabled{false};
   CDataCacheCore &m_dataCacheCore;
   std::shared_ptr<const CApplicationPlayer> m_appPlayer;
 };

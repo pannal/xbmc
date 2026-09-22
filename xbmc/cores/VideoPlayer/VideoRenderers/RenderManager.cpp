@@ -389,6 +389,15 @@ void CRenderManager::FrameMove()
     m_bRenderGUI = true;
   }
 
+  // Hardware video can skip Render(gui=true) when no overlays are present.
+  // Keep the track-enabled policy live here, including gaps and paused frames.
+  // The visible mode still evaluates overlap in Render; clear it here when
+  // there is no overlay (also handles switching away from track-enabled mode).
+  const int subsSignalMode = aml_dv_l5_subs_signal_mode();
+  if (subsSignalMode != 2 || !m_overlays.HasOverlay(m_presentsource))
+    aml_dv_set_subtitles(subsSignalMode == 1 && m_subtitleEnabled.load() &&
+                         m_appPlayer->GetSubtitleCount() > 0);
+
   m_playerPort->UpdateGuiRender(IsGuiLayer() || firstFrame);
 
   ManageCaptures();
@@ -444,6 +453,8 @@ void CRenderManager::UnInit()
   std::unique_lock<CCriticalSection> lock(m_statelock);
 
   m_overlays.UnInit();
+  m_subtitleEnabled.store(false);
+  aml_dv_set_subtitles(false);
   m_debugRenderer.Dispose();
 
   DeleteRenderer();
@@ -874,19 +885,14 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
     // Signal subtitle presence for L5 handling based on user's signal mode:
     // 0 (Off): never signal — L5 stays at source regardless of subtitles
-    // 1 (When enabled): signal whenever a subtitle track is active
+    // 1 (When enabled): handled by FrameMove, independently of overlays
     // 2 (When visible): signal when text subs are on screen or image subs
     //   extend outside the L5 active area
     // When restriction is on, subs are already inside the active area so
     // image sub checks are skipped (text subs may still need signaling).
     bool signalSubtitles = false;
     int subsSignalMode = aml_dv_l5_subs_signal_mode();
-    if (subsSignalMode == 1)
-    {
-      // When enabled: signal if any subtitle overlay is in the buffer
-      signalSubtitles = m_overlays.HasOverlay(m_presentsource);
-    }
-    else if (subsSignalMode == 2)
+    if (subsSignalMode == 2)
     {
       // When visible: signal for text subs on screen
       signalSubtitles = m_overlays.HasTextOverlay(m_presentsource);
@@ -982,7 +988,8 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
               m_presentsource, sigTop, sigBottom);
       }
     }
-    aml_dv_set_subtitles(signalSubtitles);
+    if (subsSignalMode == 2)
+      aml_dv_set_subtitles(signalSubtitles);
 
     CalcOverlayActiveArea(src, dst, view, restrictSubsToActiveArea);
     m_overlays.SetVideoRect(src, dst, view);

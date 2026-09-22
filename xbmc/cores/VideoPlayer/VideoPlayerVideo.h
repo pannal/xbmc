@@ -66,7 +66,11 @@ public:
   void SendMessage(std::shared_ptr<CDVDMsg> pMsg, int priority = 0) override;
   void FlushMessages() override;
 
-  void EnableSubtitle(bool bEnable) override { m_bRenderSubs = bEnable; }
+  void EnableSubtitle(bool bEnable) override
+  {
+    m_bRenderSubs = bEnable;
+    m_renderManager.SetSubtitleEnabled(bEnable);
+  }
   bool IsSubtitleEnabled() override { return m_bRenderSubs; }
   double GetSubtitleDelay() override { return m_iSubtitleDelay; }
   void SetSubtitleDelay(double delay) override { m_iSubtitleDelay = delay; }
@@ -128,7 +132,7 @@ protected:
                              //this is increased exponentially from CVideoPlayerVideo::CalcFrameRate()
 
   bool m_bFpsInvalid;        // needed to ignore fps (e.g. dvd stills)
-  bool m_bRenderSubs;
+  std::atomic_bool m_bRenderSubs;
   float m_fForcedAspectRatio;
   int m_speed;
   std::atomic_bool m_stalled = false;
