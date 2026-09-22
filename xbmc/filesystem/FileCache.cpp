@@ -319,8 +319,8 @@ void CFileCache::Process()
                   "throttle target {:.0f} B/s ({:.2f} Mbit/s), forward {} bytes "
                   "(nominal capacity {} bytes), average cache write rate {} B/s, throttle {}",
                   baseRate, readFactor, useAdaptativeReadFactor ? "adaptive" : "fixed", targetRate,
-                  targetRate * 8.0 / 1000000.0, forward, m_maxForward, m_writeRateActual,
-                  throttleState);
+                  static_cast<double>(targetRate) * 8.0 / 1000000.0, forward, m_maxForward,
+                  m_writeRateActual, throttleState);
         nextRateLog = now + 5s;
         lastLoggedBaseRate = baseRate;
       }
