@@ -19,6 +19,7 @@
 #include <array>
 #include <deque>
 #include <atomic>
+#include <mutex>
 
 typedef struct am_private_t am_private_t;
 
@@ -75,7 +76,7 @@ public:
   void          SetSpeed(int speed);
   void          SetDrain(bool drain){m_drain = drain; if (drain) m_tp_drain_start = std::chrono::system_clock::now();};
   void          SetStreamEOF(bool eof){m_stream_eof = eof;};
-  void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect);
+  void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect, uint64_t generation);
   void          SetVideoRate(int videoRate);
   int           GetOMXPts() const { return static_cast<int>(m_cur_pts); }
   double        GetPts() const { return static_cast<double>(m_cur_pts); }
@@ -83,7 +84,8 @@ public:
   static float  OMXPtsToSeconds(int omxpts);
   static int    OMXDurationToNs(int duration);
   int           GetAmlDuration() const;
-  int           ReleaseFrame(const uint32_t index, bool bDrop = false);
+  int           ReleaseFrame(const uint32_t index, uint64_t generation, bool bDrop = false);
+  uint64_t      GetPresentationGeneration();
 
   static int    PollFrame();
   static void   SetPollDevice(int device);
@@ -113,6 +115,12 @@ private:
 
   DllLibAmCodec   *m_dll;
   bool             m_opened;
+  // Buffered frames can outlive CloseDecoder. Drain their presentation calls
+  // before teardown, then reject them even if this codec is reopened by a reset.
+  // Never hold this mutex across decoder/DV teardown or graphics-lock acquisition.
+  std::mutex       m_presentationMutex;
+  bool             m_presentationActive = false;
+  uint64_t         m_presentationGeneration = 0;
   bool             m_drain = false;
   bool             m_stream_eof = false;
   // True between a codec_reset and the next AddData: nothing is drainable in

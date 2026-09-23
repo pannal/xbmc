@@ -2376,6 +2376,11 @@ bool CAMLCodec::OpenDecoder()
   SetSpeed(m_speed);
   SetPollDevice(am_private->vcodec.cntl_handle);
 
+  {
+    std::lock_guard<std::mutex> lock(m_presentationMutex);
+    ++m_presentationGeneration;
+    m_presentationActive = true;
+  }
   return true;
 }
 
@@ -2432,6 +2437,13 @@ void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map)
 void CAMLCodec::CloseDecoder()
 {
   CLog::Log(LOGINFO, "CAMLCodec::CloseDecoder");
+
+  {
+    // Wait for presentation already in flight, then reject buffered frames.
+    // Release before teardown: DV/HDMI work can need locks held by the GUI.
+    std::lock_guard<std::mutex> lock(m_presentationMutex);
+    m_presentationActive = false;
+  }
 
   // Make sure the green-flash hold can't outlive the decoder.
   HoldVideo(false);
@@ -2766,8 +2778,18 @@ void CAMLCodec::SetPollDevice(int dev)
   m_pollDevice = dev;
 }
 
-int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
+uint64_t CAMLCodec::GetPresentationGeneration()
 {
+  std::lock_guard<std::mutex> lock(m_presentationMutex);
+  return m_presentationGeneration;
+}
+
+int CAMLCodec::ReleaseFrame(const uint32_t index, uint64_t generation, bool drop)
+{
+  std::lock_guard<std::mutex> lock(m_presentationMutex);
+  if (!m_presentationActive || generation != m_presentationGeneration)
+    return 0;
+
   int ret;
   v4l2_buffer vbuf = v4l2_buffer();
   vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -3239,8 +3261,12 @@ void CAMLCodec::HoldVideo(bool hold)
   }
 }
 
-void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
+void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect, uint64_t generation)
 {
+  std::lock_guard<std::mutex> lock(m_presentationMutex);
+  if (!m_presentationActive || generation != m_presentationGeneration)
+    return;
+
   // this routine gets called every video frame
   // and is in the context of the renderer thread so
   // do not do anything stupid here.

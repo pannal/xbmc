@@ -107,7 +107,7 @@ void CRendererAML::ReleaseBuffer(int idx)
     {
       if (amli->m_amlCodec)
       {
-        amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, true);
+        amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, amli->m_presentationGeneration, true);
         amli->m_amlCodec = nullptr; // Released
       }
       amli->Release();
@@ -183,8 +183,8 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
       int pts = amli->m_omxPts;
       if (pts != m_prevVPts)
       {
-        amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex);
-        amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect);
+        amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, amli->m_presentationGeneration);
+        amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect, amli->m_presentationGeneration);
         amli->m_amlCodec = nullptr; //Mark frame as processed
         m_prevVPts = pts;
       }

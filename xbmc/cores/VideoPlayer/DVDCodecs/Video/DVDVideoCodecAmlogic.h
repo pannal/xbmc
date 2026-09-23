@@ -33,19 +33,21 @@ class CAMLVideoBuffer : public CVideoBuffer
 {
 public:
   CAMLVideoBuffer(int id) : CVideoBuffer(id) {};
-  void Set(CDVDVideoCodecAmlogic *codec, std::shared_ptr<CAMLCodec> amlcodec, int omxPts, int amlDuration, uint32_t bufferIndex)
+  void Set(CDVDVideoCodecAmlogic *codec, std::shared_ptr<CAMLCodec> amlcodec, int omxPts, int amlDuration, uint32_t bufferIndex, uint64_t generation)
   {
     m_codec = codec;
     m_amlCodec = amlcodec;
     m_omxPts = omxPts;
     m_amlDuration = amlDuration;
     m_bufferIndex = bufferIndex;
+    m_presentationGeneration = generation;
   }
 
   CDVDVideoCodecAmlogic* m_codec;
   std::shared_ptr<CAMLCodec> m_amlCodec;
   int m_omxPts, m_amlDuration;
   uint32_t m_bufferIndex;
+  uint64_t m_presentationGeneration = 0;
 };
 
 class CAMLVideoBufferPool : public IVideoBufferPool
