@@ -544,9 +544,9 @@ void CAEStreamParser::DefeatAC3DialNorm(uint8_t* data, unsigned int size)
 
 // ---------------------------------------------------------------------------
 // DTS dialnorm defeat — core DNG (4-bit) + DTS-HD extension-substream asset
-// nuDialNormCode (5-bit). DTS convention: the field is the dB of attenuation,
-// 0 = none (eac3to prints "dialnorm: 0dB"), so defeating it means writing 0
-// (the opposite of AC-3, where 31 = 0 dB). Layout per ETSI TS 102 114; the
+// nuDialNormCode (5-bit). Core gain is -DIALNORM dB for VERNUM 7 and
+// -(16 + DIALNORM) dB for VERNUM 6; defeat requires VERNUM 7 and DIALNORM 0.
+// EXSS gain is -nuDialNormCode dB, so 0 defeats it. Layout per ETSI TS 102 114; the
 // extension-substream header is protected by a CRC-16-CCITT (poly 0x1021,
 // init 0xFFFF) over EXSS bytes [5, headerSize). Validated against eac3to v3.62
 // and real DTS-HD MA streams. Only the 16-bit big-endian core is handled; the
@@ -626,15 +626,25 @@ void CAEStreamParser::DefeatDTSDialNorm(uint8_t* data, unsigned int size)
   DTS_ReadBits(data, pos, 3 + 1 + 1 + 2 + 1);       // EXT_AUDIO_ID/AUDIO, ASPF, LFF, HFLAG
   if (cpf)
     DTS_ReadBits(data, pos, 16);                    // header CRC (HCRC)
-  DTS_ReadBits(data, pos, 1 + 4 + 2 + 3 + 1 + 1);   // FILTS, VERNUM, CHIST, PCMR, SUMF, SUMS
+  DTS_ReadBits(data, pos, 1);                       // FILTS
+  const unsigned int vernumPos = pos;
+  const unsigned int vernum = DTS_ReadBits(data, pos, 4);
+  DTS_ReadBits(data, pos, 2 + 3 + 1 + 1);           // CHIST, PCMR, SUMF, SUMS
   const unsigned int dngPos = pos;
   const unsigned int dng = DTS_ReadBits(data, pos, 4);
 
   // Zero the core DNG only when there is no core header CRC (cpf == 0) — this
   // holds for every DTS-HD MA stream. With cpf == 1 an HCRC recompute would be
   // required, so leave the core untouched in that (rare) case.
-  if (cpf == 0 && dng != 0)
+  // ETSI TS 102 114, Table 5-20: VERNUM 6 has no zero-gain DIALNORM value.
+  // Convert it to version 7 even when DIALNORM is already zero (-16 dB).
+  // For other versions this field is unspecified and must be left untouched.
+  if (cpf == 0 && (vernum == 6 || (vernum == 7 && dng != 0)))
+  {
+    if (vernum == 6)
+      DTS_WriteBits(data, vernumPos, 4, 7);
     DTS_WriteBits(data, dngPos, 4, 0);
+  }
 
   // --- DTS-HD extension substream: asset-descriptor nuDialNormCode (5-bit) ---
   if (fsize + 4 > size)
