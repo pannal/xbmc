@@ -26,6 +26,8 @@
 #include "guilib/guiinfo/GUIInfo.h"
 #include "guilib/guiinfo/GUIInfoHelper.h"
 #include "guilib/guiinfo/GUIInfoLabels.h"
+#include "settings/Settings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/StringUtils.h"
 #include "utils/AMLUtils.h"
 #include "utils/URIUtils.h"
@@ -682,6 +684,33 @@ bool CPlayerGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
         StringUtils::Replace(cs, "YUV420", "4:2:0");
         value = cs + ", " + cd;
       }
+      return true;
+    }
+
+    case PLAYER_PROCESS_VIDEO_DOVI_VSVDB_MAX_LUM:
+    {
+      value.clear();
+      if (!m_appPlayer->IsPlayingVideo())
+        return true;
+
+      const DV_TYPE type = aml_dv_type();
+      if (type != DV_TYPE_PLAYER_LED_LLDV && type != DV_TYPE_PLAYER_LED_HDR &&
+          type != DV_TYPE_PLAYER_LED_HDR2)
+        return true;
+
+      // Read as a string so absent/unreadable sysfs cannot become an IPT (0) result.
+      CSysfsPath modePath{"/sys/module/amdolby_vision/parameters/dolby_vision_mode"};
+      const std::string mode = modePath.Get<std::string>().value_or("");
+      if (mode != std::to_string(DOLBY_VISION_OUTPUT_MODE_IPT) &&
+          mode != std::to_string(DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL))
+        return true;
+
+      // This setting includes EDID-derived values and user overrides. It is the
+      // configured display peak, not the final target after kernel adjustments.
+      const int nits = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+          CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM);
+      if (nits > 0)
+        value = std::to_string(nits);
       return true;
     }
 

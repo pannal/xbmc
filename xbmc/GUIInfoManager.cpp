@@ -1179,6 +1179,22 @@ const infomap player_times[] =   {{ "seektime",         PLAYER_SEEKTIME },
 ///     @skinning_v17 **[New Infolabel]** \link Player_Process_aml_eoft_gamut `Player.Process(amlogic.eoft_gamut)`\endlink
 ///     <p>
 ///   }
+///   \table_row3{   <b>`Player.Process(amlogic.dv.target.max.nits)`</b>,
+///                  \anchor Player_Process_aml_dv_target_max_nits
+///                  _string_,
+///     @return The display/configured Dolby Vision target maximum luminance in
+///     whole nits, without a unit suffix, during Amlogic player-led DV playback.
+///     This is the EDID-derived or overridden VSVDB setting, before payload
+///     quantization, VP payload substitution and kernel source-luminance limiting;
+///     it is not readback of the final tone-mapping target. Returns an empty string
+///     outside video playback, for display-led DV or non-DV output, or when unavailable.
+///   }
+///   \table_row3{   <b>`Player.Process(video.dovi.vsvdb.max.lum)`</b>,
+///                  \anchor Player_Process_video_dovi_vsvdb_max_lum
+///                  _string_,
+///     @return Alias of \link Player_Process_aml_dv_target_max_nits
+///     `Player.Process(amlogic.dv.target.max.nits)`\endlink, with identical behavior.
+///   }
 ///   \table_row3{   <b>`Player.Process(videobitdepth)`</b>,
 ///                  \anchor Player_Process_videobitdepth
 ///                  _string_,
@@ -1264,6 +1280,8 @@ const infomap player_process[] = {{"videodecoder", PLAYER_PROCESS_VIDEODECODER},
                                   {"video.dovi.has.header", PLAYER_PROCESS_VIDEO_DOVI_HAS_HEADER },
                                   {"video.dovi.dual.track", PLAYER_PROCESS_VIDEO_DOVI_DUAL_TRACK },
                                   {"video.hdmi.output", PLAYER_PROCESS_VIDEO_HDMI_OUTPUT },
+                                  {"video.dovi.vsvdb.max.lum", PLAYER_PROCESS_VIDEO_DOVI_VSVDB_MAX_LUM },
+                                  {"amlogic.dv.target.max.nits", PLAYER_PROCESS_VIDEO_DOVI_VSVDB_MAX_LUM },
 
                                   {"video.dovi.l1.min.pq", PLAYER_PROCESS_VIDEO_DOVI_L1_MIN_PQ },
                                   {"video.dovi.l1.max.pq", PLAYER_PROCESS_VIDEO_DOVI_L1_MAX_PQ },
