@@ -1280,14 +1280,18 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   // answer the stream gave.
   //
   // The hints describe the source, so the frame has to say whether the source is
-  // what is leaving: GetPassthroughStreamType() drops a DTS-HD MA stream to
+  // what is leaving: GetPassthroughStreamType() drops a DTS-HD stream to
   // STREAM_TYPE_DTSHD_CORE when the receiver cannot take the full one, and the
   // parser then emits the core substream alone, without the extension the objects
   // are in. These labels describe what the receiver is being handed, not what the
-  // file holds, so only a frame still leaving as DTS-HD MA may carry them.
-  const bool haveDTSXStream =
-      audioframe.passthrough && streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_MA &&
-      StreamUtils::IsDTSXProfile(m_streaminfo.profile);
+  // file holds, so the frame must still carry the matching full MA or HRA
+  // transport. HRA DTS:X is deliberately not promoted to the lossless MA type.
+  const bool dtsxTransport =
+      m_streaminfo.profile == AV_PROFILE_DTS_HD_HRA_X
+          ? streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD
+          : streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_MA;
+  const bool haveDTSXStream = audioframe.passthrough && dtsxTransport &&
+                              StreamUtils::IsDTSXProfile(m_streaminfo.profile);
   const int dtsxBedChannels = m_streaminfoOrig.channels;
   const int dtsxObjects =
       haveDTSXStream ? StreamUtils::GetDTSXObjectCount(m_streaminfo.profile, m_streaminfo.level)

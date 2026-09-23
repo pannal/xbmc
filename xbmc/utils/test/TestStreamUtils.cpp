@@ -24,6 +24,7 @@ TEST(TestStreamUtils, General)
   EXPECT_EQ(3, StreamUtils::GetCodecPriority("eac3"));
   EXPECT_EQ(4, StreamUtils::GetCodecPriority("eac3_ddp_atmos"));
   EXPECT_EQ(5, StreamUtils::GetCodecPriority("dtshd_hra"));
+  EXPECT_EQ(5, StreamUtils::GetCodecPriority("dtshd_hra_x"));
   EXPECT_EQ(6, StreamUtils::GetCodecPriority("dtshd_ma"));
   EXPECT_EQ(7, StreamUtils::GetCodecPriority("truehd"));
   EXPECT_EQ(8, StreamUtils::GetCodecPriority("flac"));
@@ -39,6 +40,7 @@ TEST(TestStreamUtils, NamesTheDtsProfiles)
   EXPECT_EQ("dtshd_ma_x", StreamUtils::GetCodecName(AV_CODEC_ID_DTS, AV_PROFILE_DTS_HD_MA_X));
   EXPECT_EQ("dtshd_ma_x_imax",
             StreamUtils::GetCodecName(AV_CODEC_ID_DTS, AV_PROFILE_DTS_HD_MA_X_IMAX));
+  EXPECT_EQ("dtshd_hra_x", StreamUtils::GetCodecName(AV_CODEC_ID_DTS, AV_PROFILE_DTS_HD_HRA_X));
 
   // Auro-3D reaches Kodi as a DTS-HD MA stream and is only told apart by the profile the patched
   // ffmpeg reconstructs it from, so this is the one name that has no bitstream field behind it.
@@ -47,7 +49,8 @@ TEST(TestStreamUtils, NamesTheDtsProfiles)
 
   // Every name above is one GetCodecPriority() scores; none may fall into the 0 meant for a codec
   // nobody listed.
-  for (const auto& name : {"dtshd_ma", "dtshd_ma_x", "dtshd_ma_x_imax", "dtshd_ma_auro3d"})
+  for (const auto& name : {"dtshd_ma", "dtshd_ma_x", "dtshd_ma_x_imax", "dtshd_ma_auro3d",
+                           "dtshd_hra_x"})
     EXPECT_GT(StreamUtils::GetCodecPriority(name), 0) << name;
 }
 
@@ -55,12 +58,14 @@ TEST(TestStreamUtils, CountsTheObjectsTheDtsxSyncwordDeclares)
 {
   // The syncword's low nibble is the type-241 element's declaration count less
   // one, and it is that nibble which arrives in the level. So D0 declares one
-  // object and D4 five, on either name DTS:X goes by.
+  // object and D4 five, on any DTS:X carrier this tree identifies.
   EXPECT_EQ(1, StreamUtils::GetDTSXObjectCount(AV_PROFILE_DTS_HD_MA_X_IMAX, 0));
   EXPECT_EQ(2, StreamUtils::GetDTSXObjectCount(AV_PROFILE_DTS_HD_MA_X, 1));
   EXPECT_EQ(3, StreamUtils::GetDTSXObjectCount(AV_PROFILE_DTS_HD_MA_X, 2));
   EXPECT_EQ(4, StreamUtils::GetDTSXObjectCount(AV_PROFILE_DTS_HD_MA_X, 3));
   EXPECT_EQ(5, StreamUtils::GetDTSXObjectCount(AV_PROFILE_DTS_HD_MA_X, 4));
+  EXPECT_EQ(1, StreamUtils::GetDTSXObjectCount(AV_PROFILE_DTS_HD_HRA_X, 0));
+  EXPECT_EQ(5, StreamUtils::GetDTSXObjectCount(AV_PROFILE_DTS_HD_HRA_X, 4));
 
   // The 0x02000850 form carries no such nibble and leaves the level where it
   // started, which is what empties the label rather than showing a zero. So does
@@ -68,6 +73,7 @@ TEST(TestStreamUtils, CountsTheObjectsTheDtsxSyncwordDeclares)
   EXPECT_EQ(-1, StreamUtils::GetDTSXObjectCount(AV_PROFILE_DTS_HD_MA_X, AV_LEVEL_UNKNOWN));
   EXPECT_EQ(-1, StreamUtils::GetDTSXObjectCount(AV_PROFILE_DTS_HD_MA_X_IMAX, AV_LEVEL_UNKNOWN));
   EXPECT_EQ(-1, StreamUtils::GetDTSXObjectCount(AV_PROFILE_DTS_HD_MA_X, 5));
+  EXPECT_EQ(-1, StreamUtils::GetDTSXObjectCount(AV_PROFILE_DTS_HD_HRA_X, AV_LEVEL_UNKNOWN));
 
   // A level is only ever read as a count when the profile says DTS:X. Auro-3D
   // will report its layout in the same field, and every other codec is free to
@@ -79,15 +85,17 @@ TEST(TestStreamUtils, CountsTheObjectsTheDtsxSyncwordDeclares)
     EXPECT_FALSE(StreamUtils::IsDTSXProfile(profile)) << profile;
   }
 
-  // Both names are DTS:X, which is what says a stream has a bed with heights
-  // over it even on the release that declares no objects at all.
+  // All three profiles are DTS:X, which is what says a stream has a bed with
+  // heights over it even on a release that declares no objects at all.
   EXPECT_TRUE(StreamUtils::IsDTSXProfile(AV_PROFILE_DTS_HD_MA_X));
   EXPECT_TRUE(StreamUtils::IsDTSXProfile(AV_PROFILE_DTS_HD_MA_X_IMAX));
+  EXPECT_TRUE(StreamUtils::IsDTSXProfile(AV_PROFILE_DTS_HD_HRA_X));
 
   // Naming is untouched by any of it: one profile per codec, as before.
   EXPECT_EQ("dtshd_ma_x", StreamUtils::GetCodecName(AV_CODEC_ID_DTS, AV_PROFILE_DTS_HD_MA_X));
   EXPECT_EQ("dtshd_ma_x_imax",
             StreamUtils::GetCodecName(AV_CODEC_ID_DTS, AV_PROFILE_DTS_HD_MA_X_IMAX));
+  EXPECT_EQ("dtshd_hra_x", StreamUtils::GetCodecName(AV_CODEC_ID_DTS, AV_PROFILE_DTS_HD_HRA_X));
 }
 
 TEST(TestStreamUtils, ReadsTheDtsxHeightsFromTheLevelAndNotFromTheCount)
@@ -107,6 +115,7 @@ TEST(TestStreamUtils, ReadsTheDtsxHeightsFromTheLevelAndNotFromTheCount)
   EXPECT_EQ(4, StreamUtils::GetDTSXHeightCount(AV_PROFILE_DTS_HD_MA_X_IMAX, SETS_READ | HEIGHTS));
   EXPECT_EQ(0, StreamUtils::GetDTSXHeightCount(AV_PROFILE_DTS_HD_MA_X_IMAX, SETS_READ));
   EXPECT_EQ(4, StreamUtils::GetDTSXHeightCount(AV_PROFILE_DTS_HD_MA_X, 4 | SETS_READ | HEIGHTS));
+  EXPECT_EQ(0, StreamUtils::GetDTSXHeightCount(AV_PROFILE_DTS_HD_HRA_X, SETS_READ));
 
   // An element whose byte was not read says nothing about heights, and an
   // ffmpeg that reports only the nibble is exactly that case.
@@ -118,6 +127,7 @@ TEST(TestStreamUtils, ReadsTheDtsxHeightsFromTheLevelAndNotFromTheCount)
   // No element at all is the 0x02000850 form, and its four heights stand.
   EXPECT_EQ(4, StreamUtils::GetDTSXHeightCount(AV_PROFILE_DTS_HD_MA_X, AV_LEVEL_UNKNOWN));
   EXPECT_EQ(4, StreamUtils::GetDTSXHeightCount(AV_PROFILE_DTS_HD_MA_X_IMAX, AV_LEVEL_UNKNOWN));
+  EXPECT_EQ(4, StreamUtils::GetDTSXHeightCount(AV_PROFILE_DTS_HD_HRA_X, AV_LEVEL_UNKNOWN));
 
   // And none of it is read off a stream that is not DTS:X.
   for (const int profile : {AV_PROFILE_DTS_HD_MA, AV_PROFILE_DTS_HD_HRA, AV_PROFILE_DTS_EXPRESS})
@@ -159,7 +169,8 @@ TEST(TestStreamUtils, NamesTheLayoutAnAuro3DCarrierUnfoldsTo)
   // A level is only a layout when the profile says Auro-3D. DTS:X reports an
   // object count in the very same field, and must not be read as one here.
   for (const int profile : {AV_PROFILE_DTS_HD_MA, AV_PROFILE_DTS_HD_MA_X,
-                            AV_PROFILE_DTS_HD_MA_X_IMAX, AV_PROFILE_DTS_HD_HRA})
+                            AV_PROFILE_DTS_HD_MA_X_IMAX, AV_PROFILE_DTS_HD_HRA,
+                            AV_PROFILE_DTS_HD_HRA_X})
   {
     EXPECT_EQ(-1, StreamUtils::GetAuro3DChannelCount(profile, 32319)) << profile;
     EXPECT_EQ("", StreamUtils::GetAuro3DLayoutName(profile, 32319)) << profile;

@@ -28,6 +28,15 @@ extern "C"
 #define AV_PROFILE_DTS_HD_MA_AURO3D 63
 #endif
 
+/*
+ * DTS-HD HRA carrying a positively detected DTS:X extension. CoreELEC's
+ * FFmpeg patch defines this profile; the fallback keeps standalone builds on
+ * stock FFmpeg source-compatible, where no stream can arrive with the value.
+ */
+#ifndef AV_PROFILE_DTS_HD_HRA_X
+#define AV_PROFILE_DTS_HD_HRA_X 64
+#endif
+
 static constexpr int MP4_BOX_HEADER_SIZE = 8;
 
 class StreamUtils
@@ -58,14 +67,14 @@ public:
   static std::string GetCodecName(int codecId, int profile);
 
   /*!
-   * \brief Whether a profile names a DTS:X stream, under either of its names
+   * \brief Whether a profile names DTS:X on an MA or HRA carrier
    *
    * DTS:X IMAX is DTS:X with a badge on it, so anything asking what shape the
    * presentation is - a bed with heights over it, and objects if the stream
    * declared any - has to take both.
    *
    * \param profile The ffmpeg codec profile
-   * \return True for DTS:X and DTS:X IMAX, false for everything else
+   * \return True for DTS:X MA, DTS:X IMAX and DTS:X HRA; false otherwise
    */
   static bool IsDTSXProfile(int profile);
 
@@ -82,8 +91,8 @@ public:
    * The ffmpeg this runs against reports that nibble in the level and leaves the
    * profile naming the codec, which is why nothing else here changes: DTS:X with
    * two objects and DTS:X with five are the same codec, so GetCodecName() above,
-   * passthrough routing and every other place that enumerates the DTS-HD MA
-   * family by profile go on seeing exactly what they saw before. The level says
+   * passthrough routing and every other place that enumerates the DTS-HD
+   * carrier by profile go on seeing exactly what they saw before. The level says
    * which variant of a codec, and a later Auro-3D layout can say so in the same
    * field without disturbing this, because the profile is asked first.
    *

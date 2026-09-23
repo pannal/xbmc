@@ -49,6 +49,9 @@ std::string CDemuxStreamAudio::GetStreamType()
         case AV_PROFILE_DTS_HD_HRA:
           strInfo = "DTS-HD HRA ";
           break;
+        case AV_PROFILE_DTS_HD_HRA_X:
+          strInfo = "DTS-HD HRA + DTS:X ";
+          break;
         case AV_PROFILE_DTS_HD_MA_X:
           strInfo = "DTS-HD MA X ";
           break;

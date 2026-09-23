@@ -83,8 +83,9 @@ int StreamUtils::GetCodecPriority(const std::string &codec)
    * Technically flac, truehd, and dtshd_ma are equivalently good as they're all lossless. However,
    * ffmpeg can't decode dtshd_ma losslessy yet.
    *
-   * Auro-3D and DTS:X are the same proposition over the same lossless carrier - a height layer on
-   * top of DTS-HD MA - and neither is the better stream, so they tie.
+   * Auro-3D and the MA form of DTS:X are spatial extensions over the same lossless carrier and
+   * tie. The HRA form of DTS:X remains at its lossy carrier's priority: spatial metadata does not
+   * turn High Resolution Audio into Master Audio.
    */
   if (codec == "truehd_atmos") // Dolby TrueHD with Atmos
     return 11;
@@ -101,6 +102,8 @@ int StreamUtils::GetCodecPriority(const std::string &codec)
   if (codec == "dtshd_ma") // DTS-HD Master Audio (previously known as DTS++)
     return 6;
   if (codec == "dtshd_hra") // DTS-HD High Resolution Audio
+    return 5;
+  if (codec == "dtshd_hra_x") // DTS:X carried in DTS-HD High Resolution Audio
     return 5;
   if (codec == "eac3_ddp_atmos") // Dolby Digital Plus with Atmos
     return 4;
@@ -127,6 +130,8 @@ std::string StreamUtils::GetCodecName(int codecId, int profile)
       codecName = "dtshd_ma_x_imax";
     else if (profile == AV_PROFILE_DTS_HD_MA_AURO3D)
       codecName = "dtshd_ma_auro3d";
+    else if (profile == AV_PROFILE_DTS_HD_HRA_X)
+      codecName = "dtshd_hra_x";
     else if (profile == AV_PROFILE_DTS_HD_HRA)
       codecName = "dtshd_hra";
     else
@@ -177,7 +182,8 @@ std::string StreamUtils::GetCodecName(int codecId, int profile)
 
 bool StreamUtils::IsDTSXProfile(int profile)
 {
-  return profile == AV_PROFILE_DTS_HD_MA_X || profile == AV_PROFILE_DTS_HD_MA_X_IMAX;
+  return profile == AV_PROFILE_DTS_HD_MA_X || profile == AV_PROFILE_DTS_HD_MA_X_IMAX ||
+         profile == AV_PROFILE_DTS_HD_HRA_X;
 }
 
 int StreamUtils::GetDTSXObjectCount(int profile, int level)

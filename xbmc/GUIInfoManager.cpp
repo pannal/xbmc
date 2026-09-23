@@ -6252,6 +6252,7 @@ const infomap container_str[]  = {{ "property",         CONTAINER_PROPERTY },
 ///       - <b>cook</b>
 ///       - <b>dca</b>
 ///       - <b>dtshd_hra</b>
+///       - <b>dtshd_hra_x</b>
 ///       - <b>dtshd_ma</b>
 ///       - <b>dtshd_ma_auro3d</b>
 ///       - <b>dtshd_ma_x</b>
