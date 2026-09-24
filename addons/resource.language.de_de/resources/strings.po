@@ -19979,3 +19979,23 @@ msgstr "Bildbasierte Untertitel (PGS, VobSub) skalieren. 100% ist die Originalgr
 msgctxt "#69999"
 msgid "Enable this to disable noise reduction. Requires reboot. FOR BETTER VIDEO PROCESSING LEAVE THIS SETTING ENABLED (i.e., DISABLE NOISE REDUCTION)."
 msgstr "Aktiviere diese Option, um die Rauschunterdrückung zu deaktivieren und die Videoverarbeitung zu verbessern. Ein Neustart ist erforderlich."
+
+msgctxt "#69240"
+msgid "This operation is not allowed by the disc."
+msgstr "Diese Aktion ist auf der Disc nicht erlaubt."
+
+msgctxt "#69241"
+msgid "Seeking is not allowed in this part of the disc."
+msgstr "In diesem Bereich der Disc ist das Springen zu einer anderen Position nicht erlaubt."
+
+msgctxt "#69242"
+msgid "Allow BD-J menus during playback"
+msgstr "BD-J-Menüs während der Wiedergabe erlauben"
+
+msgctxt "#69243"
+msgid "Allow opening BD-J top and popup menus during playback. This can interrupt navigation on some discs. Startup menus work with this setting disabled."
+msgstr "Erlaubt das Öffnen von BD-J-Haupt- und Popup-Menüs während der Wiedergabe. Dies kann die Navigation auf manchen Discs unterbrechen. Startmenüs funktionieren auch bei deaktivierter Einstellung."
+
+msgctxt "#69244"
+msgid "BD-J menus during playback are disabled. Use the playback controls or restart the disc to open its startup menu."
+msgstr "BD-J-Menüs während der Wiedergabe sind deaktiviert. Verwenden Sie die Wiedergabesteuerung oder starten Sie die Disc neu, um ihr Startmenü zu öffnen."

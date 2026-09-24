@@ -266,10 +266,16 @@ static int PlayerControl(const std::vector<std::string>& params)
         g_application.SeekPercentage(offsetpercent);
     }
   }
-  else if (paramlow == "showvideomenu")
+  else if (paramlow == "showvideomenu" || paramlow == "showvideomenu(popup)" ||
+           paramlow == "showvideomenu(top)")
   {
     if (appPlayer->IsPlaying())
-      appPlayer->OnAction(CAction(ACTION_SHOW_VIDEOMENU));
+    {
+      const std::string menu = paramlow == "showvideomenu(popup)" ? "popup"
+                               : paramlow == "showvideomenu(top)" ? "top"
+                                                                  : "";
+      appPlayer->OnAction(CAction(ACTION_SHOW_VIDEOMENU, menu));
+    }
   }
   else if (StringUtils::StartsWithNoCase(params[0], "partymode"))
   {

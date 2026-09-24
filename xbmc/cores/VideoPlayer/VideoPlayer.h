@@ -667,5 +667,18 @@ protected:
 
   std::atomic<bool> m_displayLost;
 
+  void UpdateMenuDomainQueueDepth(bool segmentOpen);
+  void DrainStreamsAtBoundary();
+  bool m_bdTimedStill{false};
+  bool m_bdAudioReuse{false};
+  bool m_bdVideoReuse{false};
   double m_messageQueueTimeSize{0.0};
+  bool m_menuDomainLowLatency{false};
+  bool m_menuDomainClampPending{false};
+  bool m_menuDomainSegment{false};
+  bool m_menuDomainFillPending{false};
+  double m_menuDomainRampCap{0.0};
+  std::chrono::steady_clock::time_point m_menuDomainRampLast{};
+  std::chrono::steady_clock::time_point m_menuDomainEvalLast{};
+  std::chrono::steady_clock::time_point m_menuDomainStarveStart{};
 };

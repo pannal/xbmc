@@ -70,7 +70,7 @@ public:
   /*! \brief Open the Menu
   * \return true if the menu is successfully opened, false otherwise
   */
-  bool OnMenu() override;
+  bool OnMenu(MenuCall call = MenuCall::Auto) override;
 
   void OnBack() override;
   void OnNext() override;

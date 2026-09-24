@@ -83,6 +83,7 @@ namespace OVERLAY {
     int m_3dSubtitleDepth{0};
     bool m_pgsSubtitle{false};
     bool m_isBitmapOverlay{false};
+    bool m_discMenuOverlay{false};
 
   protected:
     /*!
@@ -121,6 +122,7 @@ namespace OVERLAY {
     bool HasOverlay(int idx);
     bool HasTextOverlay(int idx);
     bool HasImageOverlay(int idx);
+    bool HasDiscMenuOverlay(int idx);
     bool HasImageSubOutsideActiveArea(int idx, int l5Top, int l5Bottom);
     void SetVideoRect(CRect &source, CRect &dest, CRect &view);
     void SetStereoMode(const std::string &stereomode);

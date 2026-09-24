@@ -12,7 +12,9 @@
 #ifdef HAVE_LIBBLURAY
 #include "DVDInputStreams/DVDInputStreamBluray.h"
 #endif
+#include "DVDCodecs/DVDCodecUtils.h"
 #include "DVDInputStreams/DVDInputStreamFFmpeg.h"
+#include "DemuxMVC.h"
 #include "ServiceBroker.h"
 #include "URL.h"
 #include "Util.h"
@@ -20,8 +22,6 @@
 #include "cores/FFmpeg.h"
 #include "cores/MenuType.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h" // for DVD_TIME_BASE
-#include "DVDCodecs/DVDCodecUtils.h"
-#include "DemuxMVC.h"
 #include "dialogs/GUIDialogKaiToast.h"
 #include "filesystem/CurlFile.h"
 #include "filesystem/Directory.h"
@@ -41,6 +41,7 @@
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -266,6 +267,7 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
   m_seekToKeyFrame = false;
   m_brokenFileDetected = false;
   m_sourceReadBytes = 0;
+  m_seamStreamState.clear();
 
   const AVIOInterruptCB int_cb = { interrupt_cb, this };
 
@@ -686,6 +688,7 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
 
 void CDVDDemuxFFmpeg::Dispose()
 {
+  m_seamStreamState.clear();
   m_pkt.result = -1;
   av_packet_unref(&m_pkt.pkt);
 
@@ -726,6 +729,7 @@ bool CDVDDemuxFFmpeg::Reset()
 
 void CDVDDemuxFFmpeg::Flush()
 {
+  m_seamStreamState.clear();
   if (m_pFormatContext)
   {
     if (m_pFormatContext->pb)
@@ -1008,6 +1012,52 @@ AVDictionary* CDVDDemuxFFmpeg::GetFFMpegOptionsFromInput()
   return options;
 }
 
+void CDVDDemuxFFmpeg::ApplySeamTimeOffset(DemuxPacket* packet, int streamIndex)
+{
+  // MVC stitching owns its timestamps; only native navigation supplies seam offsets.
+  if (m_pSSIF)
+    return;
+
+  const auto menu = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInput);
+  int generation = 0;
+  double current = 0.0;
+  double previous = 0.0;
+  if (!menu || !menu->GetSeamTimeOffsets(generation, current, previous))
+    return;
+
+  const double raw = packet->dts != DVD_NOPTS_VALUE ? packet->dts : packet->pts;
+  if (raw == DVD_NOPTS_VALUE)
+    return;
+
+  SeamStreamState& state = m_seamStreamState[streamIndex];
+  double offset = current;
+  if (state.generation != generation)
+  {
+    if (state.lastCorrected == DVD_NOPTS_VALUE ||
+        static_cast<int64_t>(generation) - state.generation > 1)
+      state.generation = generation;
+    else
+    {
+      // libbluray can advance the navigation event before FFmpeg drains packets
+      // from the old clip. Each elementary stream crosses the seam independently.
+      const double currentDistance = std::fabs(raw + current * DVD_TIME_BASE - state.lastCorrected);
+      const double previousDistance =
+          std::fabs(raw + previous * DVD_TIME_BASE - state.lastCorrected);
+      if (currentDistance <= previousDistance)
+        state.generation = generation;
+      else
+        offset = previous;
+    }
+  }
+
+  offset *= DVD_TIME_BASE;
+  if (packet->dts != DVD_NOPTS_VALUE)
+    packet->dts += offset;
+  if (packet->pts != DVD_NOPTS_VALUE)
+    packet->pts += offset;
+  state.lastCorrected = packet->dts != DVD_NOPTS_VALUE ? packet->dts : packet->pts;
+}
+
 double CDVDDemuxFFmpeg::ConvertTimestamp(int64_t pts, int den, int num)
 {
   if (pts == (int64_t)AV_NOPTS_VALUE)
@@ -1169,6 +1219,8 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
               ConvertTimestamp(m_pkt.pkt.dts, stream->time_base.den, stream->time_base.num);
           pPacket->duration = DVD_SEC_TO_TIME((double)m_pkt.pkt.duration * stream->time_base.num /
                                               stream->time_base.den);
+
+          ApplySeamTimeOffset(pPacket, m_pkt.pkt.stream_index);
 
           CDVDDemuxUtils::StoreSideData(pPacket, &m_pkt.pkt);
 

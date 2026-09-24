@@ -108,7 +108,19 @@ public:
     /*! \brief Open the Menu
     * \return true if the menu is successfully opened, false otherwise
     */
-    virtual bool OnMenu() = 0;
+    enum class MenuCall
+    {
+      Auto,
+      Popup,
+      Top
+    };
+    virtual bool OnMenu(MenuCall call = MenuCall::Auto) = 0;
+    virtual bool OnColorKey(int key) { return false; }
+    virtual bool ConsumeDiscontinuityFlush() { return false; }
+    virtual bool GetSeamTimeOffsets(int& generation, double& current, double& previous)
+    {
+      return false;
+    }
     virtual void OnBack() = 0;
     virtual void OnNext() = 0;
     virtual void OnPrevious() = 0;

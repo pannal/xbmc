@@ -61,6 +61,8 @@ public:
   void Flush(bool sync) override;
   bool AcceptsData() const override;
   bool HasData() const override;
+  void SetMaxTimeSize(double seconds) override { m_messageQueue.SetMaxTimeSize(seconds); }
+  double GetQueueTimeSize() const override { return m_messageQueue.GetTimeSizeSeconds(); }
   int  GetLevel() const override { return m_messageQueue.GetLevel(); }
   bool IsInited() const override;
   void SendMessage(std::shared_ptr<CDVDMsg> pMsg, int priority = 0) override;
@@ -81,6 +83,7 @@ public:
   double GetOutputDelay() override; /* returns the expected delay, from that a packet is put in queue */
   std::string GetPlayerInfo() override;
   int GetVideoBitrate() override;
+  bool IsEOS() override { return m_isEOS; }
   bool SupportsExtention() const override { return m_pVideoCodec && m_pVideoCodec->SupportsExtention(); }
 
   // classes
@@ -88,6 +91,7 @@ public:
   CDVDClock* m_pClock;
 
 protected:
+  std::atomic_bool m_isEOS{false};
 
   enum EOutputState
   {

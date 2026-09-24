@@ -1899,6 +1899,15 @@ void aml_dv_set_subtitles(bool visible)
   }
 }
 
+// Published by the render thread. Disc navigation graphics are OSD, independent
+// of the user's subtitle enable/active-area policy.
+static std::atomic_bool s_discMenuVisible{false};
+
+void aml_set_disc_menu_visible(bool visible)
+{
+  s_discMenuVisible.store(visible, std::memory_order_relaxed);
+}
+
 void aml_dv_set_xbmc_osd()
 {
   auto &wm = CServiceBroker::GetGUI()->GetWindowManager();
@@ -1927,7 +1936,7 @@ void aml_dv_set_xbmc_osd()
                  (!skinHandlesOsd && CServiceBroker::GetDataCacheCore().GetAVChangeExtended());
   }
 
-  int val = osd_active ? 1 : 0;
+  int val = (osd_active || s_discMenuVisible.load(std::memory_order_relaxed)) ? 1 : 0;
   if (val != s_lastOsd)
   {
     CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_xbmc_osd", val);

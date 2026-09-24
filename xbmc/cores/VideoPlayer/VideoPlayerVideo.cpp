@@ -260,6 +260,7 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
 
   m_pVideoCodec = std::move(codec);
   m_hints = hint;
+  m_isEOS = false;
   m_stalled = m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET) == 0;
   m_rewindStalled = false;
   m_packets.clear();
@@ -314,6 +315,8 @@ bool CVideoPlayerVideo::IsInited() const
 
 inline void CVideoPlayerVideo::SendMessage(std::shared_ptr<CDVDMsg> pMsg, int priority)
 {
+  if (pMsg->IsType(CDVDMsg::VIDEO_DRAIN))
+    m_isEOS = false;
   m_messageQueue.Put(pMsg, priority);
 }
 
@@ -479,6 +482,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))
     {
+      m_isEOS = false;
       if(m_pVideoCodec)
         m_pVideoCodec->Reset();
 
@@ -495,6 +499,8 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH)) // private message sent by (CVideoPlayerVideo::Flush())
     {
+      m_isEOS = false;
+      m_messageQueue.Flush(CDVDMsg::VIDEO_DRAIN);
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       if(m_pVideoCodec)
         m_pVideoCodec->Reset();
@@ -555,6 +561,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::VIDEO_DRAIN))
     {
+      m_isEOS = false;
       while (!m_bStop && m_pVideoCodec)
       {
         m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN);
@@ -577,6 +584,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::DEMUXER_PACKET))
     {
+      m_isEOS = false;
       DemuxPacket* pPacket = std::static_pointer_cast<CDVDMsgDemuxerPacket>(pMsg)->GetPacket();
       bool bPacketDrop = std::static_pointer_cast<CDVDMsgDemuxerPacket>(pMsg)->GetPacketDrop();
 
@@ -737,6 +745,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 
   if (decoderState == CDVDVideoCodec::VC_EOF)
   {
+    m_isEOS = true;
     if (m_syncState == IDVDStreamPlayer::SYNC_STARTING)
     {
       SStartMsg msg;
@@ -1012,7 +1021,7 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
     while (it != pVecOverlays->end())
     {
       std::shared_ptr<CDVDOverlay>& pOverlay = *it++;
-      if(!pOverlay->bForced && !m_bRenderSubs)
+      if (!pOverlay->IsDiscMenuOverlay() && !pOverlay->bForced && !m_bRenderSubs)
         continue;
 
       double pts2 = pOverlay->bForced ? pts : subsPts;
@@ -1022,10 +1031,13 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
           continue;
       }
 
-      if((pOverlay->iPTSStartTime <= pts2 && (pOverlay->iPTSStopTime > pts2 || pOverlay->iPTSStopTime == 0LL)))
+      if (pOverlay->IsDiscMenuOverlay() ||
+          (pOverlay->iPTSStartTime <= pts2 &&
+           (pOverlay->iPTSStopTime > pts2 || pOverlay->iPTSStopTime == 0LL)))
       {
 
-        pOverlay->m_3dSubtitleDepth = pSource->m_3dSubtitleDepth;
+        if (!pOverlay->IsDiscMenuOverlay())
+          pOverlay->m_3dSubtitleDepth = pSource->m_3dSubtitleDepth;
 
         if(pOverlay->IsOverlayType(DVDOVERLAY_TYPE_GROUP))
           overlays.insert(overlays.end(),

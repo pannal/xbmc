@@ -6,47 +6,48 @@
  *  See LICENSES/README.md for more information.
  */
 
-
 #include "AMLCodec.h"
-#include "DynamicDll.h"
 
+#include "DynamicDll.h"
+#include "ServiceBroker.h"
+#include "aom_integer.h"
+#include "application/ApplicationComponents.h"
+#include "application/ApplicationPowerHandling.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/Process/ProcessInfo.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
-#include "application/ApplicationComponents.h"
-#include "application/ApplicationPowerHandling.h"
+#include "obu_util.h"
 #include "settings/AdvancedSettings.h"
-#include "windowing/GraphicContext.h"
 #include "settings/DisplaySettings.h"
 #include "settings/MediaSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
-#include "utils/log.h"
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
 #include "utils/TimeUtils.h"
-#include "ServiceBroker.h"
+#include "utils/log.h"
+#include "windowing/GraphicContext.h"
 
 #include "platform/linux/SysfsPath.h"
 
 #include <algorithm>
-#include <unistd.h>
+#include <cerrno>
+#include <chrono>
 #include <queue>
-#include <vector>
 #include <signal.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/ioctl.h>
-#include <sys/utsname.h>
-#include <linux/videodev2.h>
-#include <sys/poll.h>
-#include <chrono>
 #include <thread>
-#include "aom_integer.h"
-#include "obu_util.h"
+#include <vector>
+
+#include <fcntl.h>
+#include <linux/videodev2.h>
+#include <sys/ioctl.h>
+#include <sys/poll.h>
+#include <sys/utsname.h>
+#include <unistd.h>
 
 namespace
 {
@@ -1926,6 +1927,8 @@ bool CAMLCodec::OpenDecoder()
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
   m_stream_eof = false;
+  m_no_data_since_reset = true;
+  m_stillFrameDrain = {};
   m_cur_pts = DVD_NOPTS_VALUE;
   m_last_pts = DVD_NOPTS_VALUE;
   m_prev_last_pts = DVD_NOPTS_VALUE;
@@ -2551,6 +2554,7 @@ void CAMLCodec::Reset()
   m_stream_eof = false;
   m_buffer_level_ready = false;
   m_no_data_since_reset = true;
+  m_stillFrameDrain = {};
 
   SetSpeed(m_speed);
 
@@ -2861,6 +2865,82 @@ int CAMLCodec::DequeueBuffer()
   return ret;
 }
 
+// A one-picture HEVC menu clip can finish before the decoder releases its
+// picture. Send EOS only while draining that clip, then allow bounded time for
+// its output. One nonblocking write per poll keeps stop/flush responsive even
+// when the driver repeatedly returns zero or EAGAIN.
+bool CAMLCodec::DrainHevcStill(float bufferLevel)
+{
+  using State = StillFrameDrain::State;
+  auto& still = m_stillFrameDrain;
+  if (!m_hints.stills || m_hints.codec != AV_CODEC_ID_HEVC || still.pictureEmitted)
+    return false;
+  if (m_abort)
+  {
+    still.state = State::DONE;
+    return false;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  if (still.state == State::IDLE)
+  {
+    if (bufferLevel > 0.0f)
+      return false;
+    still.state = State::WRITING;
+    still.deadline = now + std::chrono::milliseconds(100);
+  }
+  if (still.state == State::WRITING)
+  {
+    static constexpr uint8_t eosNal[] = {0x00, 0x00, 0x00, 0x01, 0x48, 0x01};
+    if (now >= still.deadline || still.attempts >= 32)
+    {
+      CLog::Log(LOGWARNING, "CAMLCodec::DrainHevcStill: EOS write timed out ({}/{} bytes)",
+                still.bytesWritten, sizeof(eosNal));
+      still.state = State::DONE;
+      return false;
+    }
+    ++still.attempts;
+    const unsigned int remaining = sizeof(eosNal) - still.bytesWritten;
+    // Normal codec input can be blocking. Change only this EOS write; codec
+    // feeding and draining run on the same video thread.
+    const int handle = am_private->vcodec.handle;
+    const int flags = fcntl(handle, F_GETFL);
+    if (flags < 0 || (!(flags & O_NONBLOCK) && fcntl(handle, F_SETFL, flags | O_NONBLOCK) < 0))
+    {
+      CLog::Log(LOGWARNING, "CAMLCodec::DrainHevcStill: cannot make EOS write nonblocking");
+      still.state = State::DONE;
+      return false;
+    }
+    const int written = m_dll->codec_write(
+        &am_private->vcodec, const_cast<uint8_t*>(eosNal) + still.bytesWritten, remaining);
+    const int writeError = errno;
+    if (!(flags & O_NONBLOCK) && fcntl(handle, F_SETFL, flags) < 0)
+    {
+      CLog::Log(LOGWARNING, "CAMLCodec::DrainHevcStill: cannot restore codec write flags");
+      still.state = State::DONE;
+      return false;
+    }
+    if (written < 0 && writeError != EAGAIN && writeError != EINTR)
+    {
+      CLog::Log(LOGWARNING, "CAMLCodec::DrainHevcStill: EOS write failed ({})", writeError);
+      still.state = State::DONE;
+      return false;
+    }
+    if (written > 0)
+      still.bytesWritten += std::min(static_cast<unsigned int>(written), remaining);
+    if (still.bytesWritten == sizeof(eosNal))
+    {
+      still.state = State::WAITING;
+      still.deadline = now + std::chrono::milliseconds(250);
+    }
+    return true;
+  }
+  if (still.state == State::WAITING && now < still.deadline)
+    return true;
+  still.state = State::DONE;
+  return false;
+}
+
 CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
 {
   struct vdec_info vi;
@@ -2912,7 +2992,9 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
   // available (EAGAIN), decoupling frame output from the input buffer level.
   // This prevents burst-gap stutter near EOF where the input buffer oscillates
   // around the minimum threshold while the decoder still has output frames ready.
-  if (m_buffer_level_ready && ((ret = DequeueBuffer()) == 0))
+  const bool drainHevcStill =
+      m_drain && m_hints.stills && m_hints.codec == AV_CODEC_ID_HEVC && !m_no_data_since_reset;
+  if ((m_buffer_level_ready || drainHevcStill) && ((ret = DequeueBuffer()) == 0))
   {
     // Hand frames over in the order the decoder delivers them. Re-sorting by
     // timestamp was tried and reverted: the timestamps are the unreliable part
@@ -3087,6 +3169,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     else if (videoPicture.stereoMode == "block_rl" && m_processInfo.GetVideoSettings().m_StereoInvert)
       videoPicture.stereoMode = "block_lr";
 
+    m_stillFrameDrain.pictureEmitted = true;
     return CDVDVideoCodec::VC_PICTURE;
   }
   // During drain, poll while the decoder still has data to process rather than
@@ -3111,6 +3194,9 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
       m_repairExcursionRun = 0;
       return CDVDVideoCodec::VC_EOF;
     }
+
+    if (DrainHevcStill(buffer_level))
+      return CDVDVideoCodec::VC_NONE;
 
     auto drain_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now() - m_tp_drain_start);

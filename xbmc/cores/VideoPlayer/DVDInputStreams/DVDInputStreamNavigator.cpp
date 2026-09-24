@@ -825,7 +825,7 @@ bool CDVDInputStreamNavigator::OnMouseClick(const CPoint &point)
   return false;
 }
 
-bool CDVDInputStreamNavigator::OnMenu()
+bool CDVDInputStreamNavigator::OnMenu(MenuCall call)
 {
   if (!m_dvdnav)
   {

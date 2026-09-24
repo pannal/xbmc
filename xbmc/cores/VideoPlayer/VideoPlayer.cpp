@@ -916,6 +916,10 @@ bool CVideoPlayer::OpenInputStream()
   if (m_pInputStream.use_count() > 1)
     throw std::runtime_error("m_pInputStream reference count is greater than 1");
   m_pInputStream.reset();
+  m_bdAudioReuse = false;
+  m_bdVideoReuse = false;
+  m_bdTimedStill = false;
+  UpdateMenuDomainQueueDepth(false);
 
   m_subtitleSeekRecallFromFile = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
       CSettings::SETTING_COREELEC_SUBTITLES_RECALL_FROM_FILE);
@@ -1026,6 +1030,12 @@ bool CVideoPlayer::OpenDemuxStream()
 
 void CVideoPlayer::CloseDemuxer()
 {
+  m_CurrentAudio.stream = nullptr;
+  m_CurrentVideo.stream = nullptr;
+  m_CurrentSubtitle.stream = nullptr;
+  m_CurrentTeletext.stream = nullptr;
+  m_CurrentRadioRDS.stream = nullptr;
+  m_CurrentAudioID3.stream = nullptr;
   m_pDemuxer.reset();
   m_SelectionStreams.Clear(STREAM_NONE, STREAM_SOURCE_DEMUX);
 
@@ -1074,6 +1084,7 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
   }
   if (!valid)
   {
+    m_bdVideoReuse = false;
     CloseStream(m_CurrentVideo, true);
     m_processInfo->ResetVideoCodecInfo();
   }
@@ -1379,6 +1390,37 @@ bool CVideoPlayer::IsBetterStream(const CCurrentStream& current, CDemuxStream* s
 
 void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stream)
 {
+  // Native navigation can postpone OpenDefaultStreams until the first packet.
+  // Rebind a retained player before the old demuxer ID makes it look invalid.
+  const bool reusePending = (current.type == STREAM_VIDEO && m_bdVideoReuse) ||
+                            (current.type == STREAM_AUDIO && m_bdAudioReuse);
+  if (reusePending)
+  {
+    if (stream->type != current.type || stream->disabled ||
+        STREAM_SOURCE_MASK(stream->source) != STREAM_SOURCE_DEMUX ||
+        (m_playerOptions.videoOnly && current.type != STREAM_VIDEO))
+      return;
+    if (current.type == STREAM_AUDIO)
+    {
+      if (m_dvd.iSelectedAudioStream >= 0)
+      {
+        if (stream->dvdNavId != m_dvd.iSelectedAudioStream)
+          return;
+      }
+      else
+      {
+        PredicateAudioFilter filter(m_processInfo->GetVideoSettings().m_AudioStream,
+                                    m_playerOptions.preferStereo);
+        const auto candidates = m_SelectionStreams.Get(STREAM_AUDIO, filter);
+        if (candidates.empty() || stream->uniqueId != candidates.front().id ||
+            stream->demuxerId != candidates.front().demuxerId)
+          return;
+      }
+    }
+    OpenStream(current, stream->demuxerId, stream->uniqueId, stream->source);
+    return;
+  }
+
   IDVDStreamPlayer* player = GetStreamPlayer(current.player);
   if (!IsValidStream(current) && (player == NULL || player->IsStalled()))
     CloseStream(current, true);
@@ -1387,8 +1429,194 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
     OpenStream(current, stream->demuxerId, stream->uniqueId, stream->source);
 }
 
+namespace
+{
+constexpr double MENU_DOMAIN_RAMP_RATE = 0.75;
+constexpr double MENU_DOMAIN_RAMP_HEADROOM = 0.5;
+constexpr double MENU_DOMAIN_EMPTY_QUEUE_SECONDS = 0.05;
+constexpr double MENU_DOMAIN_AUDIO_LOW_SECONDS = 0.4;
+constexpr auto MENU_DOMAIN_EVAL_INTERVAL = std::chrono::milliseconds(250);
+constexpr auto MENU_DOMAIN_STARVE_SUSTAIN = std::chrono::milliseconds(500);
+constexpr auto MENU_DOMAIN_RAMP_MAX_STEP = std::chrono::milliseconds(1000);
+} // namespace
+
+void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
+{
+  const double clamp = static_cast<double>(CServiceBroker::GetSettingsComponent()
+                                               ->GetAdvancedSettings()
+                                               ->m_videoMenuDomainQueueTimeSize);
+  if (clamp <= 0.0 || clamp >= m_messageQueueTimeSize)
+    return;
+
+  bool menuDomain = false;
+  bool readDataPhase = false;
+#if defined(HAVE_LIBBLURAY)
+  if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+  {
+    if (const std::shared_ptr<CDVDInputStreamBluray> bluray =
+            std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+    {
+      menuDomain = bluray->IsMenuDomainSegment();
+      readDataPhase = bluray->IsReadInDataPhase();
+    }
+  }
+#endif
+
+  if (!menuDomain)
+  {
+    m_menuDomainSegment = false;
+    m_menuDomainClampPending = false;
+    m_menuDomainFillPending = false;
+    m_menuDomainRampCap = 0.0;
+    m_menuDomainStarveStart = {};
+    if (!m_menuDomainLowLatency)
+      return;
+
+    m_menuDomainLowLatency = false;
+    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize);
+    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize);
+    CLog::Log(LOGDEBUG, "menudomain: leaving low-latency mode, queue read-ahead {:.1f}s",
+              m_messageQueueTimeSize);
+    return;
+  }
+
+  const bool domainEntered = !m_menuDomainSegment;
+  m_menuDomainSegment = true;
+
+  if (m_menuDomainLowLatency)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - m_menuDomainEvalLast < MENU_DOMAIN_EVAL_INTERVAL)
+      return;
+    m_menuDomainEvalLast = now;
+
+    const double videoSecs = m_VideoPlayerVideo->GetQueueTimeSize();
+    const double audioSecs = m_VideoPlayerAudio->GetQueueTimeSize();
+
+    if (m_menuDomainFillPending)
+    {
+      if (std::max(videoSecs, audioSecs) < clamp)
+        return;
+      m_menuDomainFillPending = false;
+      m_menuDomainRampCap = 0.0;
+      m_VideoPlayerAudio->SetMaxTimeSize(clamp);
+      m_VideoPlayerVideo->SetMaxTimeSize(clamp);
+      CLog::Log(LOGDEBUG,
+                "menudomain: queue filled, entering low-latency mode, queue read-ahead {:.1f}s",
+                clamp);
+      return;
+    }
+
+    if (m_menuDomainRampCap > clamp)
+    {
+      const auto step = std::min<std::chrono::steady_clock::duration>(now - m_menuDomainRampLast,
+                                                                      MENU_DOMAIN_RAMP_MAX_STEP);
+      m_menuDomainRampLast = now;
+      double next =
+          m_menuDomainRampCap - std::chrono::duration<double>(step).count() * MENU_DOMAIN_RAMP_RATE;
+      next = std::min(next, std::max(videoSecs, audioSecs) + MENU_DOMAIN_RAMP_HEADROOM);
+      next = std::max(next, clamp);
+      m_menuDomainRampCap = next;
+      m_VideoPlayerAudio->SetMaxTimeSize(next);
+      m_VideoPlayerVideo->SetMaxTimeSize(next);
+      if (next <= clamp)
+        CLog::Log(LOGDEBUG, "menudomain: engage ramp settled, queue read-ahead {:.1f}s", clamp);
+      m_menuDomainStarveStart = {};
+      return;
+    }
+
+    const bool starving = m_playSpeed == DVD_PLAYSPEED_NORMAL && readDataPhase && m_HasVideo &&
+                          m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
+                          videoSecs < MENU_DOMAIN_EMPTY_QUEUE_SECONDS &&
+                          (m_CurrentAudio.id < 0 || audioSecs < MENU_DOMAIN_AUDIO_LOW_SECONDS) &&
+                          m_VideoPlayerVideo->AcceptsData() && m_VideoPlayerAudio->AcceptsData();
+    if (!starving)
+    {
+      m_menuDomainStarveStart = {};
+      return;
+    }
+    if (m_menuDomainStarveStart == std::chrono::steady_clock::time_point{})
+    {
+      m_menuDomainStarveStart = now;
+      return;
+    }
+    if (now - m_menuDomainStarveStart < MENU_DOMAIN_STARVE_SUSTAIN)
+      return;
+
+    m_menuDomainLowLatency = false;
+    m_menuDomainRampCap = 0.0;
+    m_menuDomainStarveStart = {};
+    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize);
+    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize);
+    CLog::Log(
+        LOGDEBUG,
+        "menudomain: starvation release, queue read-ahead {:.1f}s until the next menu segment",
+        m_messageQueueTimeSize);
+    return;
+  }
+
+  if (segmentOpen || domainEntered)
+    m_menuDomainClampPending = true;
+
+  if (!m_menuDomainClampPending)
+    return;
+
+  if (m_HasVideo && m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_STARTING)
+    return;
+
+  m_menuDomainClampPending = false;
+  m_menuDomainLowLatency = true;
+  m_menuDomainEvalLast = std::chrono::steady_clock::now();
+  m_menuDomainStarveStart = {};
+  const double queuedSecs =
+      std::max(m_VideoPlayerVideo->GetQueueTimeSize(), m_VideoPlayerAudio->GetQueueTimeSize());
+  if (queuedSecs > clamp + MENU_DOMAIN_RAMP_HEADROOM)
+  {
+    m_menuDomainRampCap = queuedSecs + MENU_DOMAIN_RAMP_HEADROOM;
+    m_menuDomainRampLast = m_menuDomainEvalLast;
+    m_VideoPlayerAudio->SetMaxTimeSize(m_menuDomainRampCap);
+    m_VideoPlayerVideo->SetMaxTimeSize(m_menuDomainRampCap);
+    CLog::Log(
+        LOGDEBUG,
+        "menudomain: entering low-latency mode via ramp from {:.1f}s, queue read-ahead target "
+        "{:.1f}s",
+        m_menuDomainRampCap, clamp);
+  }
+  else if (queuedSecs >= clamp)
+  {
+    m_menuDomainRampCap = 0.0;
+    m_VideoPlayerAudio->SetMaxTimeSize(clamp);
+    m_VideoPlayerVideo->SetMaxTimeSize(clamp);
+    CLog::Log(LOGDEBUG, "menudomain: entering low-latency mode, queue read-ahead {:.1f}s", clamp);
+  }
+  else
+  {
+    m_menuDomainFillPending = true;
+    m_menuDomainRampCap = 0.0;
+    CLog::Log(
+        LOGDEBUG,
+        "menudomain: deferring the clamp until the queue fills to {:.1f}s (currently {:.1f}s)",
+        clamp, queuedSecs);
+  }
+}
+
 void CVideoPlayer::Prepare()
 {
+  m_menuDomainSegment = false;
+  m_menuDomainClampPending = false;
+  m_menuDomainFillPending = false;
+  m_menuDomainRampCap = 0.0;
+  m_menuDomainStarveStart = {};
+  if (m_menuDomainLowLatency)
+  {
+    m_menuDomainLowLatency = false;
+    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize);
+    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize);
+  }
+  m_bdAudioReuse = false;
+  m_bdVideoReuse = false;
+  m_bdTimedStill = false;
+
   CFFmpegLog::SetLogLevel(1);
   SetPlaySpeed(DVD_PLAYSPEED_NORMAL);
   m_processInfo->SetSpeed(1.0);
@@ -1591,9 +1819,15 @@ void CVideoPlayer::Process()
       if (!m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER) ||
           !m_SelectionStreams.m_Streams.empty())
         OpenDefaultStreams();
+#if defined(HAVE_LIBBLURAY)
+      if (auto bluray = std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+        bluray->RequestMenuOverlayRepost();
+#endif
 
       UpdatePlayState(0);
     }
+
+    UpdateMenuDomainQueueDepth(false);
 
     // handle eventual seeks due to playspeed
     HandlePlaySpeed();
@@ -1679,6 +1913,7 @@ void CVideoPlayer::Process()
               m_dvd.iDVDStillTime = 0ms;
               m_dvd.iDVDStillStartTime = {};
               m_dvd.state = DVDSTATE_NORMAL;
+              m_bdTimedStill = false;
               pStream->SkipStill();
               continue;
             }
@@ -1693,9 +1928,32 @@ void CVideoPlayer::Process()
         CloseDemuxer();
 
         SetCaching(CACHESTATE_DONE);
-        CLog::Log(LOGINFO, "VideoPlayer: next stream, wait for old streams to be finished");
-        CloseStream(m_CurrentAudio, true);
-        CloseStream(m_CurrentVideo, true);
+        bool flushOldStreams = false;
+        if (auto menu = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream))
+          flushOldStreams = menu->ConsumeDiscontinuityFlush();
+        bool videoKeepAlive = false;
+        bool naturalChain = false;
+#if defined(HAVE_LIBBLURAY)
+        if (auto bluray = std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+        {
+          videoKeepAlive = bluray->ConsumeVideoCompatBoundary();
+          naturalChain = bluray->ConsumeNaturalChainBoundary();
+        }
+#endif
+        if (naturalChain &&
+            CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoBdBoundaryDrain)
+          DrainStreamsAtBoundary();
+        if (videoKeepAlive)
+        {
+          m_bdAudioReuse = true;
+          m_bdVideoReuse = true;
+          FlushBuffers(DVD_NOPTS_VALUE, false, true);
+          continue;
+        }
+        m_bdAudioReuse = false;
+        m_bdVideoReuse = false;
+        CloseStream(m_CurrentAudio, !flushOldStreams);
+        CloseStream(m_CurrentVideo, !flushOldStreams);
 
         m_CurrentAudio.Clear();
         m_CurrentVideo.Clear();
@@ -4635,6 +4893,8 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
     current.hint = hint;
     current.stream = (void*)stream;
     current.lastdts = DVD_NOPTS_VALUE;
+    if (current.type == STREAM_VIDEO)
+      UpdateMenuDomainQueueDepth(true);
     if (oldId >= 0 && current.avsync != CCurrentStream::AV_SYNC_FORCE)
       current.avsync = CCurrentStream::AV_SYNC_CHECK;
     if(stream)
@@ -4665,8 +4925,11 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
   if(player == nullptr)
     return false;
 
-  if(m_CurrentAudio.id < 0 ||
-     m_CurrentAudio.hint != hint)
+  const bool reuse =
+      m_bdAudioReuse && m_CurrentAudio.id >= 0 &&
+      m_CurrentAudio.hint.Equal(hint, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
+  m_bdAudioReuse = false;
+  if (!reuse && (m_CurrentAudio.id < 0 || m_CurrentAudio.hint != hint))
   {
     if (!player->OpenStream(hint))
       return false;
@@ -4677,7 +4940,7 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
     m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_STARTING;
     m_CurrentAudio.packets = 0;
   }
-  else if (reset)
+  else if (reset && !reuse)
     player->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_RESET), 0);
 
   m_HasAudio = true;
@@ -4805,8 +5068,11 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   if(player == nullptr)
     return false;
 
-  if(m_CurrentVideo.id < 0 ||
-     m_CurrentVideo.hint != hint)
+  const bool reuse =
+      m_bdVideoReuse && m_CurrentVideo.id >= 0 &&
+      m_CurrentVideo.hint.Equal(hint, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
+  m_bdVideoReuse = false;
+  if (!reuse && (m_CurrentVideo.id < 0 || m_CurrentVideo.hint != hint))
   {
     if (hint.codec == AV_CODEC_ID_MPEG2VIDEO || hint.codec == AV_CODEC_ID_H264)
       m_pCCDemuxer.reset();
@@ -4834,7 +5100,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     m_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_STARTING;
     m_CurrentVideo.packets = 0;
   }
-  else if (reset)
+  else if (reset && !reuse)
     player->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_RESET), 0);
 
   m_HasVideo = true;
@@ -4960,6 +5226,10 @@ bool CVideoPlayer::OpenAudioID3Stream(CDVDStreamInfo& hint)
 
 bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
 {
+  if (current.type == STREAM_VIDEO)
+    m_bdVideoReuse = false;
+  else if (current.type == STREAM_AUDIO)
+    m_bdAudioReuse = false;
   if (current.id < 0)
     return false;
 
@@ -5086,6 +5356,95 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
     m_pDemuxer->SetSpeed(DVD_PLAYSPEED_NORMAL);
 }
 
+void CVideoPlayer::DrainStreamsAtBoundary()
+{
+  if (m_bAbortRequest || m_playSpeed != DVD_PLAYSPEED_NORMAL)
+  {
+    return;
+  }
+
+  const bool videoActive =
+      m_CurrentVideo.id >= 0 && m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC;
+  const bool audioActive =
+      m_CurrentAudio.id >= 0 && m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC;
+  if (!videoActive && !audioActive)
+  {
+    return;
+  }
+
+  const double videoSecs = videoActive ? m_VideoPlayerVideo->GetQueueTimeSize() : 0.0;
+  const double audioSecs = audioActive ? m_VideoPlayerAudio->GetQueueTimeSize() : 0.0;
+  if (videoActive)
+    m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN), 0);
+
+  const auto ceiling = std::chrono::milliseconds(
+      std::clamp(static_cast<int>(std::max(videoSecs, audioSecs) * 1000.0) + 3000, 8000, 30000));
+
+  XbmcThreads::EndTime<> totalTimer(ceiling);
+  XbmcThreads::EndTime<> stallTimer(1500ms);
+  double lastVideoPts = videoActive ? m_VideoPlayerVideo->GetCurrentPts() : DVD_NOPTS_VALUE;
+  double lastAudioPts = audioActive ? m_VideoPlayerAudio->GetCurrentPts() : DVD_NOPTS_VALUE;
+
+  XbmcThreads::EndTime<> quietTimer(100ms);
+  while (true)
+  {
+    if (m_bAbortRequest)
+    {
+      break;
+    }
+    if (m_messenger.HasMessages())
+    {
+      break;
+    }
+    if (totalTimer.IsTimePast())
+    {
+      break;
+    }
+
+    int late = 0, queued = 0, discard = 0;
+    double renderPts = DVD_NOPTS_VALUE;
+    if (videoActive)
+      m_renderManager.GetStats(late, renderPts, queued, discard);
+    const bool videoBusy = videoActive && (m_VideoPlayerVideo->HasData() ||
+                                           !m_VideoPlayerVideo->IsEOS() || queued > 0);
+    const bool audioBusy =
+        audioActive && (m_VideoPlayerAudio->HasData() ||
+                        m_VideoPlayerAudio->GetSinkDelay() > DVD_MSEC_TO_TIME(50));
+    if (videoBusy || audioBusy)
+      quietTimer.Set(100ms);
+    else if (quietTimer.IsTimePast())
+      break;
+
+    bool progressed = false;
+    if (videoActive)
+    {
+      const double pts = m_VideoPlayerVideo->GetCurrentPts();
+      if (pts != DVD_NOPTS_VALUE && pts != lastVideoPts)
+      {
+        lastVideoPts = pts;
+        progressed = true;
+      }
+    }
+    if (audioActive)
+    {
+      const double pts = m_VideoPlayerAudio->GetCurrentPts();
+      if (pts != DVD_NOPTS_VALUE && pts != lastAudioPts)
+      {
+        lastAudioPts = pts;
+        progressed = true;
+      }
+    }
+    if (progressed)
+      stallTimer.Set(1500ms);
+    else if (stallTimer.IsTimePast())
+    {
+      break;
+    }
+
+    CThread::Sleep(25ms);
+  }
+}
+
 // since we call ffmpeg functions to decode, this is being called in the same thread as ::Process() is
 int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
 {
@@ -5106,15 +5465,32 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
       if (*static_cast<uint32_t*>(pData) == false)
       {
         m_dvd.state = DVDSTATE_NORMAL;
+        m_bdTimedStill = false;
         m_dvd.iDVDStillTime = 0ms;
+        m_dvd.iDVDStillStartTime = {};
         CLog::Log(LOGDEBUG, "BD_EVENT_MENU - libbluray leave menu (DVDSTATE_NORMAL)");
       }
       break;
     case BD_EVENT_PLAYLIST_STOP:
+    {
       m_dvd.state = DVDSTATE_NORMAL;
+      m_bdTimedStill = false;
       m_dvd.iDVDStillTime = 0ms;
-      m_messenger.Put(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_FLUSH));
+      m_dvd.iDVDStillStartTime = {};
+      bool naturalChain = false;
+      if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoBdBoundaryDrain)
+      {
+        if (std::shared_ptr<CDVDInputStreamBluray> bluray =
+                std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+          naturalChain = bluray->IsNaturalChainBoundaryInFlight();
+      }
+      if (naturalChain)
+        CLog::Log(LOGDEBUG,
+                  "BD_EVENT_PLAYLIST_STOP flush suppressed - natural chain boundary in flight");
+      else
+        m_messenger.Put(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_FLUSH));
       break;
+    }
     case BD_EVENT_AUDIO_STREAM:
       m_dvd.iSelectedAudioStream = *static_cast<int*>(pData);
       break;
@@ -5130,8 +5506,9 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
     break;
     case BD_EVENT_STILL_TIME:
     {
-      if (m_dvd.state != DVDSTATE_STILL)
+      if (!m_bdTimedStill)
       {
+        m_bdTimedStill = true;
         // else notify the player we have received a still frame
 
         m_dvd.iDVDStillTime = std::chrono::milliseconds(*static_cast<int*>(pData));
@@ -5168,6 +5545,7 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
       else if (!on && m_dvd.state == DVDSTATE_STILL)
       {
         m_dvd.state = DVDSTATE_NORMAL;
+        m_bdTimedStill = false;
         m_dvd.iDVDStillStartTime = {};
         m_dvd.iDVDStillTime = 0ms;
         CLog::Log(LOGDEBUG, "CDVDPlayer::OnDVDNavResult - libbluray DVDSTATE_STILL end");
@@ -5177,6 +5555,7 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
     case BD_EVENT_MENU_ERROR:
     {
       m_dvd.state = DVDSTATE_NORMAL;
+      m_bdTimedStill = false;
       CLog::Log(LOGDEBUG, "CVideoPlayer::OnDiscNavResult - libbluray menu not supported (DVDSTATE_NORMAL)");
       CGUIDialogKaiToast::QueueNotification(g_localizeStrings.Get(25008), g_localizeStrings.Get(25009));
     }
@@ -5184,6 +5563,7 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
     case BD_EVENT_ENC_ERROR:
     {
       m_dvd.state = DVDSTATE_NORMAL;
+      m_bdTimedStill = false;
       CLog::Log(LOGDEBUG, "CVideoPlayer::OnDiscNavResult - libbluray the disc/file is encrypted and can't be played (DVDSTATE_NORMAL)");
       CGUIDialogKaiToast::QueueNotification(g_localizeStrings.Get(16026), g_localizeStrings.Get(29805));
     }
@@ -5432,7 +5812,12 @@ bool CVideoPlayer::OnAction(const CAction &action)
       {
         THREAD_ACTION(action);
         CLog::LogF(LOGDEBUG, "Trying to go to the menu");
-        if (pMenus->OnMenu())
+        CDVDInputStream::IMenus::MenuCall menuCall = CDVDInputStream::IMenus::MenuCall::Auto;
+        if (action.GetName() == "popup")
+          menuCall = CDVDInputStream::IMenus::MenuCall::Popup;
+        else if (action.GetName() == "top")
+          menuCall = CDVDInputStream::IMenus::MenuCall::Top;
+        if (pMenus->OnMenu(menuCall))
         {
           if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
           {
@@ -5447,6 +5832,14 @@ bool CVideoPlayer::OnAction(const CAction &action)
         return true;
       }
       break;
+      case ACTION_TELETEXT_RED:
+      case ACTION_TELETEXT_GREEN:
+      case ACTION_TELETEXT_YELLOW:
+      case ACTION_TELETEXT_BLUE:
+        THREAD_ACTION(action);
+        if (pMenus->OnColorKey(action.GetID() - ACTION_TELETEXT_RED))
+          return true;
+        break;
     }
 
     if (pMenus->IsInMenu())

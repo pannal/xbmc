@@ -244,9 +244,10 @@ void CRenderer::Render(COverlay* o)
     }
   }
 
-  state.x += GetStereoscopicDepth(o->m_pgsSubtitle, o->m_3dSubtitleDepth);
+  if (!o->m_discMenuOverlay)
+    state.x += GetStereoscopicDepth(o->m_pgsSubtitle, o->m_3dSubtitleDepth);
 
-  if (o->m_isBitmapOverlay)
+  if (o->m_isBitmapOverlay && !o->m_discMenuOverlay)
   {
     float zoom = static_cast<float>(
                      CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
@@ -281,7 +282,8 @@ void CRenderer::Render(COverlay* o)
   // PGS on a cropped 2.4:1 encode) are authored into those bars, so they need
   // moving just like video-anchored ones — L5 masking would swallow them.
   // For POSITION_RELATIVE subs, state.y is the center; for others it's the top edge.
-  if (o->m_isBitmapOverlay && (m_activeAreaTopOffset > 0 || m_activeAreaBottomOffset > 0))
+  if (o->m_isBitmapOverlay && !o->m_discMenuOverlay &&
+      (m_activeAreaTopOffset > 0 || m_activeAreaBottomOffset > 0))
   {
     float activeTop = m_rv.y1 + static_cast<float>(m_activeAreaTopOffset);
     float activeBottom = m_rv.y2 - static_cast<float>(m_activeAreaBottomOffset);
@@ -357,7 +359,22 @@ bool CRenderer::HasImageOverlay(int idx)
 
   for (const auto& e : m_buffers[idx])
   {
-    if (e.overlay_dvd && e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
+    if (e.overlay_dvd && !e.overlay_dvd->IsDiscMenuOverlay() &&
+        e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
+      return true;
+  }
+  return false;
+}
+
+bool CRenderer::HasDiscMenuOverlay(int idx)
+{
+  std::unique_lock<CCriticalSection> lock(m_section);
+  if (idx < 0 || idx >= NUM_BUFFERS)
+    return false;
+  for (const auto& e : m_buffers[idx])
+  {
+    if (e.overlay_dvd && e.overlay_dvd->IsDiscMenuOverlay() &&
+        e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
       return true;
   }
   return false;
@@ -376,7 +393,8 @@ bool CRenderer::HasImageSubOutsideActiveArea(int idx, int l5Top, int l5Bottom)
 
   for (const auto& e : m_buffers[idx])
   {
-    if (!e.overlay_dvd || !e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
+    if (!e.overlay_dvd || e.overlay_dvd->IsDiscMenuOverlay() ||
+        !e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
       continue;
 
     const auto& img = static_cast<CDVDOverlayImage&>(*e.overlay_dvd);
@@ -724,6 +742,7 @@ std::shared_ptr<COverlay> CRenderer::Convert(CDVDOverlay& o, double pts)
 
   if (r)
   {
+    r->m_discMenuOverlay = o.IsDiscMenuOverlay();
     return r;
   }
 
@@ -731,6 +750,9 @@ std::shared_ptr<COverlay> CRenderer::Convert(CDVDOverlay& o, double pts)
     r = COverlay::Create(static_cast<CDVDOverlayImage&>(o), m_rs);
   else if (o.IsOverlayType(DVDOVERLAY_TYPE_SPU))
     r = COverlay::Create(static_cast<CDVDOverlaySpu&>(o));
+
+  if (r)
+    r->m_discMenuOverlay = o.IsDiscMenuOverlay();
 
   m_textureCache[m_textureid] = r;
   o.m_textureid = m_textureid;

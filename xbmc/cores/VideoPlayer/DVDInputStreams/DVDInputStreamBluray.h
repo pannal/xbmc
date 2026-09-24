@@ -11,9 +11,16 @@
 #include "BlurayStateSerializer.h"
 #include "DVDInputStream.h"
 
+#include <atomic>
+#include <chrono>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <queue>
+#include <thread>
+#include <vector>
+
+class CDVDOverlay;
 
 extern "C"
 {
@@ -87,11 +94,12 @@ public:
   /*! \brief Open the Menu
   * \return true if the menu is successfully opened, false otherwise
   */
-  bool OnMenu() override;
+  bool OnMenu(MenuCall call) override;
+  bool OnColorKey(int key) override;
   void OnBack() override
   {
     if(IsInMenu())
-      OnMenu();
+      OnMenu(MenuCall::Auto);
   }
   void OnNext() override {}
   void OnPrevious() override {}
@@ -103,21 +111,36 @@ public:
   MenuType GetSupportedMenuType() override;
 
   bool IsInMenu() override;
+  bool IsMenuDomainSegment() const;
+  bool IsReadInDataPhase() const
+  {
+    const EHoldState hold = m_hold.load();
+    return hold == HOLD_NONE || hold == HOLD_DATA;
+  }
   bool OnMouseMove(const CPoint &point) override  { return MouseMove(point); }
   bool OnMouseClick(const CPoint &point) override { return MouseClick(point); }
   void SkipStill() override;
+  bool ConsumeDiscontinuityFlush() override;
+  bool GetSeamTimeOffsets(int& generation, double& current, double& previous) override
+  {
+    std::lock_guard<std::mutex> lock(m_seamOffsetMutex);
+    generation = m_seamGeneration;
+    current = m_seamTimeOffset;
+    previous = m_seamTimeOffsetPrev;
+    return true;
+  }
   bool GetState(std::string& xmlstate) override;
   bool SetState(const std::string& xmlstate) override;
   bool CanSeek() override;
 
 
   void UserInput(bd_vk_key_e vk);
-  bool MouseMove(const CPoint &point);
-  bool MouseClick(const CPoint &point);
+  bool MouseMove(const CPoint& point) const;
+  bool MouseClick(const CPoint& point) const;
 
   int GetChapter() override;
   int GetChapterCount() override;
-  void GetChapterName(std::string& name, int ch=-1) override {};
+  void GetChapterName(std::string& name, int ch = -1) override {}
   int64_t GetChapterPos(int ch) override;
   bool SeekChapter(int ch) override;
 
@@ -128,32 +151,10 @@ public:
   CDVDInputStream::IPosTime* GetIPosTime() override { return this; }
   bool PosTime(int ms) override;
 
-  void GetStreamInfo(int pid, std::string &language);
+  void GetStreamInfo(int pid, std::string& language) const;
 
-  int Get3dSubtitlePlane(uint16_t pid);
-
-  /*!
-   * \brief Notify libbluray of the audio stream selected in Kodi so that
-   *        on-disc menus (HDMV/BD-J) stay in sync with the player GUI, as
-   *        required by the libbluray API. Without this, switching to a
-   *        different audio stream while navigating the disc with its
-   *        native menu system enabled has no effect, since the elementary
-   *        stream that libbluray multiplexes into the output (in
-   *        particular for streams carried in a sub-path) is controlled by
-   *        its own internal player status register rather than by which
-   *        PID Kodi's demuxer happens to be reading.
-   * \param pid the PID of the audio stream to activate
-   * \return true if a stream with the given PID was found and selected
-   */
+  int Get3dSubtitlePlane(uint16_t pid) const;
   bool SetActiveAudioStream(int pid);
-
-  /*!
-   * \brief Notify libbluray of the subtitle (PG/TextST) stream selected in
-   *        Kodi. See SetActiveAudioStream() for details on why this is
-   *        necessary.
-   * \param pid the PID of the subtitle stream to activate
-   * \return true if a stream with the given PID was found and selected
-   */
   bool SetActiveSubtitleStream(int pid);
 
   void OverlayCallback(const BD_OVERLAY * const);
@@ -162,10 +163,22 @@ public:
 #endif
 
   BLURAY_TITLE_INFO* GetTitleFromState(const std::string& xmlstate);
-  BLURAY_TITLE_INFO* GetTitleLongest();
-  BLURAY_TITLE_INFO* GetTitleFile(const std::string& name);
+  BLURAY_TITLE_INFO* GetTitleLongest() const;
+  BLURAY_TITLE_INFO* GetTitleFile(const std::string& name) const;
 
   void ProcessEvent();
+  void RequestMenuOverlayRepost() { m_repostMenuOverlay = true; }
+  bool ConsumeVideoCompatBoundary()
+  {
+    const bool compat = m_videoCompatBoundary;
+    m_videoCompatBoundary = false;
+    return compat;
+  }
+  bool ConsumeNaturalChainBoundary() { return m_naturalChainBoundary.exchange(false); }
+  bool IsNaturalChainBoundaryInFlight() const
+  {
+    return !m_bMVCPlayback && (m_naturalChainBoundary || m_crossPlaylistPending || m_atTitleEnd);
+  }
   CDVDDemux* GetExtentionDemux() override { return m_pMVCDemux; };
   bool HasExtention() override { return m_bMVCPlayback; }
   bool AreEyesFlipped() override { return m_bFlipEyes; }
@@ -176,10 +189,17 @@ protected:
   struct SPlane;
 
   void OverlayFlush(int64_t pts);
-  void OverlayClose();
+  void DeliverParkedOverlayIfDue();
+  void OverlayClose(bool deferrable = false, int closingPlane = -1);
   static void OverlayClear(SPlane& plane, int x, int y, int w, int h);
   static void OverlayInit (SPlane& plane, int w, int h);
   bool ProcessItem(int playitem);
+  void FreePrevTitleInfo();
+  void StashBoundaryClip();
+  void UpdateSeamTimeOffset(uint64_t previousOut, uint64_t nextIn);
+  void ResetSeamTimeOffset(const char* reason);
+  static bool AreClipVideoStreamsCompatible(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b);
+  static bool AreClipPgStreamsEqual(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b);
 
   bool OpenMVCDemux(int playItem);
   bool CloseMVCDemux();
@@ -187,28 +207,60 @@ protected:
 
   IVideoPlayer* m_player = nullptr;
   BLURAY* m_bd = nullptr;
-  const BLURAY_TITLE* m_title = nullptr;
+  mutable std::mutex m_clipTableMutex;
+  uint64_t m_titleGeneration{0};
   BLURAY_TITLE_INFO* m_titleInfo = nullptr;
   uint32_t m_playlist = MAX_PLAYLIST_ID + 1;
   BLURAY_CLIP_INFO* m_clip = nullptr;
   uint32_t m_angle = 0;
-  bool m_menu = false;
-  bool m_isInMainMenu = false;
-  bool m_hasOverlay = false;
-  bool m_navmode = false;
-  int m_dispTimeBeforeRead = 0;
+  std::atomic<uint32_t> m_titleNumber{0xfffffffe};
+  std::atomic_bool m_atTitleEnd{false};
+  bool m_wrapSeekExempt = false;
+  std::atomic_bool m_crossPlaylistPending{false};
+  bool m_videoCompatBoundary = false;
+  std::atomic_bool m_naturalChainBoundary{false};
+  bool m_seamlessPlayItem = false;
+  BLURAY_TITLE_INFO* m_prevTitleInfo = nullptr;
+  const BLURAY_CLIP_INFO* m_prevClip = nullptr;
+  uint32_t m_prevPlaylist = MAX_PLAYLIST_ID + 1;
+  bool m_prevWasMVC = false;
+  bool m_prevFlipEyes = false;
+  std::atomic_bool m_menu{false};
+  std::atomic_bool m_isInMainMenu{false};
+  std::atomic_bool m_currentTitleIsBdj{false};
+  std::atomic_bool m_discontinuityFlush{false};
+  std::atomic_bool m_hasOverlay{false};
+  std::atomic_bool m_hasMenuOverlay{false};
+  std::atomic_bool m_popupAvailable{false};
+  std::atomic_bool m_overlayCloseDeferred{false};
+  std::atomic_bool m_repostMenuOverlay{false};
+  std::atomic_bool m_navmode{false};
+  std::atomic_bool m_aborted{false};
+  std::mutex m_seamOffsetMutex;
+  int m_seamGeneration = 0;
+  double m_seamTimeOffset = 0.0;
+  double m_seamTimeOffsetPrev = 0.0;
+  std::atomic<uint32_t> m_uoMask{0};
+  bool m_bdStillActive = false;
+  bool m_topMenuIsBdj = false;
+  uint32_t m_menuRestorePlaylist{MAX_PLAYLIST_ID + 1};
+  bool TitleCarriesAlwaysOnMenuComposition() const;
+  bool PlaylistWithinMenuDurationBound() const;
+  mutable std::atomic<int> m_lastMenuDomainLogged{-1};
+  std::atomic<int> m_dispTimeBeforeRead{0};
   int                 m_nTitles = -1;
   std::string         m_root;
 
   // MVC related members
   CDVDDemux*          m_pMVCDemux = nullptr;
   CDVDInputStream    *m_pMVCInput = nullptr;
-  bool                m_bMVCPlayback = false;
+  std::atomic_bool m_bMVCPlayback{false};
   int                 m_nMVCSubPathIndex = 0;
   BLURAY_CLIP_INFO*   m_nMVCClip = nullptr;
-  bool                m_bFlipEyes = false;
+  std::atomic_bool m_bFlipEyes{false};
   bool                m_bMVCDisabled = false;
   uint64_t            m_clipStartTime = 0;
+  std::chrono::steady_clock::time_point m_endOfTitleSpinStart{};
   std::queue<int>     m_clipQueue;
 
   typedef std::shared_ptr<CDVDOverlayImage> SOverlay;
@@ -221,24 +273,32 @@ protected:
     int h = 0;
   };
 
+  mutable CCriticalSection m_overlayLock;
   SPlane m_planes[2];
-  enum EHoldState {
+  std::shared_ptr<CDVDOverlay> m_pendingOverlayGroup;
+  std::atomic<std::thread::id> m_readingThread{};
+  enum EHoldState
+  {
     HOLD_NONE = 0,
     HOLD_HELD,
     HOLD_DATA,
     HOLD_STILL,
     HOLD_ERROR,
     HOLD_EXIT
-  } m_hold = HOLD_NONE;
+  };
+  std::atomic<EHoldState> m_hold{HOLD_NONE};
   BD_EVENT m_event;
+  uint32_t m_lastReadEvent = BD_EVENT_NONE;
 #ifdef HAVE_LIBBLURAY_BDJ
   struct bd_argb_buffer_s m_argb;
 #endif
 
   private:
     bool OpenStream(CFileItem &item);
-    void SetupPlayerSettings();
-    void FreeTitleInfo();
+    void SetupPlayerSettings() const;
+    void ApplyUHDCapabilities() const;
+    void ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming);
+    bool IsClipCodecCompatible(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b) const;
     std::unique_ptr<CDVDInputStreamFile> m_pstream;
     std::string m_rootPath;
 

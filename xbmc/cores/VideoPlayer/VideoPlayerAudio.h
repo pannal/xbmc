@@ -52,6 +52,8 @@ public:
   // waits until all available data has been rendered
   bool AcceptsData() const override;
   bool HasData() const override { return m_messageQueue.GetDataSize() > 0; }
+  void SetMaxTimeSize(double seconds) override { m_messageQueue.SetMaxTimeSize(seconds); }
+  double GetQueueTimeSize() const override { return m_messageQueue.GetTimeSizeSeconds(); }
   int  GetLevel() const override { return m_messageQueue.GetLevel(); }
   bool IsInited() const override { return m_messageQueue.IsInited(); }
   void SendMessage(std::shared_ptr<CDVDMsg> pMsg, int priority = 0) override
@@ -79,6 +81,7 @@ public:
   }
 
   bool IsStalled() const override { return m_stalled;  }
+  double GetSinkDelay() override { return m_audioSink.GetDelay(); }
   bool IsPassthrough() const override;
 
   // ISettingCallback - passthrough codec toggles changed (e.g. override.ini)

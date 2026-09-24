@@ -27158,3 +27158,23 @@ msgstr ""
 msgctxt "#36061"
 msgid "When CEC standby is triggered from Kodi"
 msgstr ""
+
+msgctxt "#69240"
+msgid "This operation is not allowed by the disc."
+msgstr ""
+
+msgctxt "#69241"
+msgid "Seeking is not allowed in this part of the disc."
+msgstr ""
+
+msgctxt "#69242"
+msgid "Allow BD-J menus during playback"
+msgstr ""
+
+msgctxt "#69243"
+msgid "Allow opening BD-J top and popup menus during playback. This can interrupt navigation on some discs. Startup menus work with this setting disabled."
+msgstr ""
+
+msgctxt "#69244"
+msgid "BD-J menus during playback are disabled. Use the playback controls or restart the disc to open its startup menu."
+msgstr ""

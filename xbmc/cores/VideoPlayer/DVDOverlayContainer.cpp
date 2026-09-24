@@ -21,16 +21,31 @@ CDVDOverlayContainer::~CDVDOverlayContainer()
 
 void CDVDOverlayContainer::ProcessAndAddOverlayIfValid(const std::shared_ptr<CDVDOverlay>& pOverlay)
 {
+  if (!pOverlay)
+    return;
   std::unique_lock<CCriticalSection> lock(*this);
+
+  // Menu compositions and subtitles have independent lifetimes. A menu redraw
+  // must neither expire subtitles nor be replaced by a forced subtitle.
+  if (pOverlay->IsDiscMenuOverlay())
+  {
+    m_overlays.erase(std::remove_if(m_overlays.begin(), m_overlays.end(), [](const auto& overlay)
+                                    { return overlay->IsDiscMenuOverlay(); }),
+                     m_overlays.end());
+    m_overlays.emplace_back(pOverlay);
+    return;
+  }
 
   // markup any non ending overlays, to finish
   // when this new one starts, there can be
   // multiple overlays queued at same start
   // point so only stop them when we get a
   // new startpoint
-  for(int i = m_overlays.size();i>0;)
+  for (int i = m_overlays.size(); i > 0 && pOverlay->iPTSStartTime >= 0;)
   {
     i--;
+    if (m_overlays[i]->IsDiscMenuOverlay())
+      continue;
     if(m_overlays[i]->iPTSStopTime)
     {
       if(!m_overlays[i]->replace)
@@ -66,6 +81,12 @@ void CDVDOverlayContainer::CleanUp(double pts)
   {
     const std::shared_ptr<CDVDOverlay>& pOverlay = *it;
 
+    if (pOverlay->IsDiscMenuOverlay())
+    {
+      ++it;
+      continue;
+    }
+
     // never delete forced overlays, they are used in menu's
     // clear takes care of removing them
     // also if stoptime = 0, it means the next subtitles will use its starttime as the stoptime
@@ -87,8 +108,8 @@ void CDVDOverlayContainer::CleanUp(double pts)
         const std::shared_ptr<CDVDOverlay>& pOverlay2 = *it2;
         // There can be multiple overlays queued at same start point.
         // Skip them to find a new start point.
-        if (pOverlay2->bForced && pOverlay2->iPTSStartTime <= pts &&
-            pOverlay->iPTSStartTime != pOverlay2->iPTSStartTime)
+        if (!pOverlay2->IsDiscMenuOverlay() && pOverlay2->bForced &&
+            pOverlay2->iPTSStartTime <= pts && pOverlay->iPTSStartTime != pOverlay2->iPTSStartTime)
           bNewer = true;
       }
 
@@ -123,6 +144,7 @@ void CDVDOverlayContainer::Clear()
 
 size_t CDVDOverlayContainer::GetSize()
 {
+  std::unique_lock<CCriticalSection> lock(*this);
   return m_overlays.size();
 }
 

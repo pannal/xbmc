@@ -54,6 +54,7 @@ public:
     m_enableTextAlign = src.m_enableTextAlign;
     m_overlayContainerFlushable = src.m_overlayContainerFlushable;
     m_setForcedMargins = src.m_setForcedMargins;
+    m_discMenuOverlay = src.m_discMenuOverlay;
   }
 
   virtual ~CDVDOverlay() = default;
@@ -99,6 +100,9 @@ public:
    */
   bool IsForcedMargins() const { return m_setForcedMargins; }
 
+  void SetDiscMenuOverlay(bool discMenu) { m_discMenuOverlay = discMenu; }
+  bool IsDiscMenuOverlay() const { return m_discMenuOverlay; }
+
   double iPTSStartTime;
   double iPTSStopTime;
   bool bForced; // display, no matter what
@@ -111,6 +115,7 @@ protected:
   bool m_enableTextAlign;
   bool m_overlayContainerFlushable;
   bool m_setForcedMargins;
+  bool m_discMenuOverlay{false};
 };
 
 using VecOverlays = std::vector<std::shared_ptr<CDVDOverlay>>;

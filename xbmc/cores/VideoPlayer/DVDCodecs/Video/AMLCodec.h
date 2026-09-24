@@ -106,6 +106,7 @@ private:
   float         GetBufferLevel();
   float         GetBufferLevel(int new_chunk, int &data_len, int &free_len);
   int           DequeueBuffer();
+  bool DrainHevcStill(float bufferLevel);
   unsigned int  GetDecoderVideoRate();
   std::string   GetHDRStaticMetadata();
 
@@ -126,6 +127,22 @@ private:
   // True between a codec_reset and the next AddData: nothing is drainable in
   // that state, see the m_drain branch in GetPicture.
   bool             m_no_data_since_reset = false;
+  struct StillFrameDrain
+  {
+    enum class State
+    {
+      IDLE,
+      WRITING,
+      WAITING,
+      DONE
+    };
+    State state = State::IDLE;
+    bool pictureEmitted = false;
+    unsigned int bytesWritten = 0;
+    unsigned int attempts = 0;
+    std::chrono::steady_clock::time_point deadline;
+  };
+  StillFrameDrain m_stillFrameDrain;
   // Green-flash mask state (coreelec.amlogic.video.restart.mute): the whole video
   // output is blanked (aml_video_mute, VENC black) across a decode (re)start until
   // the first valid frame, then released.

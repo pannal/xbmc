@@ -75,6 +75,12 @@ public:
 
   int GetDataSize() const { return m_iDataSize; }
   int GetTimeSize() const;
+  double GetTimeSizeSeconds() const;
+  bool HasMessages() const
+  {
+    std::unique_lock<CCriticalSection> lock(m_section);
+    return !m_messages.empty() || !m_prioMessages.empty();
+  }
   unsigned GetPacketCount(CDVDMsg::Message type);
   bool ReceivedAbortRequest() { return m_bAbortRequest; }
   void WaitUntilEmpty();
@@ -84,9 +90,17 @@ public:
   int GetLevel(bool data_level = false) const;
 
   void SetMaxDataSize(int iMaxDataSize) { m_iMaxDataSize = iMaxDataSize; }
-  void SetMaxTimeSize(double sec) { m_TimeSize  = 1.0 / std::max(1.0, sec); }
+  void SetMaxTimeSize(double sec)
+  {
+    std::unique_lock<CCriticalSection> lock(m_section);
+    m_TimeSize = 1.0 / std::max(1.0, sec);
+  }
   int GetMaxDataSize() const { return m_iMaxDataSize; }
-  double GetMaxTimeSize() const { return m_TimeSize; }
+  double GetMaxTimeSize() const
+  {
+    std::unique_lock<CCriticalSection> lock(m_section);
+    return m_TimeSize;
+  }
   bool IsInited() const { return m_bInitialized; }
   bool IsDataBased() const;
 

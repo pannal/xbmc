@@ -10,8 +10,10 @@
 
 #include "DVDDemux.h"
 #include "DemuxStreamSSIF.h"
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "threads/CriticalSection.h"
 #include "threads/SystemClock.h"
+
 #include <map>
 #include <memory>
 #include <vector>
@@ -143,6 +145,7 @@ protected:
   void ResetVideoStreams();
   AVDictionary* GetFFMpegOptionsFromInput();
   double ConvertTimestamp(int64_t pts, int den, int num);
+  void ApplySeamTimeOffset(DemuxPacket* packet, int streamIndex);
   bool IsProgramChange();
   unsigned int HLSSelectProgram();
 
@@ -159,6 +162,13 @@ protected:
   CCriticalSection m_critSection;
   std::map<int, CDemuxStream*> m_streams;
   std::map<int, std::unique_ptr<CDemuxParserFFmpeg>> m_parsers;
+
+  struct SeamStreamState
+  {
+    int generation = 0;
+    double lastCorrected = DVD_NOPTS_VALUE;
+  };
+  std::map<int, SeamStreamState> m_seamStreamState;
 
   AVIOContext* m_ioContext;
 

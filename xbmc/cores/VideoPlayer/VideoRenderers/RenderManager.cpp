@@ -389,6 +389,8 @@ void CRenderManager::FrameMove()
     m_bRenderGUI = true;
   }
 
+  aml_set_disc_menu_visible(m_overlays.HasDiscMenuOverlay(m_presentsource));
+
   // Hardware video can skip Render(gui=true) when no overlays are present.
   // Keep the track-enabled policy live here, including gaps and paused frames.
   // The visible mode still evaluates overlap in Render; clear it here when
@@ -440,6 +442,7 @@ void CRenderManager::PreInit()
 
 void CRenderManager::UnInit()
 {
+  aml_set_disc_menu_visible(false);
   if (!CServiceBroker::GetAppMessenger()->IsProcessThread())
   {
     m_initEvent.Reset();

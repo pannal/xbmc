@@ -524,6 +524,12 @@
           </constraints>
           <control type="list" format="string" />
         </setting>
+        <setting id="disc.allowbdjtopmenu" type="boolean" label="69242" help="69243">
+          <requirement>HAVE_LIBBLURAY_BDJ</requirement>
+          <level>3</level>
+          <default>false</default>
+          <control type="toggle" />
+        </setting>
       </group>
       <group id="3" label="620">
         <setting id="audiocds.autoaction" type="integer" label="14097" help="36283">
