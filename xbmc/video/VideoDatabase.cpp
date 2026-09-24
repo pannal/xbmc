@@ -12,6 +12,7 @@
 #include "GUIInfoManager.h"
 #include "GUIPassword.h"
 #include "ServiceBroker.h"
+#include "StoredStreamDetails.h"
 #include "TextureCache.h"
 #include "URL.h"
 #include "Util.h"
@@ -126,26 +127,66 @@ void CVideoDatabase::AddMissingColumns()
     CLog::Log(LOGERROR, "{} unable to migrate hdr10+ stream details", __FUNCTION__);
   }
 
+  // A build that keeps the audio codec and its profile in columns of their own stores the plain
+  // name - "truehd", with "Dolby Atmos" beside it - where this one stores "truehd_atmos". Reading
+  // a library it wrote would show the plain name in ListItem.AudioCodec, rank the stream below
+  // what it is, and make every file look changed the next time playback compares the two. Put the
+  // pairs it stored back into the one name this build uses, and touch nothing else on the row so
+  // that its profile and object counts survive for it to find again.
+  //
+  // Every name GetSplitAudioCodecs() lists is one StreamUtils::GetCodecName() produces itself, so
+  // a rescan of the same file writes back what was restored rather than contradicting it.
+  //
+  // Restoring a pair replaces the very name it matched on, so a second pass finds nothing left to
+  // do. That matters: the other build converts the names back whenever it runs against the same
+  // library, and neither side may be left needing to remember whether it has already run.
+  if (HasColumn("streamdetails", "strAudioProfile"))
+  {
+    try
+    {
+      for (const auto& codec : GetSplitAudioCodecs())
+      {
+        m_pDS->exec(PrepareSQL("UPDATE streamdetails SET strAudioCodec='%s' "
+                               "WHERE strAudioCodec='%s' AND strAudioProfile='%s'",
+                               codec.extended, codec.plain, codec.profile));
+      }
+    }
+    catch (...)
+    {
+      CLog::Log(LOGERROR, "{} unable to restore extended audio codec names", __FUNCTION__);
+    }
+  }
+
   s_checkedDatabase = databaseFolder;
+}
+
+bool CVideoDatabase::HasColumn(const std::string& table, const std::string& column)
+{
+  try
+  {
+    if (nullptr == m_pDB || nullptr == m_pDS)
+      return false;
+
+    m_pDS->query(PrepareSQL("SELECT %s FROM %s LIMIT 1", column.c_str(), table.c_str()));
+    m_pDS->close();
+    return true;
+  }
+  catch (...)
+  {
+    // asking for a column that is not there is how the absence is detected
+    return false;
+  }
 }
 
 void CVideoDatabase::AddMissingColumn(const std::string& table,
                                       const std::string& column,
                                       const std::string& type)
 {
-  try
-  {
-    if (nullptr == m_pDB || nullptr == m_pDS)
-      return;
-
-    m_pDS->query(PrepareSQL("SELECT %s FROM %s LIMIT 1", column.c_str(), table.c_str()));
-    m_pDS->close();
+  if (nullptr == m_pDB || nullptr == m_pDS)
     return;
-  }
-  catch (...)
-  {
-    // the column is not there yet, fall through and add it
-  }
+
+  if (HasColumn(table, column))
+    return;
 
   try
   {
@@ -3285,26 +3326,137 @@ int CVideoDatabase::SetDetailsForMusicVideo(CVideoInfoTag& details,
   return -1;
 }
 
-void CVideoDatabase::SetStreamDetailsForFile(const CStreamDetails& details, const std::string &strFileNameAndPath)
+namespace
+{
+//! \brief Every column this build writes to streamdetails, on any kind of row.
+const std::vector<std::string> ownStreamDetailColumns = {
+    "idFile",           "iStreamType",         "strVideoCodec",  "fVideoAspect",
+    "iVideoWidth",      "iVideoHeight",        "strAudioCodec",  "iAudioChannels",
+    "strAudioLanguage", "strSubtitleLanguage", "iVideoDuration", "strStereoMode",
+    "strVideoLanguage", "strHdrType",          "strHdrTypeAlt",  "strDvProfile"};
+
+//! \brief The columns this build writes on an audio row, in the order it writes them.
+const std::vector<std::string> audioRowColumns = {"idFile", "iStreamType", "strAudioCodec",
+                                                  "iAudioChannels", "strAudioLanguage"};
+
+bool IsOwnStreamDetailColumn(const std::string& column)
+{
+  for (const auto& own : ownStreamDetailColumns)
+  {
+    if (StringUtils::EqualsNoCase(own, column))
+      return true;
+  }
+
+  return false;
+}
+
+//! \brief A stored value as text, to be written back as a quoted literal.
+std::string StoredValueText(const field_value& value)
+{
+  // get_asString() renders a floating point value to six decimals, which would round it
+  switch (value.get_fType())
+  {
+    case ft_Float:
+    case ft_Double:
+    case ft_LongDouble:
+      return StringUtils::Format("{}", value.get_asDouble());
+    default:
+      return value.get_asString();
+  }
+}
+} // unnamed namespace
+
+void CVideoDatabase::SetStreamDetailsForFile(const CStreamDetails& details,
+                                             const std::string& strFileNameAndPath,
+                                             bool partialDetails /* = false */)
 {
   // AddFile checks to make sure the file isn't already in the DB first
   int idFile = AddFile(strFileNameAndPath);
   if (idFile < 0)
     return;
-  SetStreamDetailsForFileId(details, idFile);
+  SetStreamDetailsForFileId(details, idFile, partialDetails);
 }
 
-void CVideoDatabase::SetStreamDetailsForFileId(const CStreamDetails& details, int idFile)
+void CVideoDatabase::SetStreamDetailsForFileId(const CStreamDetails& details,
+                                               int idFile,
+                                               bool partialDetails /* = false */)
 {
   if (idFile < 0)
     return;
 
   try
   {
+    // Read what is stored before replacing it. Two things would otherwise be thrown away. The
+    // player cannot read the elementary stream, so a rewrite after playback would put its plainer
+    // HDR fields over what the scan found. And the audio rows can hold columns this build never
+    // writes - another build's object metadata, say - which a delete and reinsert resets to NULL.
+    std::vector<StoredVideoStream> storedVideo;
+    std::vector<AudioStreamRow> storedAudio;
+
+    std::unique_ptr<Dataset> pDS(m_pDB->CreateDataset());
+    pDS->query(PrepareSQL("SELECT * FROM streamdetails WHERE idFile = %i", idFile));
+    // Resolved by name for the same reason GetStreamDetails() does it: these columns were
+    // appended later, so a database that never received them must not fail the whole read.
+    const int idxHdrTypeAlt = pDS->fieldIndex("strHdrTypeAlt");
+    const int idxDvProfile = pDS->fieldIndex("strDvProfile");
+    while (!pDS->eof())
+    {
+      switch (static_cast<CStreamDetail::StreamType>(pDS->fv(1).get_asInt()))
+      {
+        case CStreamDetail::VIDEO:
+        {
+          StoredVideoStream stored;
+          stored.codec = pDS->fv(2).get_asString();
+          stored.width = pDS->fv(4).get_asInt();
+          stored.height = pDS->fv(5).get_asInt();
+          stored.hdrType = pDS->fv(13).get_asString();
+          if (idxHdrTypeAlt >= 0)
+            stored.hdrTypeAlt = pDS->fv(idxHdrTypeAlt).get_asString();
+          if (idxDvProfile >= 0)
+            stored.dvProfile = pDS->fv(idxDvProfile).get_asString();
+          storedVideo.emplace_back(std::move(stored));
+          break;
+        }
+        case CStreamDetail::AUDIO:
+        {
+          AudioStreamRow stored;
+          stored.codec = pDS->fv(6).get_asString();
+          stored.channels = pDS->fv(7).get_isNull() ? -1 : pDS->fv(7).get_asInt();
+          stored.language = pDS->fv(8).get_asString();
+          // Whatever else holds a value was put there by another build.
+          for (int column = 0; column < pDS->fieldCount(); ++column)
+          {
+            const char* name = pDS->fieldName(column);
+            const field_value& value = pDS->fv(column);
+            if (!name || value.get_isNull() || IsOwnStreamDetailColumn(name) ||
+                !IsPlainColumnName(name))
+              continue;
+
+            stored.otherColumns.emplace_back(name,
+                                             PrepareSQL("'%s'", StoredValueText(value).c_str()));
+          }
+          storedAudio.emplace_back(std::move(stored));
+          break;
+        }
+        case CStreamDetail::SUBTITLE:
+          break;
+      }
+      pDS->next();
+    }
+    pDS->close();
+
     m_pDS->exec(PrepareSQL("DELETE FROM streamdetails WHERE idFile = %i", idFile));
 
     for (int i=1; i<=details.GetVideoStreamCount(); i++)
     {
+      HdrFields hdr{details.GetVideoHdrType(i), details.GetVideoHdrTypeAlt(i),
+                    details.GetVideoDvProfile(i)};
+      // Only a caller that cannot read the elementary stream inherits these. A scan can and is
+      // authoritative, so what it reports - nothing included - is written as it stands.
+      if (partialDetails)
+        hdr = CompleteHdrFields(storedVideo, details.GetVideoCodec(i), details.GetVideoWidth(i),
+                                details.GetVideoHeight(i), hdr);
+
       m_pDS->exec(PrepareSQL("INSERT INTO streamdetails "
                              "(idFile, iStreamType, strVideoCodec, fVideoAspect, iVideoWidth, "
                              "iVideoHeight, iVideoDuration, strStereoMode, strVideoLanguage,  "
@@ -3314,19 +3466,29 @@ void CVideoDatabase::SetStreamDetailsForFileId(const CStreamDetails& details, in
                              static_cast<double>(details.GetVideoAspect(i)),
                              details.GetVideoWidth(i), details.GetVideoHeight(i),
                              details.GetVideoDuration(i), details.GetStereoMode(i).c_str(),
-                             details.GetVideoLanguage(i).c_str(),
-                             details.GetVideoHdrType(i).c_str(),
-                             details.GetVideoHdrTypeAlt(i).c_str(),
-                             details.GetVideoDvProfile(i).c_str()));
+                             details.GetVideoLanguage(i).c_str(), hdr.hdrType.c_str(),
+                             hdr.hdrTypeAlt.c_str(), hdr.dvProfile.c_str()));
     }
-    for (int i=1; i<=details.GetAudioStreamCount(); i++)
+
+    // Every audio stream is written as it is described now, so a codec the file has since been
+    // identified more precisely as reaches the database; PlanAudioRows() decides which of them
+    // still carry the columns another build keeps.
+    std::vector<AudioStreamRow> audioStreams;
+    for (int i = 1; i <= details.GetAudioStreamCount(); i++)
+      audioStreams.push_back(
+          {details.GetAudioCodec(i), details.GetAudioChannels(i), details.GetAudioLanguage(i), {}});
+
+    for (const auto& row : PlanAudioRows(storedAudio, audioStreams))
     {
-      m_pDS->exec(PrepareSQL("INSERT INTO streamdetails "
-        "(idFile, iStreamType, strAudioCodec, iAudioChannels, strAudioLanguage) "
-        "VALUES (%i,%i,'%s',%i,'%s')",
-        idFile, (int)CStreamDetail::AUDIO,
-        details.GetAudioCodec(i).c_str(), details.GetAudioChannels(i),
-        details.GetAudioLanguage(i).c_str()));
+      std::string columns = StringUtils::Join(audioRowColumns, ", ");
+      std::string values = PrepareSQL("%i,%i,'%s',%i,'%s'", idFile, (int)CStreamDetail::AUDIO,
+                                      row.codec.c_str(), row.channels, row.language.c_str());
+      for (const auto& [column, value] : row.otherColumns)
+      {
+        columns += ", " + column;
+        values += ", " + value;
+      }
+      m_pDS->exec("INSERT INTO streamdetails (" + columns + ") VALUES (" + values + ")");
     }
     for (int i=1; i<=details.GetSubtitleStreamCount(); i++)
     {
@@ -3748,13 +3910,16 @@ void CVideoDatabase::DeleteMovie(int idMovie,
     BeginTransaction();
 
     int idFile = GetDbId(PrepareSQL("SELECT idFile FROM movie WHERE idMovie=%i", idMovie));
-    DeleteStreamDetails(idFile);
 
     // keep the movie table entry, linking to tv shows, and bookmarks
     // so we can update the data in place
     // the ancillary tables are still purged
     if (!bKeepId)
     {
+      // Only when the entry really goes. An update in place need not carry stream details of
+      // its own - the setter then writes none - and must not leave the file with no rows at all.
+      DeleteStreamDetails(idFile);
+
       const std::string path = GetSingleValue(PrepareSQL(
           "SELECT strPath FROM path JOIN files ON files.idPath=path.idPath WHERE files.idFile=%i",
           idFile));
@@ -3919,12 +4084,15 @@ void CVideoDatabase::DeleteEpisode(int idEpisode, bool bKeepId /* = false */)
       AnnounceRemove(MediaTypeEpisode, idEpisode);
 
     int idFile = GetDbId(PrepareSQL("SELECT idFile FROM episode WHERE idEpisode=%i", idEpisode));
-    DeleteStreamDetails(idFile);
 
     // keep episode table entry and bookmarks so we can update the data in place
     // the ancillary tables are still purged
     if (!bKeepId)
     {
+      // Only when the entry really goes. An update in place need not carry stream details of
+      // its own - the setter then writes none - and must not leave the file with no rows at all.
+      DeleteStreamDetails(idFile);
+
       std::string path = GetSingleValue(PrepareSQL("SELECT strPath FROM path JOIN files ON files.idPath=path.idPath WHERE files.idFile=%i", idFile));
       if (!path.empty())
         InvalidatePathHash(path);
@@ -3955,12 +4123,15 @@ void CVideoDatabase::DeleteMusicVideo(int idMVideo, bool bKeepId /* = false */)
     BeginTransaction();
 
     int idFile = GetDbId(PrepareSQL("SELECT idFile FROM musicvideo WHERE idMVideo=%i", idMVideo));
-    DeleteStreamDetails(idFile);
 
     // keep the music video table entry and bookmarks so we can update data in place
     // the ancillary tables are still purged
     if (!bKeepId)
     {
+      // Only when the entry really goes. An update in place need not carry stream details of
+      // its own - the setter then writes none - and must not leave the file with no rows at all.
+      DeleteStreamDetails(idFile);
+
       std::string path = GetSingleValue(PrepareSQL("SELECT strPath FROM path JOIN files ON files.idPath=path.idPath WHERE files.idFile=%i", idFile));
       if (!path.empty())
         InvalidatePathHash(path);

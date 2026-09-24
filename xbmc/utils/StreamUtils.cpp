@@ -83,35 +83,47 @@ int StreamUtils::GetCodecPriority(const std::string &codec)
    * Technically flac, truehd, and dtshd_ma are equivalently good as they're all lossless. However,
    * ffmpeg can't decode dtshd_ma losslessy yet.
    *
+   * The DTS extensions sit either side of Dolby Digital Plus: extended surround and 96kHz/24-bit
+   * outrank it at the bitrates they ship at, while DTS Express was built for low bitrate secondary
+   * audio and ranks below Dolby Digital. A name with no entry here scores 0, which is meant for a
+   * codec nobody listed rather than a common one, so every name GetCodecName() returns wants an
+   * entry - the AAC profiles it returns still have none and fall into that 0.
+   *
    * Auro-3D and the MA form of DTS:X are spatial extensions over the same lossless carrier and
    * tie. The HRA form of DTS:X remains at its lossy carrier's priority: spatial metadata does not
    * turn High Resolution Audio into Master Audio.
    */
   if (codec == "truehd_atmos") // Dolby TrueHD with Atmos
+    return 13;
+  if (codec == "dtshd_ma_x_imax") // DTS:X IMAX Enhanced
+    return 12;
+  if (codec == "dtshd_ma_x") // DTS:X
     return 11;
   if (codec == "dtshd_ma_auro3d") // Auro-3D carried in DTS-HD MA
-    return 9;
-  if (codec == "dtshd_ma_x_imax") // DTS:X IMAX Enhanced
-    return 10;
-  if (codec == "dtshd_ma_x") // DTS:X
-    return 9;
+    return 11;
   if (codec == "flac") // Lossless FLAC
-    return 8;
+    return 10;
   if (codec == "truehd") // Dolby TrueHD
-    return 7;
+    return 9;
   if (codec == "dtshd_ma") // DTS-HD Master Audio (previously known as DTS++)
-    return 6;
+    return 8;
   if (codec == "dtshd_hra") // DTS-HD High Resolution Audio
-    return 5;
+    return 7;
   if (codec == "dtshd_hra_x") // DTS:X carried in DTS-HD High Resolution Audio
-    return 5;
+    return 7;
   if (codec == "eac3_ddp_atmos") // Dolby Digital Plus with Atmos
-    return 4;
+    return 6;
+  if (codec == "dts_es") // DTS Extended Surround
+    return 5;
+  if (codec == "dts_96_24") // DTS 96kHz/24-bit
+    return 5;
   if (codec == "eac3") // Dolby Digital Plus
-    return 3;
+    return 4;
   if (codec == "dca") // DTS
-    return 2;
+    return 3;
   if (codec == "ac3") // Dolby Digital
+    return 2;
+  if (codec == "dts_express") // DTS Express, low bitrate secondary audio
     return 1;
   return 0;
 }
@@ -134,6 +146,12 @@ std::string StreamUtils::GetCodecName(int codecId, int profile)
       codecName = "dtshd_hra_x";
     else if (profile == AV_PROFILE_DTS_HD_HRA)
       codecName = "dtshd_hra";
+    else if (profile == AV_PROFILE_DTS_ES)
+      codecName = "dts_es";
+    else if (profile == AV_PROFILE_DTS_96_24)
+      codecName = "dts_96_24";
+    else if (profile == AV_PROFILE_DTS_EXPRESS)
+      codecName = "dts_express";
     else
       codecName = "dca";
 

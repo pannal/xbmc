@@ -6295,9 +6295,23 @@ void CVideoPlayer::UpdateFileItemStreamDetails(CFileItem& item)
   AudioStreamInfo audioInfo;
   SubtitleStreamInfo subtitleInfo;
   CVideoInfoTag* info = item.GetVideoInfoTag();
-  GetVideoStreamInfo(CURRENT_STREAM, videoInfo);
-  info->m_streamDetails.SetStreams(videoInfo, m_processInfo->GetMaxTime() / 1000, audioInfo,
-                                   subtitleInfo);
+  const int duration = m_processInfo->GetMaxTime() / 1000;
+
+  // Seed the details with the first video stream, which is what SetStreams() needs to reset them
+  // and record the duration, then add the rest in stream order. Reporting only the stream being
+  // played would drop every other one from the library entry once these details are stored.
+  GetVideoStreamInfo(0, videoInfo);
+  info->m_streamDetails.SetStreams(videoInfo, duration, audioInfo, subtitleInfo);
+
+  for (int i = 1; i < GetVideoStreamCount(); i++)
+  {
+    // A fresh one each time: GetVideoStreamInfo() assigns the language only when the stream states
+    // one, so reusing a struct would hand the previous stream's language to an untagged stream.
+    VideoStreamInfo additionalVideoInfo;
+    GetVideoStreamInfo(i, additionalVideoInfo);
+    if (additionalVideoInfo.valid)
+      info->m_streamDetails.AddStream(new CStreamDetailVideo(additionalVideoInfo, duration));
+  }
 
   //grab all the audio and subtitle info and save it
 

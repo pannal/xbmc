@@ -159,7 +159,10 @@ void CSaveFileState::DoWork(CFileItem& item,
           if (!videodatabase.GetStreamDetails(dbItem) ||
               dbItem.GetVideoInfoTag()->m_streamDetails != item.GetVideoInfoTag()->m_streamDetails)
           {
-            videodatabase.SetStreamDetailsForFile(item.GetVideoInfoTag()->m_streamDetails, progressTrackingFile);
+            // These came from the player, which knows no alternate HDR type, no Dolby Vision
+            // profile and no HDR10+, so what it cannot tell must not undo what the scan found.
+            videodatabase.SetStreamDetailsForFile(item.GetVideoInfoTag()->m_streamDetails,
+                                                  progressTrackingFile, true);
             updateListing = true;
           }
         }
