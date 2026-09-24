@@ -1451,6 +1451,36 @@ void CVideoPlayerAudio::SetSpeed(int speed)
     m_messageQueue.Put(std::make_shared<CDVDMsgInt>(CDVDMsg::PLAYER_SETSPEED, speed), 1);
   else
     m_speed = speed;
+
+  // Wake the audio thread, exactly as Flush does immediately below.
+  //
+  // Queueing the message is not enough by itself. The thread spends most of its
+  // life inside CAudioSinkAE::AddPackets, which loops until the sink accepts
+  // the frame or a deadline expires - the sink's delay, plus the frame
+  // duration, plus a two second margin. A paused sink accepts nothing, so that
+  // loop always runs the full deadline, and the speed change queued behind it
+  // is not read until it does.
+  //
+  // Measured on the device over five pause/resume cycles: audio restarted 0.78
+  // to 2.35 s after the button. Video resumes at once, so ActiveAE then found
+  // the picture that far ahead and reported sync errors of -393 to -1958 ms -
+  // the delay less a near constant 0.35 to 0.40 s, the part the sink's own
+  // buffer already covered. It pays off a negative error by discarding PCM one
+  // buffer at a time, and how long that takes grows with the error: the
+  // smallest corrected in a single pass, the worst took eight seconds of
+  // splicing, which is what was heard as distortion. Seeking never had the
+  // problem because Flush already wakes the thread.
+  //
+  // This narrows the window rather than closing it. AddPackets clears the abort
+  // flag on entry, so an abort landing between two calls is lost and that call
+  // waits its full deadline; closing it would mean the flag surviving into the
+  // next call, which is sink code shared with every other player.
+  //
+  // Aborting mid-frame costs nothing: AddPackets returns the frames it copied,
+  // ProcessDecoderOutput keeps the rest in framesOut and offers it again on the
+  // next pass. Every speed change gets this, not only resume, because pause and
+  // trick play are queued the same way and are late for the same reason.
+  m_audioSink.AbortAddPackets();
 }
 
 void CVideoPlayerAudio::Flush(bool sync)
