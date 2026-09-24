@@ -30,7 +30,8 @@ def exss_header(dialnorm):
 def main():
     source = (ROOT / 'xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp').read_text()
     start = source.index('static inline uint32_t DTS_ReadBits(')
-    end = source.index('\nbool CAEStreamParser::TrySyncAC3(', start)
+    rewrite = source.index('void CAEStreamParser::DefeatDTSDialNorm(', start)
+    end = source.index('\n}\n', rewrite) + 2
     definitions = '\n'.join(line for line in source.splitlines()
                             if line.startswith('#define DTS_SYNC_'))
     preamble = r'''
