@@ -348,9 +348,17 @@ void CProcessInfo::ResetAudioCodecInfo()
   m_audioChannels = "unknown";
   m_audioSampleRate = 0;;
   m_audioBitsPerSample = 0;
+  m_audioObjectCount = -1;
+  m_audioElementCount = -1;
+  m_audioObjectFormat.clear();
+  m_audioObjectLayout.clear();
 
   if (m_dataCache)
   {
+    m_dataCache->SetAudioObjectCount(m_audioObjectCount);
+    m_dataCache->SetAudioElementCount(m_audioElementCount);
+    m_dataCache->SetAudioObjectFormat(m_audioObjectFormat);
+    m_dataCache->SetAudioObjectLayout(m_audioObjectLayout);
     m_dataCache->SetAudioDecoderName(m_audioDecoderName);
     m_dataCache->SetAudioChannels(m_audioChannels);
     m_dataCache->SetAudioSampleRate(m_audioSampleRate);
@@ -373,6 +381,74 @@ std::string CProcessInfo::GetAudioDecoderName()
   std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
 
   return m_audioDecoderName;
+}
+
+void CProcessInfo::SetAudioObjectCount(int objectCount)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
+
+  m_audioObjectCount = objectCount;
+
+  if (m_dataCache)
+    m_dataCache->SetAudioObjectCount(m_audioObjectCount);
+}
+
+int CProcessInfo::GetAudioObjectCount()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
+
+  return m_audioObjectCount;
+}
+
+void CProcessInfo::SetAudioElementCount(int elementCount)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
+
+  m_audioElementCount = elementCount;
+
+  if (m_dataCache)
+    m_dataCache->SetAudioElementCount(m_audioElementCount);
+}
+
+int CProcessInfo::GetAudioElementCount()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
+
+  return m_audioElementCount;
+}
+
+void CProcessInfo::SetAudioObjectFormat(const std::string& format)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
+
+  m_audioObjectFormat = format;
+
+  if (m_dataCache)
+    m_dataCache->SetAudioObjectFormat(m_audioObjectFormat);
+}
+
+std::string CProcessInfo::GetAudioObjectFormat()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
+
+  return m_audioObjectFormat;
+}
+
+void CProcessInfo::SetAudioObjectLayout(const std::string& layout)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
+
+  m_audioObjectLayout = layout;
+
+  if (m_dataCache)
+    m_dataCache->SetAudioObjectLayout(m_audioObjectLayout);
+}
+
+std::string CProcessInfo::GetAudioObjectLayout()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
+
+  return m_audioObjectLayout;
 }
 
 void CProcessInfo::SetAudioChannels(const std::string &channels)

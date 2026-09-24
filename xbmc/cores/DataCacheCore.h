@@ -107,6 +107,58 @@ public:
   // player audio info
   void SetAudioDecoderName(std::string name);
   std::string GetAudioDecoderName();
+  /*!
+   * @brief Dynamic objects in the TrueHD Atmos presentation, or -1 when unknown.
+   *
+   * Bed channels are excluded - this is the count the stream declares in
+   * program_assignment(), not the wider element count that also covers the
+   * static bed.
+   *
+   * Zero and -1 are different answers and both are kept: zero is a bed-only
+   * presentation that really carries no dynamic objects, -1 is a stream that
+   * never declared a count at all. Only the latter reaches skins as empty.
+   */
+  void SetAudioObjectCount(int objectCount);
+  int GetAudioObjectCount();
+  /*!
+   * @brief Encoded elements in the TrueHD Atmos 16-channel presentation.
+   *
+   * The companion to the object count above, and deliberately the wider figure:
+   * bed (static) channels and dynamic objects together, straight from
+   * 16ch_channel_count. Skins get it as prose rather than as a number, so it is
+   * kept numeric here and only rendered at the point of display.
+   *
+   * -1 is not an Atmos stream at all; 0 is Atmos that declared no element count
+   * (the presentation exists but carries no extra_channel_meaning block).
+   */
+  void SetAudioElementCount(int elementCount);
+  int GetAudioElementCount();
+  /*!
+   * @brief What the two counts above are counting - "Atmos", "DTS:X", "DTS:X
+   * IMAX" - or empty when neither is published.
+   *
+   * The counts alone cannot say. Atmos and DTS:X both describe a bed with
+   * objects over it, and the description label has to name one of them; without
+   * this it would have to guess from the figures, and call a DTS:X stream
+   * Atmos. Carried as the text to print rather than as a codec id, because
+   * naming the presentation is the only thing it is for.
+   */
+  void SetAudioObjectFormat(const std::string& format);
+  std::string GetAudioObjectFormat();
+  /*!
+   * @brief How the stream is laid out, in the words a listener uses - "7.1.4 +
+   * 5 Objects", "5.1 + 4 Heights", "LFE + 15 Objects" - or empty when the
+   * stream describes no spatial presentation.
+   *
+   * A different question to the two counts above, and it has an answer in a
+   * case where they do not: a DTS:X release that declares no objects still puts
+   * four heights over a bed, which is worth naming even though there is no
+   * figure to show. Carried as finished text because only the player holds
+   * everything it is built from - which format is playing, how many objects it
+   * declared, and the bed the demuxer reported.
+   */
+  void SetAudioObjectLayout(const std::string& layout);
+  std::string GetAudioObjectLayout();
   void SetAudioChannels(std::string channels);
   std::string GetAudioChannels();
   void SetAudioSampleRate(int sampleRate);
@@ -303,6 +355,10 @@ protected:
     int queueLevel = 0;
     int queueDataLevel = 0;
     double pts = 0;
+    int objectCount = -1;
+    int elementCount = -1;
+    std::string objectFormat;
+    std::string objectLayout;
   } m_playerAudioInfo;
 
   mutable CCriticalSection m_contentSection;

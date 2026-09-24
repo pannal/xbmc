@@ -68,6 +68,29 @@ public:
   void ResetAudioCodecInfo();
   void SetAudioDecoderName(const std::string &name);
   std::string GetAudioDecoderName();
+  //! \brief Dynamic objects in the TrueHD Atmos presentation, -1 when unknown.
+  //! Zero is a real answer - a bed-only presentation - and is kept distinct.
+  //! Routed through here rather than written straight to the data cache so that
+  //! ResetAudioCodecInfo clears it alongside everything else it clears; the
+  //! player republishes it per frame, so a codec swap corrects it either way.
+  void SetAudioObjectCount(int objectCount);
+  int GetAudioObjectCount();
+  //! \brief Elements in the TrueHD Atmos 16-channel presentation - bed channels
+  //! and dynamic objects together, the wider figure the count above excludes the
+  //! bed from. -1 is not Atmos, 0 is Atmos that declared no element count.
+  void SetAudioElementCount(int elementCount);
+  int GetAudioElementCount();
+  //! \brief What the two counts above describe - "Atmos", "DTS:X", "DTS:X IMAX"
+  //! - or empty when neither is published. The figures alone cannot say which,
+  //! and the description label has to name one.
+  void SetAudioObjectFormat(const std::string& format);
+  std::string GetAudioObjectFormat();
+  //! \brief How the stream is laid out in words - "7.1.4 + 5 Objects", "5.1 + 4
+  //! Heights", "LFE + 15 Objects" - or empty when there is no spatial
+  //! presentation to name. Answers where the counts above cannot: a DTS:X
+  //! release declaring no objects still has a bed and four heights.
+  void SetAudioObjectLayout(const std::string& layout);
+  std::string GetAudioObjectLayout();
   void SetAudioChannels(const std::string &channels);
   std::string GetAudioChannels();
   void SetAudioSampleRate(int sampleRate);
@@ -152,6 +175,10 @@ protected:
   std::string m_audioChannels;
   int m_audioSampleRate;
   int m_audioBitsPerSample;
+  int m_audioObjectCount = -1;
+  int m_audioElementCount = -1;
+  std::string m_audioObjectFormat;
+  std::string m_audioObjectLayout;
   CCriticalSection m_audioCodecSection;
 
   // render info

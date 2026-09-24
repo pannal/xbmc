@@ -531,6 +531,62 @@ int CDataCacheCore::GetAudioBitsPerSample()
   return m_playerAudioInfo.bitsPerSample;
 }
 
+void CDataCacheCore::SetAudioObjectCount(int objectCount)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  m_playerAudioInfo.objectCount = objectCount;
+}
+
+int CDataCacheCore::GetAudioObjectCount()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  return m_playerAudioInfo.objectCount;
+}
+
+void CDataCacheCore::SetAudioElementCount(int elementCount)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  m_playerAudioInfo.elementCount = elementCount;
+}
+
+int CDataCacheCore::GetAudioElementCount()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  return m_playerAudioInfo.elementCount;
+}
+
+void CDataCacheCore::SetAudioObjectFormat(const std::string& format)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  m_playerAudioInfo.objectFormat = format;
+}
+
+std::string CDataCacheCore::GetAudioObjectFormat()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  return m_playerAudioInfo.objectFormat;
+}
+
+void CDataCacheCore::SetAudioObjectLayout(const std::string& layout)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  m_playerAudioInfo.objectLayout = layout;
+}
+
+std::string CDataCacheCore::GetAudioObjectLayout()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  return m_playerAudioInfo.objectLayout;
+}
+
 void CDataCacheCore::SetAudioLiveBitRate(double bitRate)
 {
   std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);

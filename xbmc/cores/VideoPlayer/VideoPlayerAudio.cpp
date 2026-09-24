@@ -20,6 +20,7 @@
 #include "settings/SettingsComponent.h"
 #include "settings/lib/SettingsManager.h"
 #include "utils/MathUtils.h"
+#include "utils/StreamUtils.h"
 #include "utils/log.h"
 
 #include "utils/AMLUtils.h"
@@ -29,6 +30,7 @@
 #include <algorithm>
 #include <mutex>
 #include <set>
+#include <string>
 
 #ifdef TARGET_RASPBERRY_PI
 #include "platform/linux/RBP.h"
@@ -41,6 +43,116 @@
 #include <unistd.h>
 
 using namespace std::chrono_literals;
+
+namespace
+{
+/*
+ * What a channel count is called. The count alone does not say where the
+ * channels are, so this is the convention rather than a reading of the stream -
+ * the same one every skin already applies to VideoPlayer.AudioChannels, which
+ * is the figure this is given. Sharing it is the point: a row saying 7.1 and a
+ * row saying 7.1.4 have to be describing the same bed.
+ *
+ * Empty for a count with no conventional name, which leaves the layout unnamed
+ * rather than invented.
+ */
+std::string BedLayoutName(int channels)
+{
+  switch (channels)
+  {
+    case 1:
+      return "1.0";
+    case 2:
+      return "2.0";
+    case 3:
+      return "2.1";
+    case 4:
+      return "4.0";
+    case 5:
+      return "5.0";
+    case 6:
+      return "5.1";
+    case 7:
+      return "6.1";
+    case 8:
+      return "7.1";
+    default:
+      return {};
+  }
+}
+
+// "5 Objects", and the " + 5 Objects" tail most of these rows end with, so the
+// figure a listener looks for sits in the same place in all of them. Same
+// spelling as OmniphonyDescribeSpatialBed(), which already writes this sentence
+// for the decoded path.
+std::string ObjectCountName(int objectCount)
+{
+  return std::to_string(objectCount) + (objectCount == 1 ? " Object" : " Objects");
+}
+
+std::string ObjectSuffix(int objectCount)
+{
+  return " + " + ObjectCountName(objectCount);
+}
+
+/*
+ * A DTS:X presentation: the bed the demuxer reported, the heights over it, and
+ * the objects if the stream declared any.
+ *
+ * With objects the bed is context and the count is the news, so the bed folds
+ * into a layout number and the objects follow it - "7.1.4 + 1 Object". With
+ * none the heights are the news and are spelled out instead - "7.1 + 4 Heights"
+ * - because "7.1.4" reads as a speaker layout the room is expected to have.
+ * Both forms are how OmniphonyDescribeSpatialBed() writes the same thing.
+ *
+ * Heights the stream has not stated are left out rather than assumed, so a
+ * presentation with none and one that did not say both read "5.1 + 1 Object".
+ */
+std::string DescribeDTSXLayout(int bedChannels, int heightCount, int objectCount)
+{
+  const std::string bed = BedLayoutName(bedChannels);
+  if (bed.empty())
+    return {};
+
+  const std::string layout = heightCount > 0 ? bed + "." + std::to_string(heightCount) : bed;
+  if (objectCount > 0)
+    return layout + ObjectSuffix(objectCount);
+
+  if (heightCount > 0)
+    return bed + " + " + std::to_string(heightCount) + " Heights";
+
+  return {};
+}
+
+/*
+ * An Atmos presentation, described the way it describes itself: a total of
+ * elements, and how many of those move. Both codecs state the total - TrueHD as
+ * 16ch_channel_count, DD+ as the object_count in its own metadata - so the
+ * difference is the static part, the bed, and nothing else in either format
+ * says what that bed holds. So it is named by its width: one channel is the
+ * LFE, which is the only bed a dynamic-object-only program can carry and the
+ * shape almost every TrueHD Atmos presentation has, and more than one is a bed
+ * of that many channels. A presentation that is objects all the way down has no
+ * bed to name and the count stands alone.
+ *
+ * A mix declaring no objects has nothing here that the ordinary channel row
+ * does not already say, so it says nothing.
+ */
+std::string DescribeAtmosLayout(int elementCount, int objectCount)
+{
+  if (objectCount <= 0)
+    return {};
+
+  const int bedChannels = elementCount > objectCount ? elementCount - objectCount : 0;
+
+  if (bedChannels == 1)
+    return "LFE" + ObjectSuffix(objectCount);
+  if (bedChannels > 1)
+    return std::to_string(bedChannels) + " Channels" + ObjectSuffix(objectCount);
+
+  return ObjectCountName(objectCount);
+}
+} // unnamed namespace
 
 //==============================================================================
 // LAV PTS validation utilities (same as DVDAudioCodecPassthrough.cpp)
@@ -293,6 +405,14 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
   m_messageParent.Put(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_AVCHANGE));
   m_syncState = IDVDStreamPlayer::SYNC_STARTING;
 
+  // This overload also serves a codec change mid-playback, which reaches us
+  // without a CloseStream, so retire the outgoing stream's figures here too
+  // rather than let them describe the incoming one until its first frame lands.
+  m_processInfo.SetAudioObjectCount(-1);
+  m_processInfo.SetAudioElementCount(-1);
+  m_processInfo.SetAudioObjectFormat("");
+  m_processInfo.SetAudioObjectLayout("");
+
   // LAV: Reset PCM jitter tracking on stream open
   if (m_lavStylePcmSyncEnabled)
   {
@@ -353,6 +473,13 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
   { std::unique_lock<CCriticalSection> lock(m_info_section);
     m_info = info;
   }
+
+  // No frames will arrive to say otherwise once the codec is gone, so the last
+  // figures this stream published have to be retired here.
+  m_processInfo.SetAudioObjectCount(-1);
+  m_processInfo.SetAudioElementCount(-1);
+  m_processInfo.SetAudioObjectFormat("");
+  m_processInfo.SetAudioObjectLayout("");
 }
 
 void CVideoPlayerAudio::OnStartup()
@@ -1113,6 +1240,125 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     audioframe.pts / DVD_TIME_BASE, m_info.pts / DVD_TIME_BASE, m_pClock->GetClock() / DVD_TIME_BASE, GetLevel());
 
   int framesOutput = m_audioSink.AddPackets(audioframe);
+
+  // Published per frame rather than from the SYNC_STARTING block below, because
+  // SwitchCodecIfNeeded() swaps the codec without returning the player to
+  // SYNC_STARTING: a mid-playback passthrough toggle would otherwise leave the
+  // count of whichever codec happened to start the title standing for the rest
+  // of it - empty after PCM to TrueHD, stale after TrueHD to PCM. Reading it off
+  // the frame means whichever codec produced this frame is the one described.
+  //
+  // Only the passthrough path runs the stream parser that reads this metadata,
+  // so every other path publishes -1 rather than let an earlier stream's figures
+  // stand. Both figures are codec agnostic - TrueHD states them in the major
+  // sync, DD+ in the object metadata its frames carry, and m_hasAtmos is set by
+  // whichever parser found them.
+  const CAEStreamInfo& streamInfo = audioframe.format.m_streamInfo;
+  const bool haveAtmosInfo = audioframe.passthrough && streamInfo.m_hasAtmos;
+  const int atmosElements = haveAtmosInfo ? static_cast<int>(streamInfo.m_atmosChannels) : -1;
+
+  // DTS:X arrives by the other route. Its object count is not in anything this
+  // parser reads: the alternate-profile syncword states it, ffmpeg reports that
+  // syncword's count in the level, and the demuxer's probe has already run by
+  // the time a frame reaches here - so the answer is in the hints, for a
+  // passthrough stream nothing ever decodes.
+  //
+  // The element count is the stream's own bed plus the heights above it, rather
+  // than anything counted off this frame: the frame carries the bed, and the
+  // heights are in the extension the receiver reassembles. How many heights the
+  // level says, and where it does not say there is no total to give. The bed
+  // comes from the demuxer hints as they arrived, because OpenStream()
+  // overwrites m_streaminfo.channels with what the codec reports - which on
+  // this path is a count of AE_CH_RAW, not of speakers. m_streaminfoOrig is
+  // also the figure VideoPlayer.AudioChannels shows, so a skin's channel row
+  // and this one describe the same bed. 5.1.4 and 7.1.4 presentations both
+  // exist, so there is no fixed total to assume.
+  //
+  // Absent it says nothing at all. A DTS:X release that declares no objects is
+  // the ordinary case, not a bed-only mix that declared zero, so there is no
+  // figure to show and both labels stay empty - unlike Atmos, where zero is an
+  // answer the stream gave.
+  //
+  // The hints describe the source, so the frame has to say whether the source is
+  // what is leaving: GetPassthroughStreamType() drops a DTS-HD stream to
+  // STREAM_TYPE_DTSHD_CORE when the receiver cannot take the full one, and the
+  // parser then emits the core substream alone, without the extension the objects
+  // are in. These labels describe what the receiver is being handed, not what the
+  // file holds, so the frame must still carry the matching full MA or HRA
+  // transport. HRA DTS:X is deliberately not promoted to the lossless MA type.
+  const bool dtsxTransport =
+      m_streaminfo.profile == AV_PROFILE_DTS_HD_HRA_X
+          ? streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD
+          : streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_MA;
+  const bool haveDTSXStream = audioframe.passthrough && dtsxTransport &&
+                              StreamUtils::IsDTSXProfile(m_streaminfo.profile);
+  const int dtsxBedChannels = m_streaminfoOrig.channels;
+  const int dtsxObjects =
+      haveDTSXStream ? StreamUtils::GetDTSXObjectCount(m_streaminfo.profile, m_streaminfo.level)
+                     : -1;
+  const int dtsxHeights =
+      haveDTSXStream ? StreamUtils::GetDTSXHeightCount(m_streaminfo.profile, m_streaminfo.level)
+                     : -1;
+  const bool haveDTSXInfo = dtsxObjects >= 0;
+
+  // Auro-3D arrives by the same route and on the same terms: nothing decodes it
+  // on this path either, ffmpeg reports the layout in the level beside the
+  // profile, and only a frame still leaving as DTS-HD MA may carry the labels.
+  //
+  // Its element count is the layout's own channels rather than a bed plus a
+  // fixed number of heights, because the layout states them: Auro puts four,
+  // five or six heights over a 5.1 or 7.1 floor and the level says which. It
+  // declares no objects, so that figure stays empty and the description reads
+  // "Auro-3D [12 ch]".
+  const bool haveAuro3DStream = audioframe.passthrough &&
+                                streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_MA &&
+                                StreamUtils::IsAuro3DProfile(m_streaminfo.profile);
+  const int auro3DChannels =
+      haveAuro3DStream
+          ? StreamUtils::GetAuro3DChannelCount(m_streaminfo.profile, m_streaminfo.level)
+          : -1;
+  const bool haveAuro3DInfo = auro3DChannels > 0;
+
+  if (haveAuro3DInfo)
+  {
+    m_processInfo.SetAudioObjectCount(-1);
+    m_processInfo.SetAudioElementCount(auro3DChannels);
+    m_processInfo.SetAudioObjectFormat("Auro-3D");
+  }
+  else if (haveDTSXInfo)
+  {
+    m_processInfo.SetAudioObjectCount(dtsxObjects);
+    m_processInfo.SetAudioElementCount(
+        dtsxBedChannels > 0 && dtsxHeights >= 0 ? dtsxBedChannels + dtsxHeights : -1);
+    m_processInfo.SetAudioObjectFormat(m_streaminfo.profile == AV_PROFILE_DTS_HD_MA_X_IMAX
+                                           ? "DTS:X IMAX"
+                                           : "DTS:X");
+  }
+  else
+  {
+    m_processInfo.SetAudioObjectCount(haveAtmosInfo ? streamInfo.m_atmosObjects : -1);
+    m_processInfo.SetAudioElementCount(atmosElements);
+    m_processInfo.SetAudioObjectFormat(haveAtmosInfo ? "Atmos" : "");
+  }
+
+  // The layout answers a different question to the counts, and has an answer in
+  // a case where they do not: a DTS:X release declaring no objects is the
+  // ordinary one, and it still puts four heights over a bed. So it is published
+  // on its own terms rather than alongside the figures - the counts stay empty
+  // there, as they were, and the layout speaks.
+  //
+  // Auro names itself the way the discs do, "Auro 11.1", because that is the
+  // room the mix was made for and what a listener is looking for. Counted off
+  // the same level as the channels above, so the two rows agree by
+  // construction.
+  if (haveAuro3DStream)
+    m_processInfo.SetAudioObjectLayout(
+        StreamUtils::GetAuro3DLayoutName(m_streaminfo.profile, m_streaminfo.level));
+  else
+    m_processInfo.SetAudioObjectLayout(
+        haveDTSXStream
+            ? DescribeDTSXLayout(dtsxBedChannels, dtsxHeights, dtsxObjects)
+            : DescribeAtmosLayout(atmosElements, haveAtmosInfo ? streamInfo.m_atmosObjects : -1));
 
   // guess next pts
   m_audioClock += audioframe.duration * ((double)framesOutput / audioframe.nb_frames);

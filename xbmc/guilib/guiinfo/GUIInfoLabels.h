@@ -751,6 +751,8 @@ static constexpr unsigned int SYSTEM_LOCALE = 1012;
 #define PLAYER_PROCESS_AUDIOSAMPLERATE (PLAYER_PROCESS + 10)
 #define PLAYER_PROCESS_AUDIO_SAMPLE_RATE (PLAYER_PROCESS + 11)
 #define PLAYER_PROCESS_AUDIOBITSPERSAMPLE (PLAYER_PROCESS + 12)
+#define PLAYER_PROCESS_AUDIO_OBJECT_COUNT (PLAYER_PROCESS + 13)
+#define PLAYER_PROCESS_AUDIO_OBJECT_DESCRIPTION (PLAYER_PROCESS + 14)
 
 #define PLAYER_PROCESS_AUDIO_LIVE_BIT_RATE (PLAYER_PROCESS + 15)
 #define PLAYER_PROCESS_AUDIO_LIVE_KIBIT_RATE (PLAYER_PROCESS + 16)
@@ -857,6 +859,11 @@ static constexpr unsigned int SYSTEM_LOCALE = 1012;
 
 #define PLAYER_PROCESS_RENDER_PTS (PLAYER_PROCESS + 150)
 
+// The spatial presentation a passthrough stream declares, in words rather than
+// figures. Its own block so the family can grow without borrowing from the
+// generic audio run, where its two counts already sit at +13 and +14 with no
+// room beside them.
+#define PLAYER_PROCESS_AUDIO_OBJECT_LAYOUT (PLAYER_PROCESS + 170)
 #define ADDON_INFOS                 1700
 #define ADDON_SETTING_STRING        (ADDON_INFOS)
 #define ADDON_SETTING_BOOL          (ADDON_INFOS + 1)
