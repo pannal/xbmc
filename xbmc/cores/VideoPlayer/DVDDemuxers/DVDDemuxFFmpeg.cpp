@@ -44,6 +44,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -189,7 +191,10 @@ static int dvd_file_read(void* h, uint8_t* buf, int size)
   if (len == 0)
     return AVERROR_EOF;
   if (len > 0)
+  {
+    demuxer->RecordSeamRead(len);
     demuxer->m_sourceReadBytes += len;
+  }
   return len;
 }
 
@@ -267,7 +272,8 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
   m_seekToKeyFrame = false;
   m_brokenFileDetected = false;
   m_sourceReadBytes = 0;
-  m_seamStreamState.clear();
+  m_seamReadOffsets.clear();
+  m_seamReadEnd = 0;
 
   const AVIOInterruptCB int_cb = { interrupt_cb, this };
 
@@ -688,7 +694,8 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
 
 void CDVDDemuxFFmpeg::Dispose()
 {
-  m_seamStreamState.clear();
+  m_seamReadOffsets.clear();
+  m_seamReadEnd = 0;
   m_pkt.result = -1;
   av_packet_unref(&m_pkt.pkt);
 
@@ -729,7 +736,8 @@ bool CDVDDemuxFFmpeg::Reset()
 
 void CDVDDemuxFFmpeg::Flush()
 {
-  m_seamStreamState.clear();
+  m_seamReadOffsets.clear();
+  m_seamReadEnd = 0;
   if (m_pFormatContext)
   {
     if (m_pFormatContext->pb)
@@ -1012,10 +1020,9 @@ AVDictionary* CDVDDemuxFFmpeg::GetFFMpegOptionsFromInput()
   return options;
 }
 
-void CDVDDemuxFFmpeg::ApplySeamTimeOffset(DemuxPacket* packet, int streamIndex)
+void CDVDDemuxFFmpeg::RecordSeamRead(int bytes)
 {
-  // MVC stitching owns its timestamps; only native navigation supplies seam offsets.
-  if (m_pSSIF)
+  if (m_pSSIF || !m_ioContext || bytes <= 0)
     return;
 
   const auto menu = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInput);
@@ -1025,29 +1032,46 @@ void CDVDDemuxFFmpeg::ApplySeamTimeOffset(DemuxPacket* packet, int streamIndex)
   if (!menu || !menu->GetSeamTimeOffsets(generation, current, previous))
     return;
 
-  const double raw = packet->dts != DVD_NOPTS_VALUE ? packet->dts : packet->pts;
-  if (raw == DVD_NOPTS_VALUE)
+  // AVIO has not advanced pos yet inside its read callback. The paired native
+  // library delivers boundary events before returning bytes from the new clip.
+  const int64_t start = m_ioContext->pos;
+  if (start < 0 || start > std::numeric_limits<int64_t>::max() - bytes)
+    return;
+  // A seek can revisit byte coordinates. Remove superseded future ranges.
+  m_seamReadOffsets.erase(m_seamReadOffsets.lower_bound(start), m_seamReadOffsets.end());
+  if (m_seamReadOffsets.empty() || m_seamReadOffsets.rbegin()->second != current)
+    m_seamReadOffsets.emplace(start, current);
+  m_seamReadEnd = start + bytes;
+}
+
+void CDVDDemuxFFmpeg::ApplySeamTimeOffset(DemuxPacket* packet, int streamIndex)
+{
+  if (m_pSSIF || m_seamReadOffsets.empty())
     return;
 
-  SeamStreamState& state = m_seamStreamState[streamIndex];
-  double offset = current;
-  if (state.generation != generation)
+  // MPEG-TS keeps the first TS/PES byte position even when an old sparse PG
+  // packet is emitted after new video. Timestamp proximity cannot determine
+  // this ownership: an early subtitle may have no packets near the clip end.
+  const int64_t position = m_pkt.pkt.pos;
+  double offset;
+  if (position >= m_seamReadOffsets.begin()->first && position < m_seamReadEnd)
   {
-    if (state.lastCorrected == DVD_NOPTS_VALUE ||
-        static_cast<int64_t>(generation) - state.generation > 1)
-      state.generation = generation;
-    else
-    {
-      // libbluray can advance the navigation event before FFmpeg drains packets
-      // from the old clip. Each elementary stream crosses the seam independently.
-      const double currentDistance = std::fabs(raw + current * DVD_TIME_BASE - state.lastCorrected);
-      const double previousDistance =
-          std::fabs(raw + previous * DVD_TIME_BASE - state.lastCorrected);
-      if (currentDistance <= previousDistance)
-        state.generation = generation;
-      else
-        offset = previous;
-    }
+    offset = std::prev(m_seamReadOffsets.upper_bound(position))->second;
+  }
+  else if (position < 0 && m_seamReadOffsets.size() == 1)
+  {
+    // No seam ambiguity exists in the bytes read so far.
+    offset = m_seamReadOffsets.begin()->second;
+  }
+  else
+  {
+    // Keep the payload, but do not invent timing for unpositioned parser output
+    // across a seam or for coordinates outside the recorded read epoch.
+    CLog::Log(LOGDEBUG, "Blu-ray packet has no proven seam position (stream {}, pos {})",
+              streamIndex, position);
+    packet->pts = DVD_NOPTS_VALUE;
+    packet->dts = DVD_NOPTS_VALUE;
+    return;
   }
 
   offset *= DVD_TIME_BASE;
@@ -1055,7 +1079,6 @@ void CDVDDemuxFFmpeg::ApplySeamTimeOffset(DemuxPacket* packet, int streamIndex)
     packet->dts += offset;
   if (packet->pts != DVD_NOPTS_VALUE)
     packet->pts += offset;
-  state.lastCorrected = packet->dts != DVD_NOPTS_VALUE ? packet->dts : packet->pts;
 }
 
 double CDVDDemuxFFmpeg::ConvertTimestamp(int64_t pts, int den, int num)

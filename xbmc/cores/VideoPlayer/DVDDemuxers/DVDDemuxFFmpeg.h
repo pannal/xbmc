@@ -123,6 +123,7 @@ public:
   bool m_brokenFileDetected = false;
   int64_t m_sourceReadBytes = 0;
 
+  void RecordSeamRead(int bytes);
   void MarkBroken() override;
   int64_t GetSourceReadBytes() override { return m_sourceReadBytes; }
 
@@ -163,12 +164,10 @@ protected:
   std::map<int, CDemuxStream*> m_streams;
   std::map<int, std::unique_ptr<CDemuxParserFFmpeg>> m_parsers;
 
-  struct SeamStreamState
-  {
-    int generation = 0;
-    double lastCorrected = DVD_NOPTS_VALUE;
-  };
-  std::map<int, SeamStreamState> m_seamStreamState;
+  // One entry per offset change, retained until flush/disposal: a sparse PES
+  // can remain buffered across arbitrarily many intervening menu generations.
+  std::map<int64_t, double> m_seamReadOffsets;
+  int64_t m_seamReadEnd = 0;
 
   AVIOContext* m_ioContext;
 
