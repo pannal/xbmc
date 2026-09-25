@@ -74,7 +74,7 @@ static int liveTitles=0;
 static BLURAY_TITLE_INFO* NewTitle(uint32_t playlist,uint32_t clips) {
  auto* t=new BLURAY_TITLE_INFO{};t->playlist=playlist;t->clip_count=clips;t->clips=new BLURAY_CLIP_INFO[clips]{};
  auto* v=new BLURAY_STREAM_INFO[clips]{};auto* a=new BLURAY_STREAM_INFO[clips]{};
- for(uint32_t i=0;i<clips;++i){t->clips[i].video_stream_count=1;t->clips[i].video_streams=&v[i];t->clips[i].audio_stream_count=1;t->clips[i].audio_streams=&a[i];t->clips[i].in_time=i*1000;t->clips[i].out_time=i*1000+900;a[i].pid=0x1100+playlist%16;}
+ for(uint32_t i=0;i<clips;++i){t->clips[i].video_stream_count=1;t->clips[i].video_streams=&v[i];t->clips[i].audio_stream_count=1;t->clips[i].audio_streams=&a[i];t->clips[i].in_time=i*1000;t->clips[i].out_time=i*1000+900;a[i].pid=0x1100+playlist%16;v[i].coding_type=playlist>=900?0x24:0x1b;}
  ++liveTitles;return t;
 }
 void bd_free_title_info(BLURAY_TITLE_INFO* t) {delete[] t->clips[0].video_streams;delete[] t->clips[0].audio_streams;delete[] t->clips;delete t;--liveTitles;}
@@ -109,7 +109,7 @@ public:
  BLURAY_TITLE_INFO* m_titleInfo=nullptr;BLURAY_CLIP_INFO* m_clip=nullptr;BLURAY_CLIP_INFO* m_nMVCClip=nullptr; // header types
  uint64_t m_titleGeneration=0;std::queue<int> m_clipQueue;uint32_t m_playlist=MAX_PLAYLIST_ID+1,m_angle=0,m_titleNumber=0;
  BLURAY_TITLE_INFO* m_prevTitleInfo=nullptr;const BLURAY_CLIP_INFO* m_prevClip=nullptr;uint32_t m_prevPlaylist=MAX_PLAYLIST_ID+1;
- bool m_prevWasMVC=false,m_prevFlipEyes=false,m_prevTitleOnly=false,m_wrapSeekExempt=false,m_videoCompatBoundary=false;
+ int m_restoredBoundaryClip=-1;bool m_prevWasMVC=false,m_prevFlipEyes=false,m_prevTitleOnly=false,m_wrapSeekExempt=false,m_videoCompatBoundary=false;
  std::atomic_bool m_bFlipEyes=false,m_discontinuityFlush=false;BD_EVENT m_event{};
  void ReplaceTitleInfo(BLURAY_TITLE_INFO*);void FreePrevTitleInfo();void StashBoundaryClip(bool titleOnly=false);bool RestoreTitleOnlyStash();void RestoreTitleOnlyStashForEvent();int lastAudioPid=0;
  ENextStream NextStream();int HoldGate(int result);void DataRead();
@@ -292,7 +292,36 @@ int main(){
    assert(q.NextStream()==q.NEXTSTREAM_OPEN&&q.m_titleInfo->playlist==802&&q.m_clip==&q.m_titleInfo->clips[1]);
    assert(q.m_videoCompatBoundary); // the stash survived for the playlist boundary check
    assert(q.lastAudioPid==0x1102&&!q.m_prevTitleInfo&&liveTitles==2);
+   // pannal's ordering: a selection restores the stash early, then a different playlist
+   // follows in the same queue. The boundary check still sees the old clip.
+   q.DataRead();q.m_event={BD_EVENT_PLAYITEM,2};q.ProcessEvent();auto* t802=q.m_titleInfo;
+   q.m_event={BD_EVENT_TITLE,0};assert(q.HoldGate(0)==0);q.m_videoCompatBoundary=false;
+   queuedEvents.push({BD_EVENT_AUDIO_STREAM,1});queuedEvents.push({BD_EVENT_PLAYLIST,803});
+   queuedEvents.push({BD_EVENT_PLAYITEM,1});queuedEvents.push({BD_EVENT_AUDIO_STREAM,1});
+   assert(q.NextStream()==q.NEXTSTREAM_OPEN&&q.m_titleInfo->playlist==803&&q.m_clip==&q.m_titleInfo->clips[1]);
+   assert(q.m_videoCompatBoundary&&q.lastAudioPid==0x1103&&!q.m_prevTitleInfo&&q.m_restoredBoundaryClip<0&&liveTitles==2);
+   // The same with a queued play item on the old playlist first: the snapshot is still the
+   // clip that was playing at the title change, and an incompatible switch says so.
+   q.DataRead();q.m_event={BD_EVENT_PLAYITEM,0};q.ProcessEvent();(void)t802;
+   q.m_event={BD_EVENT_TITLE,0};assert(q.HoldGate(0)==0);q.m_videoCompatBoundary=true;
+   queuedEvents.push({BD_EVENT_PLAYITEM,3});queuedEvents.push({BD_EVENT_PLAYLIST,900});queuedEvents.push({BD_EVENT_PLAYITEM,0});
+   assert(q.NextStream()==q.NEXTSTREAM_OPEN&&q.m_titleInfo->playlist==900&&!q.m_videoCompatBoundary);
+   assert(!q.m_prevTitleInfo&&liveTitles==2);
+   // A stop or a new angle after an early restore frees the snapshot with the reopen.
+   q.DataRead();q.m_event={BD_EVENT_PLAYITEM,0};q.ProcessEvent();
+   q.m_event={BD_EVENT_TITLE,0};assert(q.HoldGate(0)==0);
+   queuedEvents.push({BD_EVENT_AUDIO_STREAM,1});queuedEvents.push({BD_EVENT_PLAYLIST_STOP,0});
+   assert(q.NextStream()==q.NEXTSTREAM_OPEN&&!q.m_titleInfo&&!q.m_prevTitleInfo&&liveTitles==1);
+   q.m_event={BD_EVENT_PLAYLIST,901};q.ProcessEvent();q.m_event={BD_EVENT_PLAYITEM,0};q.ProcessEvent();q.DataRead();
+   auto* t901=q.m_titleInfo;q.m_event={BD_EVENT_TITLE,0};assert(q.HoldGate(0)==0);
+   queuedEvents.push({BD_EVENT_AUDIO_STREAM,1});queuedEvents.push({BD_EVENT_ANGLE,1});
+   assert(q.NextStream()==q.NEXTSTREAM_OPEN&&q.m_titleInfo&&q.m_titleInfo!=t901&&!q.m_prevTitleInfo&&liveTitles==2);
+   // After the reopen, the snapshot marker is gone: a later stop frees the kept table.
    q.ReplaceTitleInfo(nullptr);q.FreePrevTitleInfo();assert(liveTitles==1);
+   q.m_event={BD_EVENT_PLAYLIST,902};q.ProcessEvent();q.m_event={BD_EVENT_PLAYITEM,0};q.ProcessEvent();q.DataRead();
+   q.m_event={BD_EVENT_TITLE,0};assert(q.HoldGate(0)==0);
+   assert(q.NextStream()==q.NEXTSTREAM_OPEN&&q.m_titleInfo&&q.m_restoredBoundaryClip<0&&liveTitles==2);
+   q.m_event={BD_EVENT_PLAYLIST_STOP,0};q.ProcessEvent();assert(!q.m_titleInfo&&!q.m_prevTitleInfo&&liveTitles==1);
   }
   // A stop ends the playlist: nothing is restored, and a later play item tears down as before.
   titleChange({{BD_EVENT_PLAYLIST_STOP,0}});assert(!m.m_titleInfo&&!m.m_prevTitleInfo&&liveTitles==0);

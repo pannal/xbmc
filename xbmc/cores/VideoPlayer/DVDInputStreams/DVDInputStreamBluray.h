@@ -239,6 +239,9 @@ protected:
   bool m_prevFlipEyes = false;
   // The stash was made for a title change alone; the playlist may play on.
   bool m_prevTitleOnly = false;
+  // Clip that was playing when a title-only stash was restored in the current
+  // reopen; a playlist change in the same queue re-stashes the table with it.
+  int m_restoredBoundaryClip = -1;
   std::atomic_bool m_menu{false};
   std::atomic_bool m_isInMainMenu{false};
   std::atomic_bool m_currentTitleIsBdj{false};

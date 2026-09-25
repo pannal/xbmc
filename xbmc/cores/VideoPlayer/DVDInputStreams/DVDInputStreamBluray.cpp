@@ -511,6 +511,16 @@ void CDVDInputStreamBluray::ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming)
   {
     std::lock_guard lock(m_clipTableMutex);
     outgoing = m_titleInfo;
+    // A table restored from a title-only stash during this reopen is still the
+    // boundary's outgoing side: keep it as the stash, with the clip that was
+    // playing, so NextStream() can compare it with the incoming playlist.
+    if (outgoing && m_restoredBoundaryClip >= 0 && !m_prevTitleInfo &&
+        static_cast<uint32_t>(m_restoredBoundaryClip) < outgoing->clip_count)
+    {
+      m_prevTitleInfo = outgoing;
+      m_prevClip = outgoing->clips + m_restoredBoundaryClip;
+      outgoing = nullptr;
+    }
     m_titleInfo = incoming;
     m_prevTitleOnly = false;
     m_clip = nullptr;
@@ -543,6 +553,7 @@ bool CDVDInputStreamBluray::RestoreTitleOnlyStash()
   m_prevTitleInfo = nullptr;
   m_prevClip = nullptr;
   m_prevTitleOnly = false;
+  m_restoredBoundaryClip = static_cast<int>(clip);
   ++m_titleGeneration;
   CLog::Log(LOGDEBUG,
             "CDVDInputStreamBluray - title changed without a new playlist, keeping playlist {} "
@@ -603,6 +614,7 @@ void CDVDInputStreamBluray::FreePrevTitleInfo()
     m_prevTitleInfo = nullptr;
     m_prevClip = nullptr;
     m_prevTitleOnly = false;
+    m_restoredBoundaryClip = -1;
   }
   if (outgoing)
     bd_free_title_info(outgoing);
