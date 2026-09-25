@@ -257,30 +257,36 @@ bool CDirectoryProvider::Update(bool forceRefresh)
   fireJob |= UpdateBrowse();
   fireJob &= !m_currentUrl.empty();
 
-  std::unique_lock<CCriticalSection> lock(m_section);
-  if (m_updateState == INVALIDATED)
-    fireJob = true;
-  else if (m_updateState == DONE)
-    changed = true;
-
-  m_updateState = OK;
-
-  if (fireJob)
+  // Info labels reach the window manager, which takes the GfxContext lock:
+  // evaluate them before m_section (see OnJobComplete).
+  const std::string target = m_target.GetLabel(m_parentID, false);
+  std::vector<CGUIStaticItemPtr> items;
   {
-    CLog::Log(LOGDEBUG, "CDirectoryProvider[{}]: refreshing..", m_currentUrl);
-    if (m_jobID)
-      CServiceBroker::GetJobManager()->CancelJob(m_jobID);
-    m_jobID = CServiceBroker::GetJobManager()->AddJob(
-        new CDirectoryJob(m_currentUrl, m_target.GetLabel(m_parentID, false), m_currentSort,
-                          m_currentLimit, m_currentBrowse, m_parentID),
-        this);
+    std::unique_lock<CCriticalSection> lock(m_section);
+    if (m_updateState == INVALIDATED)
+      fireJob = true;
+    else if (m_updateState == DONE)
+      changed = true;
+
+    m_updateState = OK;
+
+    if (fireJob)
+    {
+      CLog::Log(LOGDEBUG, "CDirectoryProvider[{}]: refreshing..", m_currentUrl);
+      if (m_jobID)
+        CServiceBroker::GetJobManager()->CancelJob(m_jobID);
+      m_jobID = CServiceBroker::GetJobManager()->AddJob(
+          new CDirectoryJob(m_currentUrl, target, m_currentSort, m_currentLimit, m_currentBrowse,
+                            m_parentID),
+          this);
+    }
+
+    if (!changed)
+      items = m_items;
   }
 
-  if (!changed)
-  {
-    for (auto& i : m_items)
-      changed |= i->UpdateVisibility(m_parentID);
-  }
+  for (auto& i : items)
+    changed |= i->UpdateVisibility(m_parentID);
   return changed; //! @todo Also returned changed if properties are changed (if so, need to update scroll to letter).
 }
 
@@ -331,8 +337,8 @@ void CDirectoryProvider::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
 
 void CDirectoryProvider::Fetch(std::vector<std::shared_ptr<CGUIListItem>>& items)
 {
+  items.clear(); // may release the last reference to old items: not under m_section
   std::unique_lock<CCriticalSection> lock(m_section);
-  items.clear();
   for (const auto& i : m_items)
   {
     if (i->IsVisible())
@@ -390,12 +396,13 @@ void CDirectoryProvider::OnFavouritesEvent(const CFavouritesService::FavouritesU
 
 void CDirectoryProvider::Reset()
 {
+  std::vector<CGUIStaticItemPtr> doomed; // destroyed after m_section is released
   {
     std::unique_lock<CCriticalSection> lock(m_section);
     if (m_jobID)
       CServiceBroker::GetJobManager()->CancelJob(m_jobID);
     m_jobID = 0;
-    m_items.clear();
+    doomed.swap(m_items);
     m_currentTarget.clear();
     m_currentUrl.clear();
     m_itemTypes.clear();
@@ -420,16 +427,29 @@ void CDirectoryProvider::Reset()
 
 void CDirectoryProvider::FreeResources(bool immediately)
 {
-  std::unique_lock<CCriticalSection> lock(m_section);
-  for (const auto& item : m_items)
+  std::vector<CGUIStaticItemPtr> items;
+  {
+    std::unique_lock<CCriticalSection> lock(m_section);
+    items = m_items;
+  }
+  // Freeing textures takes the GfxContext lock: never under m_section.
+  for (const auto& item : items)
     item->FreeMemory(immediately);
 }
 
 void CDirectoryProvider::OnJobComplete(unsigned int jobID, bool success, CJob *job)
 {
+  // Replacing m_items destroys the previous items, and a list item's
+  // destructor frees textures under the GfxContext lock. The main thread can
+  // hold that lock (window close/activate) while waiting for m_section in
+  // Fetch(), so destroying them under m_section deadlocks the GUI (black
+  // screen after stopping playback, log ending on "refreshing.."). Let them
+  // die after the lock is released.
+  std::vector<CGUIStaticItemPtr> doomed;
   std::unique_lock<CCriticalSection> lock(m_section);
   if (success)
   {
+    doomed.swap(m_items);
     m_items = static_cast<CDirectoryJob*>(job)->GetItems();
     m_currentTarget = static_cast<CDirectoryJob*>(job)->GetTarget();
     static_cast<CDirectoryJob*>(job)->GetItemTypes(m_itemTypes);
@@ -437,17 +457,20 @@ void CDirectoryProvider::OnJobComplete(unsigned int jobID, bool success, CJob *j
       m_updateState = DONE;
   }
   m_jobID = 0;
+  lock.unlock();
 }
 
 std::string CDirectoryProvider::GetTarget(const CFileItem& item) const
 {
   std::string target = item.GetProperty("node.target").asString();
 
-  std::unique_lock<CCriticalSection> lock(m_section);
   if (target.empty())
+  {
+    std::unique_lock<CCriticalSection> lock(m_section);
     target = m_currentTarget;
+  }
   if (target.empty())
-    target = m_target.GetLabel(m_parentID, false);
+    target = m_target.GetLabel(m_parentID, false); // not under m_section
 
   return target;
 }
@@ -658,8 +681,8 @@ bool CDirectoryProvider::IsUpdating() const
 bool CDirectoryProvider::UpdateURL()
 {
   {
-    std::unique_lock<CCriticalSection> lock(m_section);
     std::string value(m_url.GetLabel(m_parentID, false));
+    std::unique_lock<CCriticalSection> lock(m_section);
     if (value == m_currentUrl)
       return false;
 
@@ -681,8 +704,8 @@ bool CDirectoryProvider::UpdateURL()
 
 bool CDirectoryProvider::UpdateLimit()
 {
-  std::unique_lock<CCriticalSection> lock(m_section);
   unsigned int value = m_limit.GetIntValue(m_parentID);
+  std::unique_lock<CCriticalSection> lock(m_section);
   if (value == m_currentLimit)
     return false;
 
@@ -693,8 +716,8 @@ bool CDirectoryProvider::UpdateLimit()
 
 bool CDirectoryProvider::UpdateBrowse()
 {
-  std::unique_lock<CCriticalSection> lock(m_section);
   const std::string stringValue{m_browse.GetLabel(m_parentID, false)};
+  std::unique_lock<CCriticalSection> lock(m_section);
   BrowseMode value{m_currentBrowse};
   if (StringUtils::EqualsNoCase(stringValue, "always"))
     value = BrowseMode::ALWAYS;
@@ -712,9 +735,9 @@ bool CDirectoryProvider::UpdateBrowse()
 
 bool CDirectoryProvider::UpdateSort()
 {
-  std::unique_lock<CCriticalSection> lock(m_section);
   SortBy sortMethod(SortUtils::SortMethodFromString(m_sortMethod.GetLabel(m_parentID, false)));
   SortOrder sortOrder(SortUtils::SortOrderFromString(m_sortOrder.GetLabel(m_parentID, false)));
+  std::unique_lock<CCriticalSection> lock(m_section);
   if (sortOrder == SortOrderNone)
     sortOrder = SortOrderAscending;
 
