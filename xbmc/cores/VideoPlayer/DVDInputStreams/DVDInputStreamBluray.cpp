@@ -551,6 +551,34 @@ bool CDVDInputStreamBluray::RestoreTitleOnlyStash()
   return true;
 }
 
+void CDVDInputStreamBluray::RestoreTitleOnlyStashForEvent()
+{
+  // Queued events after a title change are processed in order (NextStream()).
+  // Put a title-only stash back before the first one that reads the clip
+  // table, so a queued play item or stream selection lands on it rather than
+  // on an empty table. A different playlist, a stop or a new angle replaces
+  // the table in its own case and keeps the stash for NextStream()'s
+  // boundary check.
+  switch (m_event.event)
+  {
+    case BD_EVENT_PLAYITEM:
+    case BD_EVENT_AUDIO_STREAM:
+    case BD_EVENT_PG_TEXTST_STREAM:
+      RestoreTitleOnlyStash();
+      break;
+    case BD_EVENT_PLAYLIST:
+      if (m_event.param == m_playlist)
+        RestoreTitleOnlyStash();
+      break;
+    case BD_EVENT_ANGLE:
+      if (m_event.param == m_angle)
+        RestoreTitleOnlyStash();
+      break;
+    default:
+      break;
+  }
+}
+
 void CDVDInputStreamBluray::UpdateLibblurayDebugMask()
 {
   // With debug logging on, also trace libbluray's navigation, the HDMV VM
@@ -702,6 +730,8 @@ bool CDVDInputStreamBluray::IsClipCodecCompatible(const BLURAY_CLIP_INFO* a,
 }
 
 void CDVDInputStreamBluray::ProcessEvent() {
+
+  RestoreTitleOnlyStashForEvent();
 
   int pid = -1, ret;
   switch (m_event.event) {

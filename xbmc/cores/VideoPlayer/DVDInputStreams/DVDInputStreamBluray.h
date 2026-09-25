@@ -207,6 +207,7 @@ protected:
   void FreePrevTitleInfo();
   void StashBoundaryClip(bool titleOnly = false);
   bool RestoreTitleOnlyStash();
+  void RestoreTitleOnlyStashForEvent();
   void UpdateSeamTimeOffset(uint64_t previousOut, uint64_t nextIn);
   void ResetSeamTimeOffset(const char* reason);
   static bool AreClipVideoStreamsCompatible(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b);

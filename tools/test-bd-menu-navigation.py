@@ -74,7 +74,7 @@ static int liveTitles=0;
 static BLURAY_TITLE_INFO* NewTitle(uint32_t playlist,uint32_t clips) {
  auto* t=new BLURAY_TITLE_INFO{};t->playlist=playlist;t->clip_count=clips;t->clips=new BLURAY_CLIP_INFO[clips]{};
  auto* v=new BLURAY_STREAM_INFO[clips]{};auto* a=new BLURAY_STREAM_INFO[clips]{};
- for(uint32_t i=0;i<clips;++i){t->clips[i].video_stream_count=1;t->clips[i].video_streams=&v[i];t->clips[i].audio_stream_count=1;t->clips[i].audio_streams=&a[i];t->clips[i].in_time=i*1000;t->clips[i].out_time=i*1000+900;}
+ for(uint32_t i=0;i<clips;++i){t->clips[i].video_stream_count=1;t->clips[i].video_streams=&v[i];t->clips[i].audio_stream_count=1;t->clips[i].audio_streams=&a[i];t->clips[i].in_time=i*1000;t->clips[i].out_time=i*1000+900;a[i].pid=0x1100+playlist%16;}
  ++liveTitles;return t;
 }
 void bd_free_title_info(BLURAY_TITLE_INFO* t) {delete[] t->clips[0].video_streams;delete[] t->clips[0].audio_streams;delete[] t->clips;delete t;--liveTitles;}
@@ -111,13 +111,15 @@ public:
  BLURAY_TITLE_INFO* m_prevTitleInfo=nullptr;const BLURAY_CLIP_INFO* m_prevClip=nullptr;uint32_t m_prevPlaylist=MAX_PLAYLIST_ID+1;
  bool m_prevWasMVC=false,m_prevFlipEyes=false,m_prevTitleOnly=false,m_wrapSeekExempt=false,m_videoCompatBoundary=false;
  std::atomic_bool m_bFlipEyes=false,m_discontinuityFlush=false;BD_EVENT m_event{};
- void ReplaceTitleInfo(BLURAY_TITLE_INFO*);void FreePrevTitleInfo();void StashBoundaryClip(bool titleOnly=false);bool RestoreTitleOnlyStash();
+ void ReplaceTitleInfo(BLURAY_TITLE_INFO*);void FreePrevTitleInfo();void StashBoundaryClip(bool titleOnly=false);bool RestoreTitleOnlyStash();void RestoreTitleOnlyStashForEvent();int lastAudioPid=0;
  ENextStream NextStream();int HoldGate(int result);void DataRead();
  // Stand-in for ProcessEvent(): each case repeats what the production case does to the
  // clip table (the script checks those cases in the source).
  void ProcessEvent() {
+  RestoreTitleOnlyStashForEvent(); // production helper, called first as in the real ProcessEvent()
   const uint32_t v=m_event.param;
   switch(m_event.event){
+   case BD_EVENT_AUDIO_STREAM:{std::lock_guard l(m_clipTableMutex);lastAudioPid=(m_titleInfo&&m_clip&&m_clip->audio_stream_count>v-1)?m_clip->audio_streams[v-1].pid:-1;break;}
    case BD_EVENT_TITLE:m_titleNumber=v;break;
    case BD_EVENT_PLAYLIST:{bool re;{std::lock_guard l(m_clipTableMutex);re=v==m_playlist&&m_titleInfo;}if(!re){m_playlist=v;ReplaceTitleInfo(NewTitle(v,4));}break;}
    case BD_EVENT_PLAYLIST_STOP:ReplaceTitleInfo(nullptr);break;
@@ -149,7 +151,7 @@ public:
 functions=[get(s,'EndOfTitleReadStalled')]+[get(s,'CDVDInputStreamBluray::'+name) for name in ['OverlayClose','OverlayInit','OverlayClear','OverlayFlush','DeliverParkedOverlayIfDue','OverlayCallback','OverlayCallbackARGB','ReadBlocks','UpdateSeamTimeOffset','ResetSeamTimeOffset','AreClipVideoStreamsCompatible','AreClipPgStreamsEqual','IsClipCodecCompatible']]
 a=s.index('if (m_atTitleEnd.exchange(false))');b=balance(s,s.index('{',a))
 functions.append('void CDVDInputStreamBluray::Reenter(uint64_t previousOut,uint64_t nextIn) {'+s[a:b]+'}')
-functions+=[get(s,'CDVDInputStreamBluray::'+name) for name in ['ReplaceTitleInfo','FreePrevTitleInfo','StashBoundaryClip','RestoreTitleOnlyStash','NextStream']]
+functions+=[get(s,'CDVDInputStreamBluray::'+name) for name in ['ReplaceTitleInfo','FreePrevTitleInfo','StashBoundaryClip','RestoreTitleOnlyStash','RestoreTitleOnlyStashForEvent','NextStream']]
 # The hold gate and the data-received step of Read(), verbatim.
 a=s.index('      /* Check for holding events */');g=s.index('switch(m_event.event)',a);g=s[g:balance(s,s.index('{',g))]
 functions.append('int CDVDInputStreamBluray::HoldGate(int result) {'+g+'\n return -1000;}')
@@ -167,6 +169,11 @@ for name,must,never in [('BD_EVENT_TITLE',[],['ReplaceTitleInfo','StashBoundaryC
     for m in must: assert m in body,(name,m)
     for m in never: assert m not in body,(name,m)
 assert 'ReplaceTitleInfo(bd_get_playlist_info(m_bd, playitem, m_angle))' in get(s,'CDVDInputStreamBluray::ProcessItem')
+# The restore trigger runs before the event switch, and the stream cases read the table.
+assert re.search(r'ProcessEvent\(\) \{\s*RestoreTitleOnlyStashForEvent\(\);\s*int pid = -1, ret;\s*switch \(m_event.event\)',pe)
+assert 'pid = m_clip->audio_streams[m_event.param - 1].pid;' in case('BD_EVENT_AUDIO_STREAM')
+assert 'pid = m_clip->pg_streams[m_event.param - 1].pid;' in case('BD_EVENT_PG_TEXTST_STREAM')
+assert 'm_clip = (m_titleInfo && m_event.param < m_titleInfo->clip_count)' in case('BD_EVENT_PLAYITEM')
 tests=r'''
 int main(){
  using Clock=std::chrono::steady_clock;using namespace std::chrono_literals;
@@ -257,6 +264,36 @@ int main(){
   assert(m.NextStream()==m.NEXTSTREAM_OPEN&&m.m_titleInfo&&m.m_titleInfo->playlist==803);
   assert(!m.m_prevTitleInfo&&liveTitles==1);m.DataRead();
   m.m_event={BD_EVENT_PLAYITEM,0};m.ProcessEvent();
+  // Queued events read the kept table in order (pannal review of #68): a queued play item
+  // keeps its clip, and the next boundary is measured from that clip, not the stashed one.
+  {CDVDInputStreamBluray q;table=nullptr;
+   q.m_event={BD_EVENT_PLAYLIST,801};q.ProcessEvent();q.m_event={BD_EVENT_PLAYITEM,0};q.ProcessEvent();q.m_hold=q.HOLD_NONE;
+   auto* t801=q.m_titleInfo;q.m_event={BD_EVENT_TITLE,0};assert(q.HoldGate(0)==0);
+   queuedEvents.push({BD_EVENT_PLAYITEM,2});queuedEvents.push({BD_EVENT_AUDIO_STREAM,1});
+   assert(q.NextStream()==q.NEXTSTREAM_OPEN&&q.m_titleInfo==t801&&q.m_clip==&t801->clips[2]);
+   assert(q.lastAudioPid==0x1101); // resolved on the kept 801 table, not an empty one (-1)
+   q.DataRead();q.m_atTitleEnd=true;
+   CDVDInputStreamBluray ref;ref.UpdateSeamTimeOffset(t801->clips[2].out_time,t801->clips[3].in_time);
+   q.m_event={BD_EVENT_PLAYITEM,3};assert(q.HoldGate(0)==-1000&&q.m_seamlessPlayItem);
+   assert(q.m_seamTimeOffset==ref.m_seamTimeOffset); // offset from clip 2's out time
+   // A stream selection queued first (no play item) also resolves on the kept table.
+   q.m_event={BD_EVENT_TITLE,0};assert(q.HoldGate(0)==0);q.lastAudioPid=0;
+   queuedEvents.push({BD_EVENT_AUDIO_STREAM,1});
+   assert(q.NextStream()==q.NEXTSTREAM_OPEN&&q.lastAudioPid==0x1101&&q.m_clip==&t801->clips[3]);
+   q.DataRead();
+   // A same-number playlist or angle re-announcement keeps the kept table.
+   q.m_event={BD_EVENT_TITLE,0};assert(q.HoldGate(0)==0);
+   queuedEvents.push({BD_EVENT_PLAYLIST,801});queuedEvents.push({BD_EVENT_ANGLE,0});queuedEvents.push({BD_EVENT_PLAYITEM,1});
+   assert(q.NextStream()==q.NEXTSTREAM_OPEN&&q.m_titleInfo==t801&&q.m_clip==&t801->clips[1]&&liveTitles==2);
+   // A different playlist queued first still replaces it; later selections land on the new table.
+   q.DataRead();q.m_event={BD_EVENT_TITLE,0};assert(q.HoldGate(0)==0);
+   queuedEvents.push({BD_EVENT_PLAYLIST,802});queuedEvents.push({BD_EVENT_PLAYITEM,1});queuedEvents.push({BD_EVENT_AUDIO_STREAM,1});
+   q.m_videoCompatBoundary=false;
+   assert(q.NextStream()==q.NEXTSTREAM_OPEN&&q.m_titleInfo->playlist==802&&q.m_clip==&q.m_titleInfo->clips[1]);
+   assert(q.m_videoCompatBoundary); // the stash survived for the playlist boundary check
+   assert(q.lastAudioPid==0x1102&&!q.m_prevTitleInfo&&liveTitles==2);
+   q.ReplaceTitleInfo(nullptr);q.FreePrevTitleInfo();assert(liveTitles==1);
+  }
   // A stop ends the playlist: nothing is restored, and a later play item tears down as before.
   titleChange({{BD_EVENT_PLAYLIST_STOP,0}});assert(!m.m_titleInfo&&!m.m_prevTitleInfo&&liveTitles==0);
   assert(playItem(1)==0);m.m_hold=m.HOLD_NONE;
