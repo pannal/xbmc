@@ -3705,6 +3705,21 @@ void CVideoPlayer::HandleMessages()
         continue;
       }
 
+      // A recovery reseek needs a time search. Disc menus loop and seam by
+      // design, and discs mask time search on menus and many BD-J screens: a
+      // refused seek still flushes and shows the user a "prohibited" notice
+      // for a seek they never made.
+      const auto menus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
+      if (msg.GetRecovery() &&
+          (IsInMenuInternal() || (menus && !menus->IsTimeSearchAllowed())))
+      {
+        CLog::Log(LOGDEBUG,
+                  "CVideoPlayer - corruption recovery reseek skipped (disc menu or time search "
+                  "masked)");
+        m_processInfo->SetStateSeeking(false);
+        continue;
+      }
+
       // skip seeks if player has not finished the last seek
       // Coalesce only in-flight FF/RW trickplay scans during startup; never
       // drop a deliberate seek. Previously gated on !GetAccurate(), which was

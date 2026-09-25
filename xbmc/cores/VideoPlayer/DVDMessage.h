@@ -201,6 +201,7 @@ public:
     bool sync = true;
     bool restore = true;
     bool trickplay = false;
+    bool recovery = false; // internal stream-recovery reseek, not a user seek
   };
 
   explicit CDVDMsgPlayerSeek(CDVDMsgPlayerSeek::CMode mode) : CDVDMsg(PLAYER_SEEK),
@@ -215,6 +216,7 @@ public:
   bool GetRestore() { return m_mode.restore; }
   bool GetTrickPlay() { return m_mode.trickplay; }
   bool GetSync() { return m_mode.sync; }
+  bool GetRecovery() { return m_mode.recovery; }
 
 private:
   CMode m_mode;

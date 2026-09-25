@@ -117,6 +117,8 @@ public:
     virtual bool OnMenu(MenuCall call = MenuCall::Auto) = 0;
     virtual bool OnColorKey(int key) { return false; }
     virtual bool ConsumeDiscontinuityFlush() { return false; }
+    //! false while the disc forbids time search (its user-operation mask)
+    virtual bool IsTimeSearchAllowed() const { return true; }
     virtual bool GetSeamTimeOffsets(int& generation, double& current, double& previous)
     {
       return false;

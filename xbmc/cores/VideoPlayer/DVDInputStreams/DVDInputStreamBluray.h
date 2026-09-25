@@ -121,6 +121,10 @@ public:
   bool OnMouseClick(const CPoint &point) override { return MouseClick(point); }
   void SkipStill() override;
   bool ConsumeDiscontinuityFlush() override;
+  bool IsTimeSearchAllowed() const override
+  {
+    return !(m_navmode && (m_uoMask.load() & BLURAY_UO_TIME_SEARCH_MASK));
+  }
   bool GetSeamTimeOffsets(int& generation, double& current, double& previous) override
   {
     std::lock_guard<std::mutex> lock(m_seamOffsetMutex);
