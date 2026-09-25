@@ -163,7 +163,7 @@ struct CVideoPlayer {
   ProcessInfo info; ProcessInfo* m_processInfo=&info;
   Messenger m_messenger; RenderManager m_renderManager;
   double m_messageQueueTimeSize=16,m_menuDomainRampCap=0;
-  bool m_menuDomainLowLatency=false,m_menuDomainClampPending=false;
+  bool m_menuDomainLowLatency=false,m_menuDomainClampPending=false,m_discTimeBound=false;
   bool m_menuDomainSegment=false,m_menuDomainFillPending=false;
   TestClock::time_point m_menuDomainRampLast{},m_menuDomainEvalLast{},m_menuDomainStarveStart{};
   bool valid=false,better=true; int opens=0,closes=0,validChecks=0;
@@ -278,6 +278,13 @@ int main() {
     bd->domain=false;p.UpdateMenuDomainQueueDepth(false);
     assert(!p.m_menuDomainLowLatency && p.video.limit==16 && p.audio.limit==16);
     assert(!p.video.timeBound && !p.audio.timeBound);
+  }
+  // Leaving the menu domain on a disc restores the disc's own time bound, not data-only.
+  { CVideoPlayer p;auto bd=std::make_shared<CDVDInputStreamBluray>();p.m_pInputStream=bd;
+    p.m_discTimeBound=true;p.video.queue=1.2;p.UpdateMenuDomainQueueDepth(true);
+    assert(p.m_menuDomainLowLatency && p.video.limit==1 && p.video.timeBound);
+    bd->domain=false;p.UpdateMenuDomainQueueDepth(false);
+    assert(!p.m_menuDomainLowLatency && p.video.limit==16 && p.video.timeBound && p.audio.timeBound);
   }
   // Existing read-ahead ramps down; sustained starvation releases until next segment.
   { CVideoPlayer p;p.m_pInputStream=std::make_shared<CDVDInputStreamBluray>();

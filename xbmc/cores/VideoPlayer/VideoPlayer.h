@@ -674,6 +674,7 @@ protected:
   bool m_bdVideoReuse{false};
   double m_messageQueueTimeSize{0.0};
   bool m_menuDomainLowLatency{false};
+  bool m_discTimeBound{false};
   bool m_menuDomainClampPending{false};
   bool m_menuDomainSegment{false};
   bool m_menuDomainFillPending{false};

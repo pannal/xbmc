@@ -941,6 +941,18 @@ bool CVideoPlayer::OpenInputStream()
     return false;
   }
 
+  // Disc navigation advances with the demux position, not with what is on
+  // screen. With data-only fullness a low-bitrate disc title queues minutes
+  // ahead, so the disc VM reaches end-of-playlist and jumps on (TNG S1D1: a
+  // 2:39 intro cut after ~40s, its menu drawn early). Bound disc read-ahead
+  // in time as well; other inputs keep data-only fullness.
+  m_discTimeBound = m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) ||
+                    m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD);
+  m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
+  m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
+  CLog::Log(LOGDEBUG, "CVideoPlayer::OpenInputStream - queue read-ahead {:.0f}s, {}",
+            m_messageQueueTimeSize, m_discTimeBound ? "time and data bound (disc)" : "data bound");
+
   // find any available external subtitles for non dvd files
   if (!m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD) &&
       !m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER))
@@ -1473,8 +1485,8 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
       return;
 
     m_menuDomainLowLatency = false;
-    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize);
-    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize);
+    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
+    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
     CLog::Log(LOGDEBUG, "menudomain: leaving low-latency mode, queue read-ahead {:.1f}s",
               m_messageQueueTimeSize);
     return;
@@ -1546,8 +1558,8 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
     m_menuDomainLowLatency = false;
     m_menuDomainRampCap = 0.0;
     m_menuDomainStarveStart = {};
-    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize);
-    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize);
+    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
+    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
     CLog::Log(
         LOGDEBUG,
         "menudomain: starvation release, queue read-ahead {:.1f}s until the next menu segment",
@@ -1610,8 +1622,8 @@ void CVideoPlayer::Prepare()
   if (m_menuDomainLowLatency)
   {
     m_menuDomainLowLatency = false;
-    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize);
-    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize);
+    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
+    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
   }
   m_bdAudioReuse = false;
   m_bdVideoReuse = false;
