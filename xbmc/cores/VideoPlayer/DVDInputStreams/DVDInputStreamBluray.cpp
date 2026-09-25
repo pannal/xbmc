@@ -512,6 +512,7 @@ void CDVDInputStreamBluray::ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming)
     std::lock_guard lock(m_clipTableMutex);
     outgoing = m_titleInfo;
     m_titleInfo = incoming;
+    m_prevTitleOnly = false;
     m_clip = nullptr;
     m_nMVCClip = nullptr;
     ++m_titleGeneration;
@@ -520,6 +521,34 @@ void CDVDInputStreamBluray::ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming)
 
   if (outgoing)
     bd_free_title_info(outgoing);
+}
+
+bool CDVDInputStreamBluray::RestoreTitleOnlyStash()
+{
+  // A title change stashes the clip table in case a new playlist follows.
+  // A BD-J title can change while its playlist plays on (PSR6 unchanged, no
+  // BD_EVENT_PLAYLIST), and then nothing reinstalls the table: every later
+  // play item became a no_titleInfo teardown. Any playlist change, stop or
+  // angle reload replaces the table and ends the title-only stash; a seek
+  // stays inside the current playlist.
+  std::lock_guard lock(m_clipTableMutex);
+  if (!m_prevTitleOnly || m_titleInfo || !m_prevTitleInfo || !m_prevClip ||
+      m_playlist != m_prevPlaylist || m_bMVCPlayback || m_prevWasMVC)
+    return false;
+  const ptrdiff_t clip = m_prevClip - m_prevTitleInfo->clips;
+  if (clip < 0 || static_cast<uint32_t>(clip) >= m_prevTitleInfo->clip_count)
+    return false;
+  m_titleInfo = m_prevTitleInfo;
+  m_clip = m_titleInfo->clips + clip;
+  m_prevTitleInfo = nullptr;
+  m_prevClip = nullptr;
+  m_prevTitleOnly = false;
+  ++m_titleGeneration;
+  CLog::Log(LOGDEBUG,
+            "CDVDInputStreamBluray - title changed without a new playlist, keeping playlist {} "
+            "title info",
+            m_playlist);
+  return true;
 }
 
 void CDVDInputStreamBluray::UpdateLibblurayDebugMask()
@@ -545,12 +574,13 @@ void CDVDInputStreamBluray::FreePrevTitleInfo()
     outgoing = m_prevTitleInfo;
     m_prevTitleInfo = nullptr;
     m_prevClip = nullptr;
+    m_prevTitleOnly = false;
   }
   if (outgoing)
     bd_free_title_info(outgoing);
 }
 
-void CDVDInputStreamBluray::StashBoundaryClip()
+void CDVDInputStreamBluray::StashBoundaryClip(bool titleOnly)
 {
   BLURAY_TITLE_INFO* outgoing;
   {
@@ -563,6 +593,7 @@ void CDVDInputStreamBluray::StashBoundaryClip()
     m_prevPlaylist = m_playlist;
     m_prevWasMVC = m_bMVCPlayback;
     m_prevFlipEyes = m_bFlipEyes;
+    m_prevTitleOnly = titleOnly;
     m_titleInfo = nullptr;
     m_clip = nullptr;
     m_nMVCClip = nullptr;
@@ -1101,7 +1132,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
             break;
           if (m_hold != HOLD_DATA)
           {
-            StashBoundaryClip();
+            StashBoundaryClip(true);
             m_hold = HOLD_HELD;
             return result;
           }
@@ -1871,6 +1902,7 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
     return NEXTSTREAM_RETRY;
 
   m_crossPlaylistPending = false;
+  RestoreTitleOnlyStash();
   {
     std::lock_guard lock(m_clipTableMutex);
     if (m_prevClip && m_clip && m_playlist != m_prevPlaylist && !m_bMVCPlayback && !m_prevWasMVC)
