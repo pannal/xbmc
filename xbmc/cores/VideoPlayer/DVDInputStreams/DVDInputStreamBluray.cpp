@@ -256,6 +256,7 @@ bool CDVDInputStreamBluray::Open()
   URIUtils::RemoveSlashAtEnd(root);
 
   bd_set_debug_handler(CBlurayCallback::bluray_logger);
+  UpdateLibblurayDebugMask();
 
   m_bd = bd_init();
 
@@ -521,6 +522,21 @@ void CDVDInputStreamBluray::ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming)
     bd_free_title_info(outgoing);
 }
 
+void CDVDInputStreamBluray::UpdateLibblurayDebugMask()
+{
+  // With debug logging on, also trace libbluray's navigation, the HDMV VM
+  // (movie objects and button commands) and BD-J: without them a debug log
+  // cannot show why a disc branched (which PSRs it read, what its Xlet did),
+  // and a parked BD-J title looks the same as a dead one. Off otherwise, so
+  // libbluray does not format trace lines only for Kodi to drop them.
+  // Re-evaluated on title changes so toggling debug logging takes effect
+  // without reopening the disc.
+  uint32_t debugMask = DBG_CRIT;
+  if (CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG))
+    debugMask |= DBG_BLURAY | DBG_NAV | DBG_HDMV | DBG_BDJ;
+  bd_set_debug_mask(debugMask);
+}
+
 void CDVDInputStreamBluray::FreePrevTitleInfo()
 {
   BLURAY_TITLE_INFO* outgoing;
@@ -773,6 +789,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
   {
 
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_TITLE {}", m_event.param);
+    UpdateLibblurayDebugMask();
 
     const BLURAY_DISC_INFO* disc_info = bd_get_disc_info(m_bd);
     if (!disc_info)

@@ -308,6 +308,7 @@ protected:
     void SetupPlayerSettings() const;
     void ApplyUHDCapabilities() const;
     void ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming);
+    void UpdateLibblurayDebugMask();
     bool IsClipCodecCompatible(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b) const;
     std::unique_ptr<CDVDInputStreamFile> m_pstream;
     std::string m_rootPath;
