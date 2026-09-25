@@ -314,6 +314,30 @@ bool CDVDInputStreamBluray::Open()
 
   ApplyUHDCapabilities();
 
+  // A 3D disc gets no 3D PSR setup from libbluray here: psr_init_3D() runs
+  // unforced and register.c refuses it once profile 6 (0x0310) is declared,
+  // so PSR21/23 stay 0 even on a 3D display, and BD-J derives a UHD persona
+  // from PSR31 that pre-UHD 3D Xlets do not understand. Declare what
+  // psr_init_3D would have, but keep PSR21/PSR23 on the real display rather
+  // than asserting 3D unconditionally. UHD discs are untouched.
+  if (disc_info->content_exist_3D)
+  {
+    const bool display3d = aml_display_support_3d();
+    const uint32_t displayCap =
+        display3d ? (BLURAY_DCAP_1080p_720p_3D | BLURAY_DCAP_720p_50Hz_3D |
+                     BLURAY_DCAP_NO_3D_CLASSES_REQUIRED | BLURAY_DCAP_INTERLACED_3D)
+                  : 0;
+    CLog::Log(LOGINFO,
+              "CDVDInputStreamBluray: 3D disc - declaring player profile 5 v2.4, "
+              "PSR21 {}, PSR23 0x{:08x} (display 3D: {})",
+              display3d ? "PREFER_3D" : "PREFER_2D", displayCap, display3d);
+    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE,
+                          BLURAY_PLAYER_PROFILE_5_v2_4);
+    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_OUTPUT_PREFER,
+                          display3d ? BLURAY_OUTPUT_PREFER_3D : BLURAY_OUTPUT_PREFER_2D);
+    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_DISPLAY_CAP, displayCap);
+  }
+
   if (disc_info->bluray_detected)
   {
 #if (BLURAY_VERSION > BLURAY_VERSION_CODE(1,0,0))
@@ -2358,8 +2382,11 @@ void CDVDInputStreamBluray::SetupPlayerSettings() const
   }
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_REGION_CODE, static_cast<uint32_t>(region));
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PARENTAL, 99);
-  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP,
-                        aml_display_support_3d() ? 0xffffffff : 0);
+  // PSR24 is the player's 3D capability; the display's is PSR23 and the
+  // output preference PSR21 (set in Open for 3D discs). The base view of a 3D
+  // title decodes and presents as 2D, so a 2D display does not make the
+  // player 3D-incapable. 0xffffffff is libbluray's "every 3D mode".
+  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP, 0xffffffff);
 #if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 0, 2))
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_6_v3_1);
   ApplyUHDCapabilities();
