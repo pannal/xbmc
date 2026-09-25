@@ -941,6 +941,18 @@ bool CVideoPlayer::OpenInputStream()
     return false;
   }
 
+  // Disc navigation advances with the demux position, not with what is on
+  // screen. With data-only fullness a low-bitrate disc title queues minutes
+  // ahead, so the disc VM reaches end-of-playlist and jumps on (TNG S1D1: a
+  // 2:39 intro cut after ~40s, its menu drawn early). Bound disc read-ahead
+  // in time as well; other inputs keep data-only fullness.
+  m_discTimeBound = m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) ||
+                    m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD);
+  m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
+  m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
+  CLog::Log(LOGDEBUG, "CVideoPlayer::OpenInputStream - queue read-ahead {:.0f}s, {}",
+            m_messageQueueTimeSize, m_discTimeBound ? "time and data bound (disc)" : "data bound");
+
   // find any available external subtitles for non dvd files
   if (!m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD) &&
       !m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER))
@@ -1473,8 +1485,8 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
       return;
 
     m_menuDomainLowLatency = false;
-    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize);
-    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize);
+    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
+    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
     CLog::Log(LOGDEBUG, "menudomain: leaving low-latency mode, queue read-ahead {:.1f}s",
               m_messageQueueTimeSize);
     return;
@@ -1499,8 +1511,8 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
         return;
       m_menuDomainFillPending = false;
       m_menuDomainRampCap = 0.0;
-      m_VideoPlayerAudio->SetMaxTimeSize(clamp);
-      m_VideoPlayerVideo->SetMaxTimeSize(clamp);
+      m_VideoPlayerAudio->SetMaxTimeSize(clamp, true);
+      m_VideoPlayerVideo->SetMaxTimeSize(clamp, true);
       CLog::Log(LOGDEBUG,
                 "menudomain: queue filled, entering low-latency mode, queue read-ahead {:.1f}s",
                 clamp);
@@ -1517,8 +1529,8 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
       next = std::min(next, std::max(videoSecs, audioSecs) + MENU_DOMAIN_RAMP_HEADROOM);
       next = std::max(next, clamp);
       m_menuDomainRampCap = next;
-      m_VideoPlayerAudio->SetMaxTimeSize(next);
-      m_VideoPlayerVideo->SetMaxTimeSize(next);
+      m_VideoPlayerAudio->SetMaxTimeSize(next, true);
+      m_VideoPlayerVideo->SetMaxTimeSize(next, true);
       if (next <= clamp)
         CLog::Log(LOGDEBUG, "menudomain: engage ramp settled, queue read-ahead {:.1f}s", clamp);
       m_menuDomainStarveStart = {};
@@ -1546,8 +1558,8 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
     m_menuDomainLowLatency = false;
     m_menuDomainRampCap = 0.0;
     m_menuDomainStarveStart = {};
-    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize);
-    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize);
+    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
+    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
     CLog::Log(
         LOGDEBUG,
         "menudomain: starvation release, queue read-ahead {:.1f}s until the next menu segment",
@@ -1574,8 +1586,8 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
   {
     m_menuDomainRampCap = queuedSecs + MENU_DOMAIN_RAMP_HEADROOM;
     m_menuDomainRampLast = m_menuDomainEvalLast;
-    m_VideoPlayerAudio->SetMaxTimeSize(m_menuDomainRampCap);
-    m_VideoPlayerVideo->SetMaxTimeSize(m_menuDomainRampCap);
+    m_VideoPlayerAudio->SetMaxTimeSize(m_menuDomainRampCap, true);
+    m_VideoPlayerVideo->SetMaxTimeSize(m_menuDomainRampCap, true);
     CLog::Log(
         LOGDEBUG,
         "menudomain: entering low-latency mode via ramp from {:.1f}s, queue read-ahead target "
@@ -1585,8 +1597,8 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
   else if (queuedSecs >= clamp)
   {
     m_menuDomainRampCap = 0.0;
-    m_VideoPlayerAudio->SetMaxTimeSize(clamp);
-    m_VideoPlayerVideo->SetMaxTimeSize(clamp);
+    m_VideoPlayerAudio->SetMaxTimeSize(clamp, true);
+    m_VideoPlayerVideo->SetMaxTimeSize(clamp, true);
     CLog::Log(LOGDEBUG, "menudomain: entering low-latency mode, queue read-ahead {:.1f}s", clamp);
   }
   else
@@ -1610,8 +1622,8 @@ void CVideoPlayer::Prepare()
   if (m_menuDomainLowLatency)
   {
     m_menuDomainLowLatency = false;
-    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize);
-    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize);
+    m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
+    m_VideoPlayerVideo->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
   }
   m_bdAudioReuse = false;
   m_bdVideoReuse = false;
@@ -3689,6 +3701,21 @@ void CVideoPlayer::HandleMessages()
 
       if (!m_State.canseek)
       {
+        m_processInfo->SetStateSeeking(false);
+        continue;
+      }
+
+      // A recovery reseek needs a time search. Disc menus loop and seam by
+      // design, and discs mask time search on menus and many BD-J screens: a
+      // refused seek still flushes and shows the user a "prohibited" notice
+      // for a seek they never made.
+      const auto menus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
+      if (msg.GetRecovery() &&
+          (IsInMenuInternal() || (menus && !menus->IsTimeSearchAllowed())))
+      {
+        CLog::Log(LOGDEBUG,
+                  "CVideoPlayer - corruption recovery reseek skipped (disc menu or time search "
+                  "masked)");
         m_processInfo->SetStateSeeking(false);
         continue;
       }

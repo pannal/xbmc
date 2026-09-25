@@ -26,6 +26,7 @@ def function(source, signature):
 def main():
     player = (ROOT / 'xbmc/cores/VideoPlayer/VideoPlayer.cpp').read_text()
     video = (ROOT / 'xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp').read_text()
+    queue = (ROOT / 'xbmc/cores/VideoPlayer/DVDMessageQueue.h').read_text()
     constants = player[player.index('constexpr double MENU_DOMAIN_RAMP_RATE'):
                        player.index('\n}', player.index('constexpr double MENU_DOMAIN_RAMP_RATE'))]
     methods = '\n'.join(function(player, 'void CVideoPlayer::' + name)
@@ -36,6 +37,9 @@ def main():
     methods += '\nvoid CVideoPlayer::HandleStill(int iMessage, int* pData) { switch(iMessage) {\n' + still + '\n} }\n'
     methods += function(video, 'void CVideoPlayerVideo::ProcessOverlays(')
     methods = methods.replace('std::chrono::steady_clock', 'TestClock')
+    methods += ('\nstruct QueueFullness {\n  int dataLevel=0, timeLevel=0; bool m_timeBound=false;\n'
+                '  int GetLevel(bool data_level) const {return data_level ? dataLevel : timeLevel;}\n  '
+                + function(queue, 'bool IsFull() const') + '\n};\n')
     source = PRELUDE + constants + '\n' + methods + TESTS
     with tempfile.TemporaryDirectory(prefix='bd-menu-player-') as temporary:
         cpp = pathlib.Path(temporary) / 'test.cpp'
@@ -108,8 +112,8 @@ struct IDVDStreamPlayer {
 struct TestStream : IDVDStreamPlayer {
   double queue=0, limit=16, pts=0, sink=0, outputDelay=0;
   int limitWrites=0, drainMessages=0;
-  bool data=false, eos=true, accepts=true;
-  void SetMaxTimeSize(double value) {limit=value; ++limitWrites;}
+  bool data=false, eos=true, accepts=true, timeBound=false;
+  void SetMaxTimeSize(double value, bool bound=false) {limit=value; timeBound=bound; ++limitWrites;}
   double GetQueueTimeSize() const {return queue;}
   double GetCurrentPts() const {return pts;}
   double GetSinkDelay() const {return sink;}
@@ -159,7 +163,7 @@ struct CVideoPlayer {
   ProcessInfo info; ProcessInfo* m_processInfo=&info;
   Messenger m_messenger; RenderManager m_renderManager;
   double m_messageQueueTimeSize=16,m_menuDomainRampCap=0;
-  bool m_menuDomainLowLatency=false,m_menuDomainClampPending=false;
+  bool m_menuDomainLowLatency=false,m_menuDomainClampPending=false,m_discTimeBound=false;
   bool m_menuDomainSegment=false,m_menuDomainFillPending=false;
   TestClock::time_point m_menuDomainRampLast{},m_menuDomainEvalLast{},m_menuDomainStarveStart{};
   bool valid=false,better=true; int opens=0,closes=0,validChecks=0;
@@ -270,17 +274,33 @@ int main() {
     p.UpdateMenuDomainQueueDepth(false);assert(p.m_menuDomainFillPending && p.video.limit==16);
     p.video.queue=1.2;advance(250ms);p.UpdateMenuDomainQueueDepth(false);
     assert(!p.m_menuDomainFillPending && p.video.limit==1 && p.audio.limit==1);
+    assert(p.video.timeBound && p.audio.timeBound); // the menu cap must limit read-ahead
     bd->domain=false;p.UpdateMenuDomainQueueDepth(false);
     assert(!p.m_menuDomainLowLatency && p.video.limit==16 && p.audio.limit==16);
+    assert(!p.video.timeBound && !p.audio.timeBound);
+  }
+  // Leaving the menu domain on a disc restores the disc's own time bound, not data-only.
+  { CVideoPlayer p;auto bd=std::make_shared<CDVDInputStreamBluray>();p.m_pInputStream=bd;
+    p.m_discTimeBound=true;p.video.queue=1.2;p.UpdateMenuDomainQueueDepth(true);
+    assert(p.m_menuDomainLowLatency && p.video.limit==1 && p.video.timeBound);
+    bd->domain=false;p.UpdateMenuDomainQueueDepth(false);
+    assert(!p.m_menuDomainLowLatency && p.video.limit==16 && p.video.timeBound && p.audio.timeBound);
   }
   // Existing read-ahead ramps down; sustained starvation releases until next segment.
   { CVideoPlayer p;p.m_pInputStream=std::make_shared<CDVDInputStreamBluray>();
-    p.video.queue=4;p.UpdateMenuDomainQueueDepth(true);assert(p.video.limit==4.5);
+    p.video.queue=4;p.UpdateMenuDomainQueueDepth(true);assert(p.video.limit==4.5 && p.video.timeBound);
     advance(1000ms);p.UpdateMenuDomainQueueDepth(false);assert(p.video.limit==3.75);
     p.video.queue=0;advance(1000ms);p.UpdateMenuDomainQueueDepth(false);assert(p.video.limit==1);
     advance(250ms);p.UpdateMenuDomainQueueDepth(false);assert(p.m_menuDomainLowLatency);
-    advance(500ms);p.UpdateMenuDomainQueueDepth(false);assert(!p.m_menuDomainLowLatency && p.video.limit==16);
+    advance(500ms);p.UpdateMenuDomainQueueDepth(false);
+    assert(!p.m_menuDomainLowLatency && p.video.limit==16 && !p.video.timeBound);
     advance(500ms);p.UpdateMenuDomainQueueDepth(false);assert(!p.m_menuDomainLowLatency);
+  }
+  // Queue fullness: bytes always count; the time level counts only for a time-bound queue.
+  { QueueFullness q;assert(!q.IsFull());
+    q.dataLevel=100;assert(q.IsFull());q.m_timeBound=true;assert(q.IsFull());
+    q.dataLevel=40;q.timeLevel=100;q.m_timeBound=false;assert(!q.IsFull());
+    q.m_timeBound=true;assert(q.IsFull());q.timeLevel=99;assert(!q.IsFull());
   }
   // Draining must include decoder, renderer and sink output despite empty input queues.
   { CVideoPlayer p;p.video.eos=false;p.audio.sink=DVD_MSEC_TO_TIME(200);p.m_renderManager.queued=1;

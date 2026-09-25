@@ -86,7 +86,7 @@ public:
   virtual void Flush(bool sync) = 0;
   bool AcceptsData() const override = 0;
   virtual bool HasData() const = 0;
-  virtual void SetMaxTimeSize(double seconds) {}
+  virtual void SetMaxTimeSize(double seconds, bool timeBound = false) {}
   virtual double GetQueueTimeSize() const { return 0.0; }
   virtual int  GetLevel() const = 0;
   bool IsInited() const override = 0;
@@ -119,7 +119,7 @@ public:
   virtual void Flush(bool sync) = 0;
   bool AcceptsData() const override = 0;
   virtual bool HasData() const = 0;
-  virtual void SetMaxTimeSize(double seconds) {}
+  virtual void SetMaxTimeSize(double seconds, bool timeBound = false) {}
   virtual double GetQueueTimeSize() const { return 0.0; }
   virtual int  GetLevel() const = 0;
   bool IsInited() const override = 0;

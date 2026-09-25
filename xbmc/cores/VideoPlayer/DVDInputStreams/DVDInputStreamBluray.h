@@ -40,6 +40,10 @@ extern "C"
 
 #define HDMV_PID_VIDEO            0x1011
 #define HDMV_PID_VIDEO_EL         0x1015
+#define HDMV_PID_SECONDARY_VIDEO_FIRST 0x1b00
+#define HDMV_PID_SECONDARY_VIDEO_LAST  0x1b1f
+#define HDMV_PID_SECONDARY_AUDIO_FIRST 0x1a00
+#define HDMV_PID_SECONDARY_AUDIO_LAST  0x1a1f
 #define HDMV_PID_AUDIO_FIRST      0x1100
 #define HDMV_PID_AUDIO_LAST       0x111f
 #define HDMV_PID_PG_FIRST         0x1200
@@ -121,13 +125,19 @@ public:
   bool OnMouseClick(const CPoint &point) override { return MouseClick(point); }
   void SkipStill() override;
   bool ConsumeDiscontinuityFlush() override;
+  bool IsTimeSearchAllowed() const override
+  {
+    return !(m_navmode && (m_uoMask.load() & BLURAY_UO_TIME_SEARCH_MASK));
+  }
   bool GetSeamTimeOffsets(int& generation, double& current, double& previous) override
   {
     std::lock_guard<std::mutex> lock(m_seamOffsetMutex);
     generation = m_seamGeneration;
     current = m_seamTimeOffset;
     previous = m_seamTimeOffsetPrev;
-    return true;
+    // Seams exist only in navigation mode; playlist playback keeps the
+    // demuxer's timestamps untouched.
+    return m_navmode;
   }
   bool GetState(std::string& xmlstate) override;
   bool SetState(const std::string& xmlstate) override;
@@ -298,6 +308,7 @@ protected:
     void SetupPlayerSettings() const;
     void ApplyUHDCapabilities() const;
     void ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming);
+    void UpdateLibblurayDebugMask();
     bool IsClipCodecCompatible(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b) const;
     std::unique_ptr<CDVDInputStreamFile> m_pstream;
     std::string m_rootPath;

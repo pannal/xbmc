@@ -799,6 +799,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
         mode.sync = true;
         mode.restore = false;
         mode.trickplay = true;
+        mode.recovery = true;
         m_messageParent.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
       }
     }

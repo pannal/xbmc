@@ -24,6 +24,7 @@
 #include "guilib/LocalizeStrings.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/DiscSettings.h"
+#include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
@@ -255,6 +256,7 @@ bool CDVDInputStreamBluray::Open()
   URIUtils::RemoveSlashAtEnd(root);
 
   bd_set_debug_handler(CBlurayCallback::bluray_logger);
+  UpdateLibblurayDebugMask();
 
   m_bd = bd_init();
 
@@ -312,6 +314,30 @@ bool CDVDInputStreamBluray::Open()
   }
 
   ApplyUHDCapabilities();
+
+  // A 3D disc gets no 3D PSR setup from libbluray here: psr_init_3D() runs
+  // unforced and register.c refuses it once profile 6 (0x0310) is declared,
+  // so PSR21/23 stay 0 even on a 3D display, and BD-J derives a UHD persona
+  // from PSR31 that pre-UHD 3D Xlets do not understand. Declare what
+  // psr_init_3D would have, but keep PSR21/PSR23 on the real display rather
+  // than asserting 3D unconditionally. UHD discs are untouched.
+  if (disc_info->content_exist_3D)
+  {
+    const bool display3d = aml_display_support_3d();
+    const uint32_t displayCap =
+        display3d ? (BLURAY_DCAP_1080p_720p_3D | BLURAY_DCAP_720p_50Hz_3D |
+                     BLURAY_DCAP_NO_3D_CLASSES_REQUIRED | BLURAY_DCAP_INTERLACED_3D)
+                  : 0;
+    CLog::Log(LOGINFO,
+              "CDVDInputStreamBluray: 3D disc - declaring player profile 5 v2.4, "
+              "PSR21 {}, PSR23 0x{:08x} (display 3D: {})",
+              display3d ? "PREFER_3D" : "PREFER_2D", displayCap, display3d);
+    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE,
+                          BLURAY_PLAYER_PROFILE_5_v2_4);
+    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_OUTPUT_PREFER,
+                          display3d ? BLURAY_OUTPUT_PREFER_3D : BLURAY_OUTPUT_PREFER_2D);
+    bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_DISPLAY_CAP, displayCap);
+  }
 
   if (disc_info->bluray_detected)
   {
@@ -494,6 +520,21 @@ void CDVDInputStreamBluray::ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming)
 
   if (outgoing)
     bd_free_title_info(outgoing);
+}
+
+void CDVDInputStreamBluray::UpdateLibblurayDebugMask()
+{
+  // With debug logging on, also trace libbluray's navigation, the HDMV VM
+  // (movie objects and button commands) and BD-J: without them a debug log
+  // cannot show why a disc branched (which PSRs it read, what its Xlet did),
+  // and a parked BD-J title looks the same as a dead one. Off otherwise, so
+  // libbluray does not format trace lines only for Kodi to drop them.
+  // Re-evaluated on title changes so toggling debug logging takes effect
+  // without reopening the disc.
+  uint32_t debugMask = DBG_CRIT;
+  if (CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG))
+    debugMask |= DBG_BLURAY | DBG_NAV | DBG_HDMV | DBG_BDJ;
+  bd_set_debug_mask(debugMask);
 }
 
 void CDVDInputStreamBluray::FreePrevTitleInfo()
@@ -748,6 +789,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
   {
 
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_TITLE {}", m_event.param);
+    UpdateLibblurayDebugMask();
 
     const BLURAY_DISC_INFO* disc_info = bd_get_disc_info(m_bd);
     if (!disc_info)
@@ -1315,8 +1357,13 @@ void CDVDInputStreamBluray::OverlayClose(bool deferrable, int closingPlane)
     OverlayFlush(-1);
     return;
   }
+  // Player-side close (playlist stop/change, stream close): drop what is drawn
+  // but keep each plane's geometry. libbluray sends INIT only when its own
+  // overlay is (re)opened, so a BD-J menu that outlives a playlist keeps
+  // drawing into the plane it already initialised; zeroing it here made
+  // every later draw fail the bounds check (M3GAN 2.0: no menu buttons).
   for (SPlane& plane : m_planes)
-    OverlayInit(plane, 0, 0);
+    plane.o.clear();
   auto group = std::make_shared<CDVDOverlayGroup>();
   group->bForced = true;
   group->SetDiscMenuOverlay(true);
@@ -2352,8 +2399,11 @@ void CDVDInputStreamBluray::SetupPlayerSettings() const
   }
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_REGION_CODE, static_cast<uint32_t>(region));
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PARENTAL, 99);
-  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP,
-                        aml_display_support_3d() ? 0xffffffff : 0);
+  // PSR24 is the player's 3D capability; the display's is PSR23 and the
+  // output preference PSR21 (set in Open for 3D discs). The base view of a 3D
+  // title decodes and presents as 2D, so a 2D display does not make the
+  // player 3D-incapable. 0xffffffff is libbluray's "every 3D mode".
+  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP, 0xffffffff);
 #if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 0, 2))
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_6_v3_1);
   ApplyUHDCapabilities();
@@ -2394,6 +2444,18 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities() const
     uhdCap |= 0x04;
   if (aml_display_support_hdr10plus())
     uhdCap |= 0x20;
+  // PSR26 bit 0 is the display's UHD resolution, beside bit 1's HDR10.
+  // Universal's BD-J framework (M3GAN 2.0) tests both and plays its "UHD not
+  // available" playlist without them; Superman shows its 4K warning.
+  const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
+  for (size_t i = RES_DESKTOP; i < displaySettings.ResolutionInfoSize(); ++i)
+  {
+    if (displaySettings.GetResolutionInfo(i).iScreenHeight >= 2160)
+    {
+      uhdDisplayCap |= 0x01;
+      break;
+    }
+  }
   if (aml_display_support_dv())
     uhdDisplayCap |= 0x04;
   if (aml_display_support_hdr_hlg())

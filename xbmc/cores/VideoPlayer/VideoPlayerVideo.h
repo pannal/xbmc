@@ -61,7 +61,10 @@ public:
   void Flush(bool sync) override;
   bool AcceptsData() const override;
   bool HasData() const override;
-  void SetMaxTimeSize(double seconds) override { m_messageQueue.SetMaxTimeSize(seconds); }
+  void SetMaxTimeSize(double seconds, bool timeBound = false) override
+  {
+    m_messageQueue.SetMaxTimeSize(seconds, timeBound);
+  }
   double GetQueueTimeSize() const override { return m_messageQueue.GetTimeSizeSeconds(); }
   int  GetLevel() const override { return m_messageQueue.GetLevel(); }
   bool IsInited() const override;
