@@ -245,6 +245,9 @@ protected:
   std::atomic_bool m_overlayCloseDeferred{false};
   std::atomic_bool m_repostMenuOverlay{false};
   std::atomic_bool m_navmode{false};
+  // The current playlist's video is PQ (HDR10 or Dolby Vision); its HDMV
+  // menu graphics then follow the same BT.2020 PQ policy as its PGS.
+  std::atomic_bool m_pqAuthoredGraphics{false};
   std::atomic_bool m_aborted{false};
   std::mutex m_seamOffsetMutex;
   int m_seamGeneration = 0;
@@ -309,6 +312,8 @@ protected:
     void ApplyUHDCapabilities() const;
     void ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming);
     void UpdateLibblurayDebugMask();
+    void UpdateGraphicsRegime();
+    bool TagGraphicsAsPq() const;
     bool IsClipCodecCompatible(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b) const;
     std::unique_ptr<CDVDInputStreamFile> m_pstream;
     std::string m_rootPath;

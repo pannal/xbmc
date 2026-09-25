@@ -520,6 +520,46 @@ void CDVDInputStreamBluray::ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming)
 
   if (outgoing)
     bd_free_title_info(outgoing);
+
+  // Keep the last regime across title gaps; overlays drawn between playlists
+  // belong to the disc that is still playing.
+  if (incoming)
+    UpdateGraphicsRegime();
+}
+
+bool CDVDInputStreamBluray::TagGraphicsAsPq() const
+{
+  // One switch for PQ bitmap graphics: the PGS HDR conversion setting also
+  // governs HDMV menu graphics, and its brightness/saturation/tonemap/mode
+  // settings apply to both through the shared PQ->SDR overlay shader.
+  return m_pqAuthoredGraphics &&
+         CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+             CSettings::SETTING_SUBTITLES_PGSHDRTOSDR);
+}
+
+void CDVDInputStreamBluray::UpdateGraphicsRegime()
+{
+  bool pq = false;
+  {
+    std::lock_guard lock(m_clipTableMutex);
+    if (m_titleInfo && m_titleInfo->clip_count > 0)
+    {
+      const BLURAY_CLIP_INFO& clip = m_titleInfo->clips[0];
+      for (uint8_t i = 0; i < clip.video_stream_count; ++i)
+      {
+        const uint8_t range = clip.video_streams[i].dynamic_range_type;
+        if (range == BLURAY_DYNAMIC_RANGE_HDR10 || range == BLURAY_DYNAMIC_RANGE_DOLBY_VISION)
+        {
+          pq = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (m_pqAuthoredGraphics.exchange(pq) != pq)
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - playlist graphics regime: {}",
+              pq ? "BT.2020 PQ" : "SDR");
 }
 
 void CDVDInputStreamBluray::UpdateLibblurayDebugMask()
@@ -1327,8 +1367,22 @@ static uint8_t  clamp(double v)
   return (v) > 255.0 ? 255 : ((v) < 0.0 ? 0 : static_cast<uint32_t>((v + 0.5)));
 }
 
-static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY &e)
+// libbluray: palette Y, Cr and Cb use the colour matrix of the associated
+// video stream (overlay.h). PQ-tagged graphics sit on BT.2020 video, so they
+// are converted with the same BT.2020 NCL coefficients as PGS (ffmpeg-003).
+static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY &e, bool bt2020)
 {
+  if (bt2020)
+  {
+    const double y = 255.0 / 219.0 * (e.Y - 16);
+    const double cb = 255.0 / 224.0 * (e.Cb - 128);
+    const double cr = 255.0 / 224.0 * (e.Cr - 128);
+    return static_cast<uint32_t>(e.T) << PIXEL_ASHIFT
+         | static_cast<uint32_t>(clamp(y + 1.4746 * cr)) << PIXEL_RSHIFT
+         | static_cast<uint32_t>(clamp(y - 0.16455 * cb - 0.57135 * cr)) << PIXEL_GSHIFT
+         | static_cast<uint32_t>(clamp(y + 1.8814 * cb)) << PIXEL_BSHIFT;
+  }
+
   double r = 1.164 * (e.Y - 16)                        + 1.596 * (e.Cr - 128);
   double g = 1.164 * (e.Y - 16) - 0.391 * (e.Cb - 128) - 0.813 * (e.Cr - 128);
   double b = 1.164 * (e.Y - 16) + 2.018 * (e.Cb - 128);
@@ -1532,15 +1586,21 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   {
     if (ov->palette)
     {
-      std::vector<uint32_t> pal(256);
-      for (unsigned i = 0; i < 256; i++)
-        pal[i] = build_rgba(ov->palette[i]);
+      std::vector<uint32_t> pal[2];
       for (SOverlay& o : plane.o)
       {
         if (o->palette.empty())
           continue;
+        // Keep each image's palette on the matrix its PQ tag was drawn with.
+        std::vector<uint32_t>& p = pal[o->m_isHdrPq ? 1 : 0];
+        if (p.empty())
+        {
+          p.resize(256);
+          for (unsigned i = 0; i < 256; i++)
+            p[i] = build_rgba(ov->palette[i], o->m_isHdrPq);
+        }
         SOverlay copy = std::make_shared<CDVDOverlayImage>(*o, o->x, o->y, o->width, o->height);
-        copy->palette = pal;
+        copy->palette = p;
         o = copy;
       }
       CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - palette-only update plane {} ({} overlays)",
@@ -1562,13 +1622,15 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     }
     auto overlay = std::make_shared<CDVDOverlayImage>();
     overlay->SetDiscMenuOverlay(ov->plane == BD_OVERLAY_IG);
+    // Only HDMV menu graphics (IG) are tagged; PG stays on its own path.
+    const bool pq = ov->plane == BD_OVERLAY_IG && TagGraphicsAsPq();
 
     if (ov->palette)
     {
       overlay->palette.resize(256);
 
       for(unsigned i = 0; i < 256; i++)
-        overlay->palette[i] = build_rgba(ov->palette[i]);
+        overlay->palette[i] = build_rgba(ov->palette[i], pq);
     }
     else
       overlay->palette.clear();
@@ -1608,6 +1670,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     overlay->width = ov->w;
     overlay->source_height = plane.h;
     overlay->source_width = plane.w;
+    overlay->m_isHdrPq = pq;
 
     OverlayClear(plane, ov->x, ov->y, ov->w, ov->h);
     plane.o.push_back(overlay);
@@ -1677,6 +1740,9 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     overlay->width = ov->w;
     overlay->source_height = plane.h;
     overlay->source_width = plane.w;
+    // BD-J graphics stay untagged: an Xlet may request SDR or HDR graphics
+    // (HGraphicsConfigurationTemplateUHD) and libbluray does not report the
+    // choice, so HDR video alone does not prove a BD-J image is PQ-authored.
 
     OverlayClear(plane, ov->x, ov->y, ov->w, ov->h);
     plane.o.push_back(overlay);
