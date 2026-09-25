@@ -127,7 +127,9 @@ public:
     generation = m_seamGeneration;
     current = m_seamTimeOffset;
     previous = m_seamTimeOffsetPrev;
-    return true;
+    // Seams exist only in navigation mode; playlist playback keeps the
+    // demuxer's timestamps untouched.
+    return m_navmode;
   }
   bool GetState(std::string& xmlstate) override;
   bool SetState(const std::string& xmlstate) override;
