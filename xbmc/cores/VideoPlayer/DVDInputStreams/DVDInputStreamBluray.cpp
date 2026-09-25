@@ -1240,9 +1240,11 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
               }
               break;
             }
-            const bool contentChain =
-                cur && nextClip && cur->audio_stream_count >= 1 && cur->video_stream_count >= 1 &&
-                nextClip->audio_stream_count >= 1 && nextClip->video_stream_count >= 1;
+            // A natural boundary between video clips drains the old clip even when
+            // one side has no audio (a silent intro before a menu); an interactive
+            // menu keeps the immediate teardown.
+            const bool contentChain = cur && nextClip && cur->video_stream_count >= 1 &&
+                                      nextClip->video_stream_count >= 1 && !m_menu;
             if (cur && nextClip && !m_bMVCPlayback && !(pending && m_prevWasMVC))
               m_videoCompatBoundary = AreClipVideoStreamsCompatible(cur, nextClip);
             clipLock.unlock();
