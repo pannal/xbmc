@@ -580,13 +580,15 @@ void CVideoPlayerAudio::Process()
     else if (ret == MSGQ_TIMEOUT)
     {
       // Not into a sink paused for a speed it cannot play at - the same test
-      // the packet path uses to drop packets. A decoder that holds a reserve
+      // the packet path uses to drop packets - or while the display is being
+      // reconfigured, see GENERAL_PAUSE. A decoder that holds a reserve
       // would otherwise go on handing blocks over until the sink is full, and
       // then park this thread in AddPackets until it times out. CloseStream
       // does not abort that wait, so stopping from pause would hang for the
       // length of it. What stays in the decoder is served on resume.
       const bool sinkPaused =
-          !m_processInfo.IsTempoAllowed(static_cast<float>(m_speed) / DVD_PLAYSPEED_NORMAL) &&
+          (m_paused ||
+           !m_processInfo.IsTempoAllowed(static_cast<float>(m_speed) / DVD_PLAYSPEED_NORMAL)) &&
           m_syncState == IDVDStreamPlayer::SYNC_INSYNC;
       if (!sinkPaused && ProcessDecoderOutput(audioframe))
       {
@@ -597,8 +599,9 @@ void CVideoPlayerAudio::Process()
       // Everything GENERAL_EOF asked the codec for has reached the sink - or
       // cannot, at a speed the sink does not play, where the packet path drops
       // audio too - so as far as CVideoPlayer's HasData is concerned this
-      // stream has ended.
-      if (m_eofDraining)
+      // stream has ended. Not while the display is lost: the rest is served
+      // when GENERAL_PAUSE resumes the sink.
+      if (m_eofDraining && !m_paused)
       {
         m_eofDraining = false;
         m_eofPending = false;
@@ -644,7 +647,8 @@ void CVideoPlayerAudio::Process()
         m_audioSink.Flush();
       }
       m_audioClock = pts + delay;
-      if (m_speed != DVD_PLAYSPEED_PAUSE)
+      // Not while the display is lost: GENERAL_PAUSE resumes it when it returns.
+      if (m_speed != DVD_PLAYSPEED_PAUSE && !m_paused)
         m_audioSink.Resume();
       m_syncState = IDVDStreamPlayer::SYNC_INSYNC;
       m_syncTimer.Set(3000ms);
@@ -751,7 +755,8 @@ void CVideoPlayerAudio::Process()
         {
           if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
           {
-            m_audioSink.Resume();
+            if (!m_paused)
+              m_audioSink.Resume();
             m_stalled = false;
 
 
@@ -772,8 +777,22 @@ void CVideoPlayerAudio::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
+      const bool wasPaused = m_paused;
       m_paused = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       CLog::Log(LOGDEBUG, "CVideoPlayerAudio - CDVDMsg::GENERAL_PAUSE: {}", m_paused);
+
+      // Sent while the display is being reconfigured, which CVideoPlayer stops
+      // the clock for. ActiveAE suspends its own output through that only for
+      // HDMI, so on any other device the sound played on while the clock
+      // waited - for as long as the delay after a refresh-rate change - and
+      // ActiveAE then silenced it until the picture caught up. Stop the stream
+      // with the clock and start it again with it. Only on a change: opening a
+      // stream sends the current state as well.
+      if (m_paused && !wasPaused)
+        m_audioSink.Pause();
+      else if (!m_paused && wasPaused && m_syncState == IDVDStreamPlayer::SYNC_INSYNC &&
+               m_processInfo.IsTempoAllowed(static_cast<float>(m_speed) / DVD_PLAYSPEED_NORMAL))
+        m_audioSink.Resume();
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_REQUEST_STATE))
     {
@@ -1105,7 +1124,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
 
       m_prevsynctype = -1;
 
-      if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
+      if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC && !m_paused)
         m_audioSink.Resume();
     }
 
