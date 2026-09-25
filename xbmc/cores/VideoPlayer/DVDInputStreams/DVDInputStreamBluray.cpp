@@ -1194,11 +1194,13 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
               tdReason = pending ? "xpl_no_prev_clip" : "no_current_clip";
             else if (!nextClip)
               tdReason = "clip_oob";
-            else if (!pending && cur->audio_stream_count < 1)
+            // Two clips without audio (intros, logos) continue like any other
+            // compatible pair; only a change in whether audio exists tears down.
+            else if (!pending && cur->audio_stream_count < 1 && nextClip->audio_stream_count >= 1)
               tdReason = "current_no_audio";
             else if (!pending && cur->video_stream_count < 1)
               tdReason = "current_no_video";
-            else if (!pending && nextClip->audio_stream_count < 1)
+            else if (!pending && nextClip->audio_stream_count < 1 && cur->audio_stream_count >= 1)
               tdReason = "next_no_audio";
             else if (!pending && nextClip->video_stream_count < 1)
               tdReason = "next_no_video";
