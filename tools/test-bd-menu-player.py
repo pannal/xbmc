@@ -60,6 +60,7 @@ PRELUDE = r'''
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -103,7 +104,7 @@ struct CDVDInputStreamBluray : CDVDInputStream {
   bool IsMenuDomainSegment() const {return domain;}
   bool IsReadInDataPhase() const {return data;}
 };
-struct CDVDMsg { enum {VIDEO_DRAIN}; explicit CDVDMsg(int) {} };
+struct CDVDMsg { enum Message {VIDEO_DRAIN, PLAYER_AVCHANGE, PLAYER_STARTED, GENERAL_GUI_ACTION}; explicit CDVDMsg(int) {} };
 struct IDVDStreamPlayer {
   enum { SYNC_STARTING, SYNC_INSYNC };
   bool stalled=true;
@@ -142,7 +143,14 @@ struct SelectionStreams {
 };
 struct VideoSettings {int m_AudioStream=0;};
 struct ProcessInfo { VideoSettings GetVideoSettings() const {return {};} };
-struct Messenger {bool pending=false; bool HasMessages() const {return pending;}};
+struct Messenger {
+  std::vector<CDVDMsg::Message> queued;
+  bool HasMessages() const {return !queued.empty();}
+  bool HasMessagesExcept(std::initializer_list<CDVDMsg::Message> ignored) const {
+    return std::any_of(queued.begin(), queued.end(), [&](CDVDMsg::Message type) {
+      return std::find(ignored.begin(), ignored.end(), type) == ignored.end(); });
+  }
+};
 struct RenderManager {
   int queued=0;
   void GetStats(int&,double&,int& value,int&) {value=queued;}
@@ -327,8 +335,21 @@ int main() {
     p.DrainStreamsAtBoundary();auto elapsed=TestClock::now()-start;
     assert(elapsed>=8000ms && elapsed<=8025ms); // a display that never returns is bounded by the ceiling
   }
-  { CVideoPlayer p;p.m_messenger.pending=true;auto start=TestClock::now();
+  { CVideoPlayer p;p.m_messenger.queued={CDVDMsg::GENERAL_GUI_ACTION};auto start=TestClock::now();
     p.DrainStreamsAtBoundary();assert(TestClock::now()==start); // user/control work remains responsive
+  }
+  // An A/V change note queued during the play-out does not end it.
+  { CVideoPlayer p;p.m_messenger.queued={CDVDMsg::PLAYER_AVCHANGE};p.video.eos=false;
+    auto start=TestClock::now();onSleep=[&] { if(TestClock::now()-start>=400ms)p.video.eos=true; };
+    p.DrainStreamsAtBoundary();onSleep={};assert(TestClock::now()-start>=400ms);
+  }
+  // A start note ends it at once: its sender waits in SYNC_WAITSYNC and makes no
+  // progress until the player thread handles the note and resyncs it.
+  { CVideoPlayer p;p.m_messenger.queued={CDVDMsg::PLAYER_AVCHANGE,CDVDMsg::PLAYER_STARTED};
+    p.video.eos=false;p.video.data=true;auto start=TestClock::now();int passes=0;
+    onSleep=[&] { ++passes; }; // no response arrives, so neither stream progresses
+    p.DrainStreamsAtBoundary();onSleep={};
+    assert(TestClock::now()==start && passes==0 && p.video.drainMessages==1);
   }
   { CVideoPlayer p;p.m_playSpeed=0;p.DrainStreamsAtBoundary();assert(p.video.drainMessages==0);
     p.m_playSpeed=DVD_PLAYSPEED_NORMAL;p.m_bAbortRequest=true;p.DrainStreamsAtBoundary();

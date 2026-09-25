@@ -5435,7 +5435,11 @@ void CVideoPlayer::DrainStreamsAtBoundary()
     {
       break;
     }
-    if (m_messenger.HasMessages())
+    // A stream player posts an A/V parameter note while it plays out, e.g.
+    // across a refresh-rate switch; that note waits. Anything else needs the
+    // player thread, so the drain ends. That includes PLAYER_STARTED: its
+    // sender waits in SYNC_WAITSYNC for the resync only this thread sends.
+    if (m_messenger.HasMessagesExcept({CDVDMsg::PLAYER_AVCHANGE}))
     {
       exitReason = "message pending";
       break;
