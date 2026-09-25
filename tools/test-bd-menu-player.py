@@ -164,6 +164,7 @@ struct CVideoPlayer {
   Messenger m_messenger; RenderManager m_renderManager;
   double m_messageQueueTimeSize=16,m_menuDomainRampCap=0;
   bool m_menuDomainLowLatency=false,m_menuDomainClampPending=false,m_discTimeBound=false;
+  bool m_displayLost=false;
   bool m_menuDomainSegment=false,m_menuDomainFillPending=false;
   TestClock::time_point m_menuDomainRampLast{},m_menuDomainEvalLast{},m_menuDomainStarveStart{};
   bool valid=false,better=true; int opens=0,closes=0,validChecks=0;
@@ -315,6 +316,16 @@ int main() {
   }
   { CVideoPlayer p;p.video.eos=false;auto start=TestClock::now();
     p.DrainStreamsAtBoundary();assert(TestClock::now()-start<=1525ms); // stalled decoder is bounded
+  }
+  // A display reset pauses the clock on purpose: hold through it, then stall-time normally.
+  { CVideoPlayer p;p.video.eos=false;p.m_displayLost=true;auto start=TestClock::now();
+    onSleep=[&] { if(TestClock::now()-start>=3000ms)p.m_displayLost=false; };
+    p.DrainStreamsAtBoundary();onSleep={};auto elapsed=TestClock::now()-start;
+    assert(elapsed>3000ms && elapsed<=4550ms);
+  }
+  { CVideoPlayer p;p.video.eos=false;p.m_displayLost=true;auto start=TestClock::now();
+    p.DrainStreamsAtBoundary();auto elapsed=TestClock::now()-start;
+    assert(elapsed>=8000ms && elapsed<=8025ms); // a display that never returns is bounded by the ceiling
   }
   { CVideoPlayer p;p.m_messenger.pending=true;auto start=TestClock::now();
     p.DrainStreamsAtBoundary();assert(TestClock::now()==start); // user/control work remains responsive

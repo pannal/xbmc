@@ -5403,11 +5403,18 @@ void CVideoPlayer::DrainStreamsAtBoundary()
       m_CurrentAudio.id >= 0 && m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC;
   if (!videoActive && !audioActive)
   {
+    CLog::Log(LOGDEBUG,
+              "CVideoPlayer::DrainStreamsAtBoundary - skipped: no stream in sync (video id {} "
+              "sync {}, audio id {} sync {})",
+              m_CurrentVideo.id, m_CurrentVideo.syncState, m_CurrentAudio.id,
+              m_CurrentAudio.syncState);
     return;
   }
 
   const double videoSecs = videoActive ? m_VideoPlayerVideo->GetQueueTimeSize() : 0.0;
   const double audioSecs = audioActive ? m_VideoPlayerAudio->GetQueueTimeSize() : 0.0;
+  CLog::Log(LOGDEBUG, "CVideoPlayer::DrainStreamsAtBoundary - draining (video {}{:.1f}s, audio {}{:.1f}s)",
+            videoActive ? "" : "inactive ", videoSecs, audioActive ? "" : "inactive ", audioSecs);
   if (videoActive)
     m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN), 0);
 
@@ -5420,6 +5427,8 @@ void CVideoPlayer::DrainStreamsAtBoundary()
   double lastAudioPts = audioActive ? m_VideoPlayerAudio->GetCurrentPts() : DVD_NOPTS_VALUE;
 
   XbmcThreads::EndTime<> quietTimer(100ms);
+  const char* exitReason = "abort";
+  bool heldForDisplay = false;
   while (true)
   {
     if (m_bAbortRequest)
@@ -5428,10 +5437,12 @@ void CVideoPlayer::DrainStreamsAtBoundary()
     }
     if (m_messenger.HasMessages())
     {
+      exitReason = "message pending";
       break;
     }
     if (totalTimer.IsTimePast())
     {
+      exitReason = "ceiling";
       break;
     }
 
@@ -5447,7 +5458,10 @@ void CVideoPlayer::DrainStreamsAtBoundary()
     if (videoBusy || audioBusy)
       quietTimer.Set(100ms);
     else if (quietTimer.IsTimePast())
+    {
+      exitReason = "drained";
       break;
+    }
 
     bool progressed = false;
     if (videoActive)
@@ -5468,15 +5482,27 @@ void CVideoPlayer::DrainStreamsAtBoundary()
         progressed = true;
       }
     }
-    if (progressed)
+    // A display reset (refresh-rate switch) pauses the clock on purpose;
+    // no progress while it lasts is not a stall. Giving up there flushed
+    // the rest of the clip (the tail of an intro's audio).
+    if (m_displayLost)
+      heldForDisplay = true;
+    if (progressed || m_displayLost)
       stallTimer.Set(1500ms);
     else if (stallTimer.IsTimePast())
     {
+      exitReason = "stalled";
       break;
     }
 
     CThread::Sleep(25ms);
   }
+
+  CLog::Log(LOGDEBUG,
+            "CVideoPlayer::DrainStreamsAtBoundary - ended: {} (queued video {:.1f}s audio {:.1f}s, "
+            "ceiling {}ms{})",
+            exitReason, videoSecs, audioSecs, ceiling.count(),
+            heldForDisplay ? ", held through a display reset" : "");
 }
 
 // since we call ffmpeg functions to decode, this is being called in the same thread as ::Process() is
