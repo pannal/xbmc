@@ -86,14 +86,21 @@ public:
   void WaitUntilEmpty();
 
   // non messagequeue related functions
-  bool IsFull() const { return GetLevel(true) == 100; }
+  // Fullness is data-based. A caller that lowers the time cap with timeBound
+  // (Blu-ray menu-domain low latency) also makes the time level count, so the
+  // cap actually limits read-ahead instead of only the reported level.
+  bool IsFull() const
+  {
+    return GetLevel(true) == 100 || (m_timeBound && GetLevel(false) == 100);
+  }
   int GetLevel(bool data_level = false) const;
 
   void SetMaxDataSize(int iMaxDataSize) { m_iMaxDataSize = iMaxDataSize; }
-  void SetMaxTimeSize(double sec)
+  void SetMaxTimeSize(double sec, bool timeBound = false)
   {
     std::unique_lock<CCriticalSection> lock(m_section);
     m_TimeSize = 1.0 / std::max(1.0, sec);
+    m_timeBound = timeBound;
   }
   int GetMaxDataSize() const { return m_iMaxDataSize; }
   double GetMaxTimeSize() const
@@ -115,6 +122,7 @@ private:
   std::atomic<bool> m_bAbortRequest = false;
   bool m_bInitialized;
   bool m_drain = false;
+  std::atomic<bool> m_timeBound = false;
 
   uint64_t m_iDataSize;
   double m_TimeFront;

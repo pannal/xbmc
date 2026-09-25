@@ -1499,8 +1499,8 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
         return;
       m_menuDomainFillPending = false;
       m_menuDomainRampCap = 0.0;
-      m_VideoPlayerAudio->SetMaxTimeSize(clamp);
-      m_VideoPlayerVideo->SetMaxTimeSize(clamp);
+      m_VideoPlayerAudio->SetMaxTimeSize(clamp, true);
+      m_VideoPlayerVideo->SetMaxTimeSize(clamp, true);
       CLog::Log(LOGDEBUG,
                 "menudomain: queue filled, entering low-latency mode, queue read-ahead {:.1f}s",
                 clamp);
@@ -1517,8 +1517,8 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
       next = std::min(next, std::max(videoSecs, audioSecs) + MENU_DOMAIN_RAMP_HEADROOM);
       next = std::max(next, clamp);
       m_menuDomainRampCap = next;
-      m_VideoPlayerAudio->SetMaxTimeSize(next);
-      m_VideoPlayerVideo->SetMaxTimeSize(next);
+      m_VideoPlayerAudio->SetMaxTimeSize(next, true);
+      m_VideoPlayerVideo->SetMaxTimeSize(next, true);
       if (next <= clamp)
         CLog::Log(LOGDEBUG, "menudomain: engage ramp settled, queue read-ahead {:.1f}s", clamp);
       m_menuDomainStarveStart = {};
@@ -1574,8 +1574,8 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
   {
     m_menuDomainRampCap = queuedSecs + MENU_DOMAIN_RAMP_HEADROOM;
     m_menuDomainRampLast = m_menuDomainEvalLast;
-    m_VideoPlayerAudio->SetMaxTimeSize(m_menuDomainRampCap);
-    m_VideoPlayerVideo->SetMaxTimeSize(m_menuDomainRampCap);
+    m_VideoPlayerAudio->SetMaxTimeSize(m_menuDomainRampCap, true);
+    m_VideoPlayerVideo->SetMaxTimeSize(m_menuDomainRampCap, true);
     CLog::Log(
         LOGDEBUG,
         "menudomain: entering low-latency mode via ramp from {:.1f}s, queue read-ahead target "
@@ -1585,8 +1585,8 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
   else if (queuedSecs >= clamp)
   {
     m_menuDomainRampCap = 0.0;
-    m_VideoPlayerAudio->SetMaxTimeSize(clamp);
-    m_VideoPlayerVideo->SetMaxTimeSize(clamp);
+    m_VideoPlayerAudio->SetMaxTimeSize(clamp, true);
+    m_VideoPlayerVideo->SetMaxTimeSize(clamp, true);
     CLog::Log(LOGDEBUG, "menudomain: entering low-latency mode, queue read-ahead {:.1f}s", clamp);
   }
   else
