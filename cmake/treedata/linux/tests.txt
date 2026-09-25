@@ -1,1 +1,2 @@
+xbmc/cores/VideoPlayer/DVDCodecs/Audio/test test/dvdaudiocodecs
 xbmc/platform/linux/test platform/linux/test

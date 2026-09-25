@@ -859,11 +859,18 @@ static constexpr unsigned int SYSTEM_LOCALE = 1012;
 
 #define PLAYER_PROCESS_RENDER_PTS (PLAYER_PROCESS + 150)
 
+// Omniphony object audio. Its own block so the "omniphony." infolabel family
+// can grow without borrowing numbers from the generic audio ones.
+#define PLAYER_PROCESS_OMNIPHONY_INPUT (PLAYER_PROCESS + 160)
+#define PLAYER_PROCESS_OMNIPHONY_RENDER (PLAYER_PROCESS + 161)
+#define PLAYER_PROCESS_OMNIPHONY_SOFA (PLAYER_PROCESS + 162)
+
 // The spatial presentation a passthrough stream declares, in words rather than
 // figures. Its own block so the family can grow without borrowing from the
 // generic audio run, where its two counts already sit at +13 and +14 with no
 // room beside them.
 #define PLAYER_PROCESS_AUDIO_OBJECT_LAYOUT (PLAYER_PROCESS + 170)
+
 #define ADDON_INFOS                 1700
 #define ADDON_SETTING_STRING        (ADDON_INFOS)
 #define ADDON_SETTING_BOOL          (ADDON_INFOS + 1)

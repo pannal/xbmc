@@ -18046,6 +18046,150 @@ msgctxt "#39302"
 msgid "to profile 8.1"
 msgstr "Profile 8.1"
 
+msgctxt "#39309"
+msgid "Binaural Headphones"
+msgstr "Binaurale Kopfhörer"
+
+msgctxt "#39310"
+msgid "- Dolby Atmos, DTS:X, and Auro-3D"
+msgstr "- Dolby Atmos, DTS:X und Auro-3D"
+
+msgctxt "#39311"
+msgid "Place the individual sounds a Dolby Atmos or DTS:X soundtrack carries, and unfold the height layer of an Auro-3D one, rather than placing only the channels it was mixed into. If a device struggles with it, try Cascade mode under Advanced first - that keeps the heights, where turning this off loses them entirely."
+msgstr "Die einzelnen Klänge einer Dolby-Atmos- oder DTS:X-Tonspur platzieren und die Höhenebene einer Auro-3D-Tonspur entfalten, statt nur die Kanäle zu platzieren, in die sie gemischt wurde. Wenn ein Gerät damit überfordert ist, zuerst den Kaskadenmodus unter Fortgeschritten versuchen – er behält die Höhen bei, während sie beim Ausschalten ganz verloren gehen."
+
+msgctxt "#39312"
+msgid "- Room simulation"
+msgstr "- Raumsimulation"
+
+msgctxt "#39313"
+msgid "Place the render inside a simulated room. Its early reflections are what make sound seem to come from around you rather than from inside your head, the most audible control here. A room is never smaller than the scene, so the smaller presets converge as distance rises; off is the driest."
+msgstr "Das Rendering in einen simulierten Raum setzen. Dessen frühe Reflexionen lassen den Klang von ringsum statt aus dem eigenen Kopf kommen – die am deutlichsten hörbare Einstellung hier. Ein Raum ist nie kleiner als die Szene, daher gleichen sich die kleineren Voreinstellungen mit wachsender Entfernung an; Aus klingt am trockensten."
+
+msgctxt "#39314"
+msgid "- Binaural level"
+msgstr "- Binaurale Lautstärke"
+
+msgctxt "#39315"
+msgid "How loud the rendered soundtrack is. The default matches Kodi's own stereo downmix of the same film, so turning this on does not change the volume. Raise it if it sounds too quiet, lower it if loud scenes sound strained. It follows \"Maintain original volume\" on its own."
+msgstr "Wie laut die gerenderte Tonspur ist. Der Standardwert entspricht Kodis eigenem Stereo-Downmix desselben Films, sodass sich die Lautstärke beim Einschalten nicht ändert. Erhöhen, wenn es zu leise klingt, verringern, wenn laute Szenen angestrengt klingen. Folgt \"Originallautstärke beim Heruntermischen beibehalten\" von selbst."
+
+msgctxt "#39316"
+msgid "Off"
+msgstr "Aus"
+
+msgctxt "#39317"
+msgid "Small room"
+msgstr "Kleiner Raum"
+
+msgctxt "#39318"
+msgid "Medium room"
+msgstr "Mittlerer Raum"
+
+msgctxt "#39319"
+msgid "Large room"
+msgstr "Großer Raum"
+
+msgctxt "#39320"
+msgid "- Speaker distance"
+msgstr "- Lautsprecherabstand"
+
+msgctxt "#39321"
+msgid "How far away the rendered sound is placed. Larger values push the scene out and make it wider; smaller values bring it closer. The direct sound keeps its level, but reflections and reverb grow with distance, so raising this raises overall loudness. Little effect with room simulation off."
+msgstr "Wie weit entfernt der gerenderte Klang platziert wird. Größere Werte rücken die Szene nach außen und machen sie breiter, kleinere holen sie näher heran. Der Direktschall behält seinen Pegel, Reflexionen und Nachhall nehmen aber mit der Entfernung zu, sodass ein höherer Wert die Gesamtlautstärke erhöht. Bei ausgeschalteter Raumsimulation mit wenig Wirkung."
+
+msgctxt "#39322"
+msgid "- Reverb amount"
+msgstr "- Nachhallanteil"
+
+msgctxt "#39323"
+msgid "How much reverberation tail the simulated room adds after its early reflections. Raise it for a more spacious, distant sound, lower it for a drier and more direct one. Has no effect when room simulation is off."
+msgstr "Wie viel Nachhall der simulierte Raum nach seinen frühen Reflexionen hinzufügt. Erhöhen für einen räumlicheren, entfernteren Klang, verringern für einen trockeneren und direkteren. Ohne Wirkung, wenn die Raumsimulation ausgeschaltet ist."
+
+msgctxt "#39324"
+msgid "- Head-related transfer function"
+msgstr "- Kopfbezogene Übertragungsfunktion"
+
+msgctxt "#39325"
+msgid "Whether to use the measurements built into the engine, which suit most listeners, or a SOFA file of your own. These describe how your head and ears colour sound from each direction, so your own can place sounds more convincingly. \"Built-in\" also removes the copy held in your profile."
+msgstr "Ob die in die Engine eingebauten Messungen verwendet werden, die für die meisten Hörer passen, oder eine eigene SOFA-Datei. Sie beschreiben, wie Kopf und Ohren den Klang aus jeder Richtung färben, daher kann eine eigene Messung Klänge überzeugender platzieren. \"Integriert\" entfernt außerdem die im Profil gespeicherte Kopie."
+
+msgctxt "#39326"
+msgid "Built-in"
+msgstr "Integriert"
+
+msgctxt "#39327"
+msgid "Personal"
+msgstr "Persönlich"
+
+msgctxt "#39328"
+msgid "- Personal HRTF file (SOFA)"
+msgstr "- Persönliche HRTF-Datei (SOFA)"
+
+msgctxt "#39329"
+msgid "Choose the SOFA file to use. It is checked and copied into your profile the first time a film plays with it selected; one that cannot be used is refused and the built-in set used instead. It must be a free-field HRIR measurement (SimpleFreeFieldHRIR), whatever it is named."
+msgstr "Die zu verwendende SOFA-Datei wählen. Sie wird geprüft und ins Profil kopiert, wenn zum ersten Mal ein Film mit ihr abgespielt wird; eine unbrauchbare Datei wird abgelehnt und stattdessen der integrierte Satz verwendet. Es muss eine Freifeld-HRIR-Messung (SimpleFreeFieldHRIR) sein, unabhängig vom Dateinamen."
+
+msgctxt "#39330"
+msgid "- Cascade mode (12 virtual speakers)"
+msgstr "- Kaskadenmodus (12 virtuelle Lautsprecher)"
+
+msgctxt "#39331"
+msgid "Render the objects onto twelve virtual loudspeakers and place those around you, instead of placing every object individually. Normally chosen automatically for soundtracks with more objects than direct placement can afford. Turning it on costs less CPU, worth having if the sound breaks up, for slightly less precise placement."
+msgstr "Die Objekte auf zwölf virtuelle Lautsprecher rendern und diese rund um den Hörer platzieren, statt jedes Objekt einzeln zu platzieren. Wird bei Tonspuren mit mehr Objekten, als die direkte Platzierung verkraftet, normalerweise automatisch gewählt. Einschalten spart CPU-Last – sinnvoll, wenn der Ton abreißt – auf Kosten einer etwas ungenaueren Platzierung."
+
+msgctxt "#39332"
+msgid "Personal HRTF file"
+msgstr "Persönliche HRTF-Datei"
+
+msgctxt "#39333"
+msgid "This file can be used. It has been copied into your profile and will be used from the next thing you play."
+msgstr "Diese Datei kann verwendet werden. Sie wurde ins Profil kopiert und wird ab der nächsten Wiedergabe verwendet."
+
+msgctxt "#39334"
+msgid "The file could not be opened."
+msgstr "Die Datei konnte nicht geöffnet werden."
+
+msgctxt "#39335"
+msgid "The file is far too small to hold a set of measurements. It may be an incomplete download."
+msgstr "Die Datei ist viel zu klein für einen Messdatensatz. Möglicherweise ist der Download unvollständig."
+
+msgctxt "#39336"
+msgid "This is not a SOFA file. The name ends in .sofa but the contents are something else."
+msgstr "Dies ist keine SOFA-Datei. Der Name endet auf .sofa, der Inhalt ist aber etwas anderes."
+
+msgctxt "#39337"
+msgid "This SOFA file was written in a newer format than the spatial audio engine can read. Re-saving it with an older tool may help."
+msgstr "Diese SOFA-Datei wurde in einem neueren Format geschrieben, als die Raumklang-Engine lesen kann. Erneutes Speichern mit einem älteren Werkzeug kann helfen."
+
+msgctxt "#39338"
+msgid "This SOFA file holds no impulse responses. Filter coefficients and frequency-domain measurements cannot be used; the file must contain Data.IR."
+msgstr "Diese SOFA-Datei enthält keine Impulsantworten. Filterkoeffizienten und Messungen im Frequenzbereich können nicht verwendet werden; die Datei muss Data.IR enthalten."
+
+msgctxt "#39339"
+msgid "This SOFA file is not a free-field HRIR measurement. Look for a file whose convention is SimpleFreeFieldHRIR - room responses and loudspeaker measurements will not work here."
+msgstr "Diese SOFA-Datei ist keine Freifeld-HRIR-Messung. Eine Datei mit der Konvention SimpleFreeFieldHRIR verwenden – Raumantworten und Lautsprechermessungen funktionieren hier nicht."
+
+msgctxt "#39340"
+msgid "The file could not be copied into your profile. Check there is space left on the device."
+msgstr "Die Datei konnte nicht ins Profil kopiert werden. Bitte prüfen, ob auf dem Gerät noch Speicherplatz frei ist."
+
+msgctxt "#39341"
+msgid "- LFE boost"
+msgstr "- LFE-Anhebung"
+
+msgctxt "#39342"
+msgid "Raise the level of the low-frequency effects channel, the one a cinema sends to its subwoofer. On headphones there is no subwoofer to turn up, so this is the only way to change it. It affects that channel alone, so a soundtrack with little in it will barely move. Raising it uses headroom, and enough will make the limiter quieten everything."
+msgstr "Den Pegel des Tieftoneffektkanals (LFE) anheben, den ein Kino an seinen Subwoofer schickt. Kopfhörer haben keinen Subwoofer, den man lauter stellen könnte, daher ist dies die einzige Möglichkeit, ihn zu ändern. Es betrifft nur diesen Kanal, eine Tonspur mit wenig Inhalt darin ändert sich also kaum. Eine Anhebung verbraucht Aussteuerungsreserve, und genug davon lässt den Limiter alles leiser machen."
+
+msgctxt "#39343"
+msgid "Binaural rendering for headphones"
+msgstr "Binaurales Rendering für Kopfhörer"
+
+msgctxt "#39344"
+msgid "Place the sound of anything you play around you on headphones, instead of folding it flat to stereo. It applies to every soundtrack that can be decoded, films and music alike. Turning it on turns passthrough off, and it is unused while the audio output is set to more than two channels."
+msgstr "Den Klang von allem, was abgespielt wird, auf Kopfhörern rund um den Hörer platzieren, statt ihn flach auf Stereo herunterzumischen. Gilt für jede dekodierbare Tonspur, Filme wie Musik. Das Einschalten deaktiviert Passthrough, und die Einstellung wird nicht verwendet, solange die Audioausgabe auf mehr als zwei Kanäle eingestellt ist."
+
 msgctxt "#40000"
 msgid "Versions"
 msgstr "Versionen"

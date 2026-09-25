@@ -1232,6 +1232,39 @@ const infomap player_times[] =   {{ "seektime",         PLAYER_SEEKTIME },
 ///     @skinning_v21 **[New Infolabel]** \link Player_Process_audio_object_description `Player.Process(audio.object.description)`\endlink
 ///     <p>
 ///   }
+///   \table_row3{   <b>`Player.Process(omniphony.input)`</b>,
+///                  \anchor Player_Process_omniphony_input
+///                  _string_,
+///     @return What the binaural renderer is placing for the currently playing item
+///     where that adds to what the channel labels already say - for example
+///     `Auro 11.1`\, `7.1.4 + 5 Objects`\, `7.1 + 4 Heights` or `LFE + 15 Objects`.
+///     Empty for a plain 5.1 or 7.1\, before the renderer has described the
+///     stream\, and when the audio is not being rendered binaurally.
+///     <p><hr>
+///     @skinning_v21 **[New Infolabel]** \link Player_Process_omniphony_input `Player.Process(omniphony.input)`\endlink
+///     <p>
+///   }
+///   \table_row3{   <b>`Player.Process(omniphony.render)`</b>,
+///                  \anchor Player_Process_omniphony_render
+///                  _string_,
+///     @return How the binaural renderer places the sound: `Direct` for every
+///     source on its own or `Cascade 12` through twelve virtual speakers. Empty
+///     when the audio is not being rendered binaurally.
+///     <p><hr>
+///     @skinning_v21 **[New Infolabel]** \link Player_Process_omniphony_render `Player.Process(omniphony.render)`\endlink
+///     <p>
+///   }
+///   \table_row3{   <b>`Player.Process(omniphony.sofa)`</b>,
+///                  \anchor Player_Process_omniphony_sofa
+///                  _string_,
+///     @return The head model the binaural renderer is convolving with: `Built-in`
+///     or `Personal`. A personal file the engine could not load reads `Built-in`.
+///     Empty when the audio is not being rendered binaurally or the engine does
+///     not report it.
+///     <p><hr>
+///     @skinning_v21 **[New Infolabel]** \link Player_Process_omniphony_sofa `Player.Process(omniphony.sofa)`\endlink
+///     <p>
+///   }
 /// \table_end
 ///
 /// -----------------------------------------------------------------------------
@@ -1355,7 +1388,11 @@ const infomap player_process[] = {{"videodecoder", PLAYER_PROCESS_VIDEODECODER},
                                   {"amlogic.video.fps.drop", PLAYER_PROCESS_AML_VIDEO_FPS_DROP },
                                   {"video.vpmode", PLAYER_PROCESS_AML_VP_MODE },
                                   
-                                  {"av.change", PLAYER_PROCESS_AV_CHANGE }};
+                                  {"av.change", PLAYER_PROCESS_AV_CHANGE },
+
+                                  {"omniphony.input", PLAYER_PROCESS_OMNIPHONY_INPUT },
+                                  {"omniphony.render", PLAYER_PROCESS_OMNIPHONY_RENDER },
+                                  {"omniphony.sofa", PLAYER_PROCESS_OMNIPHONY_SOFA }};
 
 /// \page modules__infolabels_boolean_conditions
 /// \subsection modules__infolabels_boolean_conditions_Weather Weather

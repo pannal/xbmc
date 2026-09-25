@@ -523,6 +523,32 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
   if (iformat && strcmp(iformat->name, "mpegts") == 0)
     av_opt_set_int(m_pFormatContext, "probesize", 10000000, 0); // double ffmpeg default
 
+  /*
+   * Matroska can put most of a video cluster ahead of the first audio packet,
+   * and ffmpeg's defaults - 5 MB, 5 s - then run out before reaching one. A
+   * track never reached is a track never profiled, and an unprofiled DTS is
+   * indistinguishable from the plain core to everything downstream: the screen
+   * names it "DTS" instead of "DTS-HD MA", and the object path refuses a
+   * stream whose profile does not confirm MA or a detected DTS:X extension
+   * (CDVDAudioCodecOmniphony::CodecId), so a lossless soundtrack is decoded as
+   * the lossy core it sits on, and HRA DTS:X loses its heights. Auro-3D loses
+   * more than a label to that - its height layer is folded into the low bits
+   * of the lossless PCM, so a core decode drops the layer and the presentation
+   * with it, and the player row falls back to naming six carrier channels.
+   *
+   * Both limits move together because find_stream_info stops at whichever it
+   * reaches first, and raising one alone changes nothing. Neither is a target:
+   * it returns as soon as every stream is described, so a normally interleaved
+   * file pays nothing for the higher ceiling. Measured against a set whose
+   * worst case puts audio 13.9 MB in, the files that do need it pay single
+   * milliseconds, and one muxed later still than that would need more again.
+   */
+  if (iformat && strncmp(iformat->name, "matroska", 8) == 0)
+  {
+    av_opt_set_int(m_pFormatContext, "probesize", 20000000, 0);
+    av_opt_set_int(m_pFormatContext, "analyzeduration", 10000000, 0);
+  }
+
   // this should never happen. Log it to inform about the error.
   if (m_pFormatContext->nb_streams > 0 && m_pFormatContext->streams == nullptr)
   {

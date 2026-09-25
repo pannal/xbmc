@@ -22,10 +22,18 @@
 #include "Video/AddonVideoCodec.h"
 #include "Video/DVDVideoCodec.h"
 #include "Video/DVDVideoCodecFFmpeg.h"
+#include "ServiceBroker.h"
 #include "addons/AddonProvider.h"
 #include "cores/VideoPlayer/DVDCodecs/DVDCodecs.h"
+#include "settings/Settings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/StringUtils.h"
 #include "utils/log.h"
+
+#if defined(TARGET_LINUX) && !defined(TARGET_ANDROID)
+// Built for Linux only - see Audio/CMakeLists.txt.
+#include "Audio/DVDAudioCodecOmniphony.h"
+#endif
 
 #include <mutex>
 #include <utility>
@@ -192,6 +200,64 @@ std::unique_ptr<CDVDAudioCodec> CDVDFactoryCodec::CreateAudioCodec(
       return pCodec;
     }
   }
+
+  // Audio rendered binaurally to headphones, decoded and rendered in a helper
+  // process. Tried ahead of passthrough, but only when passthrough is not
+  // actually going to happen: the two are mutually exclusive, and a listener
+  // with an amplifier decoding for them is on speakers, not headphones. That
+  // exclusion is enforced here rather than as a settings dependency, because
+  // whether passthrough really applies depends on the stream as well as on the
+  // setting - the same reason the branch below is guarded the same way.
+  //
+  // The stream is the whole of the test, and deliberately so. An earlier
+  // version also asked IAE::HasStereoAudioChannelCount(), meaning to check that
+  // a render made for two ears would not be handed to a speaker layout - but
+  // that helper answers a different question than its name suggests. It is
+  // false whenever the audio output is configured for more than two channels
+  // AND false whenever the passthrough setting is on at all, because it exists
+  // to decide whether a decoder should downmix. Either half silently turned
+  // this feature off on an ordinary media-box profile: the listener switched
+  // binaural on, the setting read as on, every stream decoded to the speakers,
+  // and nothing anywhere said why.
+  //
+  // Neither half was load-bearing. The passthrough setting is settled twice
+  // over already - at the settings level, where turning either of the two on
+  // turns the other off (CActiveAESettings::EnforceExclusiveOutput), and here,
+  // per stream, which is the answer that actually matters because a track this
+  // sink cannot pass through is one the listener hears decoded whatever the
+  // setting says. And the channel count decides where stereo lands, not whether
+  // this may produce it: a stereo stream on a multichannel output plays through
+  // the front pair, as every stereo stream on that output already does.
+  //
+  // So the rule is the one the setting itself promises: switch it on and, on
+  // anything not actually being passed through, the render is binaural.
+  //
+  // Which leaves one state the settings-level exclusion cannot reach, because
+  // it only runs when a setting is changed: a profile that already had both on
+  // when the exclusion was added. That profile now gets binaural rather than
+  // speakers, and that is the better of the two guesses - passthrough is on by
+  // default and binaural is not, so the setting the listener actually went and
+  // switched on is this one. Turning it off restores the amplifier.
+  //
+  // Open() also refuses unless the helper is installed beside kodi.bin, so on
+  // an image without it this costs one access() and falls through.
+#if defined(TARGET_LINUX) && !defined(TARGET_ANDROID)
+  const bool passthroughWins = allowpassthrough && ptStreamType != CAEStreamInfo::STREAM_TYPE_NULL;
+  if (!passthroughWins && CServiceBroker::GetSettingsComponent() &&
+      CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+          CSettings::SETTING_AUDIOOUTPUT_OMNIPHONY))
+  {
+    auto omni = std::make_unique<CDVDAudioCodecOmniphony>(processInfo);
+    if (omni->Open(hint, options))
+    {
+      return omni;
+    }
+    // Open() logs why it refused; this says which decision led to asking, so a
+    // log that ends in "ff-aac" can be read for whether binaural was skipped
+    // before it was tried or gave up after.
+    CLog::Log(LOGDEBUG, "CDVDFactoryCodec: binaural is on but the codec did not open this stream");
+  }
+#endif
 
   // we don't use passthrough if "sync playback to display" is enabled
   if (allowpassthrough && ptStreamType != CAEStreamInfo::STREAM_TYPE_NULL)

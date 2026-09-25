@@ -438,6 +438,12 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
   // shut down the adio_decode thread and wait for it
   StopThread(); // will set this->m_bStop to true
 
+  // Whatever an end of stream was still waiting for goes with the stream.
+  // CVideoPlayer keeps this player for the next file, and one that has no
+  // audio would otherwise never see HasData go false at its end.
+  m_eofDraining = false;
+  m_eofPending = false;
+
   // destroy audio device
   CLog::Log(LOGINFO, "Closing audio device");
   if (bWait)
@@ -573,10 +579,32 @@ void CVideoPlayerAudio::Process()
     }
     else if (ret == MSGQ_TIMEOUT)
     {
-      if (ProcessDecoderOutput(audioframe))
+      // Not into a sink paused for a speed it cannot play at - the same test
+      // the packet path uses to drop packets - or while the display is being
+      // reconfigured, see GENERAL_PAUSE. A decoder that holds a reserve
+      // would otherwise go on handing blocks over until the sink is full, and
+      // then park this thread in AddPackets until it times out. CloseStream
+      // does not abort that wait, so stopping from pause would hang for the
+      // length of it. What stays in the decoder is served on resume.
+      const bool sinkPaused =
+          (m_paused ||
+           !m_processInfo.IsTempoAllowed(static_cast<float>(m_speed) / DVD_PLAYSPEED_NORMAL)) &&
+          m_syncState == IDVDStreamPlayer::SYNC_INSYNC;
+      if (!sinkPaused && ProcessDecoderOutput(audioframe))
       {
         onlyPrioMsgs = true;
         continue;
+      }
+
+      // Everything GENERAL_EOF asked the codec for has reached the sink - or
+      // cannot, at a speed the sink does not play, where the packet path drops
+      // audio too - so as far as CVideoPlayer's HasData is concerned this
+      // stream has ended. Not while the display is lost: the rest is served
+      // when GENERAL_PAUSE resumes the sink.
+      if (m_eofDraining && !m_paused)
+      {
+        m_eofDraining = false;
+        m_eofPending = false;
       }
 
       // if we only wanted priority messages, this isn't a stall
@@ -619,7 +647,8 @@ void CVideoPlayerAudio::Process()
         m_audioSink.Flush();
       }
       m_audioClock = pts + delay;
-      if (m_speed != DVD_PLAYSPEED_PAUSE)
+      // Not while the display is lost: GENERAL_PAUSE resumes it when it returns.
+      if (m_speed != DVD_PLAYSPEED_PAUSE && !m_paused)
         m_audioSink.Resume();
       m_syncState = IDVDStreamPlayer::SYNC_INSYNC;
       m_syncTimer.Set(3000ms);
@@ -686,6 +715,9 @@ void CVideoPlayerAudio::Process()
 
       if (m_pAudioCodec)
         m_pAudioCodec->Reset();
+      // Nothing is left to drain, and an end of stream sent after the flush
+      // must not be taken for this one - see Flush.
+      m_eofDraining = false;
 
       // LAV: Reset PCM jitter tracking on GENERAL_FLUSH
       if (m_lavStylePcmSyncEnabled)
@@ -698,6 +730,19 @@ void CVideoPlayerAudio::Process()
     else if (pMsg->IsType(CDVDMsg::GENERAL_EOF))
     {
       CLog::Log(LOGDEBUG, "CVideoPlayerAudio - CDVDMsg::GENERAL_EOF");
+      if (m_pAudioCodec)
+      {
+        m_pAudioCodec->Drain();
+
+        // Drain() may have made delayed output available without another demux
+        // packet. The priority-only pass serves it until the codec reports that
+        // nothing remains, and it is also the pass that keeps it out of a sink
+        // paused for a speed it cannot play at.
+        m_eofDraining = true;
+        onlyPrioMsgs = true;
+      }
+      else
+        m_eofPending = false;
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
@@ -710,7 +755,8 @@ void CVideoPlayerAudio::Process()
         {
           if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
           {
-            m_audioSink.Resume();
+            if (!m_paused)
+              m_audioSink.Resume();
             m_stalled = false;
 
 
@@ -731,8 +777,22 @@ void CVideoPlayerAudio::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
+      const bool wasPaused = m_paused;
       m_paused = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       CLog::Log(LOGDEBUG, "CVideoPlayerAudio - CDVDMsg::GENERAL_PAUSE: {}", m_paused);
+
+      // Sent while the display is being reconfigured, which CVideoPlayer stops
+      // the clock for. ActiveAE suspends its own output through that only for
+      // HDMI, so on any other device the sound played on while the clock
+      // waited - for as long as the delay after a refresh-rate change - and
+      // ActiveAE then silenced it until the picture caught up. Stop the stream
+      // with the clock and start it again with it. Only on a change: opening a
+      // stream sends the current state as well.
+      if (m_paused && !wasPaused)
+        m_audioSink.Pause();
+      else if (!m_paused && wasPaused && m_syncState == IDVDStreamPlayer::SYNC_INSYNC &&
+               m_processInfo.IsTempoAllowed(static_cast<float>(m_speed) / DVD_PLAYSPEED_NORMAL))
+        m_audioSink.Resume();
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_REQUEST_STATE))
     {
@@ -1028,9 +1088,24 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
       }
     }
 
-    // demuxer reads metatags that influence channel layout
+    // demuxer reads metatags that influence channel layout, but only where the
+    // tag still describes what came out of the decoder.
+    //
+    // The tag names the positions of the channels the file was encoded with,
+    // which is worth having when the decoder could not name them. It says
+    // nothing about how many channels the decoder produced, and a codec that
+    // renders to a different count - the binaural one turns any layout into a
+    // stereo pair - was being relabelled with the file's layout while its
+    // samples stayed as they were. ActiveAE sizes a frame from the layout, so a
+    // mono tag on a stereo render made it read half of every block and take the
+    // two ears for successive mono samples, which is audible as distortion for
+    // the whole film; a 5.1 tag made it ask for 192 bytes of a 64-byte block.
     if (m_streaminfo.codec == AV_CODEC_ID_FLAC && m_streaminfo.channellayout)
-      audioframe.format.m_channelLayout = CAEUtil::GetAEChannelLayout(m_streaminfo.channellayout);
+    {
+      const CAEChannelInfo tagged = CAEUtil::GetAEChannelLayout(m_streaminfo.channellayout);
+      if (tagged.Count() == audioframe.format.m_channelLayout.Count())
+        audioframe.format.m_channelLayout = tagged;
+    }
 
     // If we have a stream bits per sample set on the stream info bit depth.
     if (m_streaminfo.bitspersample)   
@@ -1049,7 +1124,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
 
       m_prevsynctype = -1;
 
-      if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
+      if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC && !m_paused)
         m_audioSink.Resume();
     }
 
@@ -1485,6 +1560,9 @@ void CVideoPlayerAudio::SetSpeed(int speed)
 
 void CVideoPlayerAudio::Flush(bool sync)
 {
+  // A queued GENERAL_EOF goes with the rest, and what one already asked the
+  // codec for goes in the reset GENERAL_FLUSH makes - see HasData.
+  m_eofPending = false;
   m_messageQueue.Flush();
   m_messageQueue.Put(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_FLUSH, sync), 1);
 
@@ -1581,6 +1659,26 @@ bool CVideoPlayerAudio::SwitchCodecIfNeeded()
 
   CAEStreamInfo::DataType streamType = m_audioSink.GetPassthroughStreamType(
       probeHints.codec, probeHints.samplerate, probeHints.profile);
+
+  // Whether the factory would hand back a passthrough codec turns on these two
+  // and nothing else, so ask them rather than building a codec to look at it.
+  // Construction is not free for every codec - the object-audio codec forks a
+  // helper process and loads an HRTF engine in its Open() - and on a display
+  // reset the answer is nearly always "no change", so the whole thing was built
+  // and thrown away mid-playback. Where the answer really has changed we still
+  // build below, exactly as before.
+  const bool wouldPassthrough = allowpassthrough && streamType != CAEStreamInfo::STREAM_TYPE_NULL;
+  if (wouldPassthrough == m_pAudioCodec->NeedPassthrough())
+  {
+    // the display reset's sink reopen is the disturbance the anchor epoch
+    // exists for - restart settle tracking so it measures the post-churn
+    // state, not the calm before it (applies to the PCM path as well)
+    if (wasDisplayReset)
+      ArmAnchorTrim(true);
+
+    return false;
+  }
+
   std::unique_ptr<CDVDAudioCodec> codec = CDVDFactoryCodec::CreateAudioCodec(
       probeHints, m_processInfo, allowpassthrough, m_processInfo.AllowDTSHDDecode(), streamType);
 

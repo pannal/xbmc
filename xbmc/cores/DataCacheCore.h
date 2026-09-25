@@ -166,6 +166,27 @@ public:
   void SetAudioBitsPerSample(int bitsPerSample);
   int GetAudioBitsPerSample();
 
+  /*!
+   * @brief What the object audio renderer was handed, e.g. "15 Objects + LFE".
+   *
+   * The three below are all empty whenever nothing is being rendered
+   * binaurally, so a skin can hide the rows rather than print a word for
+   * "nothing special" - and so that a stream which fell back to the software
+   * decoder mid-film stops describing a render that is no longer happening.
+   *
+   * Named for the engine rather than for audio in general because they are
+   * surfaced as the Player.Process(omniphony.*) infolabels: a generic name
+   * here would invite unrelated state into a feature-scoped label.
+   */
+  void SetOmniphonyInput(std::string input);
+  std::string GetOmniphonyInput();
+  //! @brief How those sources reach the ears - per object, or via a virtual ring.
+  void SetOmniphonyRender(std::string render);
+  std::string GetOmniphonyRender();
+  //! @brief Which head-related measurements are in use, the engine's or the listener's.
+  void SetOmniphonySofa(std::string sofa);
+  std::string GetOmniphonySofa();
+
   // Additional Player Process Info data (Only set in Data Core Cache)
   void SetAudioLiveBitRate(double bitRate);
   double GetAudioLiveBitRate();
@@ -349,6 +370,9 @@ protected:
   {
     std::string decoderName;
     std::string channels;
+    std::string omniphonyInput;
+    std::string omniphonyRender;
+    std::string omniphonySofa;
     int sampleRate;
     int bitsPerSample;
     double liveBitRate = 0;

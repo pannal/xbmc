@@ -1985,6 +1985,13 @@ void CVideoPlayer::Process()
         m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN));
       }
 
+      // The audio counterpart. A decoder that answers later than it is asked
+      // is still holding the end of the soundtrack when the demuxer runs dry,
+      // and until it hears this it is waiting for input that will never come.
+      // The audio player's HasData stays true until that tail is out.
+      if (m_CurrentAudio.inited)
+        m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_EOF));
+
       m_CurrentAudio.inited = false;
       m_CurrentVideo.inited = false;
       m_CurrentSubtitle.inited = false;

@@ -3748,6 +3748,144 @@
           <control type="toggle" />
         </setting>
       </group>
+      <group id="4" label="39309">
+        <requirement>HAS_OMNIPHONY</requirement>
+        <setting id="audiooutput.omniphony" type="boolean" label="39343" help="39344">
+          <level>1</level>
+          <default>false</default>
+          <control type="toggle" />
+        </setting>
+        <setting id="audiooutput.omniphonyobjects" type="boolean" label="39310" help="39311">
+          <level>1</level>
+          <default>true</default>
+          <dependencies>
+            <dependency type="enable" setting="audiooutput.omniphony" operator="is">true</dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
+        <setting id="audiooutput.omniphonyroom" type="integer" label="39312" help="39313">
+          <level>1</level>
+          <default>2</default>
+          <constraints>
+            <options>
+              <option label="39316">0</option>
+              <option label="39317">1</option>
+              <option label="39318">2</option>
+              <option label="39319">3</option>
+            </options>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="audiooutput.omniphony" operator="is">true</dependency>
+          </dependencies>
+          <control type="list" format="string" />
+        </setting>
+        <setting id="audiooutput.omniphonylevel" type="number" label="39314" help="39315">
+          <level>2</level>
+          <default>-3</default>
+          <constraints>
+            <minimum>-20</minimum>
+            <step>0.5</step>
+            <maximum>10</maximum>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="audiooutput.omniphony" operator="is">true</dependency>
+          </dependencies>
+          <control type="slider" format="number">
+            <format>{:.1f} dB</format>
+          </control>
+        </setting>
+        <setting id="audiooutput.omniphonylfe" type="number" label="39341" help="39342">
+          <level>2</level>
+          <default>0</default>
+          <constraints>
+            <minimum>0</minimum>
+            <step>0.5</step>
+            <maximum>10</maximum>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="audiooutput.omniphony" operator="is">true</dependency>
+          </dependencies>
+          <control type="slider" format="number">
+            <format>{:.1f} dB</format>
+          </control>
+        </setting>
+        <setting id="audiooutput.omniphonydistance" type="number" label="39320" help="39321">
+          <level>2</level>
+          <default>2</default>
+          <constraints>
+            <minimum>1</minimum>
+            <step>0.5</step>
+            <maximum>6</maximum>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="audiooutput.omniphony" operator="is">true</dependency>
+          </dependencies>
+          <control type="slider" format="number">
+            <format>{:.1f} m</format>
+          </control>
+        </setting>
+        <setting id="audiooutput.omniphonyreverb" type="integer" label="39322" help="39323">
+          <level>2</level>
+          <default>10</default>
+          <constraints>
+            <minimum>0</minimum>
+            <step>5</step>
+            <maximum>100</maximum>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="audiooutput.omniphony" operator="is">true</dependency>
+          </dependencies>
+          <control type="slider" format="integer">
+            <format>{:d} %</format>
+          </control>
+        </setting>
+        <setting id="audiooutput.omniphonyhrtfmode" type="integer" label="39324" help="39325">
+          <level>2</level>
+          <default>0</default>
+          <constraints>
+            <options>
+              <option label="39326">0</option>
+              <option label="39327">1</option>
+            </options>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="audiooutput.omniphony" operator="is">true</dependency>
+          </dependencies>
+          <control type="list" format="string" />
+        </setting>
+        <setting id="audiooutput.omniphonyhrtf" type="path" label="39328" help="39329">
+          <level>2</level>
+          <default></default>
+          <constraints>
+            <masking>*.sofa</masking>
+            <allowempty>true</allowempty>
+          </constraints>
+          <dependencies>
+            <dependency type="visible">
+              <and>
+                <condition on="setting" setting="audiooutput.omniphony" operator="is">true</condition>
+                <condition on="setting" setting="audiooutput.omniphonyhrtfmode" operator="is">1</condition>
+              </and>
+            </dependency>
+          </dependencies>
+          <control type="button" format="file">
+            <heading>39328</heading>
+          </control>
+        </setting>
+        <setting id="audiooutput.omniphonycascade" type="boolean" label="39330" help="39331">
+          <level>2</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="enable">
+              <and>
+                <condition on="setting" setting="audiooutput.omniphony" operator="is">true</condition>
+                <condition on="setting" setting="audiooutput.omniphonyobjects" operator="is">true</condition>
+              </and>
+            </dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
+      </group>
     </category>
     <category id="input" label="14125" help="36374">
       <group id="1" label="35000">

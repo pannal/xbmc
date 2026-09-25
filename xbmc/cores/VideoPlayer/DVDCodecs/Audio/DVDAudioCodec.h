@@ -80,6 +80,15 @@ public:
   virtual void GetData(DVDAudioFrame &frame) = 0;
 
   /*
+   * Signal the true end of the compressed stream so a decoder with delayed
+   * output can emit it. This is deliberately separate from Reset(): a reset is
+   * a seek/discontinuity and must discard delayed audio, while end of stream
+   * must preserve it. Codecs without an explicit drain keep their historical
+   * no-op behaviour.
+   */
+  virtual void Drain() {}
+
+  /*
    * resets the decoder
    */
   virtual void Reset() = 0;
