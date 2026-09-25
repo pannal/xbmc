@@ -24,6 +24,7 @@
 #include "guilib/LocalizeStrings.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/DiscSettings.h"
+#include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
@@ -2394,6 +2395,18 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities() const
     uhdCap |= 0x04;
   if (aml_display_support_hdr10plus())
     uhdCap |= 0x20;
+  // PSR26 bit 0 is the display's UHD resolution, beside bit 1's HDR10.
+  // Universal's BD-J framework (M3GAN 2.0) tests both and plays its "UHD not
+  // available" playlist without them; Superman shows its 4K warning.
+  const CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
+  for (size_t i = RES_DESKTOP; i < displaySettings.ResolutionInfoSize(); ++i)
+  {
+    if (displaySettings.GetResolutionInfo(i).iScreenHeight >= 2160)
+    {
+      uhdDisplayCap |= 0x01;
+      break;
+    }
+  }
   if (aml_display_support_dv())
     uhdDisplayCap |= 0x04;
   if (aml_display_support_hdr_hlg())
