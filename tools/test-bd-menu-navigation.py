@@ -66,7 +66,15 @@ preamble=r'''
 constexpr int LOGDEBUG=0, LOGWARNING=1, BD_EVENT_MENU_OVERLAY=1000;
 struct CLog {template<class...T>static void Log(T&&...) {}};
 constexpr int64_t END_OF_TITLE_SPIN_TIMEOUT_MS=5000;
-static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e) { return e.Y; }
+static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e,bool bt2020) { return e.Y+(bt2020?1000u:0u); }
+bool g_pgsHdrToSdr=true;
+#define PIXEL_ASHIFT 24
+#define PIXEL_RSHIFT 16
+#define PIXEL_GSHIFT 8
+#define PIXEL_BSHIFT 0
+namespace real {
+@@REAL_PALETTE@@
+}
 struct Player {
  std::shared_ptr<CDVDOverlay> last;
  void OnDiscNavResult(void* p,int) { last=*static_cast<std::shared_ptr<CDVDOverlay>*>(p); }
@@ -85,6 +93,8 @@ public:
  SPlane m_planes[2];Player* m_player;
  std::atomic_bool m_atTitleEnd=false;bool m_menu=false,m_naturalChainBoundary=false,m_crossPlaylistPending=false,m_bMVCPlayback=false;
  bool m_hasMenuOverlay=false,m_hasOverlay=false,m_overlayCloseDeferred=false;
+ std::atomic_bool m_pqAuthoredGraphics=false;
+ bool TagGraphicsAsPq() const;
  std::shared_ptr<CDVDOverlay> m_pendingOverlayGroup;
  std::atomic<std::thread::id> m_readingThread{};
  int m_lastReadEvent=BD_EVENT_NONE;
@@ -108,11 +118,25 @@ public:
  int ReadBlocks(uint8_t*,int,int);
 };
 '''
-functions=[get(s,'EndOfTitleReadStalled')]+[get(s,'CDVDInputStreamBluray::'+name) for name in ['OverlayClose','OverlayInit','OverlayClear','OverlayFlush','DeliverParkedOverlayIfDue','OverlayCallback','OverlayCallbackARGB','ReadBlocks','UpdateSeamTimeOffset','ResetSeamTimeOffset','AreClipVideoStreamsCompatible','AreClipPgStreamsEqual','IsClipCodecCompatible']]
+real_palette=get(s,'clamp')+'\n'+get(s,'build_rgba')
+tag=get(s,'CDVDInputStreamBluray::TagGraphicsAsPq')
+tag=re.sub(r'CServiceBroker::GetSettingsComponent\(\)->GetSettings\(\)->GetBool\(\s*CSettings::SETTING_SUBTITLES_PGSHDRTOSDR\)','g_pgsHdrToSdr',tag)
+assert 'g_pgsHdrToSdr' in tag
+functions=[tag,get(s,'EndOfTitleReadStalled')]+[get(s,'CDVDInputStreamBluray::'+name) for name in ['OverlayClose','OverlayInit','OverlayClear','OverlayFlush','DeliverParkedOverlayIfDue','OverlayCallback','OverlayCallbackARGB','ReadBlocks','UpdateSeamTimeOffset','ResetSeamTimeOffset','AreClipVideoStreamsCompatible','AreClipPgStreamsEqual','IsClipCodecCompatible']]
 a=s.index('if (m_atTitleEnd.exchange(false))');b=balance(s,s.index('{',a))
 functions.append('void CDVDInputStreamBluray::Reenter(uint64_t previousOut,uint64_t nextIn) {'+s[a:b]+'}')
 tests=r'''
 int main(){
+ { // Real palette conversion: the SDR matrix is unchanged; BT.2020 matches ffmpeg-003's PGS path.
+   auto px=[](uint32_t v,int shift){return int((v>>shift)&0xff);};
+   BD_PG_PALETTE_ENTRY white{235,128,128,255},black{16,128,128,255},red{};red.Y=64;red.Cb=100;red.Cr=200;red.T=128;
+   for(bool bt2020:{false,true}){
+     assert(real::build_rgba(white,bt2020)==0xffffffffu&&real::build_rgba(black,bt2020)==0xff000000u);
+   }
+   uint32_t sdr=real::build_rgba(red,false),hdr=real::build_rgba(red,true);
+   assert(px(sdr,24)==128&&px(sdr,16)==171&&px(sdr,8)==8&&px(sdr,0)==0); // BT.601 as before
+   assert(px(hdr,24)==128&&px(hdr,16)==177&&px(hdr,8)==14&&px(hdr,0)==0); // BT.2020 NCL
+ }
  using Clock=std::chrono::steady_clock;using namespace std::chrono_literals;
  auto origin=Clock::time_point{}+1s,since=Clock::time_point{};
  assert(!EndOfTitleReadStalled(BD_EVENT_END_OF_TITLE,0,false,false,origin,since));
@@ -133,6 +157,7 @@ int main(){
  ov.cmd=BD_OVERLAY_DRAW;ov.palette=pal;ov.img=runs;b.OverlayCallback(&ov);
  assert(b.m_planes[1].o.size()==1);auto image=b.m_planes[1].o.front();
  assert(image->IsDiscMenuOverlay()&&image->pixels==std::vector<uint8_t>({1,1,1,1,2,2,2,2}));
+ assert(!image->m_isHdrPq); // SDR disc graphics keep the SDR path
  ov.cmd=BD_OVERLAY_FLUSH;b.OverlayCallback(&ov);assert(player.last&&player.last->IsDiscMenuOverlay());
  // Palette-only DRAW is valid with no rectangle and cannot mutate an in-flight image.
  pal[1].Y=99;ov.cmd=BD_OVERLAY_DRAW;ov.palette_update_flag=1;ov.w=ov.h=0;ov.img=nullptr;b.OverlayCallback(&ov);
@@ -141,15 +166,35 @@ int main(){
  BD_PG_RLE_ELEM malformed[]={{4,1},{0,0},{0,0},{4,2}};ov.img=malformed;
  auto valid=b.m_planes[1].o.front();b.OverlayCallback(&ov);assert(b.m_planes[1].o.front()==valid);
  BD_PG_RLE_ELEM overflow[]={{9,1}};ov.img=overflow;b.OverlayCallback(&ov);assert(b.m_planes[1].o.front()==valid);
+ // PQ-authored IG: tagged, and its palette converted with the BT.2020 matrix to match.
+ b.m_pqAuthoredGraphics=true;ov.img=runs;b.OverlayCallback(&ov);
+ auto tagged=b.m_planes[1].o.front();
+ assert(tagged!=valid&&tagged->m_isHdrPq&&tagged->palette[1]==1099);
+ // A palette-only update keeps each image on the matrix its tag was drawn with.
+ ov.palette_update_flag=1;ov.w=ov.h=0;ov.img=nullptr;b.OverlayCallback(&ov);
+ assert(b.m_planes[1].o.front()->m_isHdrPq&&b.m_planes[1].o.front()->palette[1]==1099);
+ ov.palette_update_flag=0;ov.w=4;ov.h=2;ov.img=runs;
+ // The shared PGS HDR switch off: no IG tagging, untagged matrix.
+ g_pgsHdrToSdr=false;b.OverlayCallback(&ov);
+ assert(!b.m_planes[1].o.front()->m_isHdrPq&&b.m_planes[1].o.front()->palette[1]==99);
+ g_pgsHdrToSdr=true;b.m_pqAuthoredGraphics=false;
  // PG children retain subtitle identity even in a disc-composition envelope.
  ov.plane=BD_OVERLAY_PG;ov.cmd=BD_OVERLAY_INIT;b.OverlayCallback(&ov);ov.cmd=BD_OVERLAY_DRAW;ov.img=runs;b.OverlayCallback(&ov);
  assert(!b.m_planes[0].o.front()->IsDiscMenuOverlay());
+ // PG is never tagged, even in a PQ regime: it stays on its own path and matrix.
+ b.m_pqAuthoredGraphics=true;b.OverlayCallback(&ov);
+ assert(!b.m_planes[0].o.front()->m_isHdrPq&&b.m_planes[0].o.front()->palette[1]<1000);
+ b.m_pqAuthoredGraphics=false;
  ov.cmd=BD_OVERLAY_CLOSE;b.OverlayCallback(&ov);assert(b.m_planes[0].o.empty()&&!b.m_planes[1].o.empty());
  // The last dirty row ends at the canvas allocation; a stride*h memcpy overreads.
  BD_ARGB_OVERLAY argb{};argb.plane=1;argb.cmd=BD_ARGB_OVERLAY_INIT;argb.w=4;argb.h=2;b.OverlayCallbackARGB(&argb);
  auto canvas=std::make_unique<uint32_t[]>(8);for(int i=0;i<8;++i)canvas[i]=i+1;
  argb.cmd=BD_ARGB_OVERLAY_DRAW;argb.x=2;argb.w=2;argb.stride=4;argb.argb=canvas.get()+2;b.OverlayCallbackARGB(&argb);
- auto rgba=b.m_planes[1].o.front();assert(rgba->linesize==8&&rgba->pixels.size()==16);
+ auto rgba=b.m_planes[1].o.front();assert(rgba->linesize==8&&rgba->pixels.size()==16&&!rgba->m_isHdrPq);
+ // BD-J graphics stay untagged even in a PQ regime until the Xlet's graphics range is known.
+ b.m_pqAuthoredGraphics=true;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isHdrPq);
+ b.m_pqAuthoredGraphics=false;
+ b.OverlayCallbackARGB(&argb);rgba=b.m_planes[1].o.front();
  uint32_t copied[4];memcpy(copied,rgba->pixels.data(),16);assert(copied[0]==3&&copied[1]==4&&copied[2]==7&&copied[3]==8);
  b.m_readingThread=std::this_thread::get_id();b.OverlayFlush(-1);assert(b.m_pendingOverlayGroup);
  b.m_atTitleEnd=true;b.DeliverParkedOverlayIfDue();assert(b.m_pendingOverlayGroup);
@@ -170,7 +215,7 @@ int main(){
  std::cout<<"BD-menu watchdog, short-loop seams, stream compatibility, graphics ownership/bounds and I/O: PASS\n";
 }
 '''
-source=out/'navigation-behavior.cpp';source.write_text(preamble+'\n'.join(functions)+tests)
+source=out/'navigation-behavior.cpp';source.write_text(preamble.replace('@@REAL_PALETTE@@',real_palette)+'\n'.join(functions)+tests)
 cmd=shlex.split(os.environ.get('CXX', 'g++')) + ['-std=c++17','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer','-I'+str(out/'test-include'),'-I'+str(root/'xbmc'),'-I'+str(args.libbluray_include.resolve()),str(source),'-o',str(out/'navigation-behavior')]
 result=subprocess.run(cmd,capture_output=True,text=True);(out/'navigation-behavior-build.log').write_text(result.stdout+result.stderr);assert result.returncode==0,result.stderr
 result=subprocess.run([str(out/'navigation-behavior')],capture_output=True,text=True);(out/'navigation-behavior.log').write_text(result.stdout+result.stderr);print(result.stdout+result.stderr);assert result.returncode==0
