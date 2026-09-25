@@ -483,6 +483,10 @@ void CSettingConditions::Initialize()
   m_simpleConditions.emplace("have_libbluray");
 #endif
 
+#ifdef HAVE_LIBBLURAY_BDJ
+  m_simpleConditions.emplace("have_libbluray_bdj");
+#endif
+
 #ifdef HAS_CDDA_RIPPER
   m_simpleConditions.emplace("has_cdda_ripper");
 #endif
