@@ -1316,8 +1316,13 @@ void CDVDInputStreamBluray::OverlayClose(bool deferrable, int closingPlane)
     OverlayFlush(-1);
     return;
   }
+  // Player-side close (playlist stop/change, stream close): drop what is drawn
+  // but keep each plane's geometry. libbluray sends INIT only when its own
+  // overlay is (re)opened, so a BD-J menu that outlives a playlist keeps
+  // drawing into the plane it already initialised; zeroing it here made
+  // every later draw fail the bounds check (M3GAN 2.0: no menu buttons).
   for (SPlane& plane : m_planes)
-    OverlayInit(plane, 0, 0);
+    plane.o.clear();
   auto group = std::make_shared<CDVDOverlayGroup>();
   group->bForced = true;
   group->SetDiscMenuOverlay(true);
