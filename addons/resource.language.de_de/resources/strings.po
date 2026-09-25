@@ -20163,3 +20163,11 @@ msgstr "Erlaubt das Öffnen von BD-J-Haupt- und Popup-Menüs während der Wieder
 msgctxt "#69244"
 msgid "BD-J menus during playback are disabled. Use the playback controls or restart the disc to open its startup menu."
 msgstr "BD-J-Menüs während der Wiedergabe sind deaktiviert. Verwenden Sie die Wiedergabesteuerung oder starten Sie die Disc neu, um ihr Startmenü zu öffnen."
+
+msgctxt "#69245"
+msgid "Simulate 3D display"
+msgstr "3D-Anzeige simulieren"
+
+msgctxt "#69246"
+msgid "Tells a Blu-ray 3D disc that the connected display can show 3D, whether or not it can. Some 3D discs refuse to start on a display that answers no and park on a single still frame with no menu, picture or sound. Turning this on lets them run their normal path; the film then plays in 2D, because only the base view is presented. It does not enable 3D output: a 3D display whose capability is lost through an AV receiver or scaler that rewrites EDID also plays these discs in 2D. Affects Blu-ray 3D discs only."
+msgstr "Teilt einer Blu-ray-3D-Disc mit, dass die angeschlossene Anzeige 3D darstellen kann, unabhängig davon, ob sie es kann. Manche 3D-Discs starten nicht auf einer Anzeige, die das verneint, und bleiben auf einem einzelnen Standbild ohne Menü, Bild oder Ton stehen. Ist die Option aktiviert, nehmen sie ihren normalen Weg; der Film wird dann in 2D wiedergegeben, da nur die Basisansicht dargestellt wird. Die 3D-Ausgabe wird dadurch nicht aktiviert: Auch eine 3D-Anzeige, deren 3D-Fähigkeit durch einen AV-Receiver oder Scaler verloren geht, der die EDID umschreibt, gibt diese Discs in 2D wieder. Betrifft nur Blu-ray-3D-Discs."
