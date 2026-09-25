@@ -32,6 +32,14 @@ def main():
     methods = '\n'.join(function(player, 'void CVideoPlayer::' + name)
                         for name in ('CheckBetterStream(', 'UpdateMenuDomainQueueDepth(',
                                      'DrainStreamsAtBoundary('))
+    methods += '\n' + function(player, 'bool CVideoPlayer::HoldBoundaryForVideoStart(')
+    # The hold relies on the loop handling messages and start-up sync on every
+    # pass before it, and on it running before the input moves to the next clip.
+    process = function(player, 'void CVideoPlayer::Process(')
+    order = [process.index(call) for call in ('HandleMessages();', 'HandlePlaySpeed();',
+                                               'if (HoldBoundaryForVideoStart())',
+                                               'm_pInputStream->NextStream();')]
+    assert order == sorted(order), 'Process() call order changed around the boundary hold'
     still = player[player.index('    case BD_EVENT_STILL_TIME:', player.index('int CVideoPlayer::OnDiscNavResult')):]
     still = still[:still.index('    case BD_EVENT_MENU_ERROR:')]
     methods += '\nvoid CVideoPlayer::HandleStill(int iMessage, int* pData) { switch(iMessage) {\n' + still + '\n} }\n'
@@ -68,7 +76,7 @@ using namespace std::chrono_literals;
 #define HAVE_LIBBLURAY 1
 #define STREAM_SOURCE_MASK(x) (x)
 constexpr int STREAM_VIDEO=1, STREAM_AUDIO=2, STREAM_SUBTITLE=3, STREAM_SOURCE_DEMUX=1;
-constexpr int DVDSTREAM_TYPE_BLURAY=1, LOGDEBUG=0, DVDSTATE_NORMAL=0, DVDSTATE_STILL=1;
+constexpr int DVDSTREAM_TYPE_BLURAY=1, LOGDEBUG=0, LOGWARNING=1, DVDSTATE_NORMAL=0, DVDSTATE_STILL=1;
 constexpr int BD_EVENT_STILL_TIME=1, BD_EVENT_STILL=2;
 struct TestClock {
   using duration=std::chrono::nanoseconds;
@@ -84,13 +92,14 @@ struct CThread { static void Sleep(std::chrono::milliseconds elapsed) { advance(
 namespace XbmcThreads {
 template<class T=void> struct EndTime {
   TestClock::time_point end;
+  EndTime() = default;
   explicit EndTime(std::chrono::milliseconds duration) { Set(duration); }
   void Set(std::chrono::milliseconds duration) { end=TestClock::now()+duration; }
   bool IsTimePast() const { return TestClock::now()>=end; }
 };
 }
 struct CLog { template<class... T> static void Log(T&&...) {} };
-struct Advanced { float m_videoMenuDomainQueueTimeSize=1.0f; } advanced;
+struct Advanced { float m_videoMenuDomainQueueTimeSize=1.0f; bool m_videoBdBoundaryDrain=true; } advanced;
 struct SettingsComponent { Advanced* GetAdvancedSettings() {return &advanced;} } settings;
 struct CServiceBroker { static SettingsComponent* GetSettingsComponent() {return &settings;} };
 struct CDVDInputStream {
@@ -99,14 +108,15 @@ struct CDVDInputStream {
   bool IsStreamType(int) const {return bd;}
 };
 struct CDVDInputStreamBluray : CDVDInputStream {
-  bool domain=true, data=true;
+  bool domain=true, data=true, naturalBoundary=false;
   CDVDInputStreamBluray() {bd=true;}
+  bool HasNaturalChainBoundary() const {return naturalBoundary;}
   bool IsMenuDomainSegment() const {return domain;}
   bool IsReadInDataPhase() const {return data;}
 };
 struct CDVDMsg { enum Message {VIDEO_DRAIN, PLAYER_AVCHANGE, PLAYER_STARTED, GENERAL_GUI_ACTION}; explicit CDVDMsg(int) {} };
 struct IDVDStreamPlayer {
-  enum { SYNC_STARTING, SYNC_INSYNC };
+  enum { SYNC_STARTING, SYNC_WAITSYNC, SYNC_INSYNC };
   bool stalled=true;
   bool IsStalled() const {return stalled;}
 };
@@ -173,6 +183,7 @@ struct CVideoPlayer {
   double m_messageQueueTimeSize=16,m_menuDomainRampCap=0;
   bool m_menuDomainLowLatency=false,m_menuDomainClampPending=false,m_discTimeBound=false;
   bool m_displayLost=false;
+  bool m_boundaryStartWait=false; XbmcThreads::EndTime<> m_boundaryStartTimer;
   bool m_menuDomainSegment=false,m_menuDomainFillPending=false;
   TestClock::time_point m_menuDomainRampLast{},m_menuDomainEvalLast{},m_menuDomainStarveStart{};
   bool valid=false,better=true; int opens=0,closes=0,validChecks=0;
@@ -189,6 +200,7 @@ struct CVideoPlayer {
   void CheckBetterStream(CCurrentStream&,CDemuxStream*);
   void UpdateMenuDomainQueueDepth(bool);
   void DrainStreamsAtBoundary();
+  bool HoldBoundaryForVideoStart();
   void HandleStill(int,int*);
 };
 using CCriticalSection=std::recursive_mutex;
@@ -358,6 +370,44 @@ int main() {
   { CVideoPlayer p;p.m_CurrentVideo.id=-1;p.m_CurrentAudio.id=-1;
     auto start=TestClock::now();p.DrainStreamsAtBoundary();
     assert(p.video.drainMessages==0 && TestClock::now()==start);
+  }
+  // A natural boundary waits for the ending video to start, then goes on at once.
+  { CVideoPlayer p;auto bd=std::make_shared<CDVDInputStreamBluray>();p.m_pInputStream=bd;
+    bd->naturalBoundary=true;p.m_CurrentVideo.syncState=IDVDStreamPlayer::SYNC_STARTING;
+    auto start=TestClock::now();int passes=0;
+    while(p.HoldBoundaryForVideoStart()) { // one Process() pass: messages, start-up sync, sleep
+      ++passes;auto elapsed=TestClock::now()-start;
+      if(elapsed>=300ms)p.m_CurrentVideo.syncState=IDVDStreamPlayer::SYNC_WAITSYNC;
+      if(elapsed>=320ms)p.m_CurrentVideo.syncState=IDVDStreamPlayer::SYNC_INSYNC;
+      advance(10ms);
+    }
+    assert(TestClock::now()-start==330ms && passes==33 && !p.m_boundaryStartWait);
+  }
+  // A video that never starts is bounded at 5 s; the next boundary gets its own 5 s.
+  { CVideoPlayer p;auto bd=std::make_shared<CDVDInputStreamBluray>();p.m_pInputStream=bd;
+    bd->naturalBoundary=true;p.m_CurrentVideo.syncState=IDVDStreamPlayer::SYNC_STARTING;
+    auto start=TestClock::now();
+    while(p.HoldBoundaryForVideoStart())advance(10ms);
+    assert(TestClock::now()-start==5000ms && !p.m_boundaryStartWait);
+    start=TestClock::now();assert(p.HoldBoundaryForVideoStart());advance(4990ms);
+    assert(p.HoldBoundaryForVideoStart());advance(10ms);assert(!p.HoldBoundaryForVideoStart());
+  }
+  // The wait ends and resets when the boundary goes away, the video stream closes or
+  // the drain is switched off; a later boundary starts a fresh 5 s.
+  { CVideoPlayer p;auto bd=std::make_shared<CDVDInputStreamBluray>();p.m_pInputStream=bd;
+    p.m_CurrentVideo.syncState=IDVDStreamPlayer::SYNC_STARTING;
+    auto interrupt=[&](const std::function<void()>& cut,const std::function<void()>& restore) {
+      bd->naturalBoundary=true;assert(p.HoldBoundaryForVideoStart());advance(4000ms);
+      assert(p.HoldBoundaryForVideoStart());cut();
+      assert(!p.HoldBoundaryForVideoStart() && !p.m_boundaryStartWait);restore();
+      advance(4000ms);assert(p.HoldBoundaryForVideoStart()); // fresh timer, not the old one
+      advance(990ms);assert(p.HoldBoundaryForVideoStart());
+      bd->naturalBoundary=false;assert(!p.HoldBoundaryForVideoStart());
+    };
+    interrupt([&] {bd->naturalBoundary=false;},[&] {bd->naturalBoundary=true;});
+    interrupt([&] {p.m_CurrentVideo.id=-1;},[&] {p.m_CurrentVideo.id=1;});
+    interrupt([&] {advanced.m_videoBdBoundaryDrain=false;},[&] {advanced.m_videoBdBoundaryDrain=true;});
+    p.m_pInputStream=std::make_shared<CDVDInputStream>();assert(!p.HoldBoundaryForVideoStart());
   }
   // A timed still after a generic still initializes once; duplicates cannot extend it.
   { CVideoPlayer p;int on=1,seconds=3,off=0;p.HandleStill(BD_EVENT_STILL,&on);

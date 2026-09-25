@@ -185,6 +185,7 @@ public:
     return compat;
   }
   bool ConsumeNaturalChainBoundary() { return m_naturalChainBoundary.exchange(false); }
+  bool HasNaturalChainBoundary() const { return m_naturalChainBoundary; }
   bool IsNaturalChainBoundaryInFlight() const
   {
     return !m_bMVCPlayback && (m_naturalChainBoundary || m_crossPlaylistPending || m_atTitleEnd);

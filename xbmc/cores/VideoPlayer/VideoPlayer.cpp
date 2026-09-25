@@ -946,6 +946,7 @@ bool CVideoPlayer::OpenInputStream()
   // ahead, so the disc VM reaches end-of-playlist and jumps on (TNG S1D1: a
   // 2:39 intro cut after ~40s, its menu drawn early). Bound disc read-ahead
   // in time as well; other inputs keep data-only fullness.
+  m_boundaryStartWait = false;
   m_discTimeBound = m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) ||
                     m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD);
   m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
@@ -1931,6 +1932,17 @@ void CVideoPlayer::Process()
             }
           }
         }
+      }
+
+      // A short clip can be read to its end before its video starts (decoder
+      // open and a display mode switch take longer than reading a few seconds
+      // of intro). Hold a natural boundary until that video is in sync so the
+      // drain below plays it out instead of flushing it. Player messages and
+      // start-up sync keep running on each pass; the hold is bounded.
+      if (HoldBoundaryForVideoStart())
+      {
+        CThread::Sleep(10ms);
+        continue;
       }
 
       // if there is another stream available, reopen demuxer
@@ -5388,6 +5400,31 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   m_demuxerSpeed = DVD_PLAYSPEED_NORMAL;
   if (m_pDemuxer)
     m_pDemuxer->SetSpeed(DVD_PLAYSPEED_NORMAL);
+}
+
+bool CVideoPlayer::HoldBoundaryForVideoStart()
+{
+#if defined(HAVE_LIBBLURAY)
+  if (auto bluray = std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
+      bluray && bluray->HasNaturalChainBoundary() && m_CurrentVideo.id >= 0 &&
+      m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC &&
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoBdBoundaryDrain)
+  {
+    if (!m_boundaryStartWait)
+    {
+      m_boundaryStartWait = true;
+      m_boundaryStartTimer.Set(5000ms);
+      CLog::Log(LOGDEBUG, "CVideoPlayer - holding a natural disc boundary until the ending "
+                          "video starts");
+    }
+    if (!m_boundaryStartTimer.IsTimePast())
+      return true;
+    CLog::Log(LOGWARNING, "CVideoPlayer - ending video did not start within 5s, continuing "
+                          "the disc boundary");
+  }
+  m_boundaryStartWait = false;
+#endif
+  return false;
 }
 
 void CVideoPlayer::DrainStreamsAtBoundary()
