@@ -26,6 +26,7 @@ set(HEADERS DVDFactorySubtitle.h
             DVDSubtitleTagMicroDVD.h
             DVDSubtitleTagSami.h
             DVDSubtitlesLibass.h
+            DVDSubtitlesLibassRenderResult.h
             SubtitleParserWebVTT.h
             SubtitlesAdapter.h
             SubtitlesStyle.h)

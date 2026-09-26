@@ -26,6 +26,7 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <stdexcept>
 
 using namespace KODI::SUBTITLES::STYLE;
 using namespace UTILS;
@@ -57,6 +58,47 @@ bool RenderOptsEqual(const renderOpts& a, const renderOpts& b)
 }
 
 } // namespace
+
+CLibassRenderResult::CLibassRenderResult(const ASS_Image* images,
+                                       const CLibassRenderResult* unchangedBitmaps)
+{
+  size_t count = 0;
+  for (const ASS_Image* image = images; image; image = image->next)
+    ++count;
+
+  if (count == 0)
+    return;
+
+  m_images = std::make_unique<ASS_Image[]>(count);
+  m_bitmaps = unchangedBitmaps ? unchangedBitmaps->m_bitmaps
+                              : std::make_shared<std::vector<std::vector<uint8_t>>>(count);
+  for (size_t i = 0; i < count; ++i, images = images->next)
+  {
+    ASS_Image& image = m_images[i];
+    image = *images;
+    image.next = i + 1 < count ? &m_images[i + 1] : nullptr;
+    image.bitmap = nullptr;
+    image.stride = image.w;
+    if (image.w > 0 && image.h > 0)
+    {
+      const size_t width = static_cast<size_t>(image.w);
+      const size_t height = static_cast<size_t>(image.h);
+      if (height > std::numeric_limits<size_t>::max() / width)
+        throw std::length_error("Libass bitmap size overflow");
+      auto& bitmap = (*m_bitmaps)[i];
+      if (!unchangedBitmaps)
+      {
+        bitmap.resize(width * height);
+        // Libass does not guarantee stride padding after the final row.
+        for (size_t row = 0; row < height; ++row)
+          std::memcpy(bitmap.data() + row * width, images->bitmap + row * images->stride, width);
+      }
+      image.bitmap = bitmap.data();
+    }
+  }
+}
+
+CLibassRenderResult::~CLibassRenderResult() = default;
 
 static void libass_log(int level, const char* fmt, va_list args, void* data)
 {
@@ -295,11 +337,8 @@ bool CDVDSubtitlesLibass::CreateTrack(char* buf, size_t size)
   return true;
 }
 
-ASS_Image* CDVDSubtitlesLibass::RenderImage(double pts,
-                                            renderOpts opts,
-                                            bool updateStyle,
-                                            const std::shared_ptr<struct style>& subStyle,
-                                            int* changes)
+std::shared_ptr<const CLibassRenderResult> CDVDSubtitlesLibass::RenderImage(
+    double pts, renderOpts opts, bool updateStyle, const std::shared_ptr<struct style>& subStyle)
 {
   std::unique_lock<CCriticalSection> lock(m_section);
   if (!m_renderer || !m_track)
@@ -326,9 +365,7 @@ ASS_Image* CDVDSubtitlesLibass::RenderImage(double pts,
   if (!styleChanged && m_renderCacheValid && RenderOptsEqual(opts, m_lastOpts) &&
       ptsMs >= m_cacheValidFrom && ptsMs < m_cacheValidUntil)
   {
-    if (changes)
-      *changes = 0;
-    return m_lastImages;
+    return m_lastResult;
   }
 
   if (styleChanged)
@@ -393,16 +430,25 @@ ASS_Image* CDVDSubtitlesLibass::RenderImage(double pts,
   // if you seek forward/backward the video, the overlapped subtitles lines could be rendered in the wrong order
   // this is a known side effect from libass devs and not a bug from our part
   int localChanges = 0;
-  m_lastImages = ass_render_frame(m_renderer, m_track, ptsMs, &localChanges);
-  if (changes)
-    *changes = localChanges;
+  const ASS_Image* images = ass_render_frame(m_renderer, m_track, ptsMs, &localChanges);
+  if (!images)
+    m_lastResult.reset();
+  else if (localChanges != 0 || !m_lastResult || opts.frameWidth != m_lastOpts.frameWidth ||
+           opts.frameHeight != m_lastOpts.frameHeight)
+  {
+    // Copy before unlocking: libass may replace both the list and its bitmaps
+    // on the next render. Conversion also depends on the frame dimensions.
+    // Position-only changes need new headers, but not another pixel copy.
+    m_lastResult = std::make_shared<const CLibassRenderResult>(
+        images, localChanges == 0 || localChanges == 1 ? m_lastResult.get() : nullptr);
+  }
 
-  // The returned image list stays valid until the next ass_render_frame() or
-  // track mutation; cache it together with the interval over which it holds.
+  // Unchanged output retains its identity, including across animated renders
+  // that happen to rasterize identically. Each consumer validates that identity.
   m_lastOpts = opts;
   UpdateRenderCache(ptsMs);
 
-  return m_lastImages;
+  return m_lastResult;
 }
 
 bool CDVDSubtitlesLibass::IsDynamicEvent(const ASS_Event* assEvent) const
@@ -495,7 +541,7 @@ void CDVDSubtitlesLibass::UpdateRenderCache(int64_t ptsMs)
 void CDVDSubtitlesLibass::InvalidateRenderCache()
 {
   m_renderCacheValid = false;
-  m_lastImages = nullptr;
+  m_lastResult.reset();
 }
 
 void CDVDSubtitlesLibass::ApplyStyle(const std::shared_ptr<struct style>& subStyle, renderOpts opts)

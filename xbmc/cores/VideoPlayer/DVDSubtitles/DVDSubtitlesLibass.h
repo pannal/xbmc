@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "DVDSubtitlesLibassRenderResult.h"
 #include "SubtitlesStyle.h"
 #include "threads/CriticalSection.h"
 #include "utils/ColorUtils.h"
@@ -39,11 +40,11 @@ public:
   */
   void Configure();
 
-  ASS_Image* RenderImage(double pts,
-                         KODI::SUBTITLES::STYLE::renderOpts opts,
-                         bool updateStyle,
-                         const std::shared_ptr<struct KODI::SUBTITLES::STYLE::style>& subStyle,
-                         int* changes = NULL);
+  std::shared_ptr<const CLibassRenderResult> RenderImage(
+      double pts,
+      KODI::SUBTITLES::STYLE::renderOpts opts,
+      bool updateStyle,
+      const std::shared_ptr<struct KODI::SUBTITLES::STYLE::style>& subStyle);
 
   ASS_Event* GetEvents();
 
@@ -201,7 +202,7 @@ private:
   // (typesetting with hundreds of \p drawing events) re-rasterize on every
   // video frame on the render thread, starving video buffer recycling and
   // collapsing playback to a few fps.
-  ASS_Image* m_lastImages{nullptr};
+  std::shared_ptr<const CLibassRenderResult> m_lastResult;
   KODI::SUBTITLES::STYLE::renderOpts m_lastOpts{};
   bool m_renderCacheValid{false};
   int64_t m_cacheValidFrom{0};

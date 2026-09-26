@@ -23,6 +23,7 @@
 
 typedef struct ass_image ASS_Image;
 
+class CLibassRenderResult;
 class CDVDOverlay;
 class CDVDOverlayLibass;
 class CDVDOverlayImage;
@@ -46,6 +47,10 @@ namespace OVERLAY {
     static std::shared_ptr<COverlay> Create(const CDVDOverlayImage& o, CRect& rSource);
     static std::shared_ptr<COverlay> Create(const CDVDOverlaySpu& o);
     static std::shared_ptr<COverlay> Create(ASS_Image* images, float width, float height);
+
+    static std::shared_ptr<COverlay> Create(const CLibassRenderResult& result,
+                                            float width,
+                                            float height);
 
     COverlay();
     virtual ~COverlay();
@@ -86,6 +91,8 @@ namespace OVERLAY {
     bool m_discMenuOverlay{false};
     // Built for the disc menu composite's raw PQ layer (see CWinSystemBase).
     bool m_rawPqMenu{false};
+    // Per-conversion identity, never the handler's most recent changes flag.
+    std::weak_ptr<const CLibassRenderResult> m_libassResult;
 
   protected:
     /*!

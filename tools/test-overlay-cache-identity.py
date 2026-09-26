@@ -3,8 +3,8 @@
 
 Exercises the complete Convert and ConvertLibass methods, cache retirement,
 and actual SPU highlight replacement with real producer overlay classes.
-Does not claim immutable payloads, owned ASS output, real rasterization or GPU
-validation. Run with Python 3 and g++; temporary outputs are removed.
+Exercises owned ASS output and per-consumer result identity with a fake rasterizer.
+Does not claim frozen bitmap producers, real rasterization or GPU validation. Run with Python 3 and g++; temporary outputs are removed.
 """
 import os
 from pathlib import Path
@@ -38,6 +38,10 @@ def main():
                       'void CRenderer::Reset()', 'std::shared_ptr<COverlay> CRenderer::ConvertLibass(',
                       'std::shared_ptr<COverlay> CRenderer::Convert(']:
         source += '\n' + function(renderer, signature)
+    libass = (root / 'DVDSubtitles/DVDSubtitlesLibass.cpp').read_text()
+    source += '\n' + function(libass, 'CLibassRenderResult::CLibassRenderResult(')
+    source += '\nCLibassRenderResult::~CLibassRenderResult() = default;\n'
+    source += function(renderer, 'std::shared_ptr<COverlay> COverlay::Create(const CLibassRenderResult&')
     source += '\n' + function(container, 'void CDVDOverlayContainer::UpdateOverlayInfo(')
     source += TESTS
     with tempfile.TemporaryDirectory(prefix='overlay-cache-test-') as temporary:
@@ -56,7 +60,11 @@ PRELUDE = r'''
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <cstring>
 #include <map>
+#include <limits>
+#include <stdexcept>
+#include "cores/VideoPlayer/DVDSubtitles/DVDSubtitlesLibassRenderResult.h"
 #include <memory>
 #include <mutex>
 #include <string>
@@ -79,15 +87,19 @@ struct Gfx {RESOLUTION_INFO info;RESOLUTION_INFO GetResInfo(){return info;}int G
   void SetResInfo(int,const RESOLUTION_INFO& r){info=r;}};
 struct Window {bool active=false;Gfx gfx;bool IsMenuCompositeActive(){return active;}Gfx& GetGfxContext(){return gfx;}};
 struct CServiceBroker {static Window* GetWinSystem(){static Window w;return &w;}};
-struct ASS_Image {uint32_t value=0;};
+struct ass_image {int w=1,h=1,stride=1;unsigned char* bitmap=nullptr;
+  uint32_t color=0;int dst_x=0,dst_y=0;ASS_Image* next=nullptr;int type=0;};
 struct CDVDSubtitlesLibass {
-  ASS_Image image;bool visible=true;int changes=1,calls=0;bool sawStyle=false;
+  struct {unsigned char value=0;} image;bool visible=true;int changes=2,calls=0;bool sawStyle=false;
+  std::shared_ptr<const CLibassRenderResult> result;
   SUBTITLES::STYLE::renderOpts opts{};double lastPts=0;
   int GetPlayResY(){return 720;}
-  ASS_Image* RenderImage(double pts,SUBTITLES::STYLE::renderOpts o,bool update,
-                        const std::shared_ptr<SUBTITLES::STYLE::style>&,int* out){
+  std::shared_ptr<const CLibassRenderResult> RenderImage(double pts,SUBTITLES::STYLE::renderOpts o,bool update,
+                        const std::shared_ptr<SUBTITLES::STYLE::style>&){
     assert(std::this_thread::get_id()==ownerThread);++calls;lastPts=pts;opts=o;sawStyle=update;
-    *out=update?2:changes;return visible?&image:nullptr;
+    if(!visible){result.reset();return nullptr;}
+    if(update||changes||!result){ASS_Image node;node.bitmap=&image.value;result=std::make_shared<const CLibassRenderResult>(&node);}
+    return result;
   }
 };
 @LIBASS_OVERLAY@
@@ -104,6 +116,7 @@ struct CDVDOverlayContainer:CCriticalSection{
 };
 namespace OVERLAY {
 struct COverlay {
+  std::weak_ptr<const CLibassRenderResult> m_libassResult;
   static int created,destroyed;uint32_t value=0;bool m_rawPqMenu=false,m_discMenuOverlay=false;
   ~COverlay(){assert(std::this_thread::get_id()==ownerThread);++destroyed;}
   static std::shared_ptr<COverlay> New(uint32_t value){
@@ -115,7 +128,8 @@ struct COverlay {
     auto p=New(value);p->m_rawPqMenu=o.m_isPqMenuGraphics&&CServiceBroker::GetWinSystem()->active;return p;
   }
   static std::shared_ptr<COverlay> Create(const CDVDOverlaySpu& o){return New(o.highlight_color[0][0]);}
-  static std::shared_ptr<COverlay> Create(ASS_Image* o,float,float){return New(o->value);}
+  static std::shared_ptr<COverlay> Create(ASS_Image* o,float,float){return New(o->bitmap[0]);}
+  static std::shared_ptr<COverlay> Create(const CLibassRenderResult&,float,float);
 };
 int COverlay::created=0,COverlay::destroyed=0;
 class CRenderer {
@@ -191,19 +205,31 @@ int main(){
    auto p=std::make_shared<CDVDOverlayLibass>(handler,DVDOVERLAY_TYPE_SSA);handler->image.value=1;
    auto first=r.Convert(*p,100);assert(handler->lastPts==100&&handler->sawStyle&&r.styleLoads==1);
    handler->changes=0;auto same=r.Convert(*p,101);assert(same==first&&!handler->sawStyle);
-   handler->changes=1;handler->image.value=2;auto animated=r.Convert(*p,102);assert(animated!=first&&animated->value==2);
+   handler->changes=2;handler->image.value=2;auto animated=r.Convert(*p,102);assert(animated!=first&&animated->value==2);
    handler->changes=0;r.m_isSettingsChanged=true;handler->image.value=3;
    auto styled=r.Convert(*p,103);assert(styled!=animated&&handler->sawStyle&&r.styleLoads==2);
    r.m_activeAreaTopOffset=100;r.m_activeAreaBottomOffset=120;r.m_activeAreaApplyUserPos=true;
    r.Convert(*p,104);assert(handler->opts.marginsMode==SUBTITLES::STYLE::MarginsMode::INSIDE_ACTIVE_AREA);
    assert(handler->opts.activeAreaTopMargin==100&&handler->opts.activeAreaBottomMargin==120&&handler->opts.activeAreaApplyUserPos);
-   handler->visible=false;assert(!r.Convert(*p,105));handler->visible=true;handler->changes=1;
+   handler->visible=false;assert(!r.Convert(*p,105));handler->visible=true;handler->changes=2;
    assert(r.Convert(*p,106));r.Flush();handler->changes=0;
    auto afterFlush=r.Convert(*p,107);assert(afterFlush&&afterFlush!=styled);
    // DebugRenderer calls ConvertLibass directly with its own style and cache.
    CRenderer debug;auto debugStyle=std::make_shared<SUBTITLES::STYLE::style>();
    auto debugImage=debug.ConvertLibass(*p,108,true,debugStyle);handler->changes=0;
-   assert(debug.ConvertLibass(*p,109,false,debugStyle)==debugImage&&r.Convert(*p,110)==afterFlush);}
+   assert(debug.ConvertLibass(*p,109,false,debugStyle)==debugImage);
+   // Another consumer changed the handler output. Its subsequent changes=0
+   // must not validate the old texture in r.
+   auto refreshed=r.Convert(*p,110);assert(refreshed!=afterFlush&&r.Convert(*p,111)==refreshed);
+   handler->image.value=7;handler->changes=2;auto changed=debug.ConvertLibass(*p,112,false,debugStyle);
+   handler->changes=0;auto caughtUp=r.Convert(*p,113);
+   assert(caughtUp!=refreshed&&caughtUp->value==7&&changed->value==7&&refreshed->value==3);
+   assert(r.Convert(*p,114)==caughtUp);
+   std::weak_ptr<const CLibassRenderResult> weak=handler->result;handler->result.reset();
+   assert(weak.expired());auto rebuilt=r.Convert(*p,115);assert(rebuilt!=caughtUp);
+   // Prepared owned bytes do not follow later producer mutation.
+   auto held=handler->result;handler->image.value=8;
+   assert(COverlay::Create(*held,1920,1080)->value==7);}
   // Strong cache keys prevent address recycling until main cache retirement.
   {CRenderer r;auto p=image(false,0xff123456);std::weak_ptr<CDVDOverlay> weak=p;r.Convert(*p,0);p.reset();
    assert(!weak.expired());int before=COverlay::destroyed;r.ReleaseUnused();

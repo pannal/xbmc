@@ -30,6 +30,14 @@
 using namespace KODI;
 using namespace OVERLAY;
 
+std::shared_ptr<COverlay> COverlay::Create(const CLibassRenderResult& result,
+                                         float width,
+                                         float height)
+{
+  // The legacy factories read and consume this owned chain synchronously.
+  return Create(result.m_images.get(), width, height);
+}
+
 COverlay::COverlay()
 {
   m_x = 0.0f;
@@ -745,24 +753,20 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(
     rOpts.position = 0;
   }
 
-  // changes: Detect changes from previously rendered images, if > 0 they are changed
-  int changes = 0;
-  ASS_Image* images =
-      o.GetLibassHandler()->RenderImage(pts, rOpts, updateStyle, overlayStyle, &changes);
+  const auto result = o.GetLibassHandler()->RenderImage(pts, rOpts, updateStyle, overlayStyle);
 
   // If no images not execute the renderer
-  if (!images)
+  if (!result)
     return nullptr;
 
   const auto content = o.shared_from_this();
-  if (changes == 0)
-  {
-    const auto it = m_textureCache.find(content);
-    if (it != m_textureCache.end())
-      return it->second;
-  }
+  const auto it = m_textureCache.find(content);
+  if (it != m_textureCache.end() && it->second && it->second->m_libassResult.lock() == result)
+    return it->second;
 
-  std::shared_ptr<COverlay> overlay = COverlay::Create(images, rOpts.frameWidth, rOpts.frameHeight);
+  std::shared_ptr<COverlay> overlay = COverlay::Create(*result, rOpts.frameWidth, rOpts.frameHeight);
+  if (overlay)
+    overlay->m_libassResult = result;
 
   m_textureCache[content] = overlay;
   return overlay;
