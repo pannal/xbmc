@@ -1678,6 +1678,17 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
         }
         SOverlay copy = std::make_shared<CDVDOverlayImage>(*o, o->x, o->y, o->width, o->height);
         copy->palette = p;
+        if (copy->m_isPqMenuGraphics)
+        {
+          std::vector<uint32_t>& p2020 = pal[1];
+          if (p2020.empty())
+          {
+            p2020.resize(256);
+            for (unsigned i = 0; i < 256; i++)
+              p2020[i] = build_rgba(ov->palette[i], true);
+          }
+          copy->pqMenuPalette = p2020;
+        }
         o = copy;
       }
       CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - palette-only update plane {} ({} overlays)",
@@ -1701,6 +1712,8 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     overlay->SetDiscMenuOverlay(ov->plane == BD_OVERLAY_IG);
     // Only HDMV menu graphics (IG) are tagged; PG stays on its own path.
     const bool pq = ov->plane == BD_OVERLAY_IG && TagGraphicsAsPq();
+    // IG of a PQ playlist can also take the disc menu composite's raw route.
+    const bool pqMenu = ov->plane == BD_OVERLAY_IG && m_pqAuthoredGraphics;
 
     if (ov->palette)
     {
@@ -1708,6 +1721,13 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
 
       for(unsigned i = 0; i < 256; i++)
         overlay->palette[i] = build_rgba(ov->palette[i], pq);
+
+      if (pqMenu)
+      {
+        overlay->pqMenuPalette.resize(256);
+        for (unsigned i = 0; i < 256; i++)
+          overlay->pqMenuPalette[i] = build_rgba(ov->palette[i], true);
+      }
     }
     else
       overlay->palette.clear();
@@ -1748,6 +1768,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     overlay->source_height = plane.h;
     overlay->source_width = plane.w;
     overlay->m_isHdrPq = pq;
+    overlay->m_isPqMenuGraphics = pqMenu;
 
     OverlayClear(plane, ov->x, ov->y, ov->w, ov->h);
     plane.o.push_back(overlay);
@@ -1820,6 +1841,9 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     // BD-J graphics stay untagged: an Xlet may request SDR or HDR graphics
     // (HGraphicsConfigurationTemplateUHD) and libbluray does not report the
     // choice, so HDR video alone does not prove a BD-J image is PQ-authored.
+    // On a PQ playlist they can take the disc menu composite's raw route: UHD
+    // discs author their BD-J artwork as BT.2020 PQ (pannal/CoreELEC#120).
+    overlay->m_isPqMenuGraphics = m_pqAuthoredGraphics;
 
     OverlayClear(plane, ov->x, ov->y, ov->w, ov->h);
     plane.o.push_back(overlay);

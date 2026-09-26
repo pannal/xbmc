@@ -222,6 +222,7 @@ int main(){
  assert(b.m_planes[1].o.size()==1);auto image=b.m_planes[1].o.front();
  assert(image->IsDiscMenuOverlay()&&image->pixels==std::vector<uint8_t>({1,1,1,1,2,2,2,2}));
  assert(!image->m_isHdrPq); // SDR disc graphics keep the SDR path
+ assert(!image->m_isPqMenuGraphics&&image->pqMenuPalette.empty()); // and never take the menu composite
  ov.cmd=BD_OVERLAY_FLUSH;b.OverlayCallback(&ov);assert(player.last&&player.last->IsDiscMenuOverlay());
  // Palette-only DRAW is valid with no rectangle and cannot mutate an in-flight image.
  pal[1].Y=99;ov.cmd=BD_OVERLAY_DRAW;ov.palette_update_flag=1;ov.w=ov.h=0;ov.img=nullptr;b.OverlayCallback(&ov);
@@ -234,13 +235,22 @@ int main(){
  b.m_pqAuthoredGraphics=true;ov.img=runs;b.OverlayCallback(&ov);
  auto tagged=b.m_planes[1].o.front();
  assert(tagged!=valid&&tagged->m_isHdrPq&&tagged->palette[1]==1099);
+ // The same IG can take the disc menu composite's raw route, on the BT.2020 matrix.
+ assert(tagged->m_isPqMenuGraphics&&tagged->pqMenuPalette.size()==256&&tagged->pqMenuPalette[1]==1099);
  // A palette-only update keeps each image on the matrix its tag was drawn with.
  ov.palette_update_flag=1;ov.w=ov.h=0;ov.img=nullptr;b.OverlayCallback(&ov);
  assert(b.m_planes[1].o.front()->m_isHdrPq&&b.m_planes[1].o.front()->palette[1]==1099);
+ assert(b.m_planes[1].o.front()->m_isPqMenuGraphics&&b.m_planes[1].o.front()->pqMenuPalette[1]==1099);
  ov.palette_update_flag=0;ov.w=4;ov.h=2;ov.img=runs;
  // The shared PGS HDR switch off: no IG tagging, untagged matrix.
  g_pgsHdrToSdr=false;b.OverlayCallback(&ov);
  assert(!b.m_planes[1].o.front()->m_isHdrPq&&b.m_planes[1].o.front()->palette[1]==99);
+ // The menu composite route does not depend on the PGS switch: it follows the playlist.
+ assert(b.m_planes[1].o.front()->m_isPqMenuGraphics&&b.m_planes[1].o.front()->pqMenuPalette[1]==1099);
+ // A palette-only update keeps its BT.2020 menu palette even with the switch off.
+ ov.palette_update_flag=1;ov.w=ov.h=0;ov.img=nullptr;b.OverlayCallback(&ov);
+ assert(!b.m_planes[1].o.front()->m_isHdrPq&&b.m_planes[1].o.front()->palette[1]==99&&b.m_planes[1].o.front()->pqMenuPalette[1]==1099);
+ ov.palette_update_flag=0;ov.w=4;ov.h=2;ov.img=runs;
  g_pgsHdrToSdr=true;b.m_pqAuthoredGraphics=false;
  // PG children retain subtitle identity even in a disc-composition envelope.
  ov.plane=BD_OVERLAY_PG;ov.cmd=BD_OVERLAY_INIT;b.OverlayCallback(&ov);ov.cmd=BD_OVERLAY_DRAW;ov.img=runs;b.OverlayCallback(&ov);
@@ -248,6 +258,7 @@ int main(){
  // PG is never tagged, even in a PQ regime: it stays on its own path and matrix.
  b.m_pqAuthoredGraphics=true;b.OverlayCallback(&ov);
  assert(!b.m_planes[0].o.front()->m_isHdrPq&&b.m_planes[0].o.front()->palette[1]<1000);
+ assert(!b.m_planes[0].o.front()->m_isPqMenuGraphics&&b.m_planes[0].o.front()->pqMenuPalette.empty());
  b.m_pqAuthoredGraphics=false;
  ov.cmd=BD_OVERLAY_CLOSE;b.OverlayCallback(&ov);assert(b.m_planes[0].o.empty()&&!b.m_planes[1].o.empty());
  // The last dirty row ends at the canvas allocation; a stride*h memcpy overreads.
@@ -255,8 +266,11 @@ int main(){
  auto canvas=std::make_unique<uint32_t[]>(8);for(int i=0;i<8;++i)canvas[i]=i+1;
  argb.cmd=BD_ARGB_OVERLAY_DRAW;argb.x=2;argb.w=2;argb.stride=4;argb.argb=canvas.get()+2;b.OverlayCallbackARGB(&argb);
  auto rgba=b.m_planes[1].o.front();assert(rgba->linesize==8&&rgba->pixels.size()==16&&!rgba->m_isHdrPq);
+ assert(!rgba->m_isPqMenuGraphics);
  // BD-J graphics stay untagged even in a PQ regime until the Xlet's graphics range is known.
  b.m_pqAuthoredGraphics=true;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isHdrPq);
+ // BD-J of a PQ playlist takes the menu composite's raw route (pixels untouched).
+ assert(b.m_planes[1].o.front()->m_isPqMenuGraphics);
  b.m_pqAuthoredGraphics=false;
  b.OverlayCallbackARGB(&argb);rgba=b.m_planes[1].o.front();
  uint32_t copied[4];memcpy(copied,rgba->pixels.data(),16);assert(copied[0]==3&&copied[1]==4&&copied[2]==7&&copied[3]==8);
