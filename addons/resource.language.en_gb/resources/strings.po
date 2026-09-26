@@ -27359,6 +27359,36 @@ msgctxt "#69213"
 msgid "Scale bitmap-based subtitles (PGS, VobSub). 100% is original size. Lower values shrink, higher values enlarge."
 msgstr ""
 
+#. Setting label: HDR disc menu graphics
+#: system/settings/settings.xml
+msgctxt "#69214"
+msgid "HDR disc menu graphics"
+msgstr ""
+
+#. Help text for setting "HDR disc menu graphics"
+#: system/settings/settings.xml
+msgctxt "#69215"
+msgid "How Blu-ray menu graphics authored in HDR (BT.2020 PQ) are shown on an HDR10 or Dolby Vision output. As authored: while such a menu is on screen, its graphics reach the display unconverted and Kodi's own controls keep their usual brightness; the graphics settings above do not apply to them. As authored, HDMV menus only: Java (BD-J) menus are shown as SDR, as before; use this if a disc's Java menu looks too bright. Convert: HDMV menus use the conversion above and Java menus are shown as SDR. Needs kernel support; not used in Dolby Vision video processor mode."
+msgstr ""
+
+#. Option for setting "HDR disc menu graphics"
+#: system/settings/settings.xml
+msgctxt "#69216"
+msgid "As authored"
+msgstr ""
+
+#. Option for setting "HDR disc menu graphics"
+#: system/settings/settings.xml
+msgctxt "#69217"
+msgid "As authored, HDMV menus only"
+msgstr ""
+
+#. Option for setting "HDR disc menu graphics"
+#: system/settings/settings.xml
+msgctxt "#69218"
+msgid "Convert"
+msgstr ""
+
 #: system/settings/settings.xml
 msgctxt "#69999"
 msgid "Enable this to disable noise reduction. Requires reboot. FOR BETTER VIDEO PROCESSING LEAVE THIS SETTING ENABLED (i.e., DISABLE NOISE REDUCTION)."
@@ -27371,26 +27401,6 @@ msgstr ""
 
 msgctxt "#36061"
 msgid "When CEC standby is triggered from Kodi"
-msgstr ""
-
-msgctxt "#69214"
-msgid "HDR disc menu graphics"
-msgstr ""
-
-msgctxt "#69215"
-msgid "How Blu-ray menu graphics authored in HDR (BT.2020 PQ) are shown on an HDR10 or Dolby Vision output. As authored: while such a menu is on screen, its graphics reach the display unconverted and Kodi's own controls keep their usual brightness; the graphics settings above do not apply to them. As authored, HDMV menus only: Java (BD-J) menus are shown as SDR, as before; use this if a disc's Java menu looks too bright. Convert: HDMV menus use the conversion above and Java menus are shown as SDR. Needs kernel support; not used in Dolby Vision video processor mode."
-msgstr ""
-
-msgctxt "#69216"
-msgid "As authored"
-msgstr ""
-
-msgctxt "#69217"
-msgid "As authored, HDMV menus only"
-msgstr ""
-
-msgctxt "#69218"
-msgid "Convert"
 msgstr ""
 
 msgctxt "#69240"

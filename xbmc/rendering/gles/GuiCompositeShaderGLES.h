@@ -53,7 +53,6 @@ private:
   GLuint m_lutDegammaTexId{0};
   GLuint m_lutTFTexId{0};
   GLuint m_hdrTexId{0};
-  float m_ootfGamma{0.0f};
 
   GLint m_hPos{-1};
   GLint m_hTex{-1};
@@ -61,7 +60,6 @@ private:
   GLint m_hLutDegamma{-1};
   GLint m_hLutTF{-1};
   GLint m_hProj{-1};
-  GLint m_hOotfGamma{-1};
   GLint m_hHdr{-1};
   GLint m_hHasHdr{-1};
 };

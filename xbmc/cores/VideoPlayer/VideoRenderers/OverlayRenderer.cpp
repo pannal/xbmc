@@ -198,7 +198,9 @@ bool CRenderer::HasPqMenuOverlay(int idx)
     return false;
   for (const auto& e : m_buffers[idx])
   {
-    if (IsPqMenuImage(e.overlay_dvd))
+    // Only visible menu graphics keep the composite engaged.
+    if (IsPqMenuImage(e.overlay_dvd) &&
+        std::static_pointer_cast<CDVDOverlayImage>(e.overlay_dvd)->m_menuVisible)
       return true;
   }
   return false;

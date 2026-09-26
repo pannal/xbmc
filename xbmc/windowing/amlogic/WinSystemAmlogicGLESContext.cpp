@@ -44,6 +44,22 @@ constexpr const char* DV_GRAPHIC_PQ = "/sys/module/amdolby_vision/parameters/dol
 constexpr const char* DV_GRAPHIC_MAX = "/sys/module/amdolby_vision/parameters/dolby_vision_graphic_max";
 // The VPP's OSD SDR->HDR OOTF: a flat gain table, 512 = 10000 nits.
 constexpr const char* VPP_SDR_HDR_GAIN = "/sys/module/am_vecm/parameters/oo_y_lut_sdr_hdr";
+constexpr const char* DV_OUTPUT_MODE = "/sys/module/amdolby_vision/parameters/dolby_vision_mode";
+constexpr const char* DV_LL_POLICY = "/sys/module/amdolby_vision/parameters/dolby_vision_ll_policy";
+
+// Route inputs are sysfs reads: refresh them at most this often.
+constexpr auto ROUTE_INPUTS_REFRESH = std::chrono::milliseconds(250);
+
+// The first engage of the VPP route waits this long: while DV re-engages at a
+// playlist change its enable state reads off for ~100 ms, which would look
+// like HDR10 output.
+constexpr auto OSD_ROUTE_FIRST_SETTLE = std::chrono::milliseconds(250);
+
+unsigned int ReadUint(const char* path)
+{
+  CSysfsPath sysfs(path);
+  return sysfs.Exists() ? sysfs.Get<unsigned int>().value_or(0) : 0;
+}
 
 // Rendered frames must report no PQ menu graphics for this long before the
 // composite is released, so BD-J clear/redraw cycles do not flap the route.
@@ -140,6 +156,7 @@ bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
 {
   if (m_menuRoute != MenuRoute::NONE)
     DisengageMenuComposite();
+  ApplyPendingKernelSwitch(); // no more swaps to wait for
 
   m_pGLContext.DestroyContext();
   m_pGLContext.Destroy();
@@ -329,6 +346,28 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   // Ignore errors - eglSwapBuffers() sometimes fails during modeswaps on AML,
   // there is probably nothing we can do about it
   m_pGLContext.TrySwapBuffers();
+
+  // The frame just swapped is the first one in the new encoding: switch the
+  // OSD's interpretation with it, not a frame early.
+  ApplyPendingKernelSwitch();
+}
+
+void CWinSystemAmlogicGLESContext::QueueKernelSwitch(const char* path, int value)
+{
+  // Two changes before a swap (engage and release in one frame): the earlier
+  // one is superseded only for the same switch.
+  if (m_pendingSwitchPath && m_pendingSwitchPath != path)
+    ApplyPendingKernelSwitch();
+  m_pendingSwitchPath = path;
+  m_pendingSwitchValue = value;
+}
+
+void CWinSystemAmlogicGLESContext::ApplyPendingKernelSwitch()
+{
+  if (!m_pendingSwitchPath)
+    return;
+  SetKernelSwitch(m_pendingSwitchPath, m_pendingSwitchValue);
+  m_pendingSwitchPath = nullptr;
 }
 
 void CWinSystemAmlogicGLESContext::RequestMenuComposite(bool menuShown)
@@ -358,17 +397,26 @@ CWinSystemAmlogicGLESContext::MenuRoute CWinSystemAmlogicGLESContext::MenuCompos
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiFrontToBackRendering)
     return MenuRoute::NONE;
 
-  if (aml_is_dv_enable())
+  const RouteInputs& in = m_routeInputs;
+  if (in.dvEnable)
   {
     // The video processor modes (DV processed for a non-DV display) replace
     // core2's graphics curve with an SDR one: PQ graphics are unvalidated there.
-    if (aml_dv_video_processor_mode() != 0)
+    // SDR output from the DV core keeps its SDR graphics too.
+    if (in.dvVideoProcessor != 0 || in.dvOutputMode > DOLBY_VISION_OUTPUT_MODE_HDR10)
       return MenuRoute::NONE;
-    return KernelSwitchAvailable(DV_GRAPHIC_PQ) ? MenuRoute::DV_CORE2 : MenuRoute::NONE;
+    return in.dvSwitch ? MenuRoute::DV_CORE2 : MenuRoute::NONE;
   }
 
-  if (GetGfxContext().IsTransferPQ())
-    return KernelSwitchAvailable(OSD_PQ_PASSTHROUGH) ? MenuRoute::OSD_VPP : MenuRoute::NONE;
+  // HDR10 output. The renderer clears the PQ transfer flag on a flush (a seek
+  // or a menu jump) and sets it again only when a decoder opens: while the
+  // stream it was set for plays on, the output is still PQ.
+  const bool pqOutput =
+      GetGfxContext().IsTransferPQ() ||
+      (m_pqOutputHdrType != StreamHdrType::HDR_TYPE_NONE &&
+       GetGfxContext().GetHDRType() == m_pqOutputHdrType);
+  if (pqOutput)
+    return in.osdSwitch ? MenuRoute::OSD_VPP : MenuRoute::NONE;
 
   return MenuRoute::NONE;
 }
@@ -380,10 +428,24 @@ float CWinSystemAmlogicGLESContext::MenuCompositeGuiWhite(MenuRoute route) const
   if (route == MenuRoute::DV_CORE2)
   {
     // core2 maps SDR graphics white to dolby_vision_graphic_max nits; 0 means
-    // its target table, 300 nits for these targets.
-    CSysfsPath graphicMax(DV_GRAPHIC_MAX);
-    const int nits = graphicMax.Exists() ? graphicMax.Get<int>().value_or(0) : 0;
-    return (nits > 0 ? nits : 300) / 10000.0f;
+    // its target table (amdolby_vision dv_target_graphics_max / _LL_max).
+    unsigned int nits = ReadUint(DV_GRAPHIC_MAX);
+    if (nits == 0)
+    {
+      const bool dvSource = GetGfxContext().GetHDRType() ==
+                            StreamHdrType::HDR_TYPE_DOLBYVISION;
+      if (m_routeInputs.dvOutputMode == DOLBY_VISION_OUTPUT_MODE_HDR10)
+        nits = 316;
+      else if (ReadUint(DV_LL_POLICY) >= DOLBY_VISION_LL_YUV422 && !dvSource)
+        nits = 210;
+      else
+        nits = 300;
+    }
+    // The per-primitive path scales GUI code values by the guipeakluminance
+    // factor whenever it is active; core2 then decodes them.
+    const float scale =
+        GetGfxContext().IsTransferPQ() ? std::clamp(GetGuiSdrPeakLuminance(), 0.0f, 1.0f) : 1.0f;
+    return nits / 10000.0f * std::pow(scale, 2.2f);
   }
 
   // The VPP's OSD SDR->HDR stage multiplies SDR white by oo_y_lut_sdr_hdr
@@ -441,7 +503,7 @@ bool CWinSystemAmlogicGLESContext::EngageMenuComposite(MenuRoute route)
     return false;
   }
 
-  SetKernelSwitch(route == MenuRoute::DV_CORE2 ? DV_GRAPHIC_PQ : OSD_PQ_PASSTHROUGH, 1);
+  QueueKernelSwitch(route == MenuRoute::DV_CORE2 ? DV_GRAPHIC_PQ : OSD_PQ_PASSTHROUGH, 1);
   m_menuRoute = route;
   m_menuFboHasContent = false;
 
@@ -455,7 +517,7 @@ bool CWinSystemAmlogicGLESContext::EngageMenuComposite(MenuRoute route)
 
 void CWinSystemAmlogicGLESContext::DisengageMenuComposite()
 {
-  SetKernelSwitch(m_menuRoute == MenuRoute::DV_CORE2 ? DV_GRAPHIC_PQ : OSD_PQ_PASSTHROUGH, 0);
+  QueueKernelSwitch(m_menuRoute == MenuRoute::DV_CORE2 ? DV_GRAPHIC_PQ : OSD_PQ_PASSTHROUGH, 0);
   m_menuRoute = MenuRoute::NONE;
   m_guiFbo.Cleanup();
   m_guiFboWidth = m_guiFboHeight = 0;
@@ -471,6 +533,9 @@ void CWinSystemAmlogicGLESContext::DisengageMenuComposite()
 
 bool CWinSystemAmlogicGLESContext::BeginRender()
 {
+  if (!m_bRenderCreated)
+    return CRenderSystemGLES::BeginRender();
+
   // Outside fullscreen video (a skin's video preview, a window over playback)
   // the GUI pass never reports: a frame without a report there is no menu.
   // In fullscreen a missing report is a renderer reconfiguring, which keeps
@@ -487,15 +552,39 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
     m_menuEngageFailed = false;
   }
 
+  const auto now = std::chrono::steady_clock::now();
+  if (now - m_routeInputsRead > ROUTE_INPUTS_REFRESH)
+  {
+    m_routeInputs.dvEnable = aml_is_dv_enable();
+    m_routeInputs.dvVideoProcessor = aml_dv_video_processor_mode();
+    m_routeInputs.dvOutputMode = ReadUint(DV_OUTPUT_MODE);
+    m_routeInputs.dvSwitch = KernelSwitchAvailable(DV_GRAPHIC_PQ);
+    m_routeInputs.osdSwitch = KernelSwitchAvailable(OSD_PQ_PASSTHROUGH);
+    m_routeInputsRead = now;
+  }
+  if (!m_menuShown)
+    m_pqOutputHdrType = StreamHdrType::HDR_TYPE_NONE;
+  else if (GetGfxContext().IsTransferPQ())
+    m_pqOutputHdrType = GetGfxContext().GetHDRType();
+
   const MenuRoute want = MenuCompositeRoute();
   if (want == m_menuRoute)
   {
     m_pendingRouteSince = {};
   }
+  else if (m_menuRoute == MenuRoute::NONE && want == MenuRoute::OSD_VPP)
+  {
+    // First engage of the VPP route: only once it has held (see
+    // OSD_ROUTE_FIRST_SETTLE).
+    if (want != m_pendingRoute || m_pendingRouteSince == std::chrono::steady_clock::time_point{})
+    {
+      m_pendingRoute = want;
+      m_pendingRouteSince = now;
+    }
+  }
   else if (m_menuRoute != MenuRoute::NONE && m_menuShown)
   {
     // Engaged with a menu still up: only a route that holds counts.
-    const auto now = std::chrono::steady_clock::now();
     if (want != m_pendingRoute || m_pendingRouteSince == std::chrono::steady_clock::time_point{})
     {
       m_pendingRoute = want;
@@ -503,9 +592,11 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
     }
   }
 
+  const bool firstOsd = m_menuRoute == MenuRoute::NONE && want == MenuRoute::OSD_VPP;
   const bool settled = m_pendingRouteSince != std::chrono::steady_clock::time_point{} &&
-                       std::chrono::steady_clock::now() - m_pendingRouteSince > MENU_ROUTE_SETTLE;
-  const bool immediate = m_menuRoute == MenuRoute::NONE || !m_menuShown;
+                       now - m_pendingRouteSince >
+                           (firstOsd ? OSD_ROUTE_FIRST_SETTLE : MENU_ROUTE_SETTLE);
+  const bool immediate = (m_menuRoute == MenuRoute::NONE && !firstOsd) || !m_menuShown;
   if (want != m_menuRoute && (immediate || settled))
   {
     m_pendingRouteSince = {};
@@ -631,10 +722,10 @@ void CWinSystemAmlogicGLESContext::CompositeGui()
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, m_guiFbo.Texture());
 
-  // The VPP composites the OSD over video by its stored alpha: keep that alpha
-  // "over" instead of letting the default blend square it.
+  // The shader writes premultiplied colour and "over" alpha, as the GUI does
+  // into the back buffer without the composite; the VPP blends it the same way.
   glEnable(GL_BLEND);
-  glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+  glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
   const float w = static_cast<float>(m_guiFboWidth);
   const float h = static_cast<float>(m_guiFboHeight);

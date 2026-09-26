@@ -86,6 +86,17 @@ private:
   bool EnsureFbo(CFrameBufferObject& fbo, int& width, int& height);
   bool EnsureCompositeFbos();
   void CompositeGui();
+  void QueueKernelSwitch(const char* path, int value);
+  void ApplyPendingKernelSwitch();
+
+  struct RouteInputs
+  {
+    bool dvEnable = false;
+    unsigned int dvVideoProcessor = 0;
+    unsigned int dvOutputMode = 0;
+    bool dvSwitch = false;
+    bool osdSwitch = false;
+  };
 
   CEGLContextUtils m_pGLContext;
   StreamHdrType m_hdrType = StreamHdrType::HDR_TYPE_NONE;
@@ -96,6 +107,13 @@ private:
   bool m_menuEngageFailed = false; // held off until the menu is released
   std::chrono::steady_clock::time_point m_menuGoneSince{};
   MenuRoute m_menuRoute = MenuRoute::NONE;
+  RouteInputs m_routeInputs;
+  std::chrono::steady_clock::time_point m_routeInputsRead{};
+  // The stream HDR type the output was last seen PQ for while a menu is up.
+  StreamHdrType m_pqOutputHdrType = StreamHdrType::HDR_TYPE_NONE;
+  // Kernel switch to set after the next swap.
+  const char* m_pendingSwitchPath = nullptr;
+  int m_pendingSwitchValue = 0;
   MenuRoute m_pendingRoute = MenuRoute::NONE;
   std::chrono::steady_clock::time_point m_pendingRouteSince{};
   std::unique_ptr<CGuiCompositeShaderGLES> m_compositeShader;

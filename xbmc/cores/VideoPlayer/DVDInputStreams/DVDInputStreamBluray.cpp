@@ -1697,6 +1697,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
               p2020[i] = build_rgba(ov->palette[i], true);
           }
           copy->pqMenuPalette = p2020;
+          copy->m_menuVisible = copy->HasVisiblePixels();
         }
         o = copy;
       }
@@ -1779,6 +1780,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     overlay->source_width = plane.w;
     overlay->m_isHdrPq = pq;
     overlay->m_isPqMenuGraphics = pqMenu;
+    overlay->m_menuVisible = pqMenu && overlay->HasVisiblePixels();
 
     OverlayClear(plane, ov->x, ov->y, ov->w, ov->h);
     plane.o.push_back(overlay);
@@ -1855,6 +1857,7 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     // discs author their BD-J artwork as BT.2020 PQ (pannal/CoreELEC#120).
     // Nothing reports SDR BD-J artwork, so the user can keep BD-J off it.
     overlay->m_isPqMenuGraphics = m_pqAuthoredGraphics && DiscMenuHdrMode() == 0;
+    overlay->m_menuVisible = overlay->m_isPqMenuGraphics && overlay->HasVisiblePixels();
 
     OverlayClear(plane, ov->x, ov->y, ov->w, ov->h);
     plane.o.push_back(overlay);

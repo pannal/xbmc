@@ -43,7 +43,7 @@ workspace = tempfile.TemporaryDirectory(prefix="kodi-bd-menu-test-")
 out = Path(workspace.name)
 s = (root / "xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp").read_text()
 (out / "test-include").mkdir()
-(out / "test-include/PlatformDefs.h").write_text("#pragma once\n")
+(out / "test-include/PlatformDefs.h").write_text("#pragma once\n#define PIXEL_ASHIFT 24\n#define PIXEL_RSHIFT 16\n#define PIXEL_GSHIFT 8\n#define PIXEL_BSHIFT 0\n")
 preamble=r'''
 #include <algorithm>
 #include <atomic>
@@ -84,10 +84,6 @@ struct CDVDInputStream {enum ENextStream {NEXTSTREAM_NONE,NEXTSTREAM_OPEN,NEXTST
 static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e,bool bt2020) { return e.Y+(bt2020?1000u:0u); }
 bool g_pgsHdrToSdr=true;
 int g_discMenuHdr=0;
-#define PIXEL_ASHIFT 24
-#define PIXEL_RSHIFT 16
-#define PIXEL_GSHIFT 8
-#define PIXEL_BSHIFT 0
 namespace real {
 @@REAL_PALETTE@@
 }
@@ -283,6 +279,14 @@ int main(){
  b.m_pqAuthoredGraphics=true;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isHdrPq);
  // BD-J of a PQ playlist takes the menu composite's raw route (pixels untouched).
  assert(b.m_planes[1].o.front()->m_isPqMenuGraphics);
+ // Only visible menu graphics engage the composite: this canvas has alpha 0.
+ assert(!b.m_planes[1].o.front()->m_menuVisible);
+ canvas[3]|=0x80000000u;b.OverlayCallbackARGB(&argb);
+ assert(b.m_planes[1].o.front()->m_menuVisible);
+ // A cut-out that keeps only transparent pixels is not visible.
+ {auto v=b.m_planes[1].o.front();CDVDOverlayImage cut(*v,v->x,v->y,1,1);assert(!cut.m_menuVisible);
+  CDVDOverlayImage keep(*v,v->x+1,v->y,1,1);assert(keep.m_menuVisible);}
+ canvas[3]&=~0x80000000u;
  // "HDMV only" and "Convert" keep BD-J untagged and off the route.
  g_discMenuHdr=1;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isPqMenuGraphics&&!b.m_planes[1].o.front()->m_isHdrPq);
  g_discMenuHdr=2;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isPqMenuGraphics);

@@ -147,9 +147,9 @@ namespace
 uint32_t PremultiplyPlain(uint32_t c)
 {
   const uint32_t a = (c >> PIXEL_ASHIFT) & 0xff;
-  const uint32_t r = ((c >> PIXEL_RSHIFT) & 0xff) * a / 255;
-  const uint32_t g = ((c >> PIXEL_GSHIFT) & 0xff) * a / 255;
-  const uint32_t b = ((c >> PIXEL_BSHIFT) & 0xff) * a / 255;
+  const uint32_t r = (((c >> PIXEL_RSHIFT) & 0xff) * a + 127) / 255;
+  const uint32_t g = (((c >> PIXEL_GSHIFT) & 0xff) * a + 127) / 255;
+  const uint32_t b = (((c >> PIXEL_BSHIFT) & 0xff) * a + 127) / 255;
   return a << PIXEL_ASHIFT | r << PIXEL_RSHIFT | g << PIXEL_GSHIFT | b << PIXEL_BSHIFT;
 }
 } // namespace

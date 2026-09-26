@@ -1006,7 +1006,9 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     // composite is active draw them raw into its own layer (redrawn, or
     // emptied, every frame). m_overlays.Render then skips them.
     CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
-    const bool pqMenu = m_overlays.HasPqMenuOverlay(m_presentsource);
+    // A GUI-layer renderer draws the video inside this GUI pass, where the
+    // composite would re-encode it: keep the existing path there.
+    const bool pqMenu = !m_pRenderer->IsGuiLayer() && m_overlays.HasPqMenuOverlay(m_presentsource);
     winSystem->RequestMenuComposite(pqMenu);
     if (winSystem->BeginMenuOverlayRender())
     {

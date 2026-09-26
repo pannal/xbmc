@@ -60,6 +60,8 @@ public:
       t += linesize;
     }
 
+    // A cut-out may have lost every visible pixel of its source.
+    m_menuVisible = m_isPqMenuGraphics && HasVisiblePixels();
     m_textureid = 0;
   }
 
@@ -68,6 +70,30 @@ public:
   std::shared_ptr<CDVDOverlay> Clone() override
   {
     return std::make_shared<CDVDOverlayImage>(*this);
+  }
+
+  // Any pixel a viewer can see (alpha > 0): palette entries of the indices
+  // used, or the alpha byte of ARGB pixels.
+  bool HasVisiblePixels() const
+  {
+    if (!palette.empty())
+    {
+      bool visible[256] = {};
+      bool any = false;
+      for (size_t i = 0; i < palette.size() && i < 256; ++i)
+        any |= visible[i] = ((palette[i] >> PIXEL_ASHIFT) & 0xff) != 0;
+      if (!any)
+        return false;
+      for (uint8_t index : pixels)
+        if (visible[index])
+          return true;
+      return false;
+    }
+    const uint32_t* argb = reinterpret_cast<const uint32_t*>(pixels.data());
+    for (size_t i = 0; i < pixels.size() / 4; ++i)
+      if (argb[i] >> 24)
+        return true;
+    return false;
   }
 
   uint8_t* data_at(int sub_x, int sub_y) const
@@ -93,4 +119,7 @@ public:
   // BT.2020 matrix those pixels need on that route.
   bool m_isPqMenuGraphics{false};
   std::vector<uint32_t> pqMenuPalette;
+  // Menu graphics with something visible: only these engage the composite, so
+  // a transparent BD-J canvas left up during the film does not.
+  bool m_menuVisible{false};
 };

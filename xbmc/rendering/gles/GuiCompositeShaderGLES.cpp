@@ -33,11 +33,10 @@ float ForwardPQ(float L)
   return std::pow((ST2084_c1 + ST2084_c2 * Lm1) / (1.0f + ST2084_c3 * Lm1), ST2084_m2);
 }
 
-// IEC 61966-2-1 sRGB EOTF.
-float SRGBToLinear(float v)
-{
-  return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
-}
+// The Amlogic OSD SDR->HDR stage decodes the GUI with a pure 2.2 power
+// (eo_y_lut_sdr), and dolby_core2_set's VP curve is the same power; matching
+// it keeps Kodi's own controls over a disc menu as they look without one.
+constexpr float GUI_GAMMA = 2.2f;
 
 } // namespace
 
@@ -63,7 +62,6 @@ void CGuiCompositeShaderGLES::OnCompiledAndLinked()
   m_hLutDegamma = glGetUniformLocation(ProgramHandle(), "u_lutDegamma");
   m_hLutTF = glGetUniformLocation(ProgramHandle(), "u_lutTF");
   m_hProj = glGetUniformLocation(ProgramHandle(), "u_proj");
-  m_hOotfGamma = glGetUniformLocation(ProgramHandle(), "u_ootfGamma");
   m_hHdr = glGetUniformLocation(ProgramHandle(), "u_hdr");
   m_hHasHdr = glGetUniformLocation(ProgramHandle(), "u_hasHdr");
   glUseProgram(ProgramHandle());
@@ -78,8 +76,6 @@ bool CGuiCompositeShaderGLES::OnEnabled()
 {
   if (m_proj)
     glUniformMatrix4fv(m_hProj, 1, GL_FALSE, m_proj);
-
-  glUniform1f(m_hOotfGamma, m_ootfGamma);
 
   glActiveTexture(GL_TEXTURE1);
   glBindTexture(GL_TEXTURE_2D, m_lutDegammaTexId);
@@ -154,7 +150,7 @@ std::vector<float> CGuiCompositeShaderGLES::GenerateDegammaLUT()
   for (int i = 0; i < LUT_SIZE; i++)
   {
     float x = static_cast<float>(i) / (LUT_SIZE - 1);
-    lut[i] = SRGBToLinear(x);
+    lut[i] = std::pow(x, GUI_GAMMA);
   }
   return lut;
 }
@@ -162,14 +158,14 @@ std::vector<float> CGuiCompositeShaderGLES::GenerateDegammaLUT()
 std::vector<float> CGuiCompositeShaderGLES::GeneratePQLUT(float sdrPeak)
 {
   // PQ is display-referred (absolute luminance). sdrPeak is in PQ-normalized
-  // units (nits / 10000), e.g. 203 nits = 0.0203. The LUT maps the full [0,1]
-  // texture coordinate range to ForwardPQ([0, sdrPeak]), giving full LUT
-  // resolution across the actual SDR luminance range.
+  // units (nits / 10000), e.g. 300 nits = 0.03. The LUT is indexed by the
+  // gamma-encoded value (the shader re-encodes after the gamut matrix): PQ is
+  // steep near black, where a linear-light index has too few entries.
   std::vector<float> lut(LUT_SIZE);
   for (int i = 0; i < LUT_SIZE; i++)
   {
-    float L = static_cast<float>(i) / (LUT_SIZE - 1) * sdrPeak;
-    lut[i] = ForwardPQ(L);
+    float x = static_cast<float>(i) / (LUT_SIZE - 1);
+    lut[i] = ForwardPQ(std::pow(x, GUI_GAMMA) * sdrPeak);
   }
   return lut;
 }
@@ -188,36 +184,24 @@ bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer)
     return false;
   }
 
-  GLuint tf = 0;
-  float ootfGamma = 0.0f;
-
-  if (colorTransfer == AVCOL_TRC_SMPTE2084)
-  {
-    tf = CreateLUTTexture(GeneratePQLUT(m_sdrPeak));
-    if (!tf)
-    {
-      CLog::Log(LOGERROR, "CGuiCompositeShaderGLES::CreateLUTs - failed to create PQ LUT");
-      glDeleteTextures(1, &degamma);
-      return false;
-    }
-    CLog::Log(LOGDEBUG,
-              "CGuiCompositeShaderGLES::CreateLUTs - created PQ LUT ({} entries, {:.0f} nits)",
-              LUT_SIZE, m_sdrPeak * 10000.0f);
-  }
-  else if (colorTransfer == AVCOL_TRC_ARIB_STD_B67)
-  {
-    // HLG: no TF LUT needed, shader computes OETF + inverse OOTF directly.
-    // BT.2100: gamma = 1.2 + 0.42 * log10(Lw/1000). For 1000-nit ref: 1.2.
-    ootfGamma = 1.2f;
-    CLog::Log(LOGDEBUG, "CGuiCompositeShaderGLES::CreateLUTs - HLG mode (gamma {})", ootfGamma);
-  }
-  else
+  if (colorTransfer != AVCOL_TRC_SMPTE2084)
   {
     CLog::Log(LOGERROR, "CGuiCompositeShaderGLES::CreateLUTs - unsupported transfer function {}",
               colorTransfer);
     glDeleteTextures(1, &degamma);
     return false;
   }
+
+  GLuint tf = CreateLUTTexture(GeneratePQLUT(m_sdrPeak));
+  if (!tf)
+  {
+    CLog::Log(LOGERROR, "CGuiCompositeShaderGLES::CreateLUTs - failed to create PQ LUT");
+    glDeleteTextures(1, &degamma);
+    return false;
+  }
+  CLog::Log(LOGDEBUG,
+            "CGuiCompositeShaderGLES::CreateLUTs - created PQ LUT ({} entries, {:.0f} nits)",
+            LUT_SIZE, m_sdrPeak * 10000.0f);
 
   if (m_lutDegammaTexId)
     glDeleteTextures(1, &m_lutDegammaTexId);
@@ -226,6 +210,5 @@ bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer)
 
   m_lutDegammaTexId = degamma;
   m_lutTFTexId = tf;
-  m_ootfGamma = ootfGamma;
   return true;
 }
