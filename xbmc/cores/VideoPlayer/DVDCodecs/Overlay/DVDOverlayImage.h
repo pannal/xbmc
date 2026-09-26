@@ -62,7 +62,6 @@ public:
 
     // A cut-out may have lost every visible pixel of its source.
     m_menuVisible = m_isPqMenuGraphics && HasVisiblePixels();
-    m_textureid = 0;
   }
 
   ~CDVDOverlayImage() override = default;

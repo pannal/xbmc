@@ -201,8 +201,12 @@ namespace OVERLAY {
 
     CCriticalSection m_section;
     std::vector<SElement> m_buffers[NUM_BUFFERS];
-    std::map<unsigned int, std::shared_ptr<COverlay>> m_textureCache;
-    static unsigned int m_textureid;
+    // Content identity belongs to the producer; converted resources belong to
+    // this renderer. Holding the key prevents address reuse until main retires
+    // the cache entry, without storing renderer state in the producer object.
+    using TextureCache = std::map<std::shared_ptr<CDVDOverlay>, std::shared_ptr<COverlay>,
+                                  std::owner_less<std::shared_ptr<CDVDOverlay>>>;
+    TextureCache m_textureCache;
     CRect m_rv; // Frame size
     CRect m_rs; // Source size
     CRect m_rd; // Video size, may be influenced by video settings (e.g. zoom)

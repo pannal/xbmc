@@ -134,7 +134,8 @@ public:
   @ELEMENT@
   using OverlayBatch=std::vector<SElement>;
   CCriticalSection m_section;OverlayBatch m_buffers[NUM_BUFFERS];
-  std::map<unsigned int,std::shared_ptr<COverlay>> m_textureCache;
+  std::map<std::shared_ptr<CDVDOverlay>,std::shared_ptr<COverlay>,
+           std::owner_less<std::shared_ptr<CDVDOverlay>>> m_textureCache;
   std::vector<CDVDOverlay*> drawn;std::vector<double> evaluated;
   void SetOverlays(OverlayBatch,int);OverlayBatch GetOverlays(int);
   void Release(int);void Release(std::vector<SElement>&);void ReleaseUnused(const OverlayBatch& selected={});
@@ -247,10 +248,10 @@ int main(){
   }
   // Cache eviction accounts for a detached selected batch, without moving
   // cache destruction into CPU selection destruction or producer callbacks.
-  {CRenderManager r;auto image=menu(false,0xff112233);image->m_textureid=42;
+  {CRenderManager r;auto image=menu(false,0xff112233);
    r.m_overlays.SetOverlays({{0,image}},0);r.SelectFrame();r.m_overlays.Release(0);
-   r.m_overlays.m_textureCache[42]=std::make_shared<COverlay>();
-   r.m_overlays.ReleaseUnused(r.m_frameSelection->overlays);assert(r.m_overlays.m_textureCache.count(42));
+   r.m_overlays.m_textureCache[image]=std::make_shared<COverlay>();
+   r.m_overlays.ReleaseUnused(r.m_frameSelection->overlays);assert(r.m_overlays.m_textureCache.count(image));
    r.ClearFrameSelection();r.m_overlays.ReleaseUnused();assert(r.m_overlays.m_textureCache.empty());}
   // Explicitly document the slice boundary: payloads and libass render state
   // are still shared; retaining list identity does not deep-copy mutable data.

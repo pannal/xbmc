@@ -43,8 +43,6 @@ COverlay::COverlay()
 
 COverlay::~COverlay() = default;
 
-unsigned int CRenderer::m_textureid = 1;
-
 CRenderer::CRenderer()
 {
   CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->RegisterObserver(this);
@@ -126,7 +124,6 @@ void CRenderer::Release(int idx)
 void CRenderer::ReleaseCache()
 {
   m_textureCache.clear();
-  m_textureid++;
 }
 
 void CRenderer::ReleaseUnused(const OverlayBatch& selected)
@@ -136,13 +133,13 @@ void CRenderer::ReleaseUnused(const OverlayBatch& selected)
     // A retained selection can outlive its slot's CPU list. Keep its cache
     // entries reachable until this synchronous draw has finished as well.
     bool found = std::any_of(selected.begin(), selected.end(), [&it](const SElement& e) {
-      return e.overlay_dvd && e.overlay_dvd->m_textureid == it->first;
+      return e.overlay_dvd == it->first;
     });
     for (auto& buffer : m_buffers)
     {
       for (auto& dvdoverlay : buffer)
       {
-        if (dvdoverlay.overlay_dvd && dvdoverlay.overlay_dvd->m_textureid == it->first)
+        if (dvdoverlay.overlay_dvd == it->first)
         {
           found = true;
           break;
@@ -757,22 +754,17 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(
   if (!images)
     return nullptr;
 
-  if (o.m_textureid)
+  const auto content = o.shared_from_this();
+  if (changes == 0)
   {
-    if (changes == 0)
-    {
-      std::map<unsigned int, std::shared_ptr<COverlay>>::iterator it =
-          m_textureCache.find(o.m_textureid);
-      if (it != m_textureCache.end())
-        return it->second;
-    }
+    const auto it = m_textureCache.find(content);
+    if (it != m_textureCache.end())
+      return it->second;
   }
 
   std::shared_ptr<COverlay> overlay = COverlay::Create(images, rOpts.frameWidth, rOpts.frameHeight);
 
-  m_textureCache[m_textureid] = overlay;
-  o.m_textureid = m_textureid;
-  m_textureid++;
+  m_textureCache[content] = overlay;
   return overlay;
 }
 
@@ -798,10 +790,9 @@ std::shared_ptr<COverlay> CRenderer::Convert(CDVDOverlay& o, double pts)
     if (!r)
       return nullptr;
   }
-  else if (o.m_textureid)
+  else
   {
-    std::map<unsigned int, std::shared_ptr<COverlay>>::iterator it =
-        m_textureCache.find(o.m_textureid);
+    const auto it = m_textureCache.find(o.shared_from_this());
     if (it != m_textureCache.end())
       r = it->second;
   }
@@ -827,9 +818,7 @@ std::shared_ptr<COverlay> CRenderer::Convert(CDVDOverlay& o, double pts)
   if (r)
     r->m_discMenuOverlay = o.IsDiscMenuOverlay();
 
-  m_textureCache[m_textureid] = r;
-  o.m_textureid = m_textureid;
-  m_textureid++;
+  m_textureCache[o.shared_from_this()] = r;
 
   return r;
 }

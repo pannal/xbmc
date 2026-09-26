@@ -35,7 +35,6 @@ public:
     iPTSStopTime = 0LL;
     bForced = false;
     replace = false;
-    m_textureid = 0;
     m_3dSubtitleDepth = 0;
     m_enableTextAlign = false;
     m_overlayContainerFlushable = true;
@@ -49,7 +48,6 @@ public:
     iPTSStopTime  = src.iPTSStopTime;
     bForced       = src.bForced;
     replace = src.replace;
-    m_textureid = 0;
     m_3dSubtitleDepth = 0;
     m_enableTextAlign = src.m_enableTextAlign;
     m_overlayContainerFlushable = src.m_overlayContainerFlushable;
@@ -107,7 +105,6 @@ public:
   double iPTSStopTime;
   bool bForced; // display, no matter what
   bool replace; // replace by next nomatter what stoptime it has
-  unsigned long m_textureid;
 
   int m_3dSubtitleDepth;
 protected:

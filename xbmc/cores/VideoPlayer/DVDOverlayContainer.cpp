@@ -191,10 +191,9 @@ void CDVDOverlayContainer::UpdateOverlayInfo(
           (*it) = pOverlaySpu;
         }
 
-        if (pStream->GetCurrentButtonInfo(*pOverlaySpu, pSpu, iAction))
-        {
-          pOverlaySpu->m_textureid = 0;
-        }
+        // A changed highlight belongs to the replacement object's content
+        // identity. Renderer cache state is never written into this overlay.
+        pStream->GetCurrentButtonInfo(*pOverlaySpu, pSpu, iAction);
 
       }
     }
