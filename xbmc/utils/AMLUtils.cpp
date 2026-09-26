@@ -81,6 +81,10 @@ static unsigned int s_dvModeCached = DOLBY_VISION_OUTPUT_MODE_BYPASS;
 // Tracks whether DV playback is active (between aml_dv_open/aml_dv_close).
 // Used by CreateNewWindow to avoid restoring IPT during playback-start mode switches.
 static bool s_dvPlaybackActive = false;
+// A Blu-ray disc session holds DV_MODE_ON_DEMAND's DV output across the
+// decoder closes of its segment swaps (aml_dv_set_disc_hold). Guarded by the
+// DV-core lock, like s_dvPlaybackActive.
+static bool s_dvDiscHold = false;
 
 // Last canonical /sys/class/display/mode value we wrote.
 //
@@ -1617,9 +1621,55 @@ void aml_dv_close()
     return;
   }
 
+  // Disc session: the same, for the segment swaps of a Blu-ray. Each swap
+  // closes the decoder; switching DV off there sends the sink DV -> SDR and
+  // the next segment's aml_dv_open() back to DV within a few hundred ms, a
+  // double HDMI re-lock that was seen to leave the sink at "no signal" until
+  // the next mode set. A next segment whose output mode differs still
+  // switches in its own aml_dv_open(). aml_dv_set_disc_hold(false) releases.
+  if (s_dvDiscHold && aml_dv_mode() == DV_MODE_ON_DEMAND)
+  {
+    // What aml_dv_off() would stop: the next segment may not restart the
+    // active-area detect, and its L5 values must not carry over.
+    aml_dv_detect_active_area_stop();
+    aml_dv_dump_state("dv_close/post(disc_hold_skip)");
+    return;
+  }
+
   if (aml_is_dv_enable())
     aml_dv_off();
   aml_dv_dump_state("dv_close/post");
+}
+
+void aml_dv_set_disc_hold(bool hold)
+{
+  CDVCoreGuard dvlock(__FUNCTION__);
+  if (hold)
+  {
+    s_dvDiscHold = aml_dv_mode() == DV_MODE_ON_DEMAND;
+    CLog::Log(LOGINFO, "AMLUtils::{} - disc session DV hold {}", __FUNCTION__,
+              s_dvDiscHold ? "on" : "off (DV mode is not on demand)");
+    return;
+  }
+
+  const bool wasHeld = s_dvDiscHold;
+  s_dvDiscHold = false;
+  if (!wasHeld)
+    return;
+
+  // The last decoder may have closed under the hold, leaving DV on for the GUI.
+  // A decoder still open switches it off in its own aml_dv_close(). Not only
+  // on demand: a mode changed to off mid-disc would otherwise leave DV on, as
+  // aml_dv_open() does nothing in that mode. Mode on keeps it for the GUI.
+  const bool release = !s_dvPlaybackActive && aml_dv_mode() != DV_MODE_ON &&
+                       aml_is_dv_enable();
+  CLog::Log(LOGINFO, "AMLUtils::{} - disc session DV hold released{}", __FUNCTION__,
+            release ? ", switching DV off" : "");
+  if (release)
+  {
+    aml_dv_off();
+    aml_dv_dump_state("disc_hold/release");
+  }
 }
 
 bool aml_dv_playback_active()

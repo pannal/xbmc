@@ -265,6 +265,8 @@ protected:
   double m_seamTimeOffsetPrev = 0.0;
   std::atomic<uint32_t> m_uoMask{0};
   bool m_bdStillActive = false;
+  // aml_dv_set_disc_hold() taken at Open, released at Close.
+  bool m_dvDiscHold = false;
   bool m_topMenuIsBdj = false;
   uint32_t m_menuRestorePlaylist{MAX_PLAYLIST_ID + 1};
   bool TitleCarriesAlwaysOnMenuComposition() const;
