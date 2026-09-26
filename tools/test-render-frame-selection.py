@@ -33,8 +33,8 @@ def main():
               'm_overlays.Render(frame->overlays)']
     positions = [render.index(p) for p in points]
     assert positions == sorted(positions)
-    for signature in ['bool CRenderManager::Configure()', 'void CRenderManager::PreInit()',
-                      'void CRenderManager::UnInit()', 'bool CRenderManager::Flush(']:
+    for signature in ['bool CRenderManager::Configure()', 'void CRenderManager::PreInitOnMain()',
+                      'void CRenderManager::UnInitOnMain()', 'bool CRenderManager::FlushOnMain(']:
         method = function(rm, signature)
         assert method.index('lock2(m_presentlock)') < method.index('ClearFrameSelection();')
     assert 'ClearFrameSelection' not in function(rm, 'void CRenderManager::DiscardBuffer()')
@@ -174,6 +174,7 @@ struct CRenderManager {
   std::deque<int> m_queued,m_discard,m_free;Clock m_dvdClock;Cache m_dataCacheCore;
   double m_displayLatency=0,m_latencyTweak=0,m_audioLatencyTweak=0,m_videoDelay=0,m_presentpts=0;
   struct {bool m_enabled=false;double m_error=0,m_syncOffset=0;int m_errCount=0;} m_clockSync;
+  bool m_configuredFramePending=false;
   bool m_presentstarted=false,m_showVideo=true,m_forceNext=false,m_bRenderGUI=true,m_renderedOverlay=false,m_renderDebug=false;
   std::atomic<bool> m_subtitleEnabled{true};
   int m_presentsource=0,m_presentsourcePast=-1,m_lateframes=0,m_QueueSkip=0;

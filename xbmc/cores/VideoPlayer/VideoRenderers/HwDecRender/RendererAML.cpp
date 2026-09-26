@@ -50,6 +50,11 @@ bool CRendererAML::Register()
 
 bool CRendererAML::Configure(const VideoPicture &picture, float fps, unsigned int orientation)
 {
+  if (auto* buffer = dynamic_cast<CAMLVideoBuffer*>(picture.videoBuffer))
+  {
+    m_pollCodec = buffer->Codec();
+    m_pollEpoch = buffer->OperationEpoch();
+  }
   m_sourceWidth = picture.iWidth;
   m_sourceHeight = picture.iHeight;
   m_renderOrientation = orientation;
@@ -81,6 +86,14 @@ bool CRendererAML::RenderCapture(int index, CRenderCapture* capture)
 {
   if (!capture)
     return false;
+  auto* buffer = dynamic_cast<CAMLVideoBuffer*>(m_buffers[index].videoBuffer);
+  auto permit = buffer ? buffer->AcquirePresentation() :
+      (m_pollCodec ? m_pollCodec->AcquirePresentation(m_pollEpoch) : CAMLSession::Permit{});
+  if (!permit)
+  {
+    capture->SetState(CAPTURESTATE_FAILED);
+    return false;
+  }
   capture->BeginRender();
   if (!CScreenshotAML::CaptureVideoFrame(static_cast<unsigned char*>(capture->GetRenderBuffer()),
                                        capture->GetWidth(), capture->GetHeight(), false))
@@ -101,6 +114,11 @@ void CRendererAML::AddVideoPicture(const VideoPicture &picture, int index)
   {
     buf.videoBuffer = picture.videoBuffer;
     buf.videoBuffer->Acquire();
+    if (auto* buffer = dynamic_cast<CAMLVideoBuffer*>(buf.videoBuffer))
+    {
+      m_pollCodec = buffer->Codec();
+      m_pollEpoch = buffer->OperationEpoch();
+    }
   }
 }
 
@@ -112,11 +130,7 @@ void CRendererAML::ReleaseBuffer(int idx)
     CAMLVideoBuffer *amli(dynamic_cast<CAMLVideoBuffer*>(buf.videoBuffer));
     if (amli)
     {
-      if (amli->m_amlCodec)
-      {
-        amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, amli->m_presentationGeneration, true);
-        amli->m_amlCodec = nullptr; // Released
-      }
+      amli->Drop();
       amli->Release();
     }
     buf.videoBuffer = nullptr;
@@ -179,39 +193,23 @@ bool CRendererAML::Flush(bool saveBuffers)
 
 void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha)
 {
+  auto* buffer = dynamic_cast<CAMLVideoBuffer*>(m_buffers[index].videoBuffer);
+  auto permit = buffer ? buffer->AcquirePresentation() :
+      (m_pollCodec ? m_pollCodec->AcquirePresentation(m_pollEpoch) : CAMLSession::Permit{});
+  if (!permit)
+    return;
   const PreparedVideoGeometry geometry = PrepareVideoLayer();
-  CommitVideoLayer(index, geometry);
-  PollVideoLayer();
+  if (buffer)
+  {
+    buffer->Commit(permit, geometry.source, geometry.destination, m_prevVPts);
+    buffer->Poll(permit);
+  }
+  else
+    m_pollCodec->PollFrame(permit);
 }
 
 CRendererAML::PreparedVideoGeometry CRendererAML::PrepareVideoLayer()
 {
   ManageRenderArea();
   return {m_sourceRect, m_destRect};
-}
-
-void CRendererAML::CommitVideoLayer(int index, const PreparedVideoGeometry& geometry)
-{
-  CVideoBuffer* videoBuffer = m_buffers[index].videoBuffer;
-  if (videoBuffer)
-  {
-    CAMLVideoBuffer *amli = dynamic_cast<CAMLVideoBuffer *>(videoBuffer);
-    if (amli->m_amlCodec)
-    {
-      int pts = amli->m_omxPts;
-      if (pts != m_prevVPts)
-      {
-        amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, amli->m_presentationGeneration);
-        amli->m_amlCodec->SetVideoRect(geometry.source, geometry.destination,
-                                     amli->m_presentationGeneration);
-        amli->m_amlCodec = nullptr; //Mark frame as processed
-        m_prevVPts = pts;
-      }
-    }
-  }
-}
-
-void CRendererAML::PollVideoLayer()
-{
-  CAMLCodec::PollFrame();
 }

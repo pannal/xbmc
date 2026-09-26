@@ -423,6 +423,7 @@ public:
 
   //! \brief Returns true if this is the process / app loop thread.
   bool IsProcessThread() const;
+  std::thread::id GetProcessThreadId() const { return m_processThreadId; }
 
 private:
   CApplicationMessenger(const CApplicationMessenger&) = delete;

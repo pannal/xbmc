@@ -84,6 +84,8 @@ public:
   bool OpenStream(CDVDStreamInfo hint) override = 0;
   void CloseStream(bool bWaitForBuffers) override = 0;
   virtual void Flush(bool sync) = 0;
+  virtual bool IsFlushPending() const { return false; }
+  virtual bool FlushFailed() const { return false; }
   bool AcceptsData() const override = 0;
   virtual bool HasData() const = 0;
   virtual void SetMaxTimeSize(double seconds, bool timeBound = false) {}

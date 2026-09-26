@@ -45,10 +45,11 @@ def main():
     # DiscardBuffer. Check the real configure/init wiring too, without pretending
     # to emulate platform renderer creation or a display mode change.
     for name in ['bool CRenderManager::Configure(const VideoPicture&',
-                 'bool CRenderManager::Configure()', 'void CRenderManager::PreInit()',
-                 'void CRenderManager::UnInit()']:
+                 'bool CRenderManager::Configure()', 'void CRenderManager::PreInitOnMain()',
+                 'void CRenderManager::UnInitOnMain()']:
         method = function(rm, name)
-        assert method.index('lock2(m_presentlock)') < method.index('InvalidateReservations();')
+        lock = 'present(m_presentlock)' if 'const VideoPicture&' in name else 'lock2(m_presentlock)'
+        assert method.index(lock) < method.index('InvalidateReservations();')
     output = function(vp, 'CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(')
     assert output.index('WaitForBuffer(reservation,') < output.index('auto overlays = ProcessOverlays(')
     assert output.index('auto overlays = ProcessOverlays(') < output.index('AddVideoPicture(reservation,')
@@ -67,7 +68,7 @@ def main():
         'void CRenderManager::InvalidateReservations()', 'void CRenderManager::RetireBuffer(',
         'bool CRenderManager::AddVideoPicture(', 'int CRenderManager::WaitForBuffer(',
         'void CRenderManager::DiscardBuffer()', 'void CRenderManager::ProcessPresentationQueue()',
-        'bool CRenderManager::Flush(', 'void CRenderManager::SelectFrame()',
+        'bool CRenderManager::FlushOnMain(', 'void CRenderManager::SelectFrame()',
         'void CRenderManager::ClearFrameSelection()'])
     source += '\n' + function(ov, 'void CRenderer::SetOverlays(')
     source += '\n' + function(ov, 'CRenderer::OverlayBatch CRenderer::GetOverlays(')
@@ -234,7 +235,8 @@ public:
   int WaitForBuffer(BufferReservation&,volatile std::atomic_bool&,std::chrono::milliseconds=100ms);
   void DiscardBuffer();
   void ProcessPresentationQueue();
-  bool Flush(bool,bool);
+  bool FlushOnMain(bool);
+  bool Flush(bool,bool save){return FlushOnMain(save);} // dispatch tested by test-render-lifecycle.py
   void PrepareNextRender() {} // scheduler formulas are unchanged and outside this fixture
 };
 struct CDVDOverlayLibass : CDVDOverlay {

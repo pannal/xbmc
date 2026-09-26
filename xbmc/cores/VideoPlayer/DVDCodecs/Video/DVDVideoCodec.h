@@ -169,6 +169,9 @@ public:
    * Should be the same as calling Dispose and Open after each other
    */
   virtual void Reset() = 0;
+  virtual bool LifecyclePending() const { return false; }
+  virtual bool LifecycleFailed() const { return false; }
+  virtual bool ContinueLifecycle() { return true; }
 
   /**
    * GetPicture controls decoding. Player calls it on every cycle

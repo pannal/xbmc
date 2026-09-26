@@ -160,7 +160,8 @@ MsgQueueReturnCode CDVDMessageQueue::Put(const std::shared_ptr<CDVDMsg>& pMsg,
 
 MsgQueueReturnCode CDVDMessageQueue::Get(std::shared_ptr<CDVDMsg>& pMsg,
                                          std::chrono::milliseconds timeout,
-                                         int& priority)
+                                         int& priority,
+                                         int lifecyclePending)
 {
   std::unique_lock<CCriticalSection> lock(m_section);
 
@@ -174,25 +175,42 @@ MsgQueueReturnCode CDVDMessageQueue::Get(std::shared_ptr<CDVDMsg>& pMsg,
 
   while (!m_bAbortRequest)
   {
-    std::list<DVDMessageListItem> &msgs = (priority > 0 || !m_prioMessages.empty()) ? m_prioMessages : m_messages;
-
-    if (!msgs.empty() && (msgs.back().priority >= priority || m_drain))
+    auto* msgs = (priority > 0 || !m_prioMessages.empty()) ? &m_prioMessages : &m_messages;
+    auto selected = msgs->rbegin();
+    if (lifecyclePending)
     {
-      DVDMessageListItem& item(msgs.back());
+      // Keep packets/replay and destructive requests in their bounded queues.
+      // Search both queues so an unrelated priority request cannot strand a
+      // normal-priority startup/abort message needed by the pending operation.
+      const auto allowed = [lifecyclePending](const auto& item) {
+        if (lifecyclePending == 2)
+          return item.message->IsType(CDVDMsg::PLAYER_STARTED) ||
+                 item.message->IsType(CDVDMsg::PLAYER_ABORT);
+        return item.message->IsType(CDVDMsg::GENERAL_RESYNC) ||
+               item.message->IsType(CDVDMsg::GENERAL_PAUSE);
+      };
+      msgs = &m_prioMessages;
+      selected = std::find_if(msgs->rbegin(), msgs->rend(), allowed);
+      if (selected == msgs->rend())
+      {
+        msgs = &m_messages;
+        selected = std::find_if(msgs->rbegin(), msgs->rend(), allowed);
+      }
+    }
+    if (selected != msgs->rend() &&
+        (lifecyclePending || selected->priority >= priority || m_drain))
+    {
+      DVDMessageListItem& item(*selected);
       priority = item.priority;
-
       if (item.message->IsType(CDVDMsg::DEMUXER_PACKET) && item.priority == 0)
       {
         DemuxPacket* packet =
             std::static_pointer_cast<CDVDMsgDemuxerPacket>(item.message)->GetPacket();
         if (packet)
-        {
           m_iDataSize -= packet->iSize;
-        }
       }
-
       pMsg = std::move(item.message);
-      msgs.pop_back();
+      msgs->erase(std::next(selected).base());
       UpdateTimeBack();
       ret = MSGQ_OK;
       break;

@@ -50,15 +50,77 @@ CVideoBuffer* CAMLVideoBufferPool::Get()
   return m_videoBuffers[bufferIdx];
 }
 
+void CAMLVideoBuffer::Set(std::shared_ptr<CAMLCodec> codec, int omxPts, int amlDuration,
+                          uint32_t bufferIndex, uint64_t generation)
+{
+  m_codec = std::move(codec);
+  m_omxPts = omxPts;
+  m_amlDuration = amlDuration;
+  m_bufferIndex = bufferIndex;
+  m_presentationGeneration = generation;
+  m_operationEpoch = m_codec->GetOperationEpoch();
+  m_consumption = Consumption::PENDING;
+}
+
+CAMLSession::Permit CAMLVideoBuffer::AcquirePresentation() const
+{
+  return m_codec ? m_codec->AcquirePresentation(m_operationEpoch) : CAMLSession::Permit{};
+}
+
+void CAMLVideoBuffer::Commit(const CAMLSession::Permit& permit, const CRect& source,
+                            const CRect& destination, int& previousPts)
+{
+  // Duplicate PTS deliberately leaves the return pending for a later discard.
+  // The permit was acquired before claim and remains alive through caller Poll.
+  if (!m_codec || !m_codec->IsPresentationPermit(permit, m_operationEpoch) ||
+      permit.IsRetirement() || previousPts == m_omxPts)
+    return;
+  Consumption expected = Consumption::PENDING;
+  if (!m_consumption.compare_exchange_strong(expected, Consumption::CLAIMED))
+    return;
+  m_codec->ReleaseFrame(m_bufferIndex, m_presentationGeneration, permit);
+  m_codec->SetVideoRect(source, destination, m_presentationGeneration, permit);
+  m_consumption = Consumption::CONSUMED;
+  previousPts = m_omxPts; // Consume even if QBUF failed, as before.
+}
+
+void CAMLVideoBuffer::Poll(const CAMLSession::Permit& permit) const
+{
+  if (m_codec)
+    m_codec->PollFrame(permit);
+}
+
+void CAMLVideoBuffer::Drop()
+{
+  if (!m_codec)
+    return;
+  auto permit = m_codec->AcquirePresentation(m_operationEpoch, true);
+  if (permit)
+  {
+    Consumption expected = Consumption::PENDING;
+    if (m_consumption.compare_exchange_strong(expected, Consumption::CLAIMED))
+    {
+      m_codec->ReleaseFrame(m_bufferIndex, m_presentationGeneration, permit, true);
+      m_consumption = Consumption::CONSUMED;
+    }
+  }
+  else
+  {
+    // Retirement admission stays open while a mutation is pending. Rejection
+    // means reset/close already took responsibility for the old device index.
+    m_consumption = Consumption::CONSUMED;
+  }
+}
+
 void CAMLVideoBufferPool::Return(int id)
 {
-  std::unique_lock<CCriticalSection> lock(m_criticalSection);
-  if (m_videoBuffers[id]->m_amlCodec)
+  CAMLVideoBuffer* buffer;
   {
-    m_videoBuffers[id]->m_amlCodec->ReleaseFrame(m_videoBuffers[id]->m_bufferIndex,
-                                               m_videoBuffers[id]->m_presentationGeneration, true);
-    m_videoBuffers[id]->m_amlCodec = nullptr;
+    std::unique_lock<CCriticalSection> lock(m_criticalSection);
+    buffer = m_videoBuffers[id];
   }
+  buffer->Drop();
+  std::unique_lock<CCriticalSection> lock(m_criticalSection);
   m_freeBuffers.push_back(id);
 }
 
@@ -628,7 +690,14 @@ void CDVDVideoCodecAmlogic::Close(void)
   m_videoBufferPool = nullptr;
 
   if (m_Codec)
-    m_Codec->CloseDecoder(), m_Codec = nullptr;
+  {
+    m_Codec->CloseDecoder();
+    m_Codec->WaitForLifecycle();
+    m_Codec = nullptr;
+  }
+  // Teardown also owns cleanup deferred by a pending or failed reset.
+  FinishReset();
+  m_resetCleanupPending = false;
 
   m_videobuffer.iFlags = 0;
 
@@ -645,6 +714,9 @@ void CDVDVideoCodecAmlogic::Close(void)
 
 bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 {
+  if (!ContinueLifecycle())
+    return false;
+
   // Handle Input, add demuxer packet to input queue. Returning false requeues
   // the packet in VideoPlayerVideo (SendMessageBack) for a later retry;
   // returning true reports it consumed and it will not be seen again.
@@ -759,8 +831,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
         m_hints.ptsinvalid = true;
 
       CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: Open decoder: fps:{:d}/{:d}", __FUNCTION__, m_hints.fpsrate, m_hints.fpsscale);
-      if (m_Codec && !m_Codec->OpenDecoder())
+      if (!m_Codec || !m_Codec->OpenDecoder())
+      {
         CLog::Log(LOGERROR, "CDVDVideoCodecAmlogic::{}: Failed to open Amlogic Codec", __FUNCTION__);
+        return false;
+      }
 
       m_videoBufferPool = std::shared_ptr<CAMLVideoBufferPool>(new CAMLVideoBufferPool());
 
@@ -794,14 +869,43 @@ void CDVDVideoCodecAmlogic::Reset(void)
 {
   if ((aml_get_cpufamily_id() != AML_G12B) && (m_hints.dovi_el_type == DOVIELType::TYPE_FEL) && (m_dataCacheCore.GetSpeed() == 1.0f))
   {
-    m_Codec->CloseDecoder();
-    m_Codec->OpenDecoder();
+    m_Codec->ReopenDecoder();
   }
   else
   {
     m_Codec->Reset();
   }
 
+  m_resetCleanupPending = true;
+  ContinueLifecycle();
+}
+
+bool CDVDVideoCodecAmlogic::LifecyclePending() const
+{
+  return m_resetCleanupPending || (m_Codec && m_Codec->LifecyclePending());
+}
+
+bool CDVDVideoCodecAmlogic::LifecycleFailed() const
+{
+  return m_Codec && m_Codec->LifecycleFailed();
+}
+
+bool CDVDVideoCodecAmlogic::ContinueLifecycle()
+{
+  if (LifecycleFailed())
+    return false;
+  if (m_Codec && m_Codec->LifecyclePending() && !m_Codec->ContinueLifecycle())
+    return false;
+  if (m_resetCleanupPending)
+  {
+    FinishReset();
+    m_resetCleanupPending = false;
+  }
+  return true;
+}
+
+void CDVDVideoCodecAmlogic::FinishReset()
+{
   while (!m_packages.empty())
   {
     DLDemuxPacket dual_layer_packet= m_packages.front();
@@ -825,6 +929,9 @@ void CDVDVideoCodecAmlogic::Abort()
 
 CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoPicture)
 {
+  if (!ContinueLifecycle())
+    return VC_NONE;
+
   if (!m_Codec)
     return VC_ERROR;
 
@@ -836,7 +943,7 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
     pVideoPicture->SetParams(m_videobuffer);
 
     pVideoPicture->videoBuffer = m_videoBufferPool->Get();
-    static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(this, m_Codec,
+    static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(m_Codec,
      m_Codec->GetOMXPts(), m_Codec->GetAmlDuration(), m_Codec->GetBufferIndex(),
      m_Codec->GetPresentationGeneration());
   }

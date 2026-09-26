@@ -10,6 +10,11 @@
 
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
 
+#include <cstdint>
+#include <memory>
+
+class CAMLCodec;
+
 class CRendererAML : public CBaseRenderer
 {
 public:
@@ -51,8 +56,6 @@ private:
 
   // Called synchronously, in order, by RenderUpdate on its calling thread.
   PreparedVideoGeometry PrepareVideoLayer();
-  void CommitVideoLayer(int index, const PreparedVideoGeometry& geometry);
-  void PollVideoLayer();
 
   void Reset();
 
@@ -65,6 +68,9 @@ private:
     int duration;
   } m_buffers[m_numRenderBuffers];
 
+  // Empty-slot redraws still poll, but only the original admitted codec epoch.
+  std::shared_ptr<CAMLCodec> m_pollCodec;
+  uint64_t m_pollEpoch{0};
   int m_prevVPts;
   bool m_bConfigured;
 };

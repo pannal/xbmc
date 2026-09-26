@@ -288,6 +288,11 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
   m_messageQueue.End();
 
   CLog::Log(LOGINFO, "deleting video codec");
+  if (auto request = std::atomic_load(&m_flushRequest);
+      request && request->state == CVideoFlushRequest::State::PENDING)
+    request->state = CVideoFlushRequest::State::CANCELLED;
+  m_pendingResetMessage.reset();
+  m_pendingRecoveryDiscard = false;
   m_pVideoCodec.reset();
 
   if (m_picture.videoBuffer)
@@ -376,8 +381,29 @@ void CVideoPlayerVideo::Process()
       timeout = 1ms;
     }
 
+    const bool lifecyclePending = m_pVideoCodec && !m_pVideoCodec->ContinueLifecycle();
+    if (m_pVideoCodec && m_pVideoCodec->LifecycleFailed())
+    {
+      m_messageParent.Put(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_ABORT));
+      break;
+    }
+    if (!lifecyclePending && m_pendingRecoveryDiscard)
+    {
+      m_renderManager.DiscardBuffer();
+      m_pendingRecoveryDiscard = false;
+    }
     std::shared_ptr<CDVDMsg> pMsg;
-    MsgQueueReturnCode ret = GetMessage(pMsg, timeout, iPriority);
+    bool continuingReset = false;
+    MsgQueueReturnCode ret;
+    if (!lifecyclePending && m_pendingResetMessage)
+    {
+      pMsg = std::move(m_pendingResetMessage);
+      continuingReset = true;
+      ret = MSGQ_OK;
+    }
+    else
+      ret = m_messageQueue.Get(pMsg, lifecyclePending ? 10ms : timeout, iPriority,
+                               lifecyclePending);
 
     onlyPrioMsgs = false;
 
@@ -390,6 +416,8 @@ void CVideoPlayerVideo::Process()
     }
     else if (ret == MSGQ_TIMEOUT)
     {
+      if (lifecyclePending)
+        continue;
       if (m_outputSate == OUTPUT_AGAIN &&
           m_picture.videoBuffer)
       {
@@ -483,8 +511,13 @@ void CVideoPlayerVideo::Process()
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))
     {
       m_isEOS = false;
-      if(m_pVideoCodec)
+      if (m_pVideoCodec && !continuingReset)
         m_pVideoCodec->Reset();
+      if (m_pVideoCodec && m_pVideoCodec->LifecyclePending())
+      {
+        m_pendingResetMessage = pMsg;
+        continue;
+      }
 
       if (m_picture.videoBuffer)
       {
@@ -502,8 +535,13 @@ void CVideoPlayerVideo::Process()
       m_isEOS = false;
       m_messageQueue.Flush(CDVDMsg::VIDEO_DRAIN);
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
-      if(m_pVideoCodec)
+      if (m_pVideoCodec && !continuingReset)
         m_pVideoCodec->Reset();
+      if (m_pVideoCodec && m_pVideoCodec->LifecyclePending())
+      {
+        m_pendingResetMessage = pMsg;
+        continue;
+      }
 
       if (m_picture.videoBuffer)
       {
@@ -529,6 +567,8 @@ void CVideoPlayerVideo::Process()
 
       m_renderManager.DiscardBuffer();
       FlushMessages();
+      std::static_pointer_cast<CDVDMsgVideoFlush>(pMsg)->request->state =
+          CVideoFlushRequest::State::COMPLETED;
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
@@ -551,6 +591,11 @@ void CVideoPlayerVideo::Process()
           break;
       }
 
+      if (m_pVideoCodec && m_pVideoCodec->LifecyclePending())
+      {
+        m_pendingResetMessage = pMsg;
+        continue;
+      }
       OpenStream(msg->m_hints, std::move(msg->m_codec));
       msg->m_codec = NULL;
       if (m_picture.videoBuffer)
@@ -715,6 +760,11 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
     }
 
     m_pVideoCodec->Reset();
+    if (m_pVideoCodec->LifecyclePending())
+    {
+      m_pendingRecoveryDiscard = true;
+      return false;
+    }
     m_packets.clear();
     //picture.iFlags &= ~DVP_FLAG_ALLOCATED;
     m_renderManager.DiscardBuffer();
@@ -731,6 +781,11 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
     }
 
     m_pVideoCodec->Reopen();
+    if (m_pVideoCodec->LifecyclePending())
+    {
+      m_pendingRecoveryDiscard = true;
+      return false;
+    }
     m_packets.clear();
     m_renderManager.DiscardBuffer();
     return false;
@@ -989,6 +1044,18 @@ void CVideoPlayerVideo::SetSpeed(int speed)
     m_speed = speed;
 }
 
+bool CVideoPlayerVideo::IsFlushPending() const
+{
+  auto request = std::atomic_load(&m_flushRequest);
+  return request && request->state == CVideoFlushRequest::State::PENDING;
+}
+
+bool CVideoPlayerVideo::FlushFailed() const
+{
+  auto request = std::atomic_load(&m_flushRequest);
+  return request && request->state == CVideoFlushRequest::State::CANCELLED;
+}
+
 void CVideoPlayerVideo::Flush(bool sync)
 {
   /* flush using message as this get's called from VideoPlayer thread */
@@ -996,7 +1063,12 @@ void CVideoPlayerVideo::Flush(bool sync)
   /* be disposed of before we flush */
   if (m_pVideoCodec)
     m_pVideoCodec->Abort();
-  SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_FLUSH, sync), 1);
+  if (m_messageQueue.IsInited())
+  {
+    auto request = std::make_shared<CVideoFlushRequest>();
+    std::atomic_store(&m_flushRequest, request);
+    SendMessage(std::make_shared<CDVDMsgVideoFlush>(sync, request), 1);
+  }
   m_bAbortOutput = true;
 }
 

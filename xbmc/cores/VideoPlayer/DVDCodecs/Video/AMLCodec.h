@@ -9,6 +9,7 @@
 #pragma once
 
 #include "DVDVideoCodec.h"
+#include "AMLSession.h"
 #include "cores/VideoPlayer/DVDStreamInfo.h"
 #include "cores/IPlayer.h"
 #include "windowing/Resolution.h"
@@ -66,8 +67,22 @@ public:
   virtual ~CAMLCodec();
 
   bool          OpenDecoder();
-  void          CloseDecoder();
-  void          Reset();
+  bool          CloseDecoder();
+  bool          Reset();
+  bool          ReopenDecoder();
+  bool          ContinueLifecycle();
+  bool IsPresentationPermit(const CAMLSession::Permit& permit, uint64_t epoch) const
+  {
+    return m_session.Matches(permit, epoch);
+  }
+  bool          LifecycleFailed() const { return m_lifecycleFailed; }
+  bool          LifecyclePending() const { return m_lifecycle != Lifecycle::NONE; }
+  void          WaitForLifecycle();
+  uint64_t      GetOperationEpoch() const { return m_session.Epoch(); }
+  CAMLSession::Permit AcquirePresentation(uint64_t epoch, bool retirement = false)
+  {
+    return m_session.Acquire(epoch, retirement);
+  }
   void          Abort();
 
   bool          AddData(uint8_t *pData, size_t size, double dts, double pts);
@@ -76,7 +91,7 @@ public:
   void          SetSpeed(int speed);
   void          SetDrain(bool drain){m_drain = drain; if (drain) m_tp_drain_start = std::chrono::system_clock::now();};
   void          SetStreamEOF(bool eof){m_stream_eof = eof;};
-  void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect, uint64_t generation);
+  void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect, uint64_t generation, const CAMLSession::Permit& permit);
   void          SetVideoRate(int videoRate);
   int           GetOMXPts() const { return static_cast<int>(m_cur_pts); }
   double        GetPts() const { return static_cast<double>(m_cur_pts); }
@@ -84,13 +99,23 @@ public:
   static float  OMXPtsToSeconds(int omxpts);
   static int    OMXDurationToNs(int duration);
   int           GetAmlDuration() const;
-  int           ReleaseFrame(const uint32_t index, uint64_t generation, bool bDrop = false);
+  int           ReleaseFrame(const uint32_t index, uint64_t generation, const CAMLSession::Permit& permit, bool bDrop = false);
   uint64_t      GetPresentationGeneration();
 
-  static int    PollFrame();
-  static void   SetPollDevice(int device);
+  int           PollFrame(const CAMLSession::Permit& permit);
 
 private:
+  enum class Lifecycle { NONE, OPEN, RESET, REOPEN, CLOSE };
+  bool BeginLifecycle(Lifecycle operation);
+  bool OpenDecoderInternal();
+  void CloseDecoderInternal();
+  void ResetInternal();
+  void SetPollDevice(int device);
+  CAMLSession m_session;
+  Lifecycle m_lifecycle{Lifecycle::NONE};
+  CAMLSession::Request m_lifecycleRequest;
+  bool m_lifecycleFailed{false};
+
   void          ShowMainVideo(const bool show);
   // Hide video output across a decode (re)start (startup / seek flush) until the
   // first valid frame, masking the brief green flash. coreelec.amlogic.video.restart.mute.
@@ -116,6 +141,7 @@ private:
 
   DllLibAmCodec   *m_dll;
   bool             m_opened;
+  bool             m_decoderNeedsClose{false};
   // Buffered frames can outlive CloseDecoder. Drain their presentation calls
   // before teardown, then reject them even if this codec is reopened by a reset.
   // Never hold this mutex across decoder/DV teardown or graphics-lock acquisition.
@@ -197,7 +223,7 @@ private:
   std::string      m_dvblpathVfmMap;
 
   static std::atomic_flag  m_pollSync;
-  static int m_pollDevice;
+  int m_pollDevice{-1};
   static double m_ttd;
 
   CDVDStreamInfo  &m_hints;         // Reference as values can change.

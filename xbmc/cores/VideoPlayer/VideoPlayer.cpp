@@ -805,7 +805,10 @@ CVideoPlayer::~CVideoPlayer()
 {
   CServiceBroker::GetWinSystem()->Unregister(this);
 
-  CloseFile();
+  // A timeout is still owned by this player. Keep it alive until its main
+  // renderer retirement and decode join have actually completed.
+  while (!CloseFile())
+    CThread::Sleep(10ms);
   DestroyPlayers();
 
   while (m_outboundEvents->IsProcessing())
@@ -843,7 +846,8 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   m_brokenFileStallStart = {};
   m_brokenFileStallBytes = -1;
   m_brokenFileStallStarveLogged = false;
-  m_renderManager.PreInit();
+  if (!m_renderManager.PreInit())
+    return false;
 
   Create();
   m_messenger.Init();
@@ -871,7 +875,8 @@ bool CVideoPlayer::CloseFile(bool reopen)
   if(m_pInputStream)
     m_pInputStream->Abort();
 
-  m_renderManager.UnInit();
+  if (!m_renderManager.UnInit())
+    return false;
 
   CLog::Log(LOGINFO, "VideoPlayer: waiting for threads to exit");
 
@@ -880,8 +885,17 @@ bool CVideoPlayer::CloseFile(bool reopen)
   // we are done after the StopThread call
   {
     CSingleExit exitlock(CServiceBroker::GetWinSystem()->GetGfxContext());
-    StopThread();
+    StopThread(false);
+    while (IsRunning())
+    {
+      m_renderManager.ProcessLifecycleRequests();
+      Join(10ms);
+    }
+    m_renderManager.ProcessLifecycleRequests();
+    StopThread(true);
   }
+  if (!m_renderManager.UnInit())
+    return false;
 
   m_Edl.Clear();
   CServiceBroker::GetDataCacheCore().Reset();
@@ -1789,6 +1803,11 @@ void CVideoPlayer::Process()
     // check display lost
     if (m_displayLost)
     {
+      // Startup/abort may progress, but preserve the display-loss fence on
+      // seeks, resets and player replacement until pre-mutation admission exists.
+      m_waitingForVideoFlush = true;
+      HandleMessages();
+      m_waitingForVideoFlush = false;
       CThread::Sleep(50ms);
       continue;
     }
@@ -3659,8 +3678,10 @@ void CVideoPlayer::HandleMessages()
 {
   std::shared_ptr<CDVDMsg> pMsg = nullptr;
 
-  while (m_messenger.Get(pMsg, 0ms) == MSGQ_OK)
+  int lifecyclePriority = 0;
+  while (m_messenger.Get(pMsg, 0ms, lifecyclePriority, m_waitingForVideoFlush ? 2 : 0) == MSGQ_OK)
   {
+    lifecyclePriority = 0;
     if (pMsg->IsType(CDVDMsg::PLAYER_OPENFILE) &&
         m_messenger.GetPacketCount(CDVDMsg::PLAYER_OPENFILE) == 0)
     {
@@ -3698,7 +3719,21 @@ void CVideoPlayer::HandleMessages()
       });
 
       FlushBuffers(DVD_NOPTS_VALUE, true, true);
-      m_renderManager.Flush(false, false);
+      if (m_bAbortRequest || m_bStop)
+        break;
+      auto retirement = m_renderManager.RequestFlush(false, true);
+      m_waitingForVideoFlush = true;
+      while (retirement && !retirement->Wait(10ms) &&
+             (retirement->status == CRenderLifecycle::Status::PENDING ||
+              retirement->status == CRenderLifecycle::Status::EXECUTING) &&
+             !m_bAbortRequest && !m_bStop)
+        HandleMessages();
+      m_waitingForVideoFlush = false;
+      if (!retirement || retirement->status != CRenderLifecycle::Status::COMPLETED)
+      {
+        m_bAbortRequest = true;
+        break;
+      }
       m_pDemuxer.reset();
       m_pSubtitleDemuxer.reset();
       m_subtitleDemuxerMap.clear();
@@ -5382,6 +5417,26 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
     m_VideoPlayerVideo->SendMessage(msg, 1);
     msg->Wait(m_bStop, 0);
 
+  }
+
+  // The general A/V event treats timeout as success. Device reset does not.
+  // Keep the original decode request pending and service startup/abort while
+  // its counted operation finishes; never acknowledge or replace its owner on
+  // timeout. This wait owns no renderer, graphics, pool or lifecycle lock.
+  m_waitingForVideoFlush = true;
+  while (m_VideoPlayerVideo->IsFlushPending() && !m_bAbortRequest && !m_bStop)
+  {
+    HandleMessages();
+    CThread::Sleep(10ms);
+  }
+  m_waitingForVideoFlush = false;
+  if (m_bAbortRequest || m_bStop || m_VideoPlayerVideo->FlushFailed())
+    return;
+
+  if (m_playSpeed == DVD_PLAYSPEED_NORMAL || m_playSpeed == DVD_PLAYSPEED_PAUSE ||
+      (m_playSpeed >= DVD_PLAYSPEED_NORMAL * m_processInfo->MinTempoPlatform() &&
+       m_playSpeed <= DVD_PLAYSPEED_NORMAL * m_processInfo->MaxTempoPlatform()))
+  {
     // purge any pending PLAYER_STARTED messages
     m_messenger.Flush(CDVDMsg::PLAYER_STARTED);
 

@@ -468,6 +468,7 @@ protected:
   CacheInfo GetCachingTimes();
 
   void FlushBuffers(double pts, bool accurate, bool sync);
+  bool m_waitingForVideoFlush{false};
 
   void HandleMessages();
   void HandlePlaySpeed();

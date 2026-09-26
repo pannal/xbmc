@@ -5,6 +5,8 @@ Compile the production open/close gates, SetVideoRect entry guard and complete
 ReleaseFrame/GetPresentationGeneration methods with a fake video device. The
 remaining SetVideoRect and decoder lifecycle effects are stubs: this verifies
 their synchronization boundary, not geometry, Kodi scheduling or HDMI recovery.
+Current-source checks use real session permits with modeled lifecycle framing;
+normal permits moved to fake executors test lifetime, not worker authorization.
 Use --baseline REV with a pre-fix revision to demonstrate the late-show failure.
 Requires Python 3 and g++; temporary compiler outputs are removed automatically.
 """
@@ -38,16 +40,17 @@ def main():
     source = (subprocess.check_output(["git", "show", f"{args.baseline}:{CODEC}"],
                                       cwd=ROOT, text=True)
               if args.baseline else (ROOT / CODEC).read_text())
-    opened = function(source, "bool CAMLCodec::OpenDecoder()")
+    session = "bool CAMLCodec::OpenDecoderInternal()" in source
+    opened = function(source, "bool CAMLCodec::OpenDecoderInternal()" if session else "bool CAMLCodec::OpenDecoder()")
     publish = opened.split("  SetPollDevice(am_private->vcodec.cntl_handle);", 1)[1]
     publish = publish[:publish.rindex("  return true;")]
-    closed = function(source, "void CAMLCodec::CloseDecoder()")
+    closed = function(source, "void CAMLCodec::CloseDecoderInternal()" if session else "void CAMLCodec::CloseDecoder()")
     close_gate = closed.split('  CLog::Log(LOGINFO, "CAMLCodec::CloseDecoder");', 1)[1]
     close_gate = close_gate.split("  // Make sure the green-flash hold", 1)[0]
     rect = function(source, "void CAMLCodec::SetVideoRect(")
     rect_gate = rect[rect.index("{") + 1:rect.index("  // this routine gets called")]
     release = function(source, "int CAMLCodec::ReleaseFrame(")
-    if args.baseline:
+    if args.baseline and "uint64_t generation" not in release:
         release = release.replace("const uint32_t index, bool drop",
                                   "const uint32_t index, uint64_t generation, bool drop")
         generation = "uint64_t CAMLCodec::GetPresentationGeneration() { return 0; }"
@@ -67,6 +70,8 @@ def main():
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
+#define SESSION @SESSION@
 
 using namespace std::chrono_literals;
 void check(bool ok, const char* message) {
@@ -89,6 +94,9 @@ struct Device {
 class CAMLCodec {
 public:
   std::mutex m_presentationMutex;
+#if SESSION
+  CAMLSession m_session;
+#endif
   bool m_presentationActive = false;
   uint64_t m_presentationGeneration = 0;
   std::shared_ptr<Device> device = std::make_shared<Device>();
@@ -96,12 +104,26 @@ public:
   std::function<void()> beforeShow;
   std::atomic<bool> teardownUnlocked{false};
   void Open(bool success = true) {
+#if SESSION
+    auto request=m_session.Fence();
+    check(m_session.BeginMutation(request),"open began before session quiescence");
+    if (!success) {check(m_session.Complete(request,false),"failed open completion");return;}
+#else
     if (!success) return; // the production publication is after all open failures
+#endif
     device->closed = false;
     m_amlVideoFile = device;
     @PUBLISH@
+#if SESSION
+    check(m_session.Complete(request,true),"open completion rejected");
+#endif
   }
   void Close() {
+#if SESSION
+    auto request=m_session.Fence();
+    while(!m_session.Wait(request,50ms)) {}
+    check(m_session.BeginMutation(request),"close began before session quiescence");
+#endif
     @CLOSE@
     // DV teardown must be outside this mutex (graphics/DV lock ordering).
     teardownUnlocked = m_presentationMutex.try_lock();
@@ -109,14 +131,33 @@ public:
     device->closed = true;
     device->visible = false;
     m_amlVideoFile.reset();
+#if SESSION
+    check(m_session.Complete(request,false),"close completion rejected");
+#endif
   }
+#if SESSION
   void SetVideoRect(uint64_t generation) {
+    auto permit=m_session.Acquire(m_session.Epoch());
+    SetVideoRect(generation,permit);
+  }
+  void SetVideoRect(uint64_t generation,const CAMLSession::Permit& permit) {
+#else
+  void SetVideoRect(uint64_t generation) {
+#endif
     @RECT@
     if (beforeShow) beforeShow();
     ++device->shows;
     device->visible = true;
   }
+#if SESSION
+  int ReleaseFrame(uint32_t index,uint64_t generation,bool drop=false) {
+    auto permit=m_session.Acquire(m_session.Epoch(),drop);
+    return ReleaseFrame(index,generation,permit,drop);
+  }
+  int ReleaseFrame(uint32_t index,uint64_t generation,const CAMLSession::Permit&,bool drop=false);
+#else
   int ReleaseFrame(uint32_t index, uint64_t generation, bool drop = false);
+#endif
   uint64_t GetPresentationGeneration();
 };
 @RELEASE@
@@ -144,7 +185,8 @@ void test_normal_and_split_close() {
   codec.ReleaseFrame(2, token, true);
   check(codec.device->visible && codec.device->queued == 2 && codec.device->dropped == 1,
         "normal presentation or buffer drop broken");
-  // Close can occur between RenderUpdate's two separately guarded calls.
+  // Independently admitted calls remain rejected after close. The new renderer
+  // holds one whole-operation permit; its inter-call gap is covered elsewhere.
   codec.ReleaseFrame(3, token);
   codec.Close();
   codec.SetVideoRect(token);
@@ -181,10 +223,20 @@ void test_close_waits(bool releasing) {
   auto block = [&] { entered.set_value(); proceedFuture.wait(); };
   if (releasing) codec.device->beforeQueue = block;
   else codec.beforeShow = block;
+#if SESSION
+  // Admission occurs on the actual owner; fake executor transfer tests counting.
+  auto admitted=codec.m_session.Acquire(codec.m_session.Epoch());
+  auto render = std::async(std::launch::async, [&,admitted=std::move(admitted)]() mutable {
+    auto permit=std::move(admitted);
+    if (releasing) codec.ReleaseFrame(1,token,permit);
+    else codec.SetVideoRect(token,permit);
+  });
+#else
   auto render = std::async(std::launch::async, [&] {
     if (releasing) codec.ReleaseFrame(1, token);
     else codec.SetVideoRect(token);
   });
+#endif
   entered.get_future().wait();
   auto close = std::async(std::launch::async, [&] {
     closing.set_value();
@@ -229,6 +281,7 @@ int main() {
   }
 }
 '''
+    harness = harness.replace("@SESSION@", "1" if session else "0")
     for key, value in [("PUBLISH", publish), ("CLOSE", close_gate), ("RECT", rect_gate),
                        ("RELEASE", release), ("GENERATION", generation)]:
         if key in ("PUBLISH", "CLOSE", "RECT"):
@@ -240,7 +293,7 @@ int main() {
         cpp.write_text(harness)
         subprocess.run(["g++", "-std=c++17", "-pthread", "-Wall", "-Wextra", "-Werror",
                         "-Wno-unused-parameter", "-fsanitize=address,undefined", "-g",
-                        str(cpp), "-o", str(exe)], check=True)
+                        "-I", str(ROOT / "xbmc"), str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True, timeout=15)
 
 

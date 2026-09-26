@@ -7,6 +7,7 @@
  */
 
 #include "AMLCodec.h"
+#include "messaging/ApplicationMessenger.h"
 
 #include "DynamicDll.h"
 #include "ServiceBroker.h"
@@ -1819,7 +1820,8 @@ static inline int calc_chunk_size(int size)
 
 /*************************************************************************/
 CAMLCodec::CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints)
-  : m_opened(false)
+  : m_session(CServiceBroker::GetAppMessenger()->GetProcessThreadId())
+  , m_opened(false)
   , m_speed(DVD_PLAYSPEED_NORMAL)
   , m_cur_pts(DVD_NOPTS_VALUE)
   , m_last_pts(DVD_NOPTS_VALUE)
@@ -1924,6 +1926,79 @@ void CAMLCodec::SetProcessInfoVideoDetails()
 
 bool CAMLCodec::OpenDecoder()
 {
+  return BeginLifecycle(Lifecycle::OPEN);
+}
+
+bool CAMLCodec::CloseDecoder()
+{
+  return BeginLifecycle(Lifecycle::CLOSE);
+}
+
+bool CAMLCodec::Reset()
+{
+  return BeginLifecycle(Lifecycle::RESET);
+}
+
+bool CAMLCodec::ReopenDecoder()
+{
+  return BeginLifecycle(Lifecycle::REOPEN);
+}
+
+bool CAMLCodec::BeginLifecycle(Lifecycle operation)
+{
+  // Only the serialized decoder lifecycle owner enters here. Close can supersede
+  // an unstarted recovery after the decode thread has joined.
+  if (m_lifecycle != operation)
+  {
+    m_lifecycleFailed = false;
+    m_lifecycleRequest = m_session.Fence();
+    m_lifecycle = operation;
+  }
+  return ContinueLifecycle();
+}
+
+bool CAMLCodec::ContinueLifecycle()
+{
+  if (m_lifecycle == Lifecycle::NONE)
+    return !m_lifecycleFailed;
+  if (!m_session.BeginMutation(m_lifecycleRequest))
+    return false;
+
+  const Lifecycle operation = m_lifecycle;
+  bool success = true;
+  if ((operation == Lifecycle::CLOSE || operation == Lifecycle::REOPEN) && m_decoderNeedsClose)
+    CloseDecoderInternal();
+  if (operation == Lifecycle::RESET)
+    ResetInternal();
+  if (operation == Lifecycle::OPEN || operation == Lifecycle::REOPEN)
+  {
+    success = OpenDecoderInternal();
+    // Open can fail after hold/DV/VFM/config/device acquisition, before the
+    // successful-open flag. Unwind that partial session under the same fence.
+    if (!success && m_decoderNeedsClose)
+      CloseDecoderInternal();
+  }
+
+  m_session.Complete(m_lifecycleRequest, m_opened);
+  m_lifecycleFailed = !success;
+  m_lifecycle = Lifecycle::NONE;
+  return success;
+}
+
+void CAMLCodec::WaitForLifecycle()
+{
+  // Teardown retains the original codec and its ProcessInfo owner. No timeout
+  // permits deletion. Presentation never needs the decoder's message loop to
+  // relinquish a counted device operation. Call without renderer/GUI/pool locks.
+  while (LifecyclePending())
+  {
+    m_session.Wait(m_lifecycleRequest, std::chrono::milliseconds(50));
+    ContinueLifecycle();
+  }
+}
+
+bool CAMLCodec::OpenDecoderInternal()
+{
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
   m_stream_eof = false;
@@ -1965,6 +2040,7 @@ bool CAMLCodec::OpenDecoder()
     return false;
   }
 
+  m_decoderNeedsClose = true;
   ShowMainVideo(false);
 
   // Green-flash mask also covers playback startup (same decode-restart class):
@@ -2437,7 +2513,7 @@ void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map)
   }
 }
 
-void CAMLCodec::CloseDecoder()
+void CAMLCodec::CloseDecoderInternal()
 {
   CLog::Log(LOGINFO, "CAMLCodec::CloseDecoder");
 
@@ -2471,8 +2547,9 @@ void CAMLCodec::CloseDecoder()
 
   am_packet_release(&am_private->am_pkt);
   am_private->extradata = {};
-  if (am_private->vcodec.config)
-    free(am_private->vcodec.config);
+  free(am_private->vcodec.config);
+  am_private->vcodec.config = nullptr;
+  am_private->vcodec.config_len = 0;
   // return tsync to default so external apps work
   CSysfsPath("/sys/class/tsync/enable", 1);
 
@@ -2487,6 +2564,8 @@ void CAMLCodec::CloseDecoder()
 
   if (m_dvOpened)
     aml_dv_close();
+  m_dvOpened = false;
+  m_decoderNeedsClose = false;
 }
 
 void CAMLCodec::CloseAmlVideo()
@@ -2506,7 +2585,7 @@ void CAMLCodec::Abort()
   m_abort = true;
 }
 
-void CAMLCodec::Reset()
+void CAMLCodec::ResetInternal()
 {
   m_abort = false;
   CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
@@ -2563,6 +2642,8 @@ void CAMLCodec::Reset()
 
 bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 {
+  if (LifecyclePending() && !ContinueLifecycle())
+    return false;
   int data_len, free_len;
   int chunk_size = calc_chunk_size(iSize);
   float new_buffer_level = GetBufferLevel(chunk_size, data_len, free_len);
@@ -2756,10 +2837,10 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
   return true;
 }
 
-int CAMLCodec::m_pollDevice;
-
-int CAMLCodec::PollFrame()
+int CAMLCodec::PollFrame(const CAMLSession::Permit& permit)
 {
+  if (!m_session.Matches(permit, permit.Epoch()))
+    return 0;
   std::lock_guard<std::mutex> lock(pollSyncMutex);
   if (m_pollDevice < 0)
     return 0;
@@ -2788,8 +2869,10 @@ uint64_t CAMLCodec::GetPresentationGeneration()
   return m_presentationGeneration;
 }
 
-int CAMLCodec::ReleaseFrame(const uint32_t index, uint64_t generation, bool drop)
+int CAMLCodec::ReleaseFrame(const uint32_t index, uint64_t generation, const CAMLSession::Permit& permit, bool drop)
 {
+  if (!m_session.Matches(permit, permit.Epoch()))
+    return 0;
   std::lock_guard<std::mutex> lock(m_presentationMutex);
   if (!m_presentationActive || generation != m_presentationGeneration)
     return 0;
@@ -2943,14 +3026,16 @@ bool CAMLCodec::DrainHevcStill(float bufferLevel)
 
 CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
 {
+  if (LifecyclePending() && !ContinueLifecycle())
+    return CDVDVideoCodec::VC_NONE;
+  if (!m_opened)
+    return CDVDVideoCodec::VC_ERROR;
+
   struct vdec_info vi;
   int ret = EAGAIN;
   float buffer_level = GetBufferLevel();
   std::chrono::milliseconds elapsed_since_last_frame(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()
     - m_tp_last_frame).count());
-
-  if (!m_opened)
-    return CDVDVideoCodec::VC_ERROR;
 
   // Fail-safe for the green-flash hold: never leave the output blanked
   // indefinitely. If no valid frame arrives within the cap after a restart,
@@ -3347,8 +3432,10 @@ void CAMLCodec::HoldVideo(bool hold)
   }
 }
 
-void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect, uint64_t generation)
+void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect, uint64_t generation, const CAMLSession::Permit& permit)
 {
+  if (!m_session.Matches(permit, permit.Epoch()))
+    return;
   std::lock_guard<std::mutex> lock(m_presentationMutex);
   if (!m_presentationActive || generation != m_presentationGeneration)
     return;

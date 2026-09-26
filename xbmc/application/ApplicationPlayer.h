@@ -187,7 +187,7 @@ private:
   std::shared_ptr<const IPlayer> GetInternal() const;
   std::shared_ptr<IPlayer> GetInternal();
   void CreatePlayer(const CPlayerCoreFactory &factory, const std::string &player, IPlayerCallback& callback);
-  void CloseFile(bool reopen = false);
+  bool CloseFile(bool reopen = false);
 
   std::shared_ptr<IPlayer> m_pPlayer;
   mutable CCriticalSection m_playerLock;

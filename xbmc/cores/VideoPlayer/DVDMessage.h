@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "FileItem.h"
 #include "cores/IPlayer.h"
 
@@ -136,6 +138,28 @@ public:
 };
 
 typedef CDVDMsgType<bool> CDVDMsgBool;
+
+// A distinct receipt survives cancellation/reuse of its original decode session.
+struct CVideoFlushRequest
+{
+  enum class State { PENDING, COMPLETED, CANCELLED };
+  std::atomic<State> state{State::PENDING};
+};
+
+class CDVDMsgVideoFlush : public CDVDMsgBool
+{
+public:
+  CDVDMsgVideoFlush(bool sync, std::shared_ptr<CVideoFlushRequest> receipt)
+    : CDVDMsgBool(GENERAL_FLUSH, sync), request(std::move(receipt)) {}
+  ~CDVDMsgVideoFlush() override
+  {
+    auto pending = CVideoFlushRequest::State::PENDING;
+    request->state.compare_exchange_strong(pending, CVideoFlushRequest::State::CANCELLED);
+  }
+  const std::shared_ptr<CVideoFlushRequest> request;
+};
+
+
 typedef CDVDMsgType<int> CDVDMsgInt;
 typedef CDVDMsgType<double> CDVDMsgDouble;
 

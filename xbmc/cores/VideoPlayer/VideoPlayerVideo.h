@@ -59,6 +59,8 @@ public:
   void CloseStream(bool bWaitForBuffers) override;
   void SetSpeed(int iSpeed) override;
   void Flush(bool sync) override;
+  bool IsFlushPending() const override;
+  bool FlushFailed() const override;
   bool AcceptsData() const override;
   bool HasData() const override;
   void SetMaxTimeSize(double seconds, bool timeBound = false) override
@@ -158,6 +160,9 @@ protected:
   CDVDStreamInfo m_hints;
   int m_iSubtitlePlane{0}; ///< 3D MVC subtitle depth plane (ss_offset_sequence_id)
   std::unique_ptr<CDVDVideoCodec> m_pVideoCodec;
+  std::shared_ptr<CDVDMsg> m_pendingResetMessage;
+  bool m_pendingRecoveryDiscard{false};
+  std::shared_ptr<CVideoFlushRequest> m_flushRequest;
   CPtsTracker m_ptsTracker;
   std::list<DVDMessageListItem> m_packets;
   CDroppingStats m_droppingStats;

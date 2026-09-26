@@ -48,6 +48,7 @@
 #include "cores/DataCacheCore.h"
 #include "cores/FFmpeg.h"
 #include "cores/IPlayer.h"
+#include "cores/VideoPlayer/VideoRenderers/RenderLifecycle.h"
 #include "cores/playercorefactory/PlayerCoreFactory.h"
 #include "dialogs/GUIDialogBusy.h"
 #include "dialogs/GUIDialogCache.h"
@@ -1859,6 +1860,7 @@ void CApplication::UnlockFrameMoveGuard()
 
 void CApplication::FrameMove(bool processEvents, bool processGUI)
 {
+  CRenderLifecycle::ProcessAll();
   const auto appPlayer = GetComponent<CApplicationPlayer>();
   bool renderGUI = GetComponent<CApplicationPowerHandling>()->GetRenderGUI();
   if (processEvents)

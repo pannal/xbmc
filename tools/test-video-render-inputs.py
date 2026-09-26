@@ -2,8 +2,11 @@
 """Run complete production Render and AML submission/capture methods with stubs.
 
 Covers per-call fields/progression, GUI/video gates, late GUI rectangle values,
-and AML rectangle capture/release/generation/poll ordering. Services, renderer,
-L5 math, codec and screenshot/GPU effects are stand-ins, not hardware evidence.
+and AML rectangle capture/release/generation/poll ordering. Current AML buffer
+consumption methods and session admission are production code; device calls,
+services, L5 math and screenshot/GPU effects are stand-ins, not hardware evidence.
+Configured empty-slot traces remain compared; rejection without original-session
+admission is tested separately because it is an intentional lifecycle change.
 --compare REV also checks call traces against accepted production at REV.
 """
 import argparse
@@ -30,7 +33,22 @@ def harness(revision=None):
     aml = source_at(directory + 'HwDecRender/RendererAML.cpp', revision)
     aml_header = source_at(directory + 'HwDecRender/RendererAML.h', revision)
     prepared = 'struct PreparedVideoDraw' in header
+    gateway = 'buffer->AcquirePresentation()' in aml
     source = PRELUDE.replace('@PREPARED@', '1' if prepared else '0')
+    source = source.replace('@GATEWAY@', '1' if gateway else '0')
+    buffer_methods = ''
+    if gateway:
+        buffer_header = source_at('xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h', revision)
+        buffer_source = source_at('xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp', revision)
+        # Expose only state inspection to preserve accepted consumed-marker asserts.
+        buffer_class = function(buffer_header, 'class CAMLVideoBuffer :').replace('private:', 'public:') + ';'
+        for signature in ['void CAMLVideoBuffer::Set(', 'CAMLSession::Permit CAMLVideoBuffer::AcquirePresentation()',
+                          'void CAMLVideoBuffer::Commit(', 'void CAMLVideoBuffer::Poll(', 'void CAMLVideoBuffer::Drop()']:
+            buffer_methods += '\n' + function(buffer_source, signature)
+        source = source.replace('@AMLBUFFER@', buffer_class)
+    else:
+        source = source.replace('@AMLBUFFER@', '')
+    source += buffer_methods
     for name in ['EPRESENTSTEP', 'EPRESENTMETHOD', 'ERENDERSTATE']:
         source = source.replace('@' + name + '@', function(header, 'enum ' + name) + ';')
     source = source.replace('@FRAME@', function(header, 'struct FrameSelection\n') + ';')
@@ -45,8 +63,12 @@ def harness(revision=None):
     else:
         for name in ['PresentSingle', 'PresentFields', 'PresentBlend']:
             source += '\n' + function(manager, 'void CRenderManager::' + name + '(')
-    for signature in ['void CRendererAML::RenderUpdate(', 'void CRendererAML::CommitVideoLayer(',
-                      'void CRendererAML::PollVideoLayer()', 'bool CRendererAML::RenderCapture(']:
+    signatures = ['void CRendererAML::RenderUpdate(', 'bool CRendererAML::RenderCapture(']
+    if gateway:
+        signatures += ['bool CRendererAML::Configure(']
+    if not gateway:
+        signatures += ['void CRendererAML::CommitVideoLayer(', 'void CRendererAML::PollVideoLayer()']
+    for signature in signatures:
         source += '\n' + function(aml, signature)
     source += '\n' + function(aml, ('CRendererAML::PreparedVideoGeometry' if prepared else 'void') + ' CRendererAML::PrepareVideoLayer()')
     tests = TESTS
@@ -61,7 +83,7 @@ def run(revision=None):
         out = Path(temporary)
         (out / 'test.cpp').write_text(harness(revision))
         subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++17', '-Wall', '-Wextra', '-Werror',
-                        '-Wno-unused-parameter', '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                        '-Wno-unused-parameter', '-pthread', '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
                         '-I', str(ROOT / 'xbmc'), str(out / 'test.cpp'), '-o', str(out / 'test')], check=True)
         return subprocess.check_output([str(out / 'test')], text=True)
 
@@ -81,6 +103,8 @@ def main():
 PRELUDE = r'''
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
 #include <cassert>
 #include <chrono>
 #include <deque>
@@ -95,6 +119,7 @@ PRELUDE = r'''
 #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
 using namespace std::chrono_literals;
 #define PREPARED @PREPARED@
+#define GATEWAY @GATEWAY@
 using DWORD=unsigned int;
 using CCriticalSection=std::recursive_mutex;
 std::vector<std::string> trace;
@@ -214,28 +239,88 @@ struct CRenderManager{
 struct CAMLCodec{
   std::function<void()> releaseHook;
   static inline std::function<void()> pollHook;
+#if GATEWAY
+  CAMLSession session;
+  CAMLCodec(){auto request=session.Fence();assert(session.BeginMutation(request));assert(session.Complete(request,true));}
+  uint64_t GetOperationEpoch() const{return session.Epoch();}
+  CAMLSession::Permit AcquirePresentation(uint64_t epoch,bool retirement=false){return session.Acquire(epoch,retirement);}
+  bool IsPresentationPermit(const CAMLSession::Permit& permit,uint64_t epoch) const{return session.Matches(permit,epoch);}
+  int ReleaseFrame(int index,uint64_t generation,const CAMLSession::Permit& permit,bool drop=false){
+    assert(session.Matches(permit,session.Epoch()));
+    event(std::string(drop?"drop:":"release:")+std::to_string(index)+":"+std::to_string(generation));if(releaseHook)releaseHook();return 0;}
+  void SetVideoRect(const CRect& s,const CRect& d,uint64_t generation,const CAMLSession::Permit& permit){
+    assert(session.Matches(permit,session.Epoch()));event("aml-rect:"+rect(s)+":"+rect(d)+":"+std::to_string(generation));}
+  void PollFrame(const CAMLSession::Permit& permit){assert(session.Matches(permit,session.Epoch()));event("poll");if(pollHook)pollHook();}
+#else
   int ReleaseFrame(int index,uint64_t generation){event("release:"+std::to_string(index)+":"+std::to_string(generation));if(releaseHook)releaseHook();return 0;}
   void SetVideoRect(const CRect& s,const CRect& d,uint64_t generation){event("aml-rect:"+rect(s)+":"+rect(d)+":"+std::to_string(generation));}
   static void PollFrame(){event("poll");if(pollHook)pollHook();}
+#endif
 };
-struct CVideoBuffer{virtual ~CVideoBuffer()=default;};
-struct CAMLVideoBuffer:CVideoBuffer{CAMLCodec* m_amlCodec=nullptr;int m_omxPts=0,m_bufferIndex=0;uint64_t m_presentationGeneration=0;};
+struct CVideoBuffer{explicit CVideoBuffer(int=0){} virtual ~CVideoBuffer()=default;};
+#if GATEWAY
+@AMLBUFFER@
+#else
+struct CAMLVideoBuffer:CVideoBuffer{explicit CAMLVideoBuffer(int=0){} CAMLCodec* m_amlCodec=nullptr;int m_omxPts=0,m_bufferIndex=0;uint64_t m_presentationGeneration=0;};
+#endif
+void seed(CAMLVideoBuffer& buffer,const std::shared_ptr<CAMLCodec>& codec,int pts,int index,uint64_t generation){
+#if GATEWAY
+  buffer.Set(codec,pts,40,index,generation);
+#else
+  buffer.m_amlCodec=codec.get();buffer.m_omxPts=pts;buffer.m_bufferIndex=index;buffer.m_presentationGeneration=generation;
+#endif
+}
+bool consumed(const CAMLVideoBuffer& buffer){
+#if GATEWAY
+  return buffer.m_consumption==CAMLVideoBuffer::Consumption::CONSUMED;
+#else
+  return buffer.m_amlCodec==nullptr;
+#endif
+}
+#if GATEWAY
+struct VideoPicture{
+  CVideoBuffer* videoBuffer=nullptr;
+  int iWidth=1920,iHeight=1080,iDisplayWidth=1920,iDisplayHeight=1080;
+  int chroma_position=0,color_space=0,color_primaries=0,stereoMode=0;
+};
+int GetFlagsChromaPosition(int){return 0;}
+int GetFlagsColorMatrix(int,int,int){return 0;}
+int GetFlagsColorPrimaries(int){return 0;}
+int GetFlagsStereoMode(int){return 0;}
+#endif
 struct CScreenshotAML{
-  static bool CaptureVideoFrame(unsigned char* pixel,unsigned width,unsigned height,bool=false){event("screenshot:"+std::to_string(width)+":"+std::to_string(height));*pixel=42;return true;}
+  static inline bool succeeds=true;
+  static bool CaptureVideoFrame(unsigned char* pixel,unsigned width,unsigned height,bool=false){event("screenshot:"+std::to_string(width)+":"+std::to_string(height));*pixel=42;return succeeds;}
 };
 struct CRendererAML{
   @GEOMETRY@
   struct{CVideoBuffer* videoBuffer=nullptr;}m_buffers[NUM_BUFFERS];
   int m_prevVPts=-1,revision=0;
+#if GATEWAY
+  std::shared_ptr<CAMLCodec> m_pollCodec;
+  uint64_t m_pollEpoch{0};
+  int m_sourceWidth=0,m_sourceHeight=0,m_renderOrientation=0,m_iFlags=0;
+  bool m_bConfigured=false;
+  struct{int m_ViewMode=0;}m_videoSettings;
+  void CalculateFrameAspectRatio(int,int){}
+  void SetViewMode(int){}
+  bool Configure(const VideoPicture&,float,unsigned int);
+#endif
   CRect m_sourceRect,m_destRect;
   void ManageRenderArea(){event("prepare");m_sourceRect={0,0,1920,1080};m_destRect={float(++revision),20,1000,600};}
   void RenderUpdate(int,int,bool,unsigned,unsigned);
 #if PREPARED
-  PreparedVideoGeometry PrepareVideoLayer();void CommitVideoLayer(int,const PreparedVideoGeometry&);
+  PreparedVideoGeometry PrepareVideoLayer();
+#if !GATEWAY
+  void CommitVideoLayer(int,const PreparedVideoGeometry&);
+#endif
 #else
   void PrepareVideoLayer();void CommitVideoLayer(int);
 #endif
-  void PollVideoLayer();bool RenderCapture(int,CRenderCapture*);
+#if !GATEWAY
+  void PollVideoLayer();
+#endif
+  bool RenderCapture(int,CRenderCapture*);
 };
 '''
 
@@ -305,18 +390,25 @@ int main(){
    r.RenderCapture(&c);assert(trace==std::vector<std::string>{"capture-source:2"});dump();
    r.renderer.captureOk=false;r.RenderCapture(&c);assert(c.state==CAPTURESTATE_FAILED);dump();
    assert(r.m_presentstep==CRenderManager::PRESENT_FRAME);}
-  // Real AML methods with a fake codec. Null, processed, fresh and duplicate
+  // Real AML methods with a fake device. Configured empty, processed, fresh and duplicate
   // PTS still prepare and poll; generation, release and marking order persist.
-  {CRendererAML r;CAMLCodec codec;CAMLVideoBuffer buffer;
+  {CRendererAML r;auto owned=std::make_shared<CAMLCodec>();CAMLVideoBuffer buffer(0);
+#if GATEWAY
+   // Configuration retains the original codec even when the selected slot is empty.
+   r.m_pollCodec=owned;r.m_pollEpoch=owned->GetOperationEpoch();
+#endif
    r.RenderUpdate(0,-1,true,0,255);assert((trace==std::vector<std::string>{"prepare","poll"}));dump();
+#if GATEWAY
+   seed(buffer,owned,0,0,0);buffer.m_consumption=CAMLVideoBuffer::Consumption::CONSUMED;
+#endif
    r.m_buffers[0].videoBuffer=&buffer;r.RenderUpdate(0,-1,false,0,1);dump();
-   buffer.m_amlCodec=&codec;buffer.m_omxPts=123;buffer.m_bufferIndex=8;buffer.m_presentationGeneration=99;
-   CAMLCodec::pollHook=[&]{assert(!buffer.m_amlCodec&&r.m_prevVPts==123);};
+   seed(buffer,owned,123,8,99);
+   CAMLCodec::pollHook=[&]{assert(consumed(buffer)&&r.m_prevVPts==123);};
    r.RenderUpdate(0,-1,false,0,255);
    assert((trace==std::vector<std::string>{"prepare","release:8:99","aml-rect:0,0,1920,1080:3,20,1000,600:99","poll"}));dump();
-   CAMLCodec::pollHook={};buffer.m_amlCodec=&codec;buffer.m_presentationGeneration=100;
-   r.RenderUpdate(0,-1,false,0,255);assert(buffer.m_amlCodec==&codec);assert((trace==std::vector<std::string>{"prepare","poll"}));dump();
-   buffer.m_omxPts=124;r.RenderUpdate(0,-1,false,0,255);assert(!buffer.m_amlCodec);dump();
+   CAMLCodec::pollHook={};seed(buffer,owned,123,8,100);
+   r.RenderUpdate(0,-1,false,0,255);assert(!consumed(buffer));assert((trace==std::vector<std::string>{"prepare","poll"}));dump();
+   buffer.m_omxPts=124;r.RenderUpdate(0,-1,false,0,255);assert(consumed(buffer));dump();
    CRenderCapture c;const auto before=r.m_destRect;const int previous=r.m_prevVPts;
    assert(r.RenderCapture(9,&c));assert(c.pixel==42&&same(before,r.m_destRect)&&previous==r.m_prevVPts);
    // Capture DONE now follows successful readback. Assert its intentional order
@@ -330,14 +422,51 @@ int main(){
    r.SubmitVideoDraw(draw);
    assert((trace==std::vector<std::string>{"draw:2:1:1:"+std::to_string(RENDER_FLAG_BOT|RENDER_FLAG_NOOSD)+":255","draw:2:1:0:"+std::to_string(RENDER_FLAG_TOP)+":127"}));trace.clear();}
   // The rectangle values survive a member mutation between prepare and commit,
-  // including one inside ReleaseFrame. No codec ownership is inferred.
-  {CRendererAML r;CAMLCodec codec;CAMLVideoBuffer buffer;
-   r.m_buffers[0].videoBuffer=&buffer;buffer.m_amlCodec=&codec;buffer.m_omxPts=9;
-   buffer.m_bufferIndex=3;buffer.m_presentationGeneration=77;
+  // including one inside ReleaseFrame. Device/geometry effects remain stubs.
+  {CRendererAML r;auto owned=std::make_shared<CAMLCodec>();auto& codec=*owned;CAMLVideoBuffer buffer(0);
+   r.m_buffers[0].videoBuffer=&buffer;seed(buffer,owned,9,3,77);
    const auto geometry=r.PrepareVideoLayer();r.m_sourceRect={5,6,7,8};r.m_destRect={9,10,11,12};
    codec.releaseHook=[&]{r.m_sourceRect={20,30,40,50};r.m_destRect={60,70,80,90};};
+#if GATEWAY
+   auto permit=buffer.AcquirePresentation();
+   buffer.Commit(permit,geometry.source,geometry.destination,r.m_prevVPts);
+#else
    r.CommitVideoLayer(0,geometry);
+#endif
    assert((trace==std::vector<std::string>{"prepare","release:3:77","aml-rect:0,0,1920,1080:1,20,1000,600:77"}));trace.clear();}
+#endif
+#if GATEWAY
+  // Actual Configure must retain session provenance before any renderer slot
+  // exists, so startup/empty-slot rendering and capture still use that codec.
+  {CRendererAML r;auto codec=std::make_shared<CAMLCodec>();CAMLVideoBuffer source(0);
+   seed(source,codec,1,1,1);VideoPicture picture;picture.videoBuffer=&source;
+   assert(r.Configure(picture,24.0f,0));
+   assert(r.m_pollCodec==codec&&r.m_pollEpoch==source.OperationEpoch());
+   assert(r.m_bConfigured);trace.clear();
+   r.RenderUpdate(0,-1,false,0,255);assert((trace==std::vector<std::string>{"prepare","poll"}));trace.clear();
+   CRenderCapture capture;assert(r.RenderCapture(0,&capture));
+   assert((trace==std::vector<std::string>{"capture-begin","screenshot:640:360","capture-end"}));trace.clear();}
+  // Admission rejection is an intentional new boundary, separate from unchanged
+  // accepted-session traces above. No original codec means no device authority.
+  {CRendererAML r;CRenderCapture c;
+   r.RenderUpdate(0,-1,false,0,255);assert(trace.empty());
+   assert(!r.RenderCapture(0,&c));assert(trace==std::vector<std::string>{"capture-failed"});trace.clear();
+   auto codec=std::make_shared<CAMLCodec>();r.m_pollCodec=codec;r.m_pollEpoch=codec->GetOperationEpoch();
+   auto request=codec->session.Fence();
+   r.RenderUpdate(0,-1,false,0,255);assert(trace.empty());
+   assert(!r.RenderCapture(0,&c));assert(trace==std::vector<std::string>{"capture-failed"});trace.clear();
+   assert(codec->session.BeginMutation(request));assert(codec->session.Complete(request,true));
+   assert(!r.RenderCapture(0,&c));assert(trace==std::vector<std::string>{"capture-failed"});trace.clear();
+   r.m_pollEpoch=codec->GetOperationEpoch();
+   assert(r.RenderCapture(0,&c));assert((trace==std::vector<std::string>{"capture-begin","screenshot:640:360","capture-end"}));trace.clear();
+   CScreenshotAML::succeeds=false;assert(!r.RenderCapture(0,&c));
+   assert((trace==std::vector<std::string>{"capture-begin","screenshot:640:360","capture-failed"}));trace.clear();
+   CScreenshotAML::succeeds=true;
+   CAMLVideoBuffer stale(0);seed(stale,codec,1,1,1);r.m_buffers[0].videoBuffer=&stale;
+   request=codec->session.Fence();assert(codec->session.BeginMutation(request));assert(codec->session.Complete(request,true));
+   r.m_pollEpoch=codec->GetOperationEpoch();
+   assert(!r.RenderCapture(0,&c));assert(trace==std::vector<std::string>{"capture-failed"});trace.clear();
+   r.RenderUpdate(0,-1,false,0,255);assert(trace.empty());}
 #endif
 }
 '''

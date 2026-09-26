@@ -60,6 +60,7 @@ PRELUDE = r'''
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include "utils/Geometry.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
 #include "utils/ScreenshotAML.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
 #define HAS_GLES 2
@@ -154,7 +155,22 @@ struct CRenderCapture {
   void EndRender(){++ends;state=CAPTURESTATE_DONE;}
   void SetState(int value){state=value;}
 };
-struct CRendererAML { bool RenderCapture(int,CRenderCapture*); };
+struct CAMLCodec {
+  CAMLSession session;
+  CAMLCodec(){auto request=session.Fence();assert(session.BeginMutation(request));assert(session.Complete(request,true));}
+  CAMLSession::Permit AcquirePresentation(uint64_t epoch){return session.Acquire(epoch);}
+};
+struct CVideoBuffer {virtual ~CVideoBuffer()=default;};
+struct CAMLVideoBuffer:CVideoBuffer {
+  std::shared_ptr<CAMLCodec> codec;uint64_t epoch=0;
+  CAMLSession::Permit AcquirePresentation(){return codec->AcquirePresentation(epoch);}
+};
+struct CRendererAML {
+  struct {CVideoBuffer* videoBuffer=nullptr;}m_buffers[1];
+  std::shared_ptr<CAMLCodec> m_pollCodec=std::make_shared<CAMLCodec>();
+  uint64_t m_pollEpoch=m_pollCodec->session.Epoch();
+  bool RenderCapture(int,CRenderCapture*);
+};
 struct CLinuxRendererGLES {
   bool m_bValidated=true,rendered=true,stale=false,invalid=false;
   int renders=0,dirty=0;
@@ -236,6 +252,13 @@ void testRenderers(){
     assert(capture.ends==(result ? 1 : 0));
     if(!result)assert(capture.bytes==previous);
   }
+  // Rejected admission never starts readback or touches capture bytes.
+  {auto fence=aml.m_pollCodec->session.Fence();CRenderCapture capture;capture.bytes.fill(88);
+   const auto before=capture.bytes;assert(!aml.RenderCapture(0,&capture));
+   assert(capture.begins==0&&capture.bytes==before&&capture.state==CAPTURESTATE_FAILED);
+   assert(aml.m_pollCodec->session.BeginMutation(fence));
+   assert(aml.m_pollCodec->session.Complete(fence,true));
+   assert(!aml.RenderCapture(0,&capture));assert(capture.begins==0);}
   reset();CLinuxRendererGLES renderer;assert(!renderer.RenderCapture(5,nullptr));
   for(int mode=0;mode<7;++mode){
     reset();CLinuxRendererGLES subject;CRenderCapture capture;capture.bytes.fill(66);

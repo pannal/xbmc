@@ -40,25 +40,30 @@ void CApplicationPlayer::ClosePlayer()
   std::shared_ptr<IPlayer> player = GetInternal();
   if (player)
   {
-    CloseFile();
-    ResetPlayer();
+    if (CloseFile())
+      ResetPlayer();
   }
 }
 
 void CApplicationPlayer::ResetPlayer()
 {
-  // we need to do this directly on the member
-  std::unique_lock<CCriticalSection> lock(m_playerLock);
-  m_pPlayer.reset();
+  std::shared_ptr<IPlayer> retired;
+  {
+    std::unique_lock<CCriticalSection> lock(m_playerLock);
+    retired = std::move(m_pPlayer);
+  }
+  // Destruction can wait for the original renderer's main-thread retirement.
+  // Do not hold the application player lock while that owner makes progress.
 }
 
-void CApplicationPlayer::CloseFile(bool reopen)
+bool CApplicationPlayer::CloseFile(bool reopen)
 {
   std::shared_ptr<IPlayer> player = GetInternal();
   if (player)
   {
-    player->CloseFile(reopen);
+    return player->CloseFile(reopen);
   }
+  return true;
 }
 
 void CApplicationPlayer::CreatePlayer(const CPlayerCoreFactory &factory, const std::string &player, IPlayerCallback& callback)
@@ -115,23 +120,19 @@ bool CApplicationPlayer::OpenFile(const CFileItem& item, const CPlayerOptions& o
       m_nextItem.playerName = newPlayer;
       m_nextItem.callback = &callback;
 
-      CloseFile();
+      if (!CloseFile())
+        return false;
       if (player->m_name != newPlayer)
-      {
-        std::unique_lock<CCriticalSection> lock(m_playerLock);
-        m_pPlayer.reset();
-      }
+        ResetPlayer();
       return true;
     }
   }
   else if (player && player->m_name != newPlayer)
   {
-    CloseFile();
-    {
-      std::unique_lock<CCriticalSection> lock(m_playerLock);
-      m_pPlayer.reset();
-      player.reset();
-    }
+    if (!CloseFile())
+      return false;
+    ResetPlayer();
+    player.reset();
   }
 
   if (!player)

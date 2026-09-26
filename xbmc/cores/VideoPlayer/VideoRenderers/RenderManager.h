@@ -10,6 +10,7 @@
 
 #include "DVDClock.h"
 #include "DebugRenderer.h"
+#include "RenderLifecycle.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h"
 #include "cores/DataCacheCore.h"
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
@@ -94,9 +95,11 @@ public:
   void TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode);
   void TriggerUpdateResolutionHdr(StreamHdrType m_hdrType);
   void SetViewMode(int iViewMode);
-  void PreInit();
-  void UnInit();
+  bool PreInit();
+  bool UnInit();
+  void ProcessLifecycleRequests();
   bool Flush(bool wait, bool saveBuffers);
+  std::shared_ptr<CRenderLifecycle::Request> RequestFlush(bool saveBuffers, bool newSession = false);
   bool IsConfigured() const;
   void ToggleDebug();
   void ToggleDebugVideo();
@@ -168,6 +171,14 @@ protected:
   bool IsGuiLayer();
 
   bool Configure();
+  void PreInitOnMain();
+  void UnInitOnMain();
+  bool FlushOnMain(bool saveBuffers);
+  std::shared_ptr<CRenderLifecycle> m_lifecycle;
+  std::shared_ptr<CRenderLifecycle::Request> m_configRequest;
+  bool m_configuredFramePending{false};
+  std::atomic<bool> m_closing{false};
+  uint64_t m_lifecycleGeneration{0};
   void CreateRenderer();
   void DeleteRenderer();
   void ManageCaptures();
@@ -213,7 +224,6 @@ protected:
     STATE_CONFIGURED,
   };
   ERENDERSTATE m_renderState = STATE_UNCONFIGURED;
-  CEvent m_stateEvent;
 
   /// Display latency tweak value from AdvancedSettings for the current refresh rate and resolution, and audio
   /// in milliseconds
@@ -292,8 +302,6 @@ protected:
   int m_presentsource = 0;
   int m_presentsourcePast = -1;
   XbmcThreads::ConditionVariable m_presentevent;
-  CEvent m_flushEvent;
-  CEvent m_initEvent;
   CDVDClock &m_dvdClock;
   IRenderMsg *m_playerPort;
 

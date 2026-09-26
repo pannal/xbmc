@@ -9,6 +9,7 @@
 #pragma once
 
 #include "DVDVideoCodec.h"
+#include "AMLSession.h"
 #include "DVDStreamInfo.h"
 #include "settings/lib/ISettingCallback.h"
 #include "threads/CriticalSection.h"
@@ -33,21 +34,27 @@ class CAMLVideoBuffer : public CVideoBuffer
 {
 public:
   CAMLVideoBuffer(int id) : CVideoBuffer(id) {};
-  void Set(CDVDVideoCodecAmlogic *codec, std::shared_ptr<CAMLCodec> amlcodec, int omxPts, int amlDuration, uint32_t bufferIndex, uint64_t generation)
-  {
-    m_codec = codec;
-    m_amlCodec = amlcodec;
-    m_omxPts = omxPts;
-    m_amlDuration = amlDuration;
-    m_bufferIndex = bufferIndex;
-    m_presentationGeneration = generation;
-  }
+  void Set(std::shared_ptr<CAMLCodec> codec, int omxPts, int amlDuration,
+           uint32_t bufferIndex, uint64_t generation);
+  CAMLSession::Permit AcquirePresentation() const;
+  void Commit(const CAMLSession::Permit& permit, const CRect& source,
+              const CRect& destination, int& previousPts);
+  void Poll(const CAMLSession::Permit& permit) const;
+  void Drop();
+  std::shared_ptr<CAMLCodec> Codec() const { return m_codec; }
+  uint64_t OperationEpoch() const { return m_operationEpoch; }
 
-  CDVDVideoCodecAmlogic* m_codec;
-  std::shared_ptr<CAMLCodec> m_amlCodec;
-  int m_omxPts, m_amlDuration;
-  uint32_t m_bufferIndex;
-  uint64_t m_presentationGeneration = 0;
+  int m_omxPts{0}, m_amlDuration{0};
+  uint32_t m_bufferIndex{0};
+
+private:
+  // Immutable while acquired; a pool ID is not reusable before Drop completes.
+  std::shared_ptr<CAMLCodec> m_codec;
+  uint64_t m_presentationGeneration{0};
+  uint64_t m_operationEpoch{0};
+  enum class Consumption { PENDING, CLAIMED, CONSUMED };
+  std::atomic<Consumption> m_consumption{Consumption::CONSUMED};
+
 };
 
 class CAMLVideoBufferPool : public IVideoBufferPool
@@ -79,6 +86,9 @@ public:
   virtual bool Open(CDVDStreamInfo &hints, CDVDCodecOptions &options) override;
   virtual bool AddData(const DemuxPacket &packet) override;
   virtual void Reset() override;
+  bool LifecyclePending() const override;
+  bool LifecycleFailed() const override;
+  bool ContinueLifecycle() override;
   virtual VCReturn GetPicture(VideoPicture* pVideoPicture) override;
   virtual void SetSpeed(int iSpeed) override;
   virtual void SetCodecControl(int flags) override;
@@ -113,6 +123,8 @@ protected:
   CBitstreamParser *m_bitparser;
   std::unique_ptr<CBitstreamConverter> m_bitstream;
 private:
+  void FinishReset();
+  bool m_resetCleanupPending{false};
   void UpdateAppendCMv40SettingCache();
   void UpdateStripCMv40SettingCache();
   void UpdateLevel5OverrideSettingCache();

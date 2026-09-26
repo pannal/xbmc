@@ -64,10 +64,12 @@ public:
    * msg,       message type from DVDMessage.h
    * timeout,   timeout in msec
    * priority,  minimum priority to get, outputs returned packets priority
+   * lifecyclePending, 0: normal, 1: decode resync/pause only, 2: parent started/abort only
    */
   MsgQueueReturnCode Get(std::shared_ptr<CDVDMsg>& pMsg,
                          std::chrono::milliseconds timeout,
-                         int& priority);
+                         int& priority,
+                         int lifecyclePending = 0);
   MsgQueueReturnCode Get(std::shared_ptr<CDVDMsg>& pMsg, std::chrono::milliseconds timeout)
   {
     int priority = 0;

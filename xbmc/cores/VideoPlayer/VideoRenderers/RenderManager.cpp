@@ -76,6 +76,7 @@ void CRenderManager::CClockSync::Reset()
 unsigned int CRenderManager::m_nextCaptureId = 0;
 
 CRenderManager::CRenderManager(CDVDClock &clock, IRenderMsg *player) :
+  m_lifecycle(CRenderLifecycle::Create(CServiceBroker::GetAppMessenger()->GetProcessThreadId())),
   m_dvdClock(clock),
   m_playerPort(player),
   m_dataCacheCore(CServiceBroker::GetDataCacheCore()),
@@ -85,6 +86,10 @@ CRenderManager::CRenderManager(CDVDClock &clock, IRenderMsg *player) :
 
 CRenderManager::~CRenderManager()
 {
+  // Player teardown has acknowledged main-owned UnInit. Retire any remaining
+  // CPU dispatch records before releasing this original target.
+  if (!m_lifecycle->Close())
+    std::terminate(); // Reentrant destruction inside this target's callback.
   delete m_pRenderer;
 }
 
@@ -116,15 +121,26 @@ void CRenderManager::SetVideoSettings(const CVideoSettings& settings)
 bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned int orientation,
   StreamHdrType hdrType, int buffers)
 {
+  CSingleExit graphics(CServiceBroker::GetWinSystem()->GetGfxContext());
+  if (m_closing)
+    return false;
 
   // check if something has changed
   {
     std::unique_lock<CCriticalSection> lock(m_statelock);
 
+    if (m_configRequest)
+    {
+      const auto status = m_configRequest->status.load();
+      if (status == CRenderLifecycle::Status::PENDING ||
+          status == CRenderLifecycle::Status::EXECUTING)
+        return false;
+      m_configRequest.reset();
+    }
     if (!m_bRenderGUI)
       return true;
 
-    if (m_picture.IsSameParams(picture) && m_fps == fps && m_orientation == orientation &&
+    if (m_renderState == STATE_CONFIGURED && m_picture.IsSameParams(picture) && m_fps == fps && m_orientation == orientation &&
         m_NumberBuffers == buffers && m_pRenderer != nullptr &&
         !m_pRenderer->ConfigChanged(picture))
     {
@@ -139,7 +155,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     // switch to a mode with different dimensions or pixel ratio (e.g. GUI
     // 1080p -> anamorphic 576p50 after fps re-detection on a badly muxed
     // file) would present with stale geometry and skip the AV resync.
-    if (m_pRenderer != nullptr && m_fps != fps &&
+    if (m_renderState == STATE_CONFIGURED && m_pRenderer != nullptr && m_fps != fps &&
         m_picture.IsSameParams(picture) && m_orientation == orientation &&
         m_NumberBuffers == buffers && !m_pRenderer->ConfigChanged(picture))
     {
@@ -204,40 +220,45 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     m_forceNext = false;
   }
 
+  auto payload = std::make_shared<VideoPicture>();
+  payload->CopyRef(picture);
+  std::shared_ptr<CRenderLifecycle::Request> request;
   {
     std::unique_lock<CCriticalSection> lock(m_statelock);
-    m_picture.SetParams(picture);
-    m_fps = fps;
-    m_orientation = orientation;
-    m_NumberBuffers  = buffers;
+    const auto generation = m_lifecycleGeneration;
+    request = m_lifecycle->Submit([this, payload, fps, orientation, buffers, generation] {
+      if (m_closing)
+        return false;
+      {
+        std::unique_lock<CCriticalSection> state(m_statelock);
+        if (generation != m_lifecycleGeneration)
+          return false;
+        m_picture.SetParams(*payload);
+        m_fps = fps;
+        m_orientation = orientation;
+        m_NumberBuffers = buffers;
+        m_clockSync.Reset();
+        m_dvdClock.SetVsyncAdjust(0);
+        m_pConfigPicture = std::make_unique<VideoPicture>();
+        m_pConfigPicture->CopyRef(*payload);
+      }
+      const bool result = Configure();
+      m_configuredFramePending = result;
+      return result;
+    });
+    if (!request)
+      return false;
+    m_configRequest = request;
     m_renderState = STATE_CONFIGURING;
-    m_stateEvent.Reset();
-    m_clockSync.Reset();
-    m_dvdClock.SetVsyncAdjust(0);
-    m_pConfigPicture = std::make_unique<VideoPicture>();
-    m_pConfigPicture->CopyRef(picture);
-
-    std::unique_lock<CCriticalSection> lock2(m_presentlock);
+    std::unique_lock<CCriticalSection> present(m_presentlock);
     InvalidateReservations();
     m_presentstep = PRESENT_READY;
     m_presentevent.notifyAll();
   }
-
-  if (!m_stateEvent.Wait(1000ms))
-  {
-    CLog::Log(LOGWARNING, "CRenderManager::Configure - timeout waiting for configure");
-    std::unique_lock<CCriticalSection> lock(m_statelock);
-    return false;
-  }
-
-  std::unique_lock<CCriticalSection> lock(m_statelock);
-  if (m_renderState != STATE_CONFIGURED)
-  {
-    CLog::Log(LOGWARNING, "CRenderManager::Configure - failed to configure");
-    return false;
-  }
-
-  return true;
+  ProcessLifecycleRequests();
+  // An expired wait leaves the exact request/picture retained and admission
+  // fenced. A retry may observe it, but cannot replace its payload or executor.
+  return request->Wait(1000ms);
 }
 
 bool CRenderManager::Configure()
@@ -258,7 +279,13 @@ bool CRenderManager::Configure()
   {
     CreateRenderer();
     if (!m_pRenderer)
+    {
+      m_renderState = STATE_UNCONFIGURED;
+      m_presentstep = PRESENT_IDLE;
+      m_presentevent.notifyAll();
+      m_pConfigPicture.reset();
       return false;
+    }
   }
 
   m_pRenderer->SetVideoSettings(m_playerPort->GetVideoSettings());
@@ -309,16 +336,23 @@ bool CRenderManager::Configure()
 
     m_renderState = STATE_CONFIGURED;
 
+    lock3.unlock();
+    lock2.unlock();
+    lock.unlock();
     UpdateResolution();
+    lock.lock();
 
     CLog::Log(LOGDEBUG, "CRenderManager::Configure - {}", m_QueueSize);
   }
   else
+  {
     m_renderState = STATE_UNCONFIGURED;
+    m_presentstep = PRESENT_IDLE;
+    m_presentevent.notifyAll();
+  }
 
   m_pConfigPicture.reset();
 
-  m_stateEvent.Set();
   m_playerPort->VideoParamsChange();
   return result;
 }
@@ -364,7 +398,8 @@ void CRenderManager::FrameMove()
   // Also expires attempts which never reached Render (inactive GUI, skipped
   // rendering or failed BeginRender), before a possible display update.
   ClearFrameSelection();
-  bool firstFrame = false;
+  bool firstFrame = m_configuredFramePending;
+  m_configuredFramePending = false;
   UpdateResolution();
   aml_dv_engage_stale_deferred_disc();
 
@@ -374,13 +409,12 @@ void CRenderManager::FrameMove()
     if (m_renderState == STATE_UNCONFIGURED)
       return;
     else if (m_renderState == STATE_CONFIGURING)
+      return;
+    if (firstFrame)
     {
       lock.unlock();
-      if (!Configure())
-        return;
-
-      firstFrame = true;
       FrameWait(50ms);
+      lock.lock();
     }
 
     CheckEnableClockSync();
@@ -482,22 +516,12 @@ void CRenderManager::UpdateGuiPresentationState(bool firstFrame)
   m_playerPort->UpdateGuiRender(IsGuiLayer() || firstFrame);
 }
 
-void CRenderManager::PreInit()
+void CRenderManager::PreInitOnMain()
 {
   {
     std::unique_lock<CCriticalSection> lock(m_statelock);
     if (m_renderState != STATE_UNCONFIGURED)
       return;
-  }
-
-  if (!CServiceBroker::GetAppMessenger()->IsProcessThread())
-  {
-    m_initEvent.Reset();
-    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_RENDERER_PREINIT);
-    if (!m_initEvent.Wait(2000ms))
-    {
-      CLog::Log(LOGERROR, "{} - timed out waiting for renderer to preinit", __FUNCTION__);
-    }
   }
 
   std::unique_lock<CCriticalSection> lock(m_statelock);
@@ -518,22 +542,11 @@ void CRenderManager::PreInit()
   m_presentstep = PRESENT_IDLE;
   m_bRenderGUI = true;
 
-  m_initEvent.Set();
 }
 
-void CRenderManager::UnInit()
+void CRenderManager::UnInitOnMain()
 {
   aml_set_disc_menu_visible(false);
-  if (!CServiceBroker::GetAppMessenger()->IsProcessThread())
-  {
-    m_initEvent.Reset();
-    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_RENDERER_UNINIT);
-    if (!m_initEvent.Wait(2000ms))
-    {
-      CLog::Log(LOGERROR, "{} - timed out waiting for renderer to uninit", __FUNCTION__);
-    }
-  }
-
   // Playback is ending: no disc menu graphics any more. Render thread only,
   // which owns the disc menu composite's state.
   if (CServiceBroker::GetAppMessenger()->IsProcessThread())
@@ -558,65 +571,127 @@ void CRenderManager::UnInit()
   CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(m_picture.hdrType);
   RemoveCaptures();
 
-  m_initEvent.Set();
+}
+
+void CRenderManager::ProcessLifecycleRequests()
+{
+  if (CServiceBroker::GetAppMessenger()->IsProcessThread())
+    m_lifecycle->Process();
+}
+
+bool CRenderManager::PreInit()
+{
+  CSingleExit graphics(CServiceBroker::GetWinSystem()->GetGfxContext());
+  std::shared_ptr<CRenderLifecycle::Request> request;
+  {
+    std::unique_lock<CCriticalSection> lock(m_statelock);
+    const auto generation = ++m_lifecycleGeneration;
+    request = m_lifecycle->Submit([this, generation] {
+      std::unique_lock<CCriticalSection> state(m_statelock);
+      if (generation != m_lifecycleGeneration)
+        return false;
+      m_lifecycle->AdvanceSession();
+      m_closing = false;
+      state.unlock();
+      PreInitOnMain();
+      return true;
+    });
+  }
+  ProcessLifecycleRequests();
+  return request && request->Wait(2000ms);
+}
+
+bool CRenderManager::UnInit()
+{
+  CSingleExit graphics(CServiceBroker::GetWinSystem()->GetGfxContext());
+  std::shared_ptr<CRenderLifecycle::Request> request;
+  {
+    std::unique_lock<CCriticalSection> lock(m_statelock);
+    m_closing = true;
+    const auto generation = ++m_lifecycleGeneration;
+    request = m_lifecycle->Submit([this, generation] {
+      std::unique_lock<CCriticalSection> state(m_statelock);
+      if (generation != m_lifecycleGeneration)
+        return false;
+      m_closing = true;
+      state.unlock();
+      UnInitOnMain();
+      return true;
+    });
+  }
+  ProcessLifecycleRequests();
+  return request && request->Wait(2000ms);
+}
+
+std::shared_ptr<CRenderLifecycle::Request> CRenderManager::RequestFlush(bool saveBuffers,
+                                                                     bool newSession)
+{
+  std::unique_lock<CCriticalSection> state(m_statelock);
+  const auto generation = m_lifecycleGeneration;
+  if (newSession)
+    m_closing = true;
+  return m_lifecycle->Submit([this, saveBuffers, newSession, generation] {
+    {
+      std::unique_lock<CCriticalSection> state(m_statelock);
+      if (generation != m_lifecycleGeneration)
+        return false;
+    }
+    const bool result = FlushOnMain(saveBuffers);
+    if (result && newSession)
+    {
+      std::unique_lock<CCriticalSection> state(m_statelock);
+      if (generation != m_lifecycleGeneration)
+        return false;
+      ++m_lifecycleGeneration;
+      m_lifecycle->AdvanceSession();
+      m_closing = false;
+    }
+    return result;
+  });
 }
 
 bool CRenderManager::Flush(bool wait, bool saveBuffers)
 {
-  if (!m_pRenderer)
-    return true;
+  CSingleExit graphics(CServiceBroker::GetWinSystem()->GetGfxContext());
+  auto request = RequestFlush(saveBuffers);
+  ProcessLifecycleRequests();
+  return request && request->Wait(wait ? 1000ms : 0ms);
+}
 
-  if (CServiceBroker::GetAppMessenger()->IsProcessThread())
-  {
-    CLog::Log(LOGDEBUG, "{} - flushing renderer", __FUNCTION__);
+bool CRenderManager::FlushOnMain(bool saveBuffers)
+{
+  CLog::Log(LOGDEBUG, "{} - flushing renderer", __FUNCTION__);
 
 // fix deadlock on Windows only when is enabled 'Sync playback to display'
 #ifndef TARGET_WINDOWS
-    CSingleExit exitlock(CServiceBroker::GetWinSystem()->GetGfxContext());
+  CSingleExit exitlock(CServiceBroker::GetWinSystem()->GetGfxContext());
 #endif
 
-    std::unique_lock<CCriticalSection> lock(m_statelock);
-    std::unique_lock<CCriticalSection> lock2(m_presentlock);
-    std::unique_lock<CCriticalSection> lock3(m_datalock);
+  std::unique_lock<CCriticalSection> lock(m_statelock);
+  std::unique_lock<CCriticalSection> lock2(m_presentlock);
+  std::unique_lock<CCriticalSection> lock3(m_datalock);
 
-    if (m_pRenderer)
-    {
-      ClearFrameSelection();
-      m_overlays.Flush();
-      m_debugRenderer.Flush();
-
-      const bool buffersSaved = m_pRenderer->Flush(saveBuffers);
-      InvalidateReservations();
-      if (!buffersSaved)
-      {
-        m_queued.clear();
-        m_discard.clear();
-        m_free.clear();
-        m_presentstarted = false;
-        m_presentsource = 0;
-        m_presentsourcePast = -1;
-        m_presentstep = PRESENT_IDLE;
-        for (int i = 0; i < m_QueueSize; i++)
-          m_free.push_back(i);
-      }
-
-      m_flushEvent.Set();
-    }
-  }
-  else
+  if (m_pRenderer)
   {
-    m_flushEvent.Reset();
-    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_RENDERER_FLUSH);
-    if (wait)
+    ClearFrameSelection();
+    m_overlays.Flush();
+    m_debugRenderer.Flush();
+
+    const bool buffersSaved = m_pRenderer->Flush(saveBuffers);
+    InvalidateReservations();
+    if (!buffersSaved)
     {
-      if (!m_flushEvent.Wait(1000ms))
-      {
-        CLog::Log(LOGERROR, "{} - timed out waiting for renderer to flush", __FUNCTION__);
-        return false;
-      }
-      else
-        return true;
+      m_queued.clear();
+      m_discard.clear();
+      m_free.clear();
+      m_presentstarted = false;
+      m_presentsource = 0;
+      m_presentsourcePast = -1;
+      m_presentstep = PRESENT_IDLE;
+      for (int i = 0; i < m_QueueSize; i++)
+        m_free.push_back(i);
     }
+
   }
   return true;
 }
