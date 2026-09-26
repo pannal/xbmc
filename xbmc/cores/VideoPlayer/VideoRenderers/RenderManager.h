@@ -259,6 +259,10 @@ protected:
   bool m_hasCaptures = false;
 
 private:
+  // Called synchronously by FrameMove on the application thread.
+  void ProcessPresentationQueue();
+  void UpdateGuiPresentationState(bool firstFrame);
+
   void CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view, bool useActiveArea);
 
   std::atomic_bool m_subtitleEnabled{false};

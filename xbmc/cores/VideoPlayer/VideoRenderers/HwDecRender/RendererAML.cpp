@@ -172,8 +172,18 @@ bool CRendererAML::Flush(bool saveBuffers)
 
 void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha)
 {
-  ManageRenderArea();
+  PrepareVideoLayer();
+  CommitVideoLayer(index);
+  PollVideoLayer();
+}
 
+void CRendererAML::PrepareVideoLayer()
+{
+  ManageRenderArea();
+}
+
+void CRendererAML::CommitVideoLayer(int index)
+{
   CVideoBuffer* videoBuffer = m_buffers[index].videoBuffer;
   if (videoBuffer)
   {
@@ -190,5 +200,9 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
       }
     }
   }
+}
+
+void CRendererAML::PollVideoLayer()
+{
   CAMLCodec::PollFrame();
 }

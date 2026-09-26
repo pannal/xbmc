@@ -41,6 +41,11 @@ public:
   virtual bool Supports(ERENDERFEATURE feature) const override;
 
 private:
+  // Called synchronously, in order, by RenderUpdate on its calling thread.
+  void PrepareVideoLayer();
+  void CommitVideoLayer(int index);
+  void PollVideoLayer();
+
   void Reset();
 
   static const int m_numRenderBuffers = NUM_BUFFERS;

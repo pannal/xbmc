@@ -350,45 +350,55 @@ void CRenderManager::FrameMove()
 
     CheckEnableClockSync();
   }
+
+  ProcessPresentationQueue();
+  UpdateGuiPresentationState(firstFrame);
+
+  ManageCaptures();
+}
+
+void CRenderManager::ProcessPresentationQueue()
+{
+  std::unique_lock<CCriticalSection> lock2(m_presentlock);
+
+  if (m_queued.empty())
   {
-    std::unique_lock<CCriticalSection> lock2(m_presentlock);
-
-    if (m_queued.empty())
-    {
-      m_presentstep = PRESENT_IDLE;
-    }
-    else
-    {
-      m_presentTimer.Set(1000ms);
-    }
-
-    if (m_presentstep == PRESENT_READY)
-      PrepareNextRender();
-
-    if (m_presentstep == PRESENT_FLIP)
-    {
-      m_presentstep = PRESENT_FRAME;
-      m_presentevent.notifyAll();
-    }
-
-    // release all previous
-    for (std::deque<int>::iterator it = m_discard.begin(); it != m_discard.end(); )
-    {
-      // renderer may want to keep the frame for postprocessing
-      if (!m_pRenderer->NeedBuffer(*it) || !m_bRenderGUI)
-      {
-        m_pRenderer->ReleaseBuffer(*it);
-        m_overlays.Release(*it);
-        m_free.push_back(*it);
-        it = m_discard.erase(it);
-      }
-      else
-        ++it;
-    }
-
-    m_bRenderGUI = true;
+    m_presentstep = PRESENT_IDLE;
+  }
+  else
+  {
+    m_presentTimer.Set(1000ms);
   }
 
+  if (m_presentstep == PRESENT_READY)
+    PrepareNextRender();
+
+  if (m_presentstep == PRESENT_FLIP)
+  {
+    m_presentstep = PRESENT_FRAME;
+    m_presentevent.notifyAll();
+  }
+
+  // release all previous
+  for (std::deque<int>::iterator it = m_discard.begin(); it != m_discard.end(); )
+  {
+    // renderer may want to keep the frame for postprocessing
+    if (!m_pRenderer->NeedBuffer(*it) || !m_bRenderGUI)
+    {
+      m_pRenderer->ReleaseBuffer(*it);
+      m_overlays.Release(*it);
+      m_free.push_back(*it);
+      it = m_discard.erase(it);
+    }
+    else
+      ++it;
+  }
+
+  m_bRenderGUI = true;
+}
+
+void CRenderManager::UpdateGuiPresentationState(bool firstFrame)
+{
   aml_set_disc_menu_visible(m_overlays.HasDiscMenuOverlay(m_presentsource));
 
   // Disc menu composite: report PQ menu graphics before the frame is drawn,
@@ -407,8 +417,6 @@ void CRenderManager::FrameMove()
                          m_appPlayer->GetSubtitleCount() > 0);
 
   m_playerPort->UpdateGuiRender(IsGuiLayer() || firstFrame);
-
-  ManageCaptures();
 }
 
 void CRenderManager::PreInit()
