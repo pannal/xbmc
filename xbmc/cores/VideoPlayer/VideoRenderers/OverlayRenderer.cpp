@@ -157,7 +157,9 @@ void CRenderer::Render(int idx, float depth)
 
   // While the disc menu composite is active its PQ menu graphics are drawn by
   // RenderPqMenu into their own layer; everything else renders as before.
-  const bool menuComposite = CServiceBroker::GetWinSystem()->IsMenuCompositeActive();
+  CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
+  const bool menuComposite =
+      winSystem->IsMenuCompositeActive() || winSystem->IsMenuCompositePending();
 
   std::vector<SElement>& list = m_buffers[idx];
   for(std::vector<SElement>::iterator it = list.begin(); it != list.end(); ++it)

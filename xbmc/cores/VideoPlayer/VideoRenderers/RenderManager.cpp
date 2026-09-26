@@ -391,6 +391,12 @@ void CRenderManager::FrameMove()
 
   aml_set_disc_menu_visible(m_overlays.HasDiscMenuOverlay(m_presentsource));
 
+  // Disc menu composite: report PQ menu graphics before the frame is drawn,
+  // in or out of fullscreen video (Kodi's own windows cover them and uncover
+  // them again at any moment), so the composite is engaged when they are.
+  CServiceBroker::GetWinSystem()->RequestMenuComposite(
+      !m_pRenderer->IsGuiLayer() && m_overlays.HasPqMenuOverlay(m_presentsource));
+
   // Hardware video can skip Render(gui=true) when no overlays are present.
   // Keep the track-enabled policy live here, including gaps and paused frames.
   // The visible mode still evaluates overlap in Render; clear it here when

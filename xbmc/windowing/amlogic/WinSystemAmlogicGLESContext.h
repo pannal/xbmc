@@ -57,6 +57,13 @@ public:
   // Disc menu graphics composite, see CWinSystemBase.
   void RequestMenuComposite(bool menuShown) override;
   bool IsMenuCompositeActive() const override { return m_menuRoute != MenuRoute::NONE; }
+  bool IsMenuCompositePending() const override
+  {
+    // Only the VPP route's first engage waits (OSD_ROUTE_FIRST_SETTLE).
+    return m_menuRoute == MenuRoute::NONE && m_menuShown && !m_menuEngageFailed &&
+           m_pendingRoute == MenuRoute::OSD_VPP &&
+           m_pendingRouteSince != std::chrono::steady_clock::time_point{};
+  }
   void BeginGuiComposite() override;
   void EndGuiComposite() override;
   bool BeginMenuOverlayRender() override;

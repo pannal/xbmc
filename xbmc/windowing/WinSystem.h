@@ -230,6 +230,9 @@ public:
   // Render thread, once per presented video frame: are PQ menu graphics shown?
   virtual void RequestMenuComposite(bool menuShown) {}
   virtual bool IsMenuCompositeActive() const { return false; }
+  // About to engage: PQ menu graphics are held back rather than drawn on the
+  // existing path for the few frames until it does.
+  virtual bool IsMenuCompositePending() const { return false; }
   // Around the GUI pass of a frame.
   virtual void BeginGuiComposite() {}
   virtual void EndGuiComposite() {}
