@@ -234,8 +234,10 @@ public:
   // existing path for the few frames until it does.
   virtual bool IsMenuCompositePending() const { return false; }
   // Around the GUI pass of a frame.
-  virtual void BeginGuiComposite() {}
-  virtual void EndGuiComposite() {}
+  // True means this command path is usable/completed, not presentation.
+  virtual bool BeginGuiComposite() { return true; }
+  virtual bool EndGuiComposite() { return true; }
+  virtual void CancelGuiComposite() {}
   // Around drawing the PQ menu graphics of a frame into their own buffer.
   virtual bool BeginMenuOverlayRender() { return false; }
   virtual void EndMenuOverlayRender() {}

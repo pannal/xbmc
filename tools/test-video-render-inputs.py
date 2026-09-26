@@ -49,7 +49,11 @@ def harness(revision=None):
                       'void CRendererAML::PollVideoLayer()', 'bool CRendererAML::RenderCapture(']:
         source += '\n' + function(aml, signature)
     source += '\n' + function(aml, ('CRendererAML::PreparedVideoGeometry' if prepared else 'void') + ' CRendererAML::PrepareVideoLayer()')
-    return source + TESTS
+    tests = TESTS
+    if revision and 'capture->SetState(CAPTURESTATE_FAILED)' not in function(aml, 'bool CRendererAML::RenderCapture('):
+        tests = tests.replace('"capture-begin","screenshot:640:360","capture-end"',
+                              '"capture-begin","capture-end","screenshot:640:360"')
+    return source + tests
 
 
 def run(revision=None):
@@ -217,7 +221,7 @@ struct CAMLCodec{
 struct CVideoBuffer{virtual ~CVideoBuffer()=default;};
 struct CAMLVideoBuffer:CVideoBuffer{CAMLCodec* m_amlCodec=nullptr;int m_omxPts=0,m_bufferIndex=0;uint64_t m_presentationGeneration=0;};
 struct CScreenshotAML{
-  static bool CaptureVideoFrame(unsigned char* pixel,unsigned width,unsigned height){event("screenshot:"+std::to_string(width)+":"+std::to_string(height));*pixel=42;return true;}
+  static bool CaptureVideoFrame(unsigned char* pixel,unsigned width,unsigned height,bool=false){event("screenshot:"+std::to_string(width)+":"+std::to_string(height));*pixel=42;return true;}
 };
 struct CRendererAML{
   @GEOMETRY@
@@ -315,7 +319,9 @@ int main(){
    buffer.m_omxPts=124;r.RenderUpdate(0,-1,false,0,255);assert(!buffer.m_amlCodec);dump();
    CRenderCapture c;const auto before=r.m_destRect;const int previous=r.m_prevVPts;
    assert(r.RenderCapture(9,&c));assert(c.pixel==42&&same(before,r.m_destRect)&&previous==r.m_prevVPts);
-   assert((trace==std::vector<std::string>{"capture-begin","capture-end","screenshot:640:360"}));dump();}
+   // Capture DONE now follows successful readback. Assert its intentional order
+   // separately; only unchanged display/submission traces are compared to older source.
+   assert((trace==std::vector<std::string>{"capture-begin","screenshot:640:360","capture-end"}));trace.clear();}
 #if PREPARED
   // Prepared pass values remain independent of the selection and current step.
   {CRenderManager r;CRenderManager::FrameSelection f{2,1,{0,FS_BOT,CRenderManager::PRESENT_METHOD_BLEND},{}};

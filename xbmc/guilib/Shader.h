@@ -56,6 +56,7 @@ namespace Shaders {
     ~CVertexShader() override { Free(); }
     void Free() override {}
     GLuint Handle() override { return m_vertexShader; }
+    void Abandon() { m_vertexShader = 0; m_compiled = false; }
 
   protected:
     GLuint m_vertexShader = 0;
@@ -79,6 +80,7 @@ namespace Shaders {
     ~CPixelShader() override { Free(); }
     void Free() override {}
     GLuint Handle() override { return m_pixelShader; }
+    void Abandon() { m_pixelShader = 0; m_compiled = false; }
 
   protected:
     GLuint m_pixelShader = 0;
@@ -152,6 +154,16 @@ namespace Shaders {
     CGLSLShaderProgram(const std::string& vert
                        , const std::string& frag);
     ~CGLSLShaderProgram() override;
+
+    // Only when the owning context is unavailable and will be destroyed. Do not
+    // issue deletes against another context's namespace.
+    void Abandon()
+    {
+      m_pVP->Abandon();
+      m_pFP->Abandon();
+      m_shaderProgram = 0;
+      m_ok = false;
+    }
 
     // enable the shader
     bool Enable() override;

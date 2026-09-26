@@ -9,6 +9,7 @@
 #include "ScreenshotSurfaceGLES.h"
 
 #include "ServiceBroker.h"
+#include "rendering/RenderSystem.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
 #include "utils/Screenshot.h"
@@ -42,9 +43,18 @@ bool CScreenshotSurfaceGLES::Capture()
 
   std::unique_lock<CCriticalSection> lock(winsystem->GetGfxContext());
   // While the disc menu composite is active, capture what it presents.
-  winsystem->BeginGuiComposite();
+  auto* renderSystem = CServiceBroker::GetRenderSystem();
+  if (!renderSystem || !renderSystem->CanRender())
+    return false;
+  const auto target = renderSystem->CaptureRenderTarget();
+  if (!winsystem->BeginGuiComposite())
+    return false;
+  auto cancel = [](CWinSystemBase* window) { window->CancelGuiComposite(); };
+  std::unique_ptr<CWinSystemBase, decltype(cancel)> composite(winsystem, cancel);
   gui->GetWindowManager().Render();
-  winsystem->EndGuiComposite();
+  if (!renderSystem->IsRenderTargetCurrent(target) || !winsystem->EndGuiComposite())
+    return false;
+  composite.release();
 
   //get current viewport
   GLint viewport[4];

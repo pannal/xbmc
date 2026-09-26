@@ -16,6 +16,7 @@
 #include "guilib/IWindowManagerCallback.h"
 #include "messaging/IMessageTarget.h"
 #include "playlists/PlayListTypes.h"
+#include "rendering/RenderResource.h"
 #include "threads/SystemClock.h"
 #include "utils/GlobalsHandling.h"
 #include "utils/Stopwatch.h"
@@ -106,6 +107,8 @@ public:
 
   void FrameMove(bool processEvents, bool processGUI = true) override;
   void Render() override;
+  // Main-thread observation; command completion is distinct from presentation.
+  const RenderAttemptResult& GetLastRenderAttempt() const { return m_lastRenderAttempt; }
 
   bool IsInitialized() const { return !m_bInitializing; }
   bool IsStopping() const { return m_bStop; }
@@ -241,6 +244,7 @@ public:
   bool m_AppFocused{true};
 
 private:
+  RenderAttemptResult m_lastRenderAttempt;
   void PrintStartupLog();
   void ResetCurrentItem();
 

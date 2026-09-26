@@ -56,6 +56,8 @@ namespace OVERLAY {
     virtual ~COverlay();
 
     virtual void Render(SRenderState& state) = 0;
+    // Backend context validity is independent of retained CPU content identity.
+    virtual bool IsValid() const { return true; }
 
     enum EType
     {

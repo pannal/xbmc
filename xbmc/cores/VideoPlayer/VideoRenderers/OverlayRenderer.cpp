@@ -800,7 +800,8 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(
 
   const auto content = o.shared_from_this();
   const auto it = m_textureCache.find(content);
-  if (it != m_textureCache.end() && it->second && it->second->m_libassResult.lock() == result)
+  if (it != m_textureCache.end() && it->second && it->second->IsValid() &&
+      it->second->m_libassResult.lock() == result)
     return it->second;
 
   std::shared_ptr<COverlay> overlay = COverlay::Create(*result, rOpts.frameWidth, rOpts.frameHeight);
@@ -839,6 +840,9 @@ std::shared_ptr<COverlay> CRenderer::Convert(const CDVDOverlay& o, double pts)
     if (it != m_textureCache.end())
       r = it->second;
   }
+
+  if (r && !r->IsValid())
+    r.reset();
 
   // A PQ menu texture is built for one route; rebuild it when the disc menu
   // composite turns on or off.

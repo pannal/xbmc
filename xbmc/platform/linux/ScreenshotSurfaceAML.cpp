@@ -10,6 +10,7 @@
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
 #include "ServiceBroker.h"
+#include "rendering/RenderSystem.h"
 #include "threads/SingleLock.h"
 #include "ScreenshotSurfaceAML.h"
 #include "utils/Screenshot.h"
@@ -30,7 +31,19 @@ std::unique_ptr<IScreenshotSurface> CScreenshotSurfaceAML::CreateSurface()
 bool CScreenshotSurfaceAML::Capture()
 {
   std::unique_lock<CCriticalSection> lock(CServiceBroker::GetWinSystem()->GetGfxContext());
+  auto* winsystem = CServiceBroker::GetWinSystem();
+  auto* renderSystem = CServiceBroker::GetRenderSystem();
+  if (!renderSystem || !renderSystem->CanRender())
+    return false;
+  const auto target = renderSystem->CaptureRenderTarget();
+  if (!winsystem->BeginGuiComposite())
+    return false;
+  auto cancel = [](CWinSystemBase* window) { window->CancelGuiComposite(); };
+  std::unique_ptr<CWinSystemBase, decltype(cancel)> composite(winsystem, cancel);
   CServiceBroker::GetGUI()->GetWindowManager().Render();
+  if (!renderSystem->IsRenderTargetCurrent(target) || !winsystem->EndGuiComposite())
+    return false;
+  composite.release();
 
 #ifndef HAS_GLES
   glReadBuffer(GL_BACK);

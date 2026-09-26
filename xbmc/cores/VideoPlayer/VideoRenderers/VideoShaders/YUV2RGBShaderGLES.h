@@ -8,6 +8,9 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
+
 #include "ConversionMatrix.h"
 #include "ShaderFormats.h"
 #include "cores/VideoSettings.h"
@@ -51,7 +54,15 @@ class BaseYUV2RGBGLSLShader : public CGLSLShaderProgram
     GLint GetUcoordLoc() { return m_hUcoord; }
     GLint GetVcoordLoc() { return m_hVcoord; }
 
-    void SetMatrices(const GLfloat *p, const GLfloat *m) { m_proj = p; m_model = m; }
+    void SetMatrices(const GLfloat* p, const GLfloat* m)
+    {
+      if (p)
+        std::copy_n(p, 16, m_projection.begin());
+      if (m)
+        std::copy_n(m, 16, m_modelview.begin());
+      m_proj = p ? m_projection.data() : nullptr;
+      m_model = m ? m_modelview.data() : nullptr;
+    }
     void SetAlpha(GLfloat alpha) { m_alpha = alpha; }
 
   protected:
@@ -102,6 +113,8 @@ class BaseYUV2RGBGLSLShader : public CGLSLShaderProgram
     GLint m_hModel{-1};
     GLint m_hAlpha{-1};
 
+  // Late main-owned setters copy capture/stereo matrices; no borrowed stack data.
+  std::array<GLfloat, 16> m_projection{}, m_modelview{};
     const GLfloat *m_proj{nullptr};
     const GLfloat *m_model{nullptr};
     GLfloat m_alpha{1.0f};

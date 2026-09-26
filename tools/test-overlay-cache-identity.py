@@ -124,6 +124,7 @@ struct CDVDOverlayContainer:CCriticalSection{
 };
 namespace OVERLAY {
 struct COverlay {
+  bool valid=true;bool IsValid()const{return valid;}
   std::weak_ptr<const CLibassRenderResult> m_libassResult;
   static int created,destroyed;uint32_t value=0;bool m_rawPqMenu=false,m_discMenuOverlay=false;
   ~COverlay(){assert(std::this_thread::get_id()==ownerThread);++destroyed;}
@@ -287,6 +288,17 @@ int main(){
    // Prepared owned bytes do not follow later producer mutation.
    auto held=handler->result;handler->image.value=8;
    assert(COverlay::Create(*held,1920,1080)->value==7);}
+  // Context-invalid GPU conversions must rebuild even when immutable content
+  // and libass raster identity are unchanged, then resume ordinary cache reuse.
+  {CRenderer r;auto p=image(false,0xff123456);auto content=p->GetPublishedRenderContent();
+   auto first=r.Convert(*content,0);first->valid=false;
+   auto replacement=r.Convert(*content,1);assert(replacement&&replacement!=first);
+   assert(replacement->value==first->value&&r.Convert(*content,2)==replacement);}
+  {CRenderer r;auto handler=std::make_shared<CDVDSubtitlesLibass>();handler->changes=0;
+   auto p=std::make_shared<CDVDOverlayLibass>(handler,DVDOVERLAY_TYPE_SSA);
+   auto first=r.Convert(*p,0);auto raster=handler->result;first->valid=false;
+   auto replacement=r.Convert(*p,1);assert(replacement&&replacement!=first&&handler->result==raster);
+   assert(r.Convert(*p,2)==replacement&&!handler->sawStyle);}
   // Strong cache keys retain immutable content, independently of its builder.
   {CRenderer r;auto p=image(false,0xff123456);std::weak_ptr<CDVDOverlay> producer=p;
    std::weak_ptr<const CDVDOverlay> weak=p->GetPublishedRenderContent();r.Convert(*p->GetPublishedRenderContent(),0);p.reset();

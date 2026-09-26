@@ -10,6 +10,8 @@
 
 #include "guilib/Shader.h"
 
+#include <algorithm>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -18,8 +20,18 @@ class CGuiCompositeShaderGLES : public Shaders::CGLSLShaderProgram
 public:
   explicit CGuiCompositeShaderGLES(const std::string& prefix);
   ~CGuiCompositeShaderGLES() override;
+  void Abandon()
+  {
+    m_lutDegammaTexId = m_lutTFTexId = m_hdrTexId = 0;
+    CGLSLShaderProgram::Abandon();
+  }
 
-  void SetProjection(const GLfloat* proj) { m_proj = proj; }
+  void SetProjection(const GLfloat* proj)
+  {
+    if (proj)
+      std::copy_n(proj, 16, m_projection.begin());
+    m_proj = proj ? m_projection.data() : nullptr;
+  }
 
   // How the hardware decodes the SDR GUI on the active route: a BT.1886 curve
   // (a pure power when blackLift is 0) with white at `white` (PQ-normalized,
@@ -62,6 +74,7 @@ private:
   static std::vector<float> GenerateDegammaLUT(const GuiTransfer& transfer);
   static std::vector<float> GeneratePQLUT(float white);
 
+  std::array<GLfloat, 16> m_projection{};
   const GLfloat* m_proj{nullptr};
   GuiTransfer m_transfer;
 

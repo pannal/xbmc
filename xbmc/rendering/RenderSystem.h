@@ -9,6 +9,7 @@
 #pragma once
 
 #include "RenderSystemTypes.h"
+#include "RenderResource.h"
 #include "utils/ColorUtils.h"
 #include "utils/Geometry.h"
 
@@ -40,6 +41,20 @@ public:
   virtual bool InitRenderSystem() = 0;
   virtual bool DestroyRenderSystem() = 0;
   virtual bool ResetRenderSystem(int width, int height) = 0;
+
+  // Retained CPU preparation must be checked again at its consuming owner.
+  virtual bool CanRender() const { return m_bRenderCreated; }
+  RenderTargetToken CaptureRenderTarget() const
+  {
+    return {m_renderTargetIdentity, m_renderTargetGeneration};
+  }
+  bool IsRenderTargetCurrent(const RenderTargetToken& target) const
+  {
+    return CanRender() && target.identity == m_renderTargetIdentity &&
+           target.generation == m_renderTargetGeneration;
+  }
+  PresentResult GetPresentResult() const { return m_presentResult; }
+  void ResetPresentResult() { m_presentResult = PresentResult::UNREPORTED; }
 
   virtual bool BeginRender() = 0;
   virtual bool EndRender() = 0;
@@ -88,6 +103,11 @@ public:
   virtual void ShowSplash(const std::string& message);
 
 protected:
+  void InvalidateRenderTarget() { ++m_renderTargetGeneration; }
+  const std::shared_ptr<const uint8_t> m_renderTargetIdentity{std::make_shared<const uint8_t>(0)};
+  uint64_t m_renderTargetGeneration{1};
+  PresentResult m_presentResult{PresentResult::NOT_ATTEMPTED};
+
   bool                m_bRenderCreated;
   bool                m_bVSync;
   unsigned int        m_maxTextureSize;

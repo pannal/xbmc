@@ -1289,10 +1289,16 @@ void CLinuxRendererGLES::RenderFromFBO()
 
 bool CLinuxRendererGLES::RenderCapture(int index, CRenderCapture* capture)
 {
-  if (!m_bValidated)
+  if (!capture)
+    return false;
+  auto* renderSystem = CServiceBroker::GetRenderSystem();
+  if (!m_bValidated || !renderSystem || !renderSystem->CanRender())
   {
+    capture->SetState(CAPTURESTATE_FAILED);
     return false;
   }
+
+  const auto target = renderSystem->CaptureRenderTarget();
 
   // save current video rect
   CRect saveSize = m_destRect;
@@ -1313,29 +1319,38 @@ bool CLinuxRendererGLES::RenderCapture(int index, CRenderCapture* capture)
 
   capture->BeginRender();
 
-  Render(RENDER_FLAG_NOOSD, index);
-  // read pixels
-  glReadPixels(0, CServiceBroker::GetWinSystem()->GetGfxContext().GetHeight() - capture->GetHeight(), capture->GetWidth(), capture->GetHeight(),
-               GL_RGBA, GL_UNSIGNED_BYTE, capture->GetRenderBuffer());
-
-  // OpenGLES returns in RGBA order but CRenderCapture needs BGRA order
-  // XOR Swap RGBA -> BGRA
-  unsigned char* pixels = static_cast<unsigned char*>(capture->GetRenderBuffer());
-  for (unsigned int i = 0; i < capture->GetWidth() * capture->GetHeight(); i++, pixels += 4)
+  const bool rendered = Render(RENDER_FLAG_NOOSD, index);
+  const bool current = renderSystem->IsRenderTargetCurrent(target);
+  if (rendered && current)
   {
-    std::swap(pixels[0], pixels[2]);
-  }
+    // read pixels
+    glReadPixels(0, CServiceBroker::GetWinSystem()->GetGfxContext().GetHeight() - capture->GetHeight(), capture->GetWidth(), capture->GetHeight(),
+                 GL_RGBA, GL_UNSIGNED_BYTE, capture->GetRenderBuffer());
 
-  capture->EndRender();
+    // OpenGLES returns in RGBA order but CRenderCapture needs BGRA order
+    // XOR Swap RGBA -> BGRA
+    unsigned char* pixels = static_cast<unsigned char*>(capture->GetRenderBuffer());
+    for (unsigned int i = 0; i < capture->GetWidth() * capture->GetHeight(); i++, pixels += 4)
+    {
+      std::swap(pixels[0], pixels[2]);
+    }
+
+    capture->EndRender();
+  }
+  else
+    capture->SetState(CAPTURESTATE_FAILED);
 
   // revert model view matrix
-  glMatrixModview.PopLoad();
+  if (current)
+    glMatrixModview.PopLoad();
+  else
+    glMatrixModview.Pop();
 
   // restore original video rect
   m_destRect = saveSize;
   restoreRotatedCoords(); // restores the previous state of the rotated dest coords
 
-  return true;
+  return rendered && current;
 }
 
 //********************************************************************************************************/

@@ -871,6 +871,7 @@ bool CApplication::OnSettingsSaving() const
 
 void CApplication::Render()
 {
+  m_lastRenderAttempt = {};
   // do not render if we are stopped or in background
   if (m_bStop)
     return;
@@ -890,14 +891,25 @@ void CApplication::Render()
       appPower->ResetScreenSaver();
   }
 
-  if (!CServiceBroker::GetRenderSystem()->BeginRender())
+  auto* renderSystem = CServiceBroker::GetRenderSystem();
+  if (!renderSystem->BeginRender())
+  {
+    m_lastRenderAttempt.status = RenderAttemptStatus::BEGIN_REJECTED;
     return;
+  }
+  const auto target = renderSystem->CaptureRenderTarget();
+  m_lastRenderAttempt.status = RenderAttemptStatus::CANCELLED;
+  auto cancel = [](CWinSystemBase* window) { window->CancelGuiComposite(); };
+  std::unique_ptr<CWinSystemBase, decltype(cancel)> composite(
+      CServiceBroker::GetWinSystem(), cancel);
 
   // render video layer
   CServiceBroker::GetGUI()->GetWindowManager().RenderEx();
 
   // render gui layer (into the disc menu composite's buffer while it is active)
-  CServiceBroker::GetWinSystem()->BeginGuiComposite();
+  if (m_bStop || !renderSystem->IsRenderTargetCurrent(target) ||
+      !CServiceBroker::GetWinSystem()->BeginGuiComposite())
+    return;
   if (appPower->GetRenderGUI() && !m_skipGuiRender)
   {
     if (CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode())
@@ -921,9 +933,22 @@ void CApplication::Render()
 
     m_lastRenderTime = std::chrono::steady_clock::now();
   }
-  CServiceBroker::GetWinSystem()->EndGuiComposite();
+  m_lastRenderAttempt.guiRendered = hasRendered;
+  if (m_bStop || !renderSystem->IsRenderTargetCurrent(target))
+    return;
+  if (!CServiceBroker::GetWinSystem()->EndGuiComposite())
+    return;
+  composite.release();
+  if (m_bStop || !renderSystem->IsRenderTargetCurrent(target))
+    return;
 
-  CServiceBroker::GetRenderSystem()->EndRender();
+  if (!renderSystem->EndRender())
+  {
+    m_lastRenderAttempt.status = RenderAttemptStatus::END_REJECTED;
+    return;
+  }
+  if (!renderSystem->IsRenderTargetCurrent(target))
+    return;
 
   // reset our info cache - we do this at the end of Render so that it is
   // fresh for the next process(), or after a windowclose animation (where process()
@@ -937,9 +962,14 @@ void CApplication::Render()
     infoMgr.GetInfoProviders().GetSystemInfoProvider().UpdateFPS();
   }
 
+  if (m_bStop || !renderSystem->IsRenderTargetCurrent(target))
+    return;
+  renderSystem->ResetPresentResult();
   CServiceBroker::GetWinSystem()->GetGfxContext().Flip(hasRendered,
                                                        appPlayer->IsRenderingVideoLayer());
 
+  m_lastRenderAttempt.status = RenderAttemptStatus::COMMANDS_COMPLETED;
+  m_lastRenderAttempt.present = renderSystem->GetPresentResult();
   CTimeUtils::UpdateFrameTime(hasRendered);
 }
 

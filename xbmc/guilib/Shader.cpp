@@ -267,10 +267,16 @@ CGLSLShaderProgram::~CGLSLShaderProgram()
 
 void CGLSLShaderProgram::Free()
 {
-  m_pVP->Free();
-  VerifyGLState();
-  m_pFP->Free();
-  VerifyGLState();
+  if (m_pVP->Handle())
+  {
+    m_pVP->Free();
+    VerifyGLState();
+  }
+  if (m_pFP->Handle())
+  {
+    m_pFP->Free();
+    VerifyGLState();
+  }
   if (m_shaderProgram)
   {
     glDeleteProgram(m_shaderProgram);

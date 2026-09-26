@@ -40,6 +40,7 @@ public:
   CRenderSystemBase *GetRenderSystem() override { return this; }
   bool InitWindowSystem() override;
   bool DestroyWindowSystem() override;
+  bool DestroyRenderSystem() override;
   bool CreateNewWindow(const std::string& name,
                        bool fullScreen,
                        RESOLUTION_INFO& res) override;
@@ -64,8 +65,9 @@ public:
            m_pendingRoute == MenuRoute::OSD_VPP &&
            m_pendingRouteSince != std::chrono::steady_clock::time_point{};
   }
-  void BeginGuiComposite() override;
-  void EndGuiComposite() override;
+  bool BeginGuiComposite() override;
+  bool EndGuiComposite() override;
+  void CancelGuiComposite() override;
   bool BeginMenuOverlayRender() override;
   void EndMenuOverlayRender() override;
 
@@ -74,6 +76,7 @@ public:
   EGLContext GetEGLContext() const;
   EGLConfig  GetEGLConfig() const;
 protected:
+  bool IsPrimaryContextCurrent() const override;
   void SetVSyncImpl(bool enable) override;
   void PresentRenderImpl(bool rendered) override;
 
@@ -92,7 +95,12 @@ private:
   CGuiCompositeShaderGLES::GuiTransfer MenuCompositeGuiTransfer(MenuRoute route) const;
   bool EnsureFbo(CFrameBufferObject& fbo, int& width, int& height);
   bool EnsureCompositeFbos();
-  void CompositeGui();
+  bool CompositeGui();
+  void ReleaseCompositeResources();
+  std::shared_ptr<CGLESTextureResources> m_guiResources;
+  bool m_guiScissor = false;
+  RenderTargetToken m_guiTarget;
+  RenderTargetToken m_menuTarget;
   void QueueKernelSwitch(const char* path, int value);
   void ApplyPendingKernelSwitch();
 

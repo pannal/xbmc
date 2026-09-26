@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
+#include <limits>
 
 #include <sys/ioctl.h>
 
@@ -26,12 +27,18 @@
 #define CAPTURE_DEVICEPATH "/dev/amvideocap0"
 
 //the buffer format is BGRA (4 byte)
-void CScreenshotAML::CaptureVideoFrame(unsigned char *buffer, int iWidth, int iHeight, bool bBlendToBuffer)
+bool CScreenshotAML::CaptureVideoFrame(unsigned char *buffer, int iWidth, int iHeight, bool bBlendToBuffer)
 {
+  if (!buffer || iWidth <= 0 || iHeight <= 0 ||
+      iWidth > std::numeric_limits<int>::max() / 3 - 31)
+    return false;
+  const int stride = ((iWidth + 31) & ~31) * 3;
+  if (iHeight > std::numeric_limits<int>::max() / stride)
+    return false;
+  bool captured = false;
   int captureFd = open(CAPTURE_DEVICEPATH, O_RDWR, 0);
   if (captureFd >= 0)
   {
-    int stride = ((iWidth + 31) & ~31) * 3;
     int buffSize = stride * iHeight;
     int readSize = 0;
     // videobuffer should be rgb according to docu - but it is bgr ...
@@ -40,19 +47,16 @@ void CScreenshotAML::CaptureVideoFrame(unsigned char *buffer, int iWidth, int iH
     if (videoBuffer != NULL)
     {
       // configure destination
-      ioctl(captureFd, AMVIDEOCAP_IOW_SET_WANTFRAME_WIDTH, stride / 3);
-      ioctl(captureFd, AMVIDEOCAP_IOW_SET_WANTFRAME_HEIGHT, iHeight);
-      readSize = pread(captureFd, videoBuffer, buffSize, 0);
+      if (ioctl(captureFd, AMVIDEOCAP_IOW_SET_WANTFRAME_WIDTH, stride / 3) == 0 &&
+          ioctl(captureFd, AMVIDEOCAP_IOW_SET_WANTFRAME_HEIGHT, iHeight) == 0)
+        readSize = pread(captureFd, videoBuffer, buffSize, 0);
     }
 
     close(captureFd);
 
     if (readSize == buffSize)
     {
-      if (!bBlendToBuffer)
-      {
-        memset(buffer, 0xff, buffSize);
-      }
+      captured = true;
 
       for (int y = 0; y < iHeight; ++y)
       {
@@ -60,7 +64,7 @@ void CScreenshotAML::CaptureVideoFrame(unsigned char *buffer, int iWidth, int iH
 
         for (int x = 0; x < iWidth; ++x, buffer += 4, videoPtr += 3)
         {
-          float alpha = buffer[3] / (float)255;
+          float alpha = bBlendToBuffer ? buffer[3] / (float)255 : 0.0f;
 
           if (bBlendToBuffer)
           {
@@ -76,10 +80,12 @@ void CScreenshotAML::CaptureVideoFrame(unsigned char *buffer, int iWidth, int iH
           else
           {
             memcpy(buffer, videoPtr, 3);
+            buffer[3] = 0xff;
           }
         }
       }
     }
     delete [] videoBuffer;
   }
+  return captured;
 }

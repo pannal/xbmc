@@ -33,8 +33,56 @@ CRenderSystemGLES::CRenderSystemGLES()
 {
 }
 
+bool CRenderSystemGLES::CanRender() const
+{
+  return m_bRenderCreated && m_textureResources && m_textureResources->IsOwner() &&
+         m_textureResources->IsOpen() && IsPrimaryContextCurrent();
+}
+
+bool CRenderSystemGLES::IsTextureContextCurrent(
+    const std::shared_ptr<CGLESTextureResources>& resources) const
+{
+  return CanRender() && resources == m_textureResources;
+}
+
+void CRenderSystemGLES::DrainTextureResources()
+{
+  if (!CanRender())
+    return;
+  // Same-context command ordering retains storage for earlier draws. Deleting a
+  // name is not a fence and does not report GPU completion.
+  for (GLuint texture : m_textureResources->TakeRetired())
+    glDeleteTextures(1, &texture);
+}
+
+void CRenderSystemGLES::CloseTextureResources()
+{
+  InvalidateRenderTarget();
+  if (!m_textureResources)
+    return;
+  const bool current = m_textureResources->IsOwner() && IsPrimaryContextCurrent();
+  const auto textures = m_textureResources->Close();
+  if (current)
+    for (GLuint texture : textures)
+      glDeleteTextures(1, &texture);
+  // Without a current context, EGL destruction reclaims the old namespace.
+  // Late CPU releases cannot issue deletes in a replacement context.
+}
+
 bool CRenderSystemGLES::InitRenderSystem()
 {
+  // Reinitialization may fail before new shaders exist. Retire the previous
+  // regime while its context is current, or abandon it with that namespace.
+  if (!IsPrimaryContextCurrent())
+    for (auto& shader : m_pShader)
+      if (shader.second)
+        shader.second->Abandon();
+  ReleaseShaders();
+  CloseTextureResources();
+  m_bRenderCreated = false;
+  if (!IsPrimaryContextCurrent())
+    return false;
+
   GLint maxTextureSize;
 
   glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTextureSize);
@@ -111,6 +159,7 @@ bool CRenderSystemGLES::InitRenderSystem()
 
   LogGraphicsInfo();
 
+  m_textureResources = std::make_shared<CGLESTextureResources>();
   m_bRenderCreated = true;
 
   InitialiseShaders();
@@ -122,6 +171,10 @@ bool CRenderSystemGLES::InitRenderSystem()
 
 bool CRenderSystemGLES::ResetRenderSystem(int width, int height)
 {
+  InvalidateRenderTarget();
+  if (!CanRender())
+    return false;
+
   m_width = width;
   m_height = height;
 
@@ -154,6 +207,18 @@ bool CRenderSystemGLES::ResetRenderSystem(int width, int height)
 
 bool CRenderSystemGLES::DestroyRenderSystem()
 {
+  InvalidateRenderTarget();
+  if (!CanRender())
+  {
+    for (auto& shader : m_pShader)
+      if (shader.second)
+        shader.second->Abandon();
+    ReleaseShaders();
+    CloseTextureResources();
+    m_bRenderCreated = false;
+    return true;
+  }
+  DrainTextureResources();
   ResetScissors();
   CDirtyRegionList dirtyRegions;
   CDirtyRegion dirtyWindow(CServiceBroker::GetWinSystem()->GetGfxContext().GetViewWindow());
@@ -164,6 +229,7 @@ bool CRenderSystemGLES::DestroyRenderSystem()
   PresentRenderImpl(true);
 
   ReleaseShaders();
+  CloseTextureResources();
   m_bRenderCreated = false;
 
   return true;
@@ -171,8 +237,10 @@ bool CRenderSystemGLES::DestroyRenderSystem()
 
 bool CRenderSystemGLES::BeginRender()
 {
-  if (!m_bRenderCreated)
+  if (!CanRender())
     return false;
+
+  DrainTextureResources();
 
   // While the disc menu composite is active it encodes the GUI itself (PQ and
   // limited range at its output), so the per-primitive paths stand down.
@@ -183,6 +251,7 @@ bool CRenderSystemGLES::BeginRender()
 
   if (m_limitedColorRange != useLimited || m_transferPQ != usePQ)
   {
+    InvalidateRenderTarget();
     ReleaseShaders();
 
     m_limitedColorRange = useLimited;
@@ -196,7 +265,8 @@ bool CRenderSystemGLES::BeginRender()
 
 bool CRenderSystemGLES::EndRender()
 {
-  if (!m_bRenderCreated)
+  DrainTextureResources();
+  if (!CanRender())
     return false;
 
   return true;
@@ -265,10 +335,11 @@ bool CRenderSystemGLES::IsExtSupported(const char* extension) const
 
 void CRenderSystemGLES::PresentRender(bool rendered, bool videoLayer)
 {
-  SetVSync(true);
-
-  if (!m_bRenderCreated)
+  m_presentResult = PresentResult::TARGET_INVALID;
+  if (!CanRender())
     return;
+  SetVSync(true);
+  m_presentResult = PresentResult::UNREPORTED;
 
   PresentRenderImpl(rendered);
 

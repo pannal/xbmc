@@ -8,6 +8,9 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
+
 #include "cores/VideoSettings.h"
 #include "guilib/Shader.h"
 
@@ -39,8 +42,12 @@ public:
   virtual GLint GetcoordLoc() { return m_hcoord; }
   virtual void SetMatrices(const GLfloat* p, const GLfloat* m)
   {
-    m_proj = p;
-    m_model = m;
+    if (p)
+      std::copy_n(p, 16, m_projection.begin());
+    if (m)
+      std::copy_n(m, 16, m_modelview.begin());
+    m_proj = p ? m_projection.data() : nullptr;
+    m_model = m ? m_modelview.data() : nullptr;
   }
   virtual void SetAlpha(GLfloat alpha) { m_alpha = alpha; }
 
@@ -61,6 +68,8 @@ protected:
   GLint m_hModel = -1;
   GLint m_hAlpha = -1;
 
+  // Late main-owned setters copy capture/stereo matrices; no borrowed stack data.
+  std::array<GLfloat, 16> m_projection{}, m_modelview{};
   const GLfloat* m_proj;
   const GLfloat* m_model;
   GLfloat m_alpha = -1;

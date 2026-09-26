@@ -49,6 +49,12 @@ public:
 
   // Cleanup
   void Cleanup();
+  // Context teardown without a current context: EGL owns final reclamation.
+  void Abandon()
+  {
+    m_fbo = m_texid = 0;
+    m_valid = m_bound = false;
+  }
 
   // Set texture filtering
   void SetFiltering(GLenum target, GLenum mode);

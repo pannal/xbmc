@@ -79,9 +79,16 @@ CRenderInfo CRendererAML::GetRenderInfo()
 
 bool CRendererAML::RenderCapture(int index, CRenderCapture* capture)
 {
+  if (!capture)
+    return false;
   capture->BeginRender();
+  if (!CScreenshotAML::CaptureVideoFrame(static_cast<unsigned char*>(capture->GetRenderBuffer()),
+                                       capture->GetWidth(), capture->GetHeight(), false))
+  {
+    capture->SetState(CAPTURESTATE_FAILED);
+    return false;
+  }
   capture->EndRender();
-  CScreenshotAML::CaptureVideoFrame((unsigned char *)capture->GetRenderBuffer(), capture->GetWidth(), capture->GetHeight());
   return true;
 }
 

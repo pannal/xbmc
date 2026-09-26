@@ -118,8 +118,47 @@ std::unique_ptr<CWinSystemBase> CWinSystemAmlogicGLESContext::CreateWinSystem()
   return std::make_unique<CWinSystemAmlogicGLESContext>();
 }
 
+bool CWinSystemAmlogicGLESContext::IsPrimaryContextCurrent() const
+{
+  return m_pGLContext.GetEGLDisplay() != EGL_NO_DISPLAY &&
+         eglGetCurrentDisplay() == m_pGLContext.GetEGLDisplay() &&
+         m_pGLContext.GetEGLContext() != EGL_NO_CONTEXT &&
+         eglGetCurrentContext() == m_pGLContext.GetEGLContext() &&
+         m_pGLContext.GetEGLSurface() != EGL_NO_SURFACE &&
+         eglGetCurrentSurface(EGL_DRAW) == m_pGLContext.GetEGLSurface();
+}
+
+void CWinSystemAmlogicGLESContext::ReleaseCompositeResources()
+{
+  InvalidateRenderTarget();
+  if (IsPrimaryContextCurrent())
+  {
+    m_guiFbo.Cleanup();
+    m_menuFbo.Cleanup();
+  }
+  else
+  {
+    m_guiFbo.Abandon();
+    m_menuFbo.Abandon();
+    if (m_compositeShader)
+      m_compositeShader->Abandon();
+  }
+  m_compositeShader.reset();
+  m_guiFboWidth = m_guiFboHeight = m_menuFboWidth = m_menuFboHeight = 0;
+  m_guiFboBound = m_menuFboHasContent = false;
+}
+
+bool CWinSystemAmlogicGLESContext::DestroyRenderSystem()
+{
+  // Application cleanup unbinds the surface before DestroyWindowSystem. Retire
+  // these main-owned resources now, without changing route/kernel-switch timing.
+  ReleaseCompositeResources();
+  return CRenderSystemGLES::DestroyRenderSystem();
+}
+
 bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 {
+  CloseTextureResources();
   if (!CWinSystemAmlogic::InitWindowSystem())
   {
     return false;
@@ -157,6 +196,10 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 
 bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
 {
+  // Also cover direct/failed-startup teardown without Application::Cleanup.
+  DestroyRenderSystem();
+  ReleaseCompositeResources();
+  CloseTextureResources();
   if (m_menuRoute != MenuRoute::NONE)
     DisengageMenuComposite();
   ApplyPendingKernelSwitch(); // no more swaps to wait for
@@ -290,6 +333,8 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     return false;
   }
 
+  InvalidateRenderTarget(); // Replacement surface is now bound; callbacks do not establish readiness.
+
   if (!m_delayDispReset)
   {
     std::unique_lock<CCriticalSection> lock(m_resourceSection);
@@ -303,21 +348,22 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 
 bool CWinSystemAmlogicGLESContext::DestroyWindow()
 {
+  InvalidateRenderTarget();
+  CancelGuiComposite();
   m_pGLContext.DestroySurface();
   return CWinSystemAmlogic::DestroyWindow();
 }
 
 bool CWinSystemAmlogicGLESContext::ResizeWindow(int newWidth, int newHeight, int newLeft, int newTop)
 {
-  CRenderSystemGLES::ResetRenderSystem(newWidth, newHeight);
-  return true;
+  return CRenderSystemGLES::ResetRenderSystem(newWidth, newHeight);
 }
 
 bool CWinSystemAmlogicGLESContext::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays)
 {
-  CreateNewWindow("", fullScreen, res);
-  CRenderSystemGLES::ResetRenderSystem(res.iWidth, res.iHeight);
-  return true;
+  if (!CreateNewWindow("", fullScreen, res))
+    return false;
+  return CRenderSystemGLES::ResetRenderSystem(res.iWidth, res.iHeight);
 }
 
 void CWinSystemAmlogicGLESContext::SetVSyncImpl(bool enable)
@@ -330,6 +376,7 @@ void CWinSystemAmlogicGLESContext::SetVSyncImpl(bool enable)
 
 void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
 {
+  const auto target = CaptureRenderTarget();
   // GUI-path HDMI link watchdog: catches a sink dropping sync in the menus,
   // where neither the DV-transition dump nor the playback vsync-stall snapshot
   // is active. Self-throttled to ~1Hz and only logs on a state change.
@@ -344,15 +391,26 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
       (*i)->OnResetDisplay();
     aml_hdr10plus_vsif_hold(false);
   }
+  m_presentResult = PresentResult::SKIPPED;
   if (!rendered)
     return;
+  if (!IsRenderTargetCurrent(target))
+  {
+    m_presentResult = PresentResult::TARGET_INVALID;
+    return;
+  }
 
   // eglSwapBuffers() sometimes fails during modeswaps on AML; there is nothing
   // to do about it. The frame just swapped is the first one in the new
   // encoding: switch the OSD's interpretation with it, not a frame early. A
   // failed swap presented nothing new, so the switches stay pending.
   if (m_pGLContext.TrySwapBuffers())
+  {
+    m_presentResult = PresentResult::SWAP_ACCEPTED;
     ApplyPendingKernelSwitch();
+  }
+  else
+    m_presentResult = PresentResult::SWAP_FAILED;
 }
 
 void CWinSystemAmlogicGLESContext::QueueKernelSwitch(const char* path, int value)
@@ -528,6 +586,7 @@ bool CWinSystemAmlogicGLESContext::EngageMenuComposite(MenuRoute route)
   }
 
   QueueKernelSwitch(route == MenuRoute::DV_CORE2 ? DV_GRAPHIC_PQ : OSD_PQ_PASSTHROUGH, 1);
+  InvalidateRenderTarget();
   m_menuRoute = route;
   m_menuFboHasContent = false;
 
@@ -546,6 +605,7 @@ bool CWinSystemAmlogicGLESContext::EngageMenuComposite(MenuRoute route)
 void CWinSystemAmlogicGLESContext::DisengageMenuComposite()
 {
   QueueKernelSwitch(m_menuRoute == MenuRoute::DV_CORE2 ? DV_GRAPHIC_PQ : OSD_PQ_PASSTHROUGH, 0);
+  InvalidateRenderTarget();
   m_menuRoute = MenuRoute::NONE;
   m_guiFbo.Cleanup();
   m_guiFboWidth = m_guiFboHeight = 0;
@@ -561,7 +621,7 @@ void CWinSystemAmlogicGLESContext::DisengageMenuComposite()
 
 bool CWinSystemAmlogicGLESContext::BeginRender()
 {
-  if (!m_bRenderCreated)
+  if (!CanRender())
     return CRenderSystemGLES::BeginRender();
 
   // Outside fullscreen video (a skin's video preview, a window over playback)
@@ -600,7 +660,10 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
       {
         m_compositeShader->SetGuiTransfer(t);
         if (m_compositeShader->CreateLUTs(AVCOL_TRC_SMPTE2084))
+        {
+          InvalidateRenderTarget();
           m_guiTransfer = t;
+        }
       }
     }
   }
@@ -662,6 +725,7 @@ bool CWinSystemAmlogicGLESContext::EnsureFbo(CFrameBufferObject& fbo, int& width
   if (fbo.IsValid() && fbo.IsBound() && width == m_nWidth && height == m_nHeight)
     return true;
 
+  InvalidateRenderTarget();
   fbo.Cleanup();
   if (!fbo.Initialize() || !fbo.CreateAndBindToTexture(GL_TEXTURE_2D, m_nWidth, m_nHeight, GL_RGBA))
   {
@@ -696,23 +760,29 @@ bool CWinSystemAmlogicGLESContext::EnsureCompositeFbos()
   return true;
 }
 
-void CWinSystemAmlogicGLESContext::BeginGuiComposite()
+bool CWinSystemAmlogicGLESContext::BeginGuiComposite()
 {
   m_guiFboBound = false;
-  // The menu layer is sampled only if this frame's GUI pass drew into it.
   m_menuFboHasContent = false;
+  if (!CanRender())
+    return false;
   if (m_menuRoute == MenuRoute::NONE)
-    return;
-
-  // BeginRender made sure both layers exist.
+    return true;
+  m_guiTarget = CaptureRenderTarget();
+  m_guiResources = GetTextureResources();
+  m_guiScissor = glIsEnabled(GL_SCISSOR_TEST);
   if (!m_guiFbo.BeginRender())
-    return;
+  {
+    m_menuEngageFailed = true;
+    return false;
+  }
   m_guiFboBound = true;
+  return true;
 }
 
 bool CWinSystemAmlogicGLESContext::BeginMenuOverlayRender()
 {
-  if (m_menuRoute == MenuRoute::NONE || !m_guiFboBound)
+  if (m_menuRoute == MenuRoute::NONE || !m_guiFboBound || !IsRenderTargetCurrent(m_guiTarget))
     return false;
 
   if (!m_menuFbo.BeginRender())
@@ -723,6 +793,8 @@ bool CWinSystemAmlogicGLESContext::BeginMenuOverlayRender()
     m_guiFbo.BeginRender();
     return false;
   }
+
+  m_menuTarget = CaptureRenderTarget();
 
   // The menu layer is cleared and redrawn whole every time, so the GUI's
   // dirty-region scissor must not clip it.
@@ -735,6 +807,11 @@ bool CWinSystemAmlogicGLESContext::BeginMenuOverlayRender()
 
 void CWinSystemAmlogicGLESContext::EndMenuOverlayRender()
 {
+  if (!IsRenderTargetCurrent(m_menuTarget))
+  {
+    CancelGuiComposite();
+    return;
+  }
   m_menuFboHasContent = true;
   if (m_menuScissor)
     glEnable(GL_SCISSOR_TEST);
@@ -742,19 +819,40 @@ void CWinSystemAmlogicGLESContext::EndMenuOverlayRender()
   m_guiFbo.BeginRender();
 }
 
-void CWinSystemAmlogicGLESContext::EndGuiComposite()
+void CWinSystemAmlogicGLESContext::CancelGuiComposite()
 {
-  if (!m_guiFboBound)
-    return;
-  m_guiFbo.EndRender();
+  // A route/target change cancels the draw, but the same context still owns
+  // its bindings. Never restore those bindings in a replacement namespace.
+  if (m_guiFboBound && IsTextureContextCurrent(m_guiResources))
+  {
+    m_guiFbo.EndRender();
+    if (m_guiScissor)
+      glEnable(GL_SCISSOR_TEST);
+    else
+      glDisable(GL_SCISSOR_TEST);
+  }
   m_guiFboBound = false;
-  CompositeGui();
+  m_menuFboHasContent = false;
 }
 
-void CWinSystemAmlogicGLESContext::CompositeGui()
+bool CWinSystemAmlogicGLESContext::EndGuiComposite()
+{
+  if (!m_guiFboBound)
+    return CanRender() && m_menuRoute == MenuRoute::NONE;
+  if (!IsRenderTargetCurrent(m_guiTarget))
+  {
+    CancelGuiComposite();
+    return false;
+  }
+  m_guiFbo.EndRender();
+  m_guiFboBound = false;
+  return CompositeGui();
+}
+
+bool CWinSystemAmlogicGLESContext::CompositeGui()
 {
   if (!m_compositeShader)
-    return;
+    return false;
 
   // The back buffer carries only the composite while it is active.
   glViewport(0, 0, m_guiFboWidth, m_guiFboHeight);
@@ -776,7 +874,12 @@ void CWinSystemAmlogicGLESContext::CompositeGui()
 
   m_compositeShader->SetProjection(proj);
   m_compositeShader->SetHdrTexture(m_menuFboHasContent ? m_menuFbo.Texture() : 0);
-  m_compositeShader->Enable();
+  if (!m_compositeShader->Enable())
+  {
+    m_compositeShader->Disable();
+    glEnable(GL_SCISSOR_TEST);
+    return false;
+  }
 
   const GLint posLoc = m_compositeShader->GetPosLoc();
   const GLint texLoc = m_compositeShader->GetTexLoc();
@@ -794,6 +897,7 @@ void CWinSystemAmlogicGLESContext::CompositeGui()
 
   m_compositeShader->Disable();
   glEnable(GL_SCISSOR_TEST);
+  return true;
 }
 
 EGLDisplay CWinSystemAmlogicGLESContext::GetEGLDisplay() const

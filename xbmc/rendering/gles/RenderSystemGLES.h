@@ -9,6 +9,7 @@
 #pragma once
 
 #include "GLESShader.h"
+#include "TextureResources.h"
 #include "rendering/RenderSystem.h"
 #include "utils/ColorUtils.h"
 #include "utils/Map.h"
@@ -86,6 +87,12 @@ public:
   bool DestroyRenderSystem() override;
   bool ResetRenderSystem(int width, int height) override;
 
+  bool CanRender() const override;
+  std::shared_ptr<CGLESTextureResources> GetTextureResources() const { return m_textureResources; }
+  bool IsTextureContextCurrent(const std::shared_ptr<CGLESTextureResources>& resources) const;
+  void DrainTextureResources();
+  void CloseTextureResources();
+
   bool BeginRender() override;
   bool EndRender() override;
   void PresentRender(bool rendered, bool videoLayer) override;
@@ -140,6 +147,9 @@ public:
   GLint GUIShaderGetPma();
 
 protected:
+  virtual bool IsPrimaryContextCurrent() const { return true; }
+  std::shared_ptr<CGLESTextureResources> m_textureResources;
+
   virtual void SetVSyncImpl(bool enable) = 0;
   virtual void PresentRenderImpl(bool rendered) = 0;
   void CalculateMaxTexturesize();

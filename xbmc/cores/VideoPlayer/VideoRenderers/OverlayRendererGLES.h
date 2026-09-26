@@ -10,6 +10,8 @@
 #pragma once
 
 #include "OverlayRenderer.h"
+#include "rendering/RenderResource.h"
+#include "rendering/gles/TextureResources.h"
 
 #include "system_gl.h"
 
@@ -28,12 +30,26 @@ public:
      *  \param o The overlay image
      *  \param rSource The video source rect size
      */
-  explicit COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSource);
+  struct PreparedImage
+  {
+    RenderTargetToken target;
+    bool rawPqMenu{false};
+    bool premultiplied{false};
+    int stride{0};
+    std::vector<uint32_t> pixels;
+  };
+  // CPU-only work over immutable producer content and explicit route input.
+  static PreparedImage PrepareImage(const CDVDOverlayImage& o,
+                                    bool rawPqMenu,
+                                    RenderTargetToken target);
+  COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSource, PreparedImage image);
   explicit COverlayTextureGLES(const CDVDOverlaySpu& o);
   ~COverlayTextureGLES() override;
 
   void Render(SRenderState& state) override;
+  bool IsValid() const override;
 
+  std::shared_ptr<CGLESTextureResources> m_textureResources;
   GLuint m_texture = 0;
   float m_u;
   float m_v;
@@ -49,6 +65,7 @@ public:
   ~COverlayGlyphGLES() override;
 
   void Render(SRenderState& state) override;
+  bool IsValid() const override;
 
   struct VERTEX
   {
@@ -68,7 +85,9 @@ private:
     std::vector<VERTEX> vertex;
   };
 
+  std::shared_ptr<CGLESTextureResources> m_textureResources;
   std::vector<Page> m_pages;
+  bool m_uploadFailed{false};
 };
 
 } // namespace OVERLAY

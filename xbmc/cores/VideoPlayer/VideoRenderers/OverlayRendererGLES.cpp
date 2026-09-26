@@ -27,6 +27,7 @@
 #include "windowing/WinSystem.h"
 
 #include <cmath>
+#include <cstring>
 #include <utility>
 
 // GLES2.0 cant do CLAMP, but can do CLAMP_TO_EDGE.
@@ -155,26 +156,16 @@ uint32_t PremultiplyPlain(uint32_t c)
 }
 } // namespace
 
-std::shared_ptr<COverlay> COverlay::Create(const CDVDOverlayImage& o, CRect& rSource)
+COverlayTextureGLES::PreparedImage COverlayTextureGLES::PrepareImage(
+    const CDVDOverlayImage& o, bool rawPqMenu, RenderTargetToken target)
 {
-  return std::make_shared<COverlayTextureGLES>(o, rSource);
-}
-
-COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSource)
-{
-  glGenTextures(1, &m_texture);
-  glBindTexture(GL_TEXTURE_2D, m_texture);
-
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-
-  m_rawPqMenu = o.m_isPqMenuGraphics && CServiceBroker::GetWinSystem()->IsMenuCompositeActive();
-
-  if (m_rawPqMenu)
+  PreparedImage image;
+  image.target = std::move(target);
+  image.rawPqMenu = rawPqMenu;
+  image.stride = o.width * 4;
+  if (image.rawPqMenu)
   {
-    m_pma = true;
+    image.premultiplied = true;
     const size_t count = static_cast<size_t>(o.width) * o.height;
     std::vector<uint32_t> rgba(count);
     if (o.palette.empty())
@@ -196,12 +187,12 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
         for (int col = 0; col < o.width; col++)
           rgba[row * o.width + col] = palette[o.pixels[row * o.linesize + col]];
     }
-    LoadTexture(GL_TEXTURE_2D, o.width, o.height, o.width * 4, &m_u, &m_v, false, rgba.data());
+    image.pixels = std::move(rgba);
   }
   else if (o.palette.empty())
   {
-    m_pma = !!USE_PREMULTIPLIED_ALPHA;
-    if (m_pma)
+    image.premultiplied = !!USE_PREMULTIPLIED_ALPHA;
+    if (image.premultiplied)
     {
       // Premultiply alpha in linear light so bilinear/mipmap filtering
       // preserves correct edge colors and semi-transparent edges don't appear
@@ -222,21 +213,59 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
         pma[i] = (a << PIXEL_ASHIFT) | (rp << PIXEL_RSHIFT) | (gp << PIXEL_GSHIFT) |
                  (bp << PIXEL_BSHIFT);
       }
-      LoadTexture(GL_TEXTURE_2D, o.width, o.height, o.width * 4, &m_u, &m_v, false, pma.data());
+      image.pixels = std::move(pma);
     }
     else
     {
-      const uint32_t* rgba = reinterpret_cast<const uint32_t*>(o.pixels.data());
-      LoadTexture(GL_TEXTURE_2D, o.width, o.height, o.linesize, &m_u, &m_v, false, rgba);
+      image.stride = o.linesize;
+      image.pixels.resize((o.pixels.size() + 3) / 4);
+      std::memcpy(image.pixels.data(), o.pixels.data(), o.pixels.size());
     }
   }
   else
   {
     std::vector<uint32_t> rgba(o.width * o.height);
-    m_pma = !!USE_PREMULTIPLIED_ALPHA;
-    convert_rgba(o, m_pma, rgba);
-    LoadTexture(GL_TEXTURE_2D, o.width, o.height, o.width * 4, &m_u, &m_v, false, rgba.data());
+    image.premultiplied = !!USE_PREMULTIPLIED_ALPHA;
+    convert_rgba(o, image.premultiplied, rgba);
+    image.pixels = std::move(rgba);
   }
+
+  return image;
+}
+
+std::shared_ptr<COverlay> COverlay::Create(const CDVDOverlayImage& o, CRect& rSource)
+{
+  auto* renderSystem = dynamic_cast<CRenderSystemGLES*>(CServiceBroker::GetRenderSystem());
+  if (!renderSystem || !renderSystem->CanRender())
+    return nullptr;
+  const auto target = renderSystem->CaptureRenderTarget();
+  auto image = COverlayTextureGLES::PrepareImage(
+      o, o.m_isPqMenuGraphics && CServiceBroker::GetWinSystem()->IsMenuCompositeActive(), target);
+  auto overlay = std::make_shared<COverlayTextureGLES>(o, rSource, std::move(image));
+  return overlay->IsValid() ? overlay : nullptr;
+}
+
+COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o,
+                                       CRect& rSource,
+                                       PreparedImage image)
+{
+  auto* renderSystem = dynamic_cast<CRenderSystemGLES*>(CServiceBroker::GetRenderSystem());
+  if (!renderSystem || !renderSystem->IsRenderTargetCurrent(image.target))
+    return;
+  m_textureResources = renderSystem->GetTextureResources();
+  m_rawPqMenu = image.rawPqMenu;
+  m_pma = image.premultiplied;
+  glGenTextures(1, &m_texture);
+  if (!m_texture)
+    return;
+  m_textureResources->Register(m_texture);
+  glBindTexture(GL_TEXTURE_2D, m_texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  LoadTexture(GL_TEXTURE_2D, o.width, o.height, image.stride, &m_u, &m_v, false,
+              image.pixels.data());
 
   m_isHdrPqAuthored = o.m_isHdrPq && !m_rawPqMenu;
   m_isBitmapOverlay = true;
@@ -287,17 +316,28 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
 
 std::shared_ptr<COverlay> COverlay::Create(const CDVDOverlaySpu& o)
 {
-  return std::make_shared<COverlayTextureGLES>(o);
+  auto overlay = std::make_shared<COverlayTextureGLES>(o);
+  return overlay->IsValid() ? overlay : nullptr;
 }
 
 COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlaySpu& o)
 {
+  auto* renderSystem = dynamic_cast<CRenderSystemGLES*>(CServiceBroker::GetRenderSystem());
+  if (!renderSystem || !renderSystem->CanRender())
+    return;
+  const auto target = renderSystem->CaptureRenderTarget();
   int min_x, max_x, min_y, max_y;
   std::vector<uint32_t> rgba(o.width * o.height);
 
   convert_rgba(o, USE_PREMULTIPLIED_ALPHA, min_x, max_x, min_y, max_y, rgba);
 
+  if (!renderSystem->IsRenderTargetCurrent(target))
+    return;
+  m_textureResources = renderSystem->GetTextureResources();
   glGenTextures(1, &m_texture);
+  if (!m_texture)
+    return;
+  m_textureResources->Register(m_texture);
   glBindTexture(GL_TEXTURE_2D, m_texture);
 
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
@@ -323,11 +363,17 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlaySpu& o)
 
 std::shared_ptr<COverlay> COverlay::Create(ASS_Image* images, float width, float height)
 {
-  return std::make_shared<COverlayGlyphGLES>(images, width, height);
+  auto overlay = std::make_shared<COverlayGlyphGLES>(images, width, height);
+  return overlay->IsValid() ? overlay : nullptr;
 }
 
 COverlayGlyphGLES::COverlayGlyphGLES(ASS_Image* images, float width, float height)
 {
+  auto* renderSystem = dynamic_cast<CRenderSystemGLES*>(CServiceBroker::GetRenderSystem());
+  if (!renderSystem || !renderSystem->CanRender())
+    return;
+  const auto target = renderSystem->CaptureRenderTarget();
+  m_textureResources = renderSystem->GetTextureResources();
   m_width = 1.0;
   m_height = 1.0;
   m_align = ALIGN_SCREEN;
@@ -347,6 +393,12 @@ COverlayGlyphGLES::COverlayGlyphGLES(ASS_Image* images, float width, float heigh
   if (!convert_quads(images, pages, maxTextureSize))
     return;
 
+  if (!renderSystem->IsRenderTargetCurrent(target))
+  {
+    m_textureResources.reset();
+    return;
+  }
+
   const float scale_x = 1.0f / width;
   const float scale_y = 1.0f / height;
 
@@ -356,6 +408,12 @@ COverlayGlyphGLES::COverlayGlyphGLES(ASS_Image* images, float width, float heigh
   {
     Page page;
     glGenTextures(1, &page.texture);
+    if (!page.texture)
+    {
+      m_uploadFailed = true;
+      return;
+    }
+    m_textureResources->Register(page.texture);
     glBindTexture(GL_TEXTURE_2D, page.texture);
 
     float u = 0.0f;
@@ -418,13 +476,14 @@ COverlayGlyphGLES::COverlayGlyphGLES(ASS_Image* images, float width, float heigh
 
 COverlayGlyphGLES::~COverlayGlyphGLES()
 {
-  for (Page& page : m_pages)
-    glDeleteTextures(1, &page.texture);
+  if (m_textureResources)
+    for (const Page& page : m_pages)
+      m_textureResources->Retire(page.texture);
 }
 
 void COverlayGlyphGLES::Render(SRenderState& state)
 {
-  if (m_pages.empty())
+  if (!IsValid() || m_pages.empty())
     return;
 
   glEnable(GL_BLEND);
@@ -510,11 +569,15 @@ void COverlayGlyphGLES::Render(SRenderState& state)
 
 COverlayTextureGLES::~COverlayTextureGLES()
 {
-  glDeleteTextures(1, &m_texture);
+  if (m_textureResources)
+    m_textureResources->Retire(m_texture);
 }
 
 void COverlayTextureGLES::Render(SRenderState& state)
 {
+  if (!IsValid())
+    return;
+  // Filters, PQ tuning and matrices remain late main-context inputs below.
   glEnable(GL_BLEND);
 
   glBindTexture(GL_TEXTURE_2D, m_texture);
@@ -629,4 +692,18 @@ void COverlayTextureGLES::Render(SRenderState& state)
   glDisable(GL_BLEND);
 
   glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+
+bool COverlayTextureGLES::IsValid() const
+{
+  auto* renderSystem = dynamic_cast<CRenderSystemGLES*>(CServiceBroker::GetRenderSystem());
+  return m_texture != 0 && renderSystem && renderSystem->IsTextureContextCurrent(m_textureResources);
+}
+
+bool COverlayGlyphGLES::IsValid() const
+{
+  auto* renderSystem = dynamic_cast<CRenderSystemGLES*>(CServiceBroker::GetRenderSystem());
+  return !m_uploadFailed && renderSystem &&
+         renderSystem->IsTextureContextCurrent(m_textureResources);
 }
