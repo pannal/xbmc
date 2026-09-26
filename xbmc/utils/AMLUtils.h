@@ -265,6 +265,8 @@ void aml_set_transfer_pq(StreamHdrType hdrType, unsigned int bitDepth);
 // The decision aml_set_transfer_pq made at the last decoder/renderer open.
 // Unlike the graphic context's flag, a renderer flush does not clear it.
 bool aml_transfer_pq_at_open();
+// Whether the DV core was engaged when aml_set_transfer_pq last ran.
+bool aml_dv_core_at_open();
 bool aml_has_frac_rate_policy();
 void aml_video_mute(bool mute);
 void aml_set_audio_passthrough(bool passthrough);

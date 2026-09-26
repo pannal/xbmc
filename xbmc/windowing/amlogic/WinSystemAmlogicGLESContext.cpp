@@ -421,6 +421,12 @@ CWinSystemAmlogicGLESContext::MenuRoute CWinSystemAmlogicGLESContext::MenuCompos
     return in.dvSwitch ? MenuRoute::DV_CORE2 : MenuRoute::NONE;
   }
 
+  // The DV core owned the output at the last decoder open but reads as off
+  // or in bypass now: a DV restart at a playlist change (~0.5 s), not an
+  // HDR10 session. The VPP route would engage, then flip to the DV one.
+  if (aml_dv_core_at_open())
+    return MenuRoute::NONE;
+
   // HDR10 output. CRendererAML::Reset (a renderer flush or teardown) clears
   // the context's PQ transfer flag without the output changing; the decision
   // made at the last decoder open is what the output still carries.

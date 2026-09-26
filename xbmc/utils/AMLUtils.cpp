@@ -3308,10 +3308,16 @@ void aml_hevc_nal_skip_policy(const int value)
 }
 
 static std::atomic<bool> s_transferPqAtOpen{false};
+static std::atomic<bool> s_dvCoreAtOpen{false};
 
 bool aml_transfer_pq_at_open()
 {
   return s_transferPqAtOpen;
+}
+
+bool aml_dv_core_at_open()
+{
+  return s_dvCoreAtOpen;
 }
 
 void aml_set_transfer_pq(StreamHdrType hdrType, unsigned int bitDepth) {
@@ -3345,6 +3351,8 @@ void aml_set_transfer_pq(StreamHdrType hdrType, unsigned int bitDepth) {
           hdr ? "set" : "not set");
 
   s_transferPqAtOpen = hdr;
+  // Called after aml_dv_open, so this is what that open left engaged.
+  s_dvCoreAtOpen = aml_is_dv_enable();
   CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(hdr);
 }
 
