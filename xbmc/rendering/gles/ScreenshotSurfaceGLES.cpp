@@ -41,7 +41,10 @@ bool CScreenshotSurfaceGLES::Capture()
     return false;
 
   std::unique_lock<CCriticalSection> lock(winsystem->GetGfxContext());
+  // While the disc menu composite is active, capture what it presents.
+  winsystem->BeginGuiComposite();
   gui->GetWindowManager().Render();
+  winsystem->EndGuiComposite();
 
   //get current viewport
   GLint viewport[4];

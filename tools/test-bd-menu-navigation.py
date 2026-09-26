@@ -43,7 +43,7 @@ workspace = tempfile.TemporaryDirectory(prefix="kodi-bd-menu-test-")
 out = Path(workspace.name)
 s = (root / "xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.cpp").read_text()
 (out / "test-include").mkdir()
-(out / "test-include/PlatformDefs.h").write_text("#pragma once\n")
+(out / "test-include/PlatformDefs.h").write_text("#pragma once\n#define PIXEL_ASHIFT 24\n#define PIXEL_RSHIFT 16\n#define PIXEL_GSHIFT 8\n#define PIXEL_BSHIFT 0\n")
 preamble=r'''
 #include <algorithm>
 #include <atomic>
@@ -81,12 +81,9 @@ void bd_free_title_info(BLURAY_TITLE_INFO* t) {delete[] t->clips[0].video_stream
 static std::queue<BD_EVENT> queuedEvents;
 int bd_get_event(BLURAY*,BD_EVENT* e) {if(queuedEvents.empty())return 0;*e=queuedEvents.front();queuedEvents.pop();return 1;}
 struct CDVDInputStream {enum ENextStream {NEXTSTREAM_NONE,NEXTSTREAM_OPEN,NEXTSTREAM_RETRY};};
-static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e,bool bt2020) { return e.Y+(bt2020?1000u:0u); }
+static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e,bool bt2020) { return uint32_t(e.T)<<24|(e.Y+(bt2020?1000u:0u)); }
 bool g_pgsHdrToSdr=true;
-#define PIXEL_ASHIFT 24
-#define PIXEL_RSHIFT 16
-#define PIXEL_GSHIFT 8
-#define PIXEL_BSHIFT 0
+int g_discMenuHdr=0;
 namespace real {
 @@REAL_PALETTE@@
 }
@@ -110,6 +107,8 @@ public:
  bool m_hasMenuOverlay=false,m_hasOverlay=false,m_overlayCloseDeferred=false;
  std::atomic_bool m_pqAuthoredGraphics=false;
  bool TagGraphicsAsPq() const;
+ int DiscMenuHdrMode() const;
+ int m_discMenuHdrMode=0;
  void UpdateGraphicsRegime();
  std::shared_ptr<CDVDOverlay> m_pendingOverlayGroup;
  std::atomic<std::thread::id> m_readingThread{};
@@ -163,6 +162,10 @@ real_palette=get(s,'clamp')+'\n'+get(s,'build_rgba')
 tag=get(s,'CDVDInputStreamBluray::TagGraphicsAsPq')
 tag=re.sub(r'CServiceBroker::GetSettingsComponent\(\)->GetSettings\(\)->GetBool\(\s*CSettings::SETTING_SUBTITLES_PGSHDRTOSDR\)','g_pgsHdrToSdr',tag)
 assert 'g_pgsHdrToSdr' in tag
+menuMode=get(s,'CDVDInputStreamBluray::DiscMenuHdrMode')
+menuMode=re.sub(r'CServiceBroker::GetSettingsComponent\(\)->GetSettings\(\)->GetInt\(\s*CSettings::SETTING_SUBTITLES_DISCMENUHDR\)','g_discMenuHdr',menuMode)
+assert 'g_discMenuHdr' in menuMode
+tag+='\n'+menuMode
 functions=[tag,get(s,'EndOfTitleReadStalled')]+[get(s,'CDVDInputStreamBluray::'+name) for name in ['OverlayClose','OverlayInit','OverlayClear','OverlayFlush','DeliverParkedOverlayIfDue','OverlayCallback','OverlayCallbackARGB','ReadBlocks','UpdateSeamTimeOffset','ResetSeamTimeOffset','AreClipVideoStreamsCompatible','AreClipPgStreamsEqual','IsClipCodecCompatible']]
 a=s.index('if (m_atTitleEnd.exchange(false))');b=balance(s,s.index('{',a))
 functions.append('void CDVDInputStreamBluray::Reenter(uint64_t previousOut,uint64_t nextIn) {'+s[a:b]+'}')
@@ -222,6 +225,7 @@ int main(){
  assert(b.m_planes[1].o.size()==1);auto image=b.m_planes[1].o.front();
  assert(image->IsDiscMenuOverlay()&&image->pixels==std::vector<uint8_t>({1,1,1,1,2,2,2,2}));
  assert(!image->m_isHdrPq); // SDR disc graphics keep the SDR path
+ assert(!image->m_isPqMenuGraphics&&image->pqMenuPalette.empty()); // and never take the menu composite
  ov.cmd=BD_OVERLAY_FLUSH;b.OverlayCallback(&ov);assert(player.last&&player.last->IsDiscMenuOverlay());
  // Palette-only DRAW is valid with no rectangle and cannot mutate an in-flight image.
  pal[1].Y=99;ov.cmd=BD_OVERLAY_DRAW;ov.palette_update_flag=1;ov.w=ov.h=0;ov.img=nullptr;b.OverlayCallback(&ov);
@@ -234,20 +238,49 @@ int main(){
  b.m_pqAuthoredGraphics=true;ov.img=runs;b.OverlayCallback(&ov);
  auto tagged=b.m_planes[1].o.front();
  assert(tagged!=valid&&tagged->m_isHdrPq&&tagged->palette[1]==1099);
+ // The same IG can take the disc menu composite's raw route, on the BT.2020 matrix.
+ assert(tagged->m_isPqMenuGraphics&&tagged->pqMenuPalette.size()==256&&tagged->pqMenuPalette[1]==1099);
+ // Its palette alpha is 0: nothing visible, so it does not engage the composite.
+ assert(!tagged->m_menuVisible);
+ // A fade-in through a palette-only update makes it visible (and back).
+ pal[1].T=255;ov.palette_update_flag=1;ov.w=ov.h=0;ov.img=nullptr;b.OverlayCallback(&ov);
+ assert(b.m_planes[1].o.front()->m_menuVisible);
+ pal[1].T=0;b.OverlayCallback(&ov);assert(!b.m_planes[1].o.front()->m_menuVisible);
+ ov.palette_update_flag=0;ov.w=4;ov.h=2;ov.img=runs;
+ // Drawn with a visible palette entry in use, it is visible straight away.
+ pal[2].T=128;b.OverlayCallback(&ov);assert(b.m_planes[1].o.front()->m_menuVisible);pal[2].T=0;
+ b.OverlayCallback(&ov);
  // A palette-only update keeps each image on the matrix its tag was drawn with.
  ov.palette_update_flag=1;ov.w=ov.h=0;ov.img=nullptr;b.OverlayCallback(&ov);
  assert(b.m_planes[1].o.front()->m_isHdrPq&&b.m_planes[1].o.front()->palette[1]==1099);
+ assert(b.m_planes[1].o.front()->m_isPqMenuGraphics&&b.m_planes[1].o.front()->pqMenuPalette[1]==1099);
  ov.palette_update_flag=0;ov.w=4;ov.h=2;ov.img=runs;
  // The shared PGS HDR switch off: no IG tagging, untagged matrix.
  g_pgsHdrToSdr=false;b.OverlayCallback(&ov);
  assert(!b.m_planes[1].o.front()->m_isHdrPq&&b.m_planes[1].o.front()->palette[1]==99);
- g_pgsHdrToSdr=true;b.m_pqAuthoredGraphics=false;
+ // The menu composite route does not depend on the PGS switch: it follows the playlist.
+ assert(b.m_planes[1].o.front()->m_isPqMenuGraphics&&b.m_planes[1].o.front()->pqMenuPalette[1]==1099);
+ // A palette-only update keeps its BT.2020 menu palette even with the switch off.
+ ov.palette_update_flag=1;ov.w=ov.h=0;ov.img=nullptr;b.OverlayCallback(&ov);
+ assert(!b.m_planes[1].o.front()->m_isHdrPq&&b.m_planes[1].o.front()->palette[1]==99&&b.m_planes[1].o.front()->pqMenuPalette[1]==1099);
+ ov.palette_update_flag=0;ov.w=4;ov.h=2;ov.img=runs;
+ g_pgsHdrToSdr=true;
+ // subtitles.discmenuhdr: "HDMV only" keeps IG on the route; "Convert" keeps IG on #66's tag only.
+ b.m_discMenuHdrMode=1;b.OverlayCallback(&ov);assert(b.m_planes[1].o.front()->m_isPqMenuGraphics);
+ b.m_discMenuHdrMode=2;b.OverlayCallback(&ov);
+ assert(!b.m_planes[1].o.front()->m_isPqMenuGraphics&&b.m_planes[1].o.front()->pqMenuPalette.empty());
+ assert(b.m_planes[1].o.front()->m_isHdrPq&&b.m_planes[1].o.front()->palette[1]==1099);
+ // The mode is the one read at Open: changing the setting mid-disc changes nothing.
+ b.m_discMenuHdrMode=0;g_discMenuHdr=2;assert(b.DiscMenuHdrMode()==2);
+ b.OverlayCallback(&ov);assert(b.m_planes[1].o.front()->m_isPqMenuGraphics);
+ g_discMenuHdr=0;b.m_pqAuthoredGraphics=false;
  // PG children retain subtitle identity even in a disc-composition envelope.
  ov.plane=BD_OVERLAY_PG;ov.cmd=BD_OVERLAY_INIT;b.OverlayCallback(&ov);ov.cmd=BD_OVERLAY_DRAW;ov.img=runs;b.OverlayCallback(&ov);
  assert(!b.m_planes[0].o.front()->IsDiscMenuOverlay());
  // PG is never tagged, even in a PQ regime: it stays on its own path and matrix.
  b.m_pqAuthoredGraphics=true;b.OverlayCallback(&ov);
  assert(!b.m_planes[0].o.front()->m_isHdrPq&&b.m_planes[0].o.front()->palette[1]<1000);
+ assert(!b.m_planes[0].o.front()->m_isPqMenuGraphics&&b.m_planes[0].o.front()->pqMenuPalette.empty());
  b.m_pqAuthoredGraphics=false;
  ov.cmd=BD_OVERLAY_CLOSE;b.OverlayCallback(&ov);assert(b.m_planes[0].o.empty()&&!b.m_planes[1].o.empty());
  // The last dirty row ends at the canvas allocation; a stride*h memcpy overreads.
@@ -255,9 +288,25 @@ int main(){
  auto canvas=std::make_unique<uint32_t[]>(8);for(int i=0;i<8;++i)canvas[i]=i+1;
  argb.cmd=BD_ARGB_OVERLAY_DRAW;argb.x=2;argb.w=2;argb.stride=4;argb.argb=canvas.get()+2;b.OverlayCallbackARGB(&argb);
  auto rgba=b.m_planes[1].o.front();assert(rgba->linesize==8&&rgba->pixels.size()==16&&!rgba->m_isHdrPq);
+ assert(!rgba->m_isPqMenuGraphics);
  // BD-J graphics stay untagged even in a PQ regime until the Xlet's graphics range is known.
  b.m_pqAuthoredGraphics=true;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isHdrPq);
- b.m_pqAuthoredGraphics=false;
+ // BD-J of a PQ playlist takes the menu composite's raw route (pixels untouched).
+ assert(b.m_planes[1].o.front()->m_isPqMenuGraphics);
+ // Only visible menu graphics engage the composite: this canvas has alpha 0.
+ assert(!b.m_planes[1].o.front()->m_menuVisible);
+ canvas[3]|=0x80000000u;b.OverlayCallbackARGB(&argb);
+ assert(b.m_planes[1].o.front()->m_menuVisible);
+ // A cut-out that keeps only transparent pixels is not visible.
+ {auto v=b.m_planes[1].o.front();CDVDOverlayImage cut(*v,v->x,v->y,1,1);assert(!cut.m_menuVisible);
+  CDVDOverlayImage keep(*v,v->x+1,v->y,1,1);assert(keep.m_menuVisible);}
+ canvas[3]&=~0x80000000u;
+ // "HDMV only" and "Convert" keep BD-J untagged and off the route.
+ b.m_discMenuHdrMode=1;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isPqMenuGraphics&&!b.m_planes[1].o.front()->m_isHdrPq);
+ b.m_discMenuHdrMode=2;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isPqMenuGraphics);
+ // Nor for BD-J: the setting changed to "Convert" mid-disc keeps the Open-time mode.
+ b.m_discMenuHdrMode=0;g_discMenuHdr=2;b.OverlayCallbackARGB(&argb);assert(b.m_planes[1].o.front()->m_isPqMenuGraphics);
+ g_discMenuHdr=0;b.m_pqAuthoredGraphics=false;
  b.OverlayCallbackARGB(&argb);rgba=b.m_planes[1].o.front();
  uint32_t copied[4];memcpy(copied,rgba->pixels.data(),16);assert(copied[0]==3&&copied[1]==4&&copied[2]==7&&copied[3]==8);
  b.m_readingThread=std::this_thread::get_id();b.OverlayFlush(-1);assert(b.m_pendingOverlayGroup);

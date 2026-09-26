@@ -896,7 +896,8 @@ void CApplication::Render()
   // render video layer
   CServiceBroker::GetGUI()->GetWindowManager().RenderEx();
 
-  // render gui layer
+  // render gui layer (into the disc menu composite's buffer while it is active)
+  CServiceBroker::GetWinSystem()->BeginGuiComposite();
   if (appPower->GetRenderGUI() && !m_skipGuiRender)
   {
     if (CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode())
@@ -920,6 +921,7 @@ void CApplication::Render()
 
     m_lastRenderTime = std::chrono::steady_clock::now();
   }
+  CServiceBroker::GetWinSystem()->EndGuiComposite();
 
   CServiceBroker::GetRenderSystem()->EndRender();
 

@@ -174,8 +174,12 @@ bool CRenderSystemGLES::BeginRender()
   if (!m_bRenderCreated)
     return false;
 
-  const bool useLimited = CServiceBroker::GetWinSystem()->UseLimitedColor();
-  const bool usePQ = CServiceBroker::GetWinSystem()->GetGfxContext().IsTransferPQ();
+  // While the disc menu composite is active it encodes the GUI itself (PQ and
+  // limited range at its output), so the per-primitive paths stand down.
+  const bool menuComposite = CServiceBroker::GetWinSystem()->IsMenuCompositeActive();
+  const bool useLimited = CServiceBroker::GetWinSystem()->UseLimitedColor() && !menuComposite;
+  const bool usePQ =
+      CServiceBroker::GetWinSystem()->GetGfxContext().IsTransferPQ() && !menuComposite;
 
   if (m_limitedColorRange != useLimited || m_transferPQ != usePQ)
   {
@@ -443,7 +447,8 @@ void CRenderSystemGLES::SetDepthCulling(DEPTH_CULLING culling)
 void CRenderSystemGLES::InitialiseShaders()
 {
   std::string defines;
-  m_limitedColorRange = CServiceBroker::GetWinSystem()->UseLimitedColor();
+  m_limitedColorRange = CServiceBroker::GetWinSystem()->UseLimitedColor() &&
+                        !CServiceBroker::GetWinSystem()->IsMenuCompositeActive();
   if (m_limitedColorRange)
   {
     defines += "#define KODI_LIMITED_RANGE 1\n";

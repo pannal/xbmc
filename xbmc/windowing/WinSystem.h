@@ -222,6 +222,25 @@ public:
   virtual bool HasSystemSdrPeakLuminance() { return false; }
 
   /*!
+   * \brief Disc menu graphics composite (Blu-ray HDMV IG and BD-J authored in
+   * BT.2020 PQ). While such menus are on screen the GUI is rendered into an
+   * FBO and composited to PQ, with the menu graphics layered raw, so they reach
+   * an HDR sink as authored. Outside that window nothing changes.
+   */
+  // Render thread, once per presented video frame: are PQ menu graphics shown?
+  virtual void RequestMenuComposite(bool menuShown) {}
+  virtual bool IsMenuCompositeActive() const { return false; }
+  // About to engage: PQ menu graphics are held back rather than drawn on the
+  // existing path for the few frames until it does.
+  virtual bool IsMenuCompositePending() const { return false; }
+  // Around the GUI pass of a frame.
+  virtual void BeginGuiComposite() {}
+  virtual void EndGuiComposite() {}
+  // Around drawing the PQ menu graphics of a frame into their own buffer.
+  virtual bool BeginMenuOverlayRender() { return false; }
+  virtual void EndMenuOverlayRender() {}
+
+  /*!
    * \brief System supports Video Super Resolution HW upscaler i.e.:
    * "NVIDIA RTX Video Super Resolution" or "Intel Video Super Resolution"
    *

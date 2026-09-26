@@ -391,6 +391,12 @@ void CRenderManager::FrameMove()
 
   aml_set_disc_menu_visible(m_overlays.HasDiscMenuOverlay(m_presentsource));
 
+  // Disc menu composite: report PQ menu graphics before the frame is drawn,
+  // in or out of fullscreen video (Kodi's own windows cover them and uncover
+  // them again at any moment), so the composite is engaged when they are.
+  CServiceBroker::GetWinSystem()->RequestMenuComposite(
+      !m_pRenderer->IsGuiLayer() && m_overlays.HasPqMenuOverlay(m_presentsource));
+
   // Hardware video can skip Render(gui=true) when no overlays are present.
   // Keep the track-enabled policy live here, including gaps and paused frames.
   // The visible mode still evaluates overlap in Render; clear it here when
@@ -452,6 +458,11 @@ void CRenderManager::UnInit()
       CLog::Log(LOGERROR, "{} - timed out waiting for renderer to uninit", __FUNCTION__);
     }
   }
+
+  // Playback is ending: no disc menu graphics any more. Render thread only,
+  // which owns the disc menu composite's state.
+  if (CServiceBroker::GetAppMessenger()->IsProcessThread())
+    CServiceBroker::GetWinSystem()->RequestMenuComposite(false);
 
   std::unique_lock<CCriticalSection> lock(m_statelock);
 
@@ -996,6 +1007,22 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
     CalcOverlayActiveArea(src, dst, view, restrictSubsToActiveArea);
     m_overlays.SetVideoRect(src, dst, view);
+
+    // Disc menu composite: report PQ-authored menu graphics, and while the
+    // composite is active draw them raw into its own layer (redrawn, or
+    // emptied, every frame). m_overlays.Render then skips them.
+    CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
+    // A GUI-layer renderer draws the video inside this GUI pass, where the
+    // composite would re-encode it: keep the existing path there.
+    const bool pqMenu = !m_pRenderer->IsGuiLayer() && m_overlays.HasPqMenuOverlay(m_presentsource);
+    winSystem->RequestMenuComposite(pqMenu);
+    if (winSystem->BeginMenuOverlayRender())
+    {
+      if (pqMenu)
+        m_overlays.RenderPqMenu(m_presentsource);
+      winSystem->EndMenuOverlayRender();
+    }
+
     m_overlays.Render(m_presentsource);
 
     if (m_renderDebug)

@@ -957,6 +957,18 @@
           </dependencies>
           <control type="list" format="string" />
         </setting>
+        <setting id="subtitles.discmenuhdr" type="integer" label="69214" help="69215">
+          <level>1</level>
+          <default>1</default>
+          <constraints>
+            <options>
+              <option label="69216">0</option>
+              <option label="69217">1</option>
+              <option label="69218">2</option>
+            </options>
+          </constraints>
+          <control type="list" format="string" />
+        </setting>
         <setting id="subtitles.bitmapzoom" type="integer" label="69212" help="69213">
           <level>1</level>
           <default>100</default>
