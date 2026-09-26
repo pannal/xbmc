@@ -23,7 +23,9 @@
 #include "utils/StreamDetails.h"
 #include "windowing/Resolution.h"
 
+#include <array>
 #include <atomic>
+#include <cstdint>
 #include <deque>
 #include <list>
 #include <map>
@@ -60,6 +62,25 @@ class CRenderManager
 public:
   CRenderManager(CDVDClock &clock, IRenderMsg *player);
   virtual ~CRenderManager();
+
+  // A producer-stack reservation must not outlive its render manager.
+  // Destruction cancels unpublished capacity; it never calls the renderer.
+  class BufferReservation
+  {
+  public:
+    BufferReservation() = default;
+    ~BufferReservation();
+    BufferReservation(const BufferReservation&) = delete;
+    BufferReservation& operator=(const BufferReservation&) = delete;
+    BufferReservation(BufferReservation&& other) noexcept;
+    BufferReservation& operator=(BufferReservation&& other) noexcept;
+
+  private:
+    friend class CRenderManager;
+    CRenderManager* m_owner{nullptr};
+    int m_index{-1};
+    uint64_t m_serial{0};
+  };
 
   // Functions called from render thread
   void GetVideoRect(CRect& source, CRect& dest, CRect& view) const;
@@ -101,17 +122,22 @@ public:
   int GetSkippedFrames()  { return m_QueueSkip; }
 
   bool Configure(const VideoPicture& picture, float fps, unsigned int orientation, StreamHdrType hdrType, int buffers = 0);
-  bool AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop, EINTERLACEMETHOD deintMethod, bool wait);
-  void AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts);
+  bool AddVideoPicture(BufferReservation& reservation,
+                       const VideoPicture& picture,
+                       OVERLAY::CRenderer::OverlayBatch overlays,
+                       volatile std::atomic_bool& bStop,
+                       EINTERLACEMETHOD deintMethod,
+                       bool wait);
   void ShowVideo(bool enable);
 
   /**
-   * If player uses buffering it has to wait for a buffer before it calls
-   * AddVideoPicture and AddOverlay. It waits for max 50 ms before it returns -1
-   * in case no buffer is available. Player may call this in a loop and decides
-   * by itself when it wants to drop a frame.
+   * Reserve capacity before collecting overlays and publishing a picture.
+   * Returns the buffer level, or -1 on timeout/abort. With the GUI inactive,
+   * returns 0 after the existing bounded wait even if no slot can be reserved;
+   * AddVideoPicture then rejects the empty reservation without waiting.
    */
-  int WaitForBuffer(volatile std::atomic_bool& bStop,
+  int WaitForBuffer(BufferReservation& reservation,
+                    volatile std::atomic_bool& bStop,
                     std::chrono::milliseconds timeout = std::chrono::milliseconds(100));
 
   /**
@@ -262,6 +288,15 @@ private:
   // Called synchronously by FrameMove on the application thread.
   void ProcessPresentationQueue();
   void UpdateGuiPresentationState(bool firstFrame);
+
+  // Reserve/Invalidate/Retire are called with m_presentlock held.
+  void ReserveBuffer(BufferReservation& reservation);
+  void CancelReservation(BufferReservation& reservation);
+  void InvalidateReservations();
+  void RetireBuffer(int index);
+  std::array<uint64_t, NUM_BUFFERS> m_reservations{};
+  uint64_t m_nextReservation{0};
+  uint64_t m_reservationEpoch{0};
 
   void CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view, bool useActiveArea);
 

@@ -105,7 +105,15 @@ namespace OVERLAY {
     // Implementation of Observer
     void Notify(const Observable& obs, const ObservableMessage msg) override;
 
+    struct SElement
+    {
+      double pts{0.0};
+      std::shared_ptr<CDVDOverlay> overlay_dvd;
+    };
+    using OverlayBatch = std::vector<SElement>;
+
     void AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts, int index);
+    void SetOverlays(OverlayBatch overlays, int index);
     virtual void Render(int idx, float depth = 0.0f);
 
     /*!
@@ -156,13 +164,6 @@ namespace OVERLAY {
      * \brief Called when the screen resolution is changed
      */
     void OnViewChange();
-
-    struct SElement
-    {
-      SElement() : overlay_dvd(NULL) { pts = 0.0; }
-      double pts;
-      std::shared_ptr<CDVDOverlay> overlay_dvd;
-    };
 
     void Render(COverlay* o);
     std::shared_ptr<COverlay> Convert(CDVDOverlay& o, double pts);

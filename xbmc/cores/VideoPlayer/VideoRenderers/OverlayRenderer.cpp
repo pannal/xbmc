@@ -66,6 +66,12 @@ void CRenderer::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts, int index
   m_buffers[index].push_back(e);
 }
 
+void CRenderer::SetOverlays(OverlayBatch overlays, int index)
+{
+  std::unique_lock<CCriticalSection> lock(m_section);
+  m_buffers[index] = std::move(overlays);
+}
+
 void CRenderer::Release(std::vector<SElement>& list)
 {
   list.clear();

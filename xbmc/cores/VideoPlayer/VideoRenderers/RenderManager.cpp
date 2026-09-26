@@ -34,8 +34,36 @@
 
 #include <memory>
 #include <mutex>
+#include <utility>
 
 using namespace std::chrono_literals;
+
+CRenderManager::BufferReservation::~BufferReservation()
+{
+  if (m_owner)
+    m_owner->CancelReservation(*this);
+}
+
+CRenderManager::BufferReservation::BufferReservation(BufferReservation&& other) noexcept
+  : m_owner(std::exchange(other.m_owner, nullptr)),
+    m_index(other.m_index),
+    m_serial(other.m_serial)
+{
+}
+
+CRenderManager::BufferReservation& CRenderManager::BufferReservation::operator=(
+    BufferReservation&& other) noexcept
+{
+  if (this != &other)
+  {
+    if (m_owner)
+      m_owner->CancelReservation(*this);
+    m_owner = std::exchange(other.m_owner, nullptr);
+    m_index = other.m_index;
+    m_serial = other.m_serial;
+  }
+  return *this;
+}
 
 void CRenderManager::CClockSync::Reset()
 {
@@ -190,6 +218,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     m_pConfigPicture->CopyRef(picture);
 
     std::unique_lock<CCriticalSection> lock2(m_presentlock);
+    InvalidateReservations();
     m_presentstep = PRESENT_READY;
     m_presentevent.notifyAll();
   }
@@ -217,6 +246,7 @@ bool CRenderManager::Configure()
   std::unique_lock<CCriticalSection> lock(m_statelock);
   std::unique_lock<CCriticalSection> lock2(m_presentlock);
   std::unique_lock<CCriticalSection> lock3(m_datalock);
+  InvalidateReservations();
 
   if (m_pRenderer)
   {
@@ -385,9 +415,7 @@ void CRenderManager::ProcessPresentationQueue()
     // renderer may want to keep the frame for postprocessing
     if (!m_pRenderer->NeedBuffer(*it) || !m_bRenderGUI)
     {
-      m_pRenderer->ReleaseBuffer(*it);
-      m_overlays.Release(*it);
-      m_free.push_back(*it);
+      RetireBuffer(*it);
       it = m_discard.erase(it);
     }
     else
@@ -395,6 +423,15 @@ void CRenderManager::ProcessPresentationQueue()
   }
 
   m_bRenderGUI = true;
+}
+
+void CRenderManager::RetireBuffer(int index)
+{
+  // This remains on the render thread: generic renderers may release GL resources.
+  // The discarded slot is unavailable until both video and overlays are retired.
+  m_pRenderer->ReleaseBuffer(index);
+  m_overlays.Release(index);
+  m_free.push_back(index);
 }
 
 void CRenderManager::UpdateGuiPresentationState(bool firstFrame)
@@ -438,6 +475,9 @@ void CRenderManager::PreInit()
   }
 
   std::unique_lock<CCriticalSection> lock(m_statelock);
+  std::unique_lock<CCriticalSection> lock2(m_presentlock);
+  std::unique_lock<CCriticalSection> lock3(m_datalock);
+  InvalidateReservations();
 
   if (!m_pRenderer)
   {
@@ -473,6 +513,9 @@ void CRenderManager::UnInit()
     CServiceBroker::GetWinSystem()->RequestMenuComposite(false);
 
   std::unique_lock<CCriticalSection> lock(m_statelock);
+  std::unique_lock<CCriticalSection> lock2(m_presentlock);
+  std::unique_lock<CCriticalSection> lock3(m_datalock);
+  InvalidateReservations();
 
   m_overlays.UnInit();
   m_subtitleEnabled.store(false);
@@ -513,7 +556,9 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
       m_overlays.Flush();
       m_debugRenderer.Flush();
 
-      if (!m_pRenderer->Flush(saveBuffers))
+      const bool buffersSaved = m_pRenderer->Flush(saveBuffers);
+      InvalidateReservations();
+      if (!buffersSaved)
       {
         m_queued.clear();
         m_discard.clear();
@@ -1291,14 +1336,20 @@ void CRenderManager::SetSubtitleVerticalPosition(int value, bool save)
   m_overlays.SetSubtitleVerticalPosition(value, save);
 }
 
-bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop, EINTERLACEMETHOD deintMethod, bool wait)
+bool CRenderManager::AddVideoPicture(BufferReservation& reservation,
+                                    const VideoPicture& picture,
+                                    OVERLAY::CRenderer::OverlayBatch overlays,
+                                    volatile std::atomic_bool& bStop,
+                                    EINTERLACEMETHOD deintMethod,
+                                    bool wait)
 {
   std::unique_lock<CCriticalSection> lock(m_presentlock);
 
-  if (m_free.empty())
+  if (reservation.m_owner != this ||
+      m_reservations[reservation.m_index] != reservation.m_serial)
     return false;
 
-  int index = m_free.front();
+  const int index = reservation.m_index;
 
   {
     std::unique_lock<CCriticalSection> lock(m_datalock);
@@ -1306,8 +1357,8 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
       return false;
 
     m_pRenderer->AddVideoPicture(picture, index);
+    m_overlays.SetOverlays(std::move(overlays), index);
   }
-
 
   // set fieldsync if picture is interlaced
   EFIELDSYNC displayField = FS_NONE;
@@ -1354,7 +1405,8 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
   m.presentmethod = presentmethod;
   m.pts = picture.pts;
   m_queued.push_back(index);
-  m_free.pop_front();
+  m_reservations[index] = 0;
+  reservation.m_owner = nullptr;
 
   // signal to any waiters to check state
   if (m_presentstep == PRESENT_IDLE)
@@ -1385,17 +1437,51 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
   return true;
 }
 
-void CRenderManager::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts)
+void CRenderManager::ReserveBuffer(BufferReservation& reservation)
 {
-  int idx;
+  if (m_free.empty())
+    return;
+
+  const int index = m_free.front();
+  // As in WaitForBuffer before reservations, retire any CPU overlay list left
+  // in a free slot. This does not release the main-owned texture cache.
+  m_overlays.Release(index);
+  m_free.pop_front();
+  if (++m_nextReservation == 0)
+    ++m_nextReservation;
+  m_reservations[index] = m_nextReservation;
+  reservation.m_owner = this;
+  reservation.m_index = index;
+  reservation.m_serial = m_nextReservation;
+}
+
+void CRenderManager::CancelReservation(BufferReservation& reservation)
+{
+  std::unique_lock<CCriticalSection> lock(m_presentlock);
+  if (reservation.m_owner == this &&
+      m_reservations[reservation.m_index] == reservation.m_serial)
   {
-    std::unique_lock<CCriticalSection> lock(m_presentlock);
-    if (m_free.empty())
-      return;
-    idx = m_free.front();
+    // No picture or overlays were attached to an unpublished reservation.
+    // In particular, do not call a renderer's GL-capable ReleaseBuffer here.
+    m_reservations[reservation.m_index] = 0;
+    m_free.push_front(reservation.m_index);
+    m_presentevent.notifyAll();
   }
-  std::unique_lock<CCriticalSection> lock(m_datalock);
-  m_overlays.AddOverlay(std::move(o), pts, idx);
+  reservation.m_owner = nullptr;
+}
+
+void CRenderManager::InvalidateReservations()
+{
+  ++m_reservationEpoch;
+  for (int index = NUM_BUFFERS - 1; index >= 0; --index)
+  {
+    if (m_reservations[index] != 0)
+    {
+      m_reservations[index] = 0;
+      m_free.push_front(index);
+    }
+  }
+  m_presentevent.notifyAll();
 }
 
 bool CRenderManager::Supports(ERENDERFEATURE feature) const
@@ -1416,10 +1502,13 @@ bool CRenderManager::Supports(ESCALINGMETHOD method) const
     return false;
 }
 
-int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
-                                  std::chrono::milliseconds timeout)
+int CRenderManager::WaitForBuffer(BufferReservation& reservation,
+                                volatile std::atomic_bool& bStop,
+                                std::chrono::milliseconds timeout)
 {
+  reservation = BufferReservation{};
   std::unique_lock<CCriticalSection> lock(m_presentlock);
+  const uint64_t epoch = m_reservationEpoch;
 
   // check if gui is active and discard buffer if not
   // this keeps videoplayer going
@@ -1441,7 +1530,10 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
       sleeptime = 0ms;
     sleeptime = std::min(sleeptime, 20ms);
     m_presentevent.wait(lock, sleeptime);
+    if (epoch != m_reservationEpoch)
+      return 0; // The interrupted no-GUI request still must not wait for capacity.
     DiscardBuffer();
+    ReserveBuffer(reservation);
     return 0;
   }
 
@@ -1449,14 +1541,13 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
   while(m_free.empty())
   {
     m_presentevent.wait(lock, std::min(50ms, timeout));
-    if (endtime.IsTimePast() || bStop)
+    if (endtime.IsTimePast() || bStop || epoch != m_reservationEpoch)
     {
       return -1;
     }
   }
 
-  // make sure overlay buffer is released, this won't happen on AddOverlay
-  m_overlays.Release(m_free.front());
+  ReserveBuffer(reservation);
 
   // return buffer level
   return m_queued.size() + m_discard.size();
@@ -1586,6 +1677,7 @@ void CRenderManager::PrepareNextRender()
 void CRenderManager::DiscardBuffer()
 {
   std::unique_lock<CCriticalSection> lock2(m_presentlock);
+  InvalidateReservations();
 
   while(!m_queued.empty())
   {

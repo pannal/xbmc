@@ -1000,8 +1000,10 @@ void CVideoPlayerVideo::Flush(bool sync)
   m_bAbortOutput = true;
 }
 
-void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
+OVERLAY::CRenderer::OverlayBatch CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource,
+                                                                double pts)
 {
+  OVERLAY::CRenderer::OverlayBatch batch;
 
   double subsPts = pts - m_iSubtitleDelay;
 
@@ -1052,9 +1054,10 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
     for(it = overlays.begin(); it != overlays.end(); ++it)
     {
       double pts2 = (*it)->bForced ? pts : subsPts;
-      m_renderManager.AddOverlay(*it, pts2);
+      batch.push_back({pts2, *it});
     }
   }
+  return batch;
 }
 
 CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPicture* pPicture)
@@ -1120,7 +1123,8 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   if (m_speed > DVD_PLAYSPEED_NORMAL)
     maxWaitTime = std::max(timeToDisplay, 0ms);
 
-  int buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
+  CRenderManager::BufferReservation reservation;
+  int buffer = m_renderManager.WaitForBuffer(reservation, m_bAbortOutput, maxWaitTime);
   CLog::Log(LOGDEBUG,"CVideoPlayerVideo::{} - ttd:{:d}ms pts:{:.3f} Clock:{:.3f} Level:{:d}",
         __FUNCTION__, timeToDisplay.count(), pPicture->pts/DVD_TIME_BASE, static_cast<double>(iPlayingClock/DVD_TIME_BASE), buffer);
   if (buffer < 0)
@@ -1130,14 +1134,15 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     return OUTPUT_AGAIN;
   }
 
-  ProcessOverlays(pPicture, pPicture->pts);
+  auto overlays = ProcessOverlays(pPicture, pPicture->pts);
 
   EINTERLACEMETHOD deintMethod = EINTERLACEMETHOD::VS_INTERLACEMETHOD_NONE;
   deintMethod = m_processInfo.GetVideoSettings().m_InterlaceMethod;
   if (!m_processInfo.Supports(deintMethod))
     deintMethod = m_processInfo.GetDeinterlacingMethodDefault();
 
-  if (!m_renderManager.AddVideoPicture(*pPicture, m_bAbortOutput, deintMethod, (m_syncState == ESyncState::SYNC_STARTING)))
+  if (!m_renderManager.AddVideoPicture(reservation, *pPicture, std::move(overlays), m_bAbortOutput,
+                                       deintMethod, (m_syncState == ESyncState::SYNC_STARTING)))
   {
     m_droppingStats.AddOutputDropGain(pPicture->pts, 1);
     return OUTPUT_DROPPED;

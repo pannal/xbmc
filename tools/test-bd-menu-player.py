@@ -43,7 +43,7 @@ def main():
     still = player[player.index('    case BD_EVENT_STILL_TIME:', player.index('int CVideoPlayer::OnDiscNavResult')):]
     still = still[:still.index('    case BD_EVENT_MENU_ERROR:')]
     methods += '\nvoid CVideoPlayer::HandleStill(int iMessage, int* pData) { switch(iMessage) {\n' + still + '\n} }\n'
-    methods += function(video, 'void CVideoPlayerVideo::ProcessOverlays(')
+    methods += function(video, 'OVERLAY::CRenderer::OverlayBatch CVideoPlayerVideo::ProcessOverlays(')
     methods = methods.replace('std::chrono::steady_clock', 'TestClock')
     methods += ('\nstruct QueueFullness {\n  int dataLevel=0, timeLevel=0; bool m_timeBound=false;\n'
                 '  int GetLevel(bool data_level) const {return data_level ? dataLevel : timeLevel;}\n  '
@@ -224,16 +224,17 @@ struct OverlayContainer : CCriticalSection {
   VecOverlays* GetOverlays() {return &items;}
 };
 struct VideoPicture {int m_3dSubtitleDepth=7;};
-struct OverlayRender {
-  VecOverlays rendered;
-  void AddOverlay(std::shared_ptr<CDVDOverlay> value,double) {rendered.push_back(value);}
+namespace OVERLAY {
+struct CRenderer {
+  struct SElement {double pts; std::shared_ptr<CDVDOverlay> overlay_dvd;};
+  using OverlayBatch=std::vector<SElement>;
 };
+}
 struct CVideoPlayerVideo {
   double m_iSubtitleDelay=0; bool m_bRenderSubs=true;
   int m_syncState=IDVDStreamPlayer::SYNC_INSYNC;
   OverlayContainer container; OverlayContainer* m_pOverlayContainer=&container;
-  OverlayRender m_renderManager;
-  void ProcessOverlays(const VideoPicture*,double);
+  OVERLAY::CRenderer::OverlayBatch ProcessOverlays(const VideoPicture*,double);
 };
 '''
 
@@ -425,17 +426,17 @@ int main() {
   { CVideoPlayerVideo v;v.m_bRenderSubs=false;VideoPicture picture;
     auto group=std::make_shared<CDVDOverlayGroup>();group->menu=true;group->type=DVDOVERLAY_TYPE_GROUP;
     group->iPTSStartTime=-1;auto image=std::make_shared<CDVDOverlay>();image->menu=true;
-    group->m_overlays={image};v.container.items={group};v.ProcessOverlays(&picture,-500000);
-    assert(v.m_renderManager.rendered.size()==1 && group->m_3dSubtitleDepth==0);
+    group->m_overlays={image};v.container.items={group};auto batch=v.ProcessOverlays(&picture,-500000);
+    assert(batch.size()==1 && batch[0].overlay_dvd==image && group->m_3dSubtitleDepth==0);
   }
   // Ordinary and forced subtitles still honor visibility and authored intervals.
   { CVideoPlayerVideo v;VideoPicture picture;auto sub=std::make_shared<CDVDOverlay>();
     sub->iPTSStartTime=100;sub->iPTSStopTime=200;v.container.items={sub};
-    v.ProcessOverlays(&picture,99);assert(v.m_renderManager.rendered.empty());
-    v.ProcessOverlays(&picture,100);assert(v.m_renderManager.rendered.size()==1);
-    v.m_renderManager.rendered.clear();v.ProcessOverlays(&picture,200);assert(v.m_renderManager.rendered.empty());
-    v.m_bRenderSubs=false;v.ProcessOverlays(&picture,150);assert(v.m_renderManager.rendered.empty());
-    sub->bForced=true;v.ProcessOverlays(&picture,150);assert(v.m_renderManager.rendered.size()==1);
+    assert(v.ProcessOverlays(&picture,99).empty());
+    assert(v.ProcessOverlays(&picture,100).size()==1);
+    assert(v.ProcessOverlays(&picture,200).empty());
+    v.m_bRenderSubs=false;assert(v.ProcessOverlays(&picture,150).empty());
+    sub->bForced=true;assert(v.ProcessOverlays(&picture,150).size()==1);
   }
 }
 '''
