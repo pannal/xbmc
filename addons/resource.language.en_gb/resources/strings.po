@@ -27272,7 +27272,7 @@ msgstr ""
 #. Help text for setting "Use correct colors for PGS"
 #: system/settings/settings.xml
 msgctxt "#69199"
-msgid "Convert PGS subtitles and supported Blu-ray navigation graphics from BT.2020 PQ to SDR BT.709 for correct display. This switch and the settings below are shared by both. In Dolby Vision mode, the DV compositor reprocesses OSD colors, so the fine-tuning settings below may have limited effect. Disable if colors appear wrong on non-HDR content."
+msgid "Convert PGS subtitles, and Blu-ray navigation graphics that are not passed through as authored (see HDR disc menu graphics), from BT.2020 PQ to SDR BT.709 for correct display. This switch and the settings below are shared by both. In Dolby Vision mode, the DV compositor reprocesses OSD colors, so the fine-tuning settings below may have limited effect. Disable if colors appear wrong on non-HDR content."
 msgstr ""
 
 #. Label for setting "PGS brightness"
@@ -27284,7 +27284,7 @@ msgstr ""
 #. Help text for setting "PGS brightness"
 #: system/settings/settings.xml
 msgctxt "#69201"
-msgid "Controls brightness of converted PGS subtitles and supported Blu-ray navigation graphics (shared setting). 100% is accurate per BT.2408 (203 nits reference). Increase if they appear too dim, decrease if they are too bright."
+msgid "Controls brightness of converted PGS subtitles and converted Blu-ray navigation graphics (shared setting). 100% is accurate per BT.2408 (203 nits reference). Increase if they appear too dim, decrease if they are too bright."
 msgstr ""
 
 #. Label for setting "PGS color saturation"
@@ -27296,7 +27296,7 @@ msgstr ""
 #. Help text for setting "PGS color saturation"
 #: system/settings/settings.xml
 msgctxt "#69203"
-msgid "Adjust color saturation of converted PGS subtitles and supported Blu-ray navigation graphics (shared setting). 100% is accurate. Increase if colors appear washed out, decrease to desaturate."
+msgid "Adjust color saturation of converted PGS subtitles and converted Blu-ray navigation graphics (shared setting). 100% is accurate. Increase if colors appear washed out, decrease to desaturate."
 msgstr ""
 
 #. Label for setting "PGS Reinhard tonemap"
@@ -27308,7 +27308,7 @@ msgstr ""
 #. Help text for setting "PGS Reinhard tonemap"
 #: system/settings/settings.xml
 msgctxt "#69205"
-msgid "Use Reinhard soft rolloff instead of hard clipping when converting PGS subtitles and supported Blu-ray navigation graphics (shared setting). Preserves more detail in bright highlights but makes the overall image slightly darker."
+msgid "Use Reinhard soft rolloff instead of hard clipping when converting PGS subtitles and Blu-ray navigation graphics (shared setting). Preserves more detail in bright highlights but makes the overall image slightly darker."
 msgstr ""
 
 #. Group label for image-based subtitle settings
@@ -27326,7 +27326,7 @@ msgstr ""
 #. Help text for setting "PGS tonemap mode"
 #: system/settings/settings.xml
 msgctxt "#69208"
-msgid "Select the tonemapping algorithm for PGS subtitles and supported Blu-ray navigation graphics (shared setting). Classic: BT.709 gamut + per-channel tonemap. Linear: BT.709 gamut + luminance-based tonemap (preserves color ratios). Luma: BT.2020 native + luminance-based tonemap (no gamut conversion)."
+msgid "Select the tonemapping algorithm for PGS subtitles and converted Blu-ray navigation graphics (shared setting). Classic: BT.709 gamut + per-channel tonemap. Linear: BT.709 gamut + luminance-based tonemap (preserves color ratios). Luma: BT.2020 native + luminance-based tonemap (no gamut conversion)."
 msgstr ""
 
 #. Option label for PGS tonemap mode "Classic"
@@ -27371,6 +27371,26 @@ msgstr ""
 
 msgctxt "#36061"
 msgid "When CEC standby is triggered from Kodi"
+msgstr ""
+
+msgctxt "#69214"
+msgid "HDR disc menu graphics"
+msgstr ""
+
+msgctxt "#69215"
+msgid "How Blu-ray menu graphics authored in HDR (BT.2020 PQ) are shown on an HDR10 or Dolby Vision output. As authored: while such a menu is on screen, its graphics reach the display unconverted and Kodi's own controls keep their usual brightness; the graphics settings above do not apply to them. As authored, HDMV menus only: Java (BD-J) menus are shown as SDR, as before; use this if a disc's Java menu looks too bright. Convert: HDMV menus use the conversion above and Java menus are shown as SDR. Needs kernel support; not used in Dolby Vision video processor mode."
+msgstr ""
+
+msgctxt "#69216"
+msgid "As authored"
+msgstr ""
+
+msgctxt "#69217"
+msgid "As authored, HDMV menus only"
+msgstr ""
+
+msgctxt "#69218"
+msgid "Convert"
 msgstr ""
 
 msgctxt "#69240"

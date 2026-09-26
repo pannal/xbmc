@@ -548,6 +548,15 @@ bool CDVDInputStreamBluray::TagGraphicsAsPq() const
              CSettings::SETTING_SUBTITLES_PGSHDRTOSDR);
 }
 
+// subtitles.discmenuhdr: which menu graphics of a PQ playlist may take the
+// disc menu composite's raw route (0 HDMV and BD-J, 1 HDMV only, 2 none).
+// Graphics that do not keep their existing paths below.
+int CDVDInputStreamBluray::DiscMenuHdrMode() const
+{
+  return CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+      CSettings::SETTING_SUBTITLES_DISCMENUHDR);
+}
+
 void CDVDInputStreamBluray::UpdateGraphicsRegime()
 {
   bool pq = false;
@@ -1713,7 +1722,8 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     // Only HDMV menu graphics (IG) are tagged; PG stays on its own path.
     const bool pq = ov->plane == BD_OVERLAY_IG && TagGraphicsAsPq();
     // IG of a PQ playlist can also take the disc menu composite's raw route.
-    const bool pqMenu = ov->plane == BD_OVERLAY_IG && m_pqAuthoredGraphics;
+    const bool pqMenu =
+        ov->plane == BD_OVERLAY_IG && m_pqAuthoredGraphics && DiscMenuHdrMode() != 2;
 
     if (ov->palette)
     {
@@ -1843,7 +1853,8 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     // choice, so HDR video alone does not prove a BD-J image is PQ-authored.
     // On a PQ playlist they can take the disc menu composite's raw route: UHD
     // discs author their BD-J artwork as BT.2020 PQ (pannal/CoreELEC#120).
-    overlay->m_isPqMenuGraphics = m_pqAuthoredGraphics;
+    // Nothing reports SDR BD-J artwork, so the user can keep BD-J off it.
+    overlay->m_isPqMenuGraphics = m_pqAuthoredGraphics && DiscMenuHdrMode() == 0;
 
     OverlayClear(plane, ov->x, ov->y, ov->w, ov->h);
     plane.o.push_back(overlay);

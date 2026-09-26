@@ -322,6 +322,7 @@ protected:
     void UpdateLibblurayDebugMask();
     void UpdateGraphicsRegime();
     bool TagGraphicsAsPq() const;
+    int DiscMenuHdrMode() const;
     bool IsClipCodecCompatible(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b) const;
     std::unique_ptr<CDVDInputStreamFile> m_pstream;
     std::string m_rootPath;

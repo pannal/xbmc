@@ -83,6 +83,7 @@ int bd_get_event(BLURAY*,BD_EVENT* e) {if(queuedEvents.empty())return 0;*e=queue
 struct CDVDInputStream {enum ENextStream {NEXTSTREAM_NONE,NEXTSTREAM_OPEN,NEXTSTREAM_RETRY};};
 static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e,bool bt2020) { return e.Y+(bt2020?1000u:0u); }
 bool g_pgsHdrToSdr=true;
+int g_discMenuHdr=0;
 #define PIXEL_ASHIFT 24
 #define PIXEL_RSHIFT 16
 #define PIXEL_GSHIFT 8
@@ -110,6 +111,7 @@ public:
  bool m_hasMenuOverlay=false,m_hasOverlay=false,m_overlayCloseDeferred=false;
  std::atomic_bool m_pqAuthoredGraphics=false;
  bool TagGraphicsAsPq() const;
+ int DiscMenuHdrMode() const;
  void UpdateGraphicsRegime();
  std::shared_ptr<CDVDOverlay> m_pendingOverlayGroup;
  std::atomic<std::thread::id> m_readingThread{};
@@ -163,6 +165,10 @@ real_palette=get(s,'clamp')+'\n'+get(s,'build_rgba')
 tag=get(s,'CDVDInputStreamBluray::TagGraphicsAsPq')
 tag=re.sub(r'CServiceBroker::GetSettingsComponent\(\)->GetSettings\(\)->GetBool\(\s*CSettings::SETTING_SUBTITLES_PGSHDRTOSDR\)','g_pgsHdrToSdr',tag)
 assert 'g_pgsHdrToSdr' in tag
+menuMode=get(s,'CDVDInputStreamBluray::DiscMenuHdrMode')
+menuMode=re.sub(r'CServiceBroker::GetSettingsComponent\(\)->GetSettings\(\)->GetInt\(\s*CSettings::SETTING_SUBTITLES_DISCMENUHDR\)','g_discMenuHdr',menuMode)
+assert 'g_discMenuHdr' in menuMode
+tag+='\n'+menuMode
 functions=[tag,get(s,'EndOfTitleReadStalled')]+[get(s,'CDVDInputStreamBluray::'+name) for name in ['OverlayClose','OverlayInit','OverlayClear','OverlayFlush','DeliverParkedOverlayIfDue','OverlayCallback','OverlayCallbackARGB','ReadBlocks','UpdateSeamTimeOffset','ResetSeamTimeOffset','AreClipVideoStreamsCompatible','AreClipPgStreamsEqual','IsClipCodecCompatible']]
 a=s.index('if (m_atTitleEnd.exchange(false))');b=balance(s,s.index('{',a))
 functions.append('void CDVDInputStreamBluray::Reenter(uint64_t previousOut,uint64_t nextIn) {'+s[a:b]+'}')
@@ -251,7 +257,13 @@ int main(){
  ov.palette_update_flag=1;ov.w=ov.h=0;ov.img=nullptr;b.OverlayCallback(&ov);
  assert(!b.m_planes[1].o.front()->m_isHdrPq&&b.m_planes[1].o.front()->palette[1]==99&&b.m_planes[1].o.front()->pqMenuPalette[1]==1099);
  ov.palette_update_flag=0;ov.w=4;ov.h=2;ov.img=runs;
- g_pgsHdrToSdr=true;b.m_pqAuthoredGraphics=false;
+ g_pgsHdrToSdr=true;
+ // subtitles.discmenuhdr: "HDMV only" keeps IG on the route; "Convert" keeps IG on #66's tag only.
+ g_discMenuHdr=1;b.OverlayCallback(&ov);assert(b.m_planes[1].o.front()->m_isPqMenuGraphics);
+ g_discMenuHdr=2;b.OverlayCallback(&ov);
+ assert(!b.m_planes[1].o.front()->m_isPqMenuGraphics&&b.m_planes[1].o.front()->pqMenuPalette.empty());
+ assert(b.m_planes[1].o.front()->m_isHdrPq&&b.m_planes[1].o.front()->palette[1]==1099);
+ g_discMenuHdr=0;b.m_pqAuthoredGraphics=false;
  // PG children retain subtitle identity even in a disc-composition envelope.
  ov.plane=BD_OVERLAY_PG;ov.cmd=BD_OVERLAY_INIT;b.OverlayCallback(&ov);ov.cmd=BD_OVERLAY_DRAW;ov.img=runs;b.OverlayCallback(&ov);
  assert(!b.m_planes[0].o.front()->IsDiscMenuOverlay());
@@ -271,7 +283,10 @@ int main(){
  b.m_pqAuthoredGraphics=true;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isHdrPq);
  // BD-J of a PQ playlist takes the menu composite's raw route (pixels untouched).
  assert(b.m_planes[1].o.front()->m_isPqMenuGraphics);
- b.m_pqAuthoredGraphics=false;
+ // "HDMV only" and "Convert" keep BD-J untagged and off the route.
+ g_discMenuHdr=1;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isPqMenuGraphics&&!b.m_planes[1].o.front()->m_isHdrPq);
+ g_discMenuHdr=2;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isPqMenuGraphics);
+ g_discMenuHdr=0;b.m_pqAuthoredGraphics=false;
  b.OverlayCallbackARGB(&argb);rgba=b.m_planes[1].o.front();
  uint32_t copied[4];memcpy(copied,rgba->pixels.data(),16);assert(copied[0]==3&&copied[1]==4&&copied[2]==7&&copied[3]==8);
  b.m_readingThread=std::this_thread::get_id();b.OverlayFlush(-1);assert(b.m_pendingOverlayGroup);

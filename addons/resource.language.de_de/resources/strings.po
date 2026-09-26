@@ -20061,32 +20061,32 @@ msgid "Correct HDR colors for PGS and disc graphics"
 msgstr "HDR-Farben für PGS und Disc-Grafiken korrigieren"
 
 msgctxt "#69199"
-msgid "Convert PGS subtitles and supported Blu-ray navigation graphics from BT.2020 PQ to SDR BT.709 for correct display. This switch and the settings below are shared by both. In Dolby Vision mode, the DV compositor reprocesses OSD colors, so the fine-tuning settings below may have limited effect. Disable if colors appear wrong on non-HDR content."
-msgstr "PGS-Untertitel und unterstützte Blu-ray-Navigationsgrafiken von BT.2020 PQ nach SDR BT.709 konvertieren. Dieser Schalter und die folgenden Einstellungen gelten für beide gemeinsam. Im Dolby-Vision-Modus verarbeitet der DV-Compositor die OSD-Farben nach, sodass die Feineinstellungen unten nur begrenzt wirken. Deaktivieren, falls die Farben bei Nicht-HDR-Inhalten falsch aussehen."
+msgid "Convert PGS subtitles, and Blu-ray navigation graphics that are not passed through as authored (see HDR disc menu graphics), from BT.2020 PQ to SDR BT.709 for correct display. This switch and the settings below are shared by both. In Dolby Vision mode, the DV compositor reprocesses OSD colors, so the fine-tuning settings below may have limited effect. Disable if colors appear wrong on non-HDR content."
+msgstr "PGS-Untertitel sowie Blu-ray-Navigationsgrafiken, die nicht unverändert durchgereicht werden (siehe HDR-Disc-Menügrafiken), von BT.2020 PQ nach SDR BT.709 konvertieren. Dieser Schalter und die folgenden Einstellungen gelten für beide gemeinsam. Im Dolby-Vision-Modus verarbeitet der DV-Compositor die OSD-Farben nach, sodass die Feineinstellungen unten nur begrenzt wirken. Deaktivieren, falls die Farben bei Nicht-HDR-Inhalten falsch aussehen."
 
 msgctxt "#69200"
 msgid "Graphics brightness"
 msgstr "Grafikhelligkeit"
 
 msgctxt "#69201"
-msgid "Controls brightness of converted PGS subtitles and supported Blu-ray navigation graphics (shared setting). 100% is accurate per BT.2408 (203 nits reference). Increase if they appear too dim, decrease if they are too bright."
-msgstr "Steuert die Helligkeit konvertierter PGS-Untertitel und unterstützter Blu-ray-Navigationsgrafiken (gemeinsame Einstellung). 100% entspricht dem BT.2408-Standard (203 Nits Referenz). Erhöhen, falls sie zu dunkel erscheinen, verringern, falls sie zu hell sind."
+msgid "Controls brightness of converted PGS subtitles and converted Blu-ray navigation graphics (shared setting). 100% is accurate per BT.2408 (203 nits reference). Increase if they appear too dim, decrease if they are too bright."
+msgstr "Steuert die Helligkeit konvertierter PGS-Untertitel und konvertierter Blu-ray-Navigationsgrafiken (gemeinsame Einstellung). 100% entspricht dem BT.2408-Standard (203 Nits Referenz). Erhöhen, falls sie zu dunkel erscheinen, verringern, falls sie zu hell sind."
 
 msgctxt "#69202"
 msgid "Graphics color saturation"
 msgstr "Grafik-Farbsättigung"
 
 msgctxt "#69203"
-msgid "Adjust color saturation of converted PGS subtitles and supported Blu-ray navigation graphics (shared setting). 100% is accurate. Increase if colors appear washed out, decrease to desaturate."
-msgstr "Farbsättigung konvertierter PGS-Untertitel und unterstützter Blu-ray-Navigationsgrafiken anpassen (gemeinsame Einstellung). 100% ist korrekt. Erhöhen, falls die Farben ausgewaschen wirken, verringern zum Entsättigen."
+msgid "Adjust color saturation of converted PGS subtitles and converted Blu-ray navigation graphics (shared setting). 100% is accurate. Increase if colors appear washed out, decrease to desaturate."
+msgstr "Farbsättigung konvertierter PGS-Untertitel und konvertierter Blu-ray-Navigationsgrafiken anpassen (gemeinsame Einstellung). 100% ist korrekt. Erhöhen, falls die Farben ausgewaschen wirken, verringern zum Entsättigen."
 
 msgctxt "#69204"
 msgid "Use Reinhard tonemap for graphics"
 msgstr "Reinhard-Tonemap für Grafiken verwenden"
 
 msgctxt "#69205"
-msgid "Use Reinhard soft rolloff instead of hard clipping when converting PGS subtitles and supported Blu-ray navigation graphics (shared setting). Preserves more detail in bright highlights but makes the overall image slightly darker."
-msgstr "Reinhard-Tonemap anstelle von hartem Clipping bei der Konvertierung von PGS-Untertiteln und unterstützten Blu-ray-Navigationsgrafiken verwenden (gemeinsame Einstellung). Bewahrt mehr Details in hellen Bereichen, macht das Bild aber insgesamt etwas dunkler."
+msgid "Use Reinhard soft rolloff instead of hard clipping when converting PGS subtitles and Blu-ray navigation graphics (shared setting). Preserves more detail in bright highlights but makes the overall image slightly darker."
+msgstr "Reinhard-Tonemap anstelle von hartem Clipping bei der Konvertierung von PGS-Untertiteln und Blu-ray-Navigationsgrafiken verwenden (gemeinsame Einstellung). Bewahrt mehr Details in hellen Bereichen, macht das Bild aber insgesamt etwas dunkler."
 
 msgctxt "#69206"
 msgid "Image-based subtitles and disc graphics"
@@ -20097,8 +20097,8 @@ msgid "Graphics tonemap mode"
 msgstr "Grafik-Tonemap-Modus"
 
 msgctxt "#69208"
-msgid "Select the tonemapping algorithm for PGS subtitles and supported Blu-ray navigation graphics (shared setting). Classic: BT.709 gamut + per-channel tonemap. Linear: BT.709 gamut + luminance-based tonemap (preserves color ratios). Luma: BT.2020 native + luminance-based tonemap (no gamut conversion)."
-msgstr "Tonemapping-Algorithmus für PGS-Untertitel und unterstützte Blu-ray-Navigationsgrafiken wählen (gemeinsame Einstellung). Classic: BT.709-Farbraum + kanalweises Tonemap. Linear: BT.709-Farbraum + luminanzbasiertes Tonemap (erhält Farbverhältnisse). Luma: BT.2020 nativ + luminanzbasiertes Tonemap (keine Farbraumkonvertierung)."
+msgid "Select the tonemapping algorithm for PGS subtitles and converted Blu-ray navigation graphics (shared setting). Classic: BT.709 gamut + per-channel tonemap. Linear: BT.709 gamut + luminance-based tonemap (preserves color ratios). Luma: BT.2020 native + luminance-based tonemap (no gamut conversion)."
+msgstr "Tonemapping-Algorithmus für PGS-Untertitel und konvertierte Blu-ray-Navigationsgrafiken wählen (gemeinsame Einstellung). Classic: BT.709-Farbraum + kanalweises Tonemap. Linear: BT.709-Farbraum + luminanzbasiertes Tonemap (erhält Farbverhältnisse). Luma: BT.2020 nativ + luminanzbasiertes Tonemap (keine Farbraumkonvertierung)."
 
 msgctxt "#69209"
 msgid "Classic"
@@ -20123,6 +20123,26 @@ msgstr "Bildbasierte Untertitel (PGS, VobSub) skalieren. 100% ist die Originalgr
 msgctxt "#69999"
 msgid "Enable this to disable noise reduction. Requires reboot. FOR BETTER VIDEO PROCESSING LEAVE THIS SETTING ENABLED (i.e., DISABLE NOISE REDUCTION)."
 msgstr "Aktiviere diese Option, um die Rauschunterdrückung zu deaktivieren und die Videoverarbeitung zu verbessern. Ein Neustart ist erforderlich."
+
+msgctxt "#69214"
+msgid "HDR disc menu graphics"
+msgstr "HDR-Disc-Menügrafiken"
+
+msgctxt "#69215"
+msgid "How Blu-ray menu graphics authored in HDR (BT.2020 PQ) are shown on an HDR10 or Dolby Vision output. As authored: while such a menu is on screen, its graphics reach the display unconverted and Kodi's own controls keep their usual brightness; the graphics settings above do not apply to them. As authored, HDMV menus only: Java (BD-J) menus are shown as SDR, as before; use this if a disc's Java menu looks too bright. Convert: HDMV menus use the conversion above and Java menus are shown as SDR. Needs kernel support; not used in Dolby Vision video processor mode."
+msgstr "Legt fest, wie in HDR (BT.2020 PQ) erstellte Blu-ray-Menügrafiken an einem HDR10- oder Dolby-Vision-Ausgang angezeigt werden. Wie erstellt: Solange ein solches Menü angezeigt wird, erreichen seine Grafiken das Display unverändert, und Kodis eigene Bedienelemente behalten ihre gewohnte Helligkeit; die Grafikeinstellungen oben gelten dafür nicht. Wie erstellt, nur HDMV-Menüs: Java-Menüs (BD-J) werden wie bisher als SDR angezeigt; wählen, falls das Java-Menü einer Disc zu hell aussieht. Konvertieren: HDMV-Menüs nutzen die Konvertierung oben, Java-Menüs werden als SDR angezeigt. Erfordert Kernel-Unterstützung; im Dolby-Vision-Videoprozessor-Modus nicht verwendet."
+
+msgctxt "#69216"
+msgid "As authored"
+msgstr "Wie erstellt"
+
+msgctxt "#69217"
+msgid "As authored, HDMV menus only"
+msgstr "Wie erstellt, nur HDMV-Menüs"
+
+msgctxt "#69218"
+msgid "Convert"
+msgstr "Konvertieren"
 
 msgctxt "#69240"
 msgid "This operation is not allowed by the disc."
