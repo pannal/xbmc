@@ -101,7 +101,7 @@ struct CDVDSubtitlesLibass {
   SUBTITLES::STYLE::renderOpts opts{};double lastPts=0;
   int GetPlayResY(){return 720;}
   std::shared_ptr<const CLibassRenderResult> RenderImage(double pts,SUBTITLES::STYLE::renderOpts o,bool update,
-                        const std::shared_ptr<SUBTITLES::STYLE::style>&){
+                        std::shared_ptr<const SUBTITLES::STYLE::style>){
     assert(std::this_thread::get_id()==ownerThread);++calls;lastPts=pts;opts=o;sawStyle=update;
     if(!visible){result.reset();return nullptr;}
     if(update||changes||!result){ASS_Image node;node.bitmap=&image.value;result=std::make_shared<const CLibassRenderResult>(&node);}
@@ -153,14 +153,14 @@ public:
   int m_activeAreaTopOffset=0,m_activeAreaBottomOffset=0;bool m_activeAreaApplyUserPos=false;
   enum{POSRESINFO_SAVE_CHANGES=-2};
   bool m_isSettingsChanged=false;int styleLoads=0;
-  std::shared_ptr<SUBTITLES::STYLE::style> m_overlayStyle;
+  std::shared_ptr<const SUBTITLES::STYLE::style> m_overlayStyle;
   void ResetSubtitlePosition(){m_subtitlePosResInfo=1000;}
   void LoadSettings(){++styleLoads;}
-  void CreateSubtitlesStyle(){m_overlayStyle=std::make_shared<SUBTITLES::STYLE::style>();}
+  void CreateSubtitlesStyle(){m_overlayStyle=std::make_shared<const SUBTITLES::STYLE::style>();}
   void SetOverlays(OverlayBatch,int);void Release(int);void Release(std::vector<SElement>&);
   void ReleaseCache();void ReleaseUnused(const OverlayBatch& selected={});void Flush();void Reset();
   std::shared_ptr<COverlay> Convert(const CDVDOverlay&,double);
-  std::shared_ptr<COverlay> ConvertLibass(const CDVDOverlayLibass&,double,bool,const std::shared_ptr<SUBTITLES::STYLE::style>&);
+  std::shared_ptr<COverlay> ConvertLibass(const CDVDOverlayLibass&,double,bool,std::shared_ptr<const SUBTITLES::STYLE::style>);
 };
 }
 using namespace OVERLAY;
@@ -271,7 +271,7 @@ int main(){
    assert(r.Convert(*p->GetPublishedRenderContent(),106));r.Flush();handler->changes=0;
    auto afterFlush=r.Convert(*p->GetPublishedRenderContent(),107);assert(afterFlush&&afterFlush!=styled);
    // DebugRenderer calls ConvertLibass directly with its own style and cache.
-   CRenderer debug;auto debugStyle=std::make_shared<SUBTITLES::STYLE::style>();
+   CRenderer debug;auto debugStyle=std::make_shared<const SUBTITLES::STYLE::style>();
    const auto& published=static_cast<const CDVDOverlayLibass&>(*p->GetPublishedRenderContent());
    auto debugImage=debug.ConvertLibass(published,108,true,debugStyle);handler->changes=0;
    assert(debug.ConvertLibass(published,109,false,debugStyle)==debugImage);

@@ -225,7 +225,7 @@ namespace OVERLAY {
         const CDVDOverlayLibass& o,
         double pts,
         bool updateStyle,
-        const std::shared_ptr<struct KODI::SUBTITLES::STYLE::style>& overlayStyle);
+        std::shared_ptr<const KODI::SUBTITLES::STYLE::style> overlayStyle);
 
     void CreateSubtitlesStyle();
 
@@ -270,7 +270,7 @@ namespace OVERLAY {
         KODI::SUBTITLES::HorizontalAlign::CENTER};
     KODI::SUBTITLES::Align m_subtitleAlign{KODI::SUBTITLES::Align::BOTTOM_OUTSIDE};
 
-    std::shared_ptr<struct KODI::SUBTITLES::STYLE::style> m_overlayStyle;
+    std::shared_ptr<const KODI::SUBTITLES::STYLE::style> m_overlayStyle;
     std::atomic<bool> m_isSettingsChanged{false};
   };
 }

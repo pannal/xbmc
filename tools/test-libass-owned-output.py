@@ -57,6 +57,7 @@ PRELUDE = r'''
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -83,11 +84,13 @@ public:
   int64_t m_cacheValidFrom=0,m_cacheValidUntil=0;
   ~CDVDSubtitlesLibass(){ass_free_track(m_track);ass_renderer_done(m_renderer);ass_library_done(m_library);}
   void Init(const char* font);
-  void ApplyStyle(const std::shared_ptr<style>& value,renderOpts){
+  int styleApplications=0; std::function<void()> onApply;
+  void ApplyStyle(const std::shared_ptr<const style>& value,renderOpts){
+    ++styleApplications;if(onApply)onApply();
     for(int i=0;i<m_track->n_styles;++i)m_track->styles[i].FontSize=value->fontSize;
     m_currentDefaultStyleId=0;
   }
-  std::shared_ptr<const CLibassRenderResult> RenderImage(double,renderOpts,bool,const std::shared_ptr<style>&);
+  std::shared_ptr<const CLibassRenderResult> RenderImage(double,renderOpts,bool,std::shared_ptr<const style>);
   bool IsDynamicEvent(const ASS_Event*)const;
   void UpdateRenderCache(int64_t);void InvalidateRenderCache();void FlushRenderCache();void FlushEvents();
 };
@@ -154,11 +157,15 @@ int main(int argc,char** argv){
    CLibassRenderResult empty(nullptr);assert(!Inspect::Images(empty));}
   renderOpts opts{};opts.frameWidth=opts.videoWidth=opts.sourceWidth=640;
   opts.frameHeight=opts.videoHeight=opts.sourceHeight=360;opts.m_par=1;
-  auto subStyle=std::make_shared<style>();subStyle->fontSize=28;
+  style builder{};builder.fontSize=28;
+  auto subStyle=std::make_shared<const style>(builder);
   std::shared_ptr<const CLibassRenderResult> retained;
   std::vector<unsigned char> retainedBytes;
   {CDVDSubtitlesLibass h;h.Init(argv[1]);
-   retained=h.RenderImage(500000,opts,false,subStyle);assert(retained);
+   assert(!h.RenderImage(500000,opts,false,nullptr));
+   h.m_currentDefaultStyleId=ASS_NO_ID;
+   retained=h.RenderImage(500000,opts,false,subStyle);assert(retained&&h.styleApplications==1);
+   assert(!h.RenderImage(500000,opts,false,nullptr));
    retainedBytes=Inspect::Bytes(*retained);assert(!retainedBytes.empty());
    assert(h.m_renderCacheValid);
    for(int i=0;i<20;++i)assert(h.RenderImage(500000+i*1000,opts,false,subStyle)==retained);
@@ -177,7 +184,15 @@ int main(int argc,char** argv){
    // Style fixture changes real libass track font sizes at the production
    // updateStyle evaluation point; this is not Kodi's complete ApplyStyle.
    auto beforeStyle=h.RenderImage(500000,opts,false,subStyle);
-   subStyle->fontSize=44;auto styled=h.RenderImage(500000,opts,true,subStyle);
+   auto heldStyle=subStyle;builder.fontSize=44;subStyle=std::make_shared<const style>(builder);
+   assert(heldStyle!=subStyle&&heldStyle->fontSize==28);
+   const int applied=h.styleApplications;
+   assert(h.RenderImage(500000,opts,false,subStyle)==beforeStyle&&h.styleApplications==applied);
+   // Replacing the caller handle during application must not change this request.
+   h.onApply=[&]{subStyle=heldStyle;};
+   auto styled=h.RenderImage(500000,opts,true,subStyle);
+   h.onApply={};
+   assert(h.styleApplications==applied+1&&h.m_track->styles[0].FontSize==44);
    assert(styled!=beforeStyle&&Inspect::Bytes(*styled)!=Inspect::Bytes(*beforeStyle));
    // Fractional canvas change rounds to the same libass dimensions, but the
    // GPU conversion denominator changes: new identity, shared owned pixels.

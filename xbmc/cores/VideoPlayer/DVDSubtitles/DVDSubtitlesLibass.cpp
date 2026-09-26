@@ -338,7 +338,7 @@ bool CDVDSubtitlesLibass::CreateTrack(char* buf, size_t size)
 }
 
 std::shared_ptr<const CLibassRenderResult> CDVDSubtitlesLibass::RenderImage(
-    double pts, renderOpts opts, bool updateStyle, const std::shared_ptr<struct style>& subStyle)
+    double pts, renderOpts opts, bool updateStyle, std::shared_ptr<const style> subStyle)
 {
   std::unique_lock<CCriticalSection> lock(m_section);
   if (!m_renderer || !m_track)
@@ -544,7 +544,7 @@ void CDVDSubtitlesLibass::InvalidateRenderCache()
   m_lastResult.reset();
 }
 
-void CDVDSubtitlesLibass::ApplyStyle(const std::shared_ptr<struct style>& subStyle, renderOpts opts)
+void CDVDSubtitlesLibass::ApplyStyle(const std::shared_ptr<const style>& subStyle, renderOpts opts)
 {
   CLog::Log(LOGDEBUG, "{} - Start setting up the LibAss style", __FUNCTION__);
 
@@ -819,8 +819,8 @@ bool CDVDSubtitlesLibass::EventActive(double pts)
   return false;
 }
 
-void CDVDSubtitlesLibass::ConfigureAssOverride(const std::shared_ptr<struct style>& subStyle,
-                                               ASS_Style* style)
+void CDVDSubtitlesLibass::ConfigureAssOverride(const std::shared_ptr<const style>& subStyle,
+                                              ASS_Style* style)
 {
   if (!subStyle)
   {

@@ -604,78 +604,81 @@ void CRenderer::ResetSubtitlePosition()
 
 void CRenderer::CreateSubtitlesStyle()
 {
-  m_overlayStyle = std::make_shared<SUBTITLES::STYLE::style>();
+  SUBTITLES::STYLE::style style{};
   const auto settings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
 
-  m_overlayStyle->fontName = settings->GetFontName();
-  m_overlayStyle->fontSize = static_cast<double>(settings->GetFontSize());
+  style.fontName = settings->GetFontName();
+  style.fontSize = static_cast<double>(settings->GetFontSize());
 
   SUBTITLES::FontStyle fontStyle = settings->GetFontStyle();
   if (fontStyle == SUBTITLES::FontStyle::BOLD_ITALIC)
-    m_overlayStyle->fontStyle = SUBTITLES::STYLE::FontStyle::BOLD_ITALIC;
+    style.fontStyle = SUBTITLES::STYLE::FontStyle::BOLD_ITALIC;
   else if (fontStyle == SUBTITLES::FontStyle::BOLD)
-    m_overlayStyle->fontStyle = SUBTITLES::STYLE::FontStyle::BOLD;
+    style.fontStyle = SUBTITLES::STYLE::FontStyle::BOLD;
   else if (fontStyle == SUBTITLES::FontStyle::ITALIC)
-    m_overlayStyle->fontStyle = SUBTITLES::STYLE::FontStyle::ITALIC;
+    style.fontStyle = SUBTITLES::STYLE::FontStyle::ITALIC;
 
-  m_overlayStyle->fontColor = settings->GetFontColor();
-  m_overlayStyle->fontBorderSize = settings->GetBorderSize();
-  m_overlayStyle->fontBorderColor = settings->GetBorderColor();
-  m_overlayStyle->fontOpacity = settings->GetFontOpacity();
+  style.fontColor = settings->GetFontColor();
+  style.fontBorderSize = settings->GetBorderSize();
+  style.fontBorderColor = settings->GetBorderColor();
+  style.fontOpacity = settings->GetFontOpacity();
 
   SUBTITLES::BackgroundType backgroundType = settings->GetBackgroundType();
   if (backgroundType == SUBTITLES::BackgroundType::NONE)
-    m_overlayStyle->borderStyle = SUBTITLES::STYLE::BorderType::OUTLINE_NO_SHADOW;
+    style.borderStyle = SUBTITLES::STYLE::BorderType::OUTLINE_NO_SHADOW;
   else if (backgroundType == SUBTITLES::BackgroundType::SHADOW)
-    m_overlayStyle->borderStyle = SUBTITLES::STYLE::BorderType::OUTLINE;
+    style.borderStyle = SUBTITLES::STYLE::BorderType::OUTLINE;
   else if (backgroundType == SUBTITLES::BackgroundType::BOX)
-    m_overlayStyle->borderStyle = SUBTITLES::STYLE::BorderType::BOX;
+    style.borderStyle = SUBTITLES::STYLE::BorderType::BOX;
   else if (backgroundType == SUBTITLES::BackgroundType::SQUAREBOX)
-    m_overlayStyle->borderStyle = SUBTITLES::STYLE::BorderType::SQUARE_BOX;
+    style.borderStyle = SUBTITLES::STYLE::BorderType::SQUARE_BOX;
 
-  m_overlayStyle->backgroundColor = settings->GetBackgroundColor();
-  m_overlayStyle->backgroundOpacity = settings->GetBackgroundOpacity();
+  style.backgroundColor = settings->GetBackgroundColor();
+  style.backgroundOpacity = settings->GetBackgroundOpacity();
 
-  m_overlayStyle->shadowColor = settings->GetShadowColor();
-  m_overlayStyle->shadowOpacity = settings->GetShadowOpacity();
-  m_overlayStyle->shadowSize = settings->GetShadowSize();
+  style.shadowColor = settings->GetShadowColor();
+  style.shadowOpacity = settings->GetShadowOpacity();
+  style.shadowSize = settings->GetShadowSize();
 
   SUBTITLES::Align subAlign = settings->GetAlignment();
   if (subAlign == SUBTITLES::Align::TOP_INSIDE || subAlign == SUBTITLES::Align::TOP_OUTSIDE)
-    m_overlayStyle->alignment = SUBTITLES::STYLE::FontAlign::TOP_CENTER;
+    style.alignment = SUBTITLES::STYLE::FontAlign::TOP_CENTER;
   else
-    m_overlayStyle->alignment = SUBTITLES::STYLE::FontAlign::SUB_CENTER;
+    style.alignment = SUBTITLES::STYLE::FontAlign::SUB_CENTER;
 
   if (settings->IsOverrideAss())
   {
-    m_overlayStyle->assOverrideFont = settings->IsOverrideFonts();
+    style.assOverrideFont = settings->IsOverrideFonts();
 
     SUBTITLES::OverrideStyles overrideStyles = settings->GetOverrideStyles();
     if (overrideStyles == SUBTITLES::OverrideStyles::POSITIONS)
-      m_overlayStyle->assOverrideStyles = SUBTITLES::STYLE::OverrideStyles::POSITIONS;
+      style.assOverrideStyles = SUBTITLES::STYLE::OverrideStyles::POSITIONS;
     else if (overrideStyles == SUBTITLES::OverrideStyles::STYLES)
-      m_overlayStyle->assOverrideStyles = SUBTITLES::STYLE::OverrideStyles::STYLES;
+      style.assOverrideStyles = SUBTITLES::STYLE::OverrideStyles::STYLES;
     else if (overrideStyles == SUBTITLES::OverrideStyles::STYLES_POSITIONS)
-      m_overlayStyle->assOverrideStyles = SUBTITLES::STYLE::OverrideStyles::STYLES_POSITIONS;
+      style.assOverrideStyles = SUBTITLES::STYLE::OverrideStyles::STYLES_POSITIONS;
     else
-      m_overlayStyle->assOverrideStyles = SUBTITLES::STYLE::OverrideStyles::DISABLED;
+      style.assOverrideStyles = SUBTITLES::STYLE::OverrideStyles::DISABLED;
   }
 
   // Changing vertical margin while in playback causes side effects when you
   // rewind the video, displaying the previous text position (test Libass 15.2)
   // for now vertical margin setting will be disabled during playback
-  m_overlayStyle->marginVertical =
+  style.marginVertical =
       static_cast<int>(SUBTITLES::STYLE::VIEWPORT_HEIGHT / 100 *
                        static_cast<double>(settings->GetVerticalMarginPerc()));
 
-  m_overlayStyle->blur = settings->GetBlurSize();
+  style.blur = settings->GetBlurSize();
+
+  // Publish only a complete const object; no mutable shared alias escapes.
+  m_overlayStyle = std::make_shared<const SUBTITLES::STYLE::style>(std::move(style));
 }
 
 std::shared_ptr<COverlay> CRenderer::ConvertLibass(
     const CDVDOverlayLibass& o,
     double pts,
     bool updateStyle,
-    const std::shared_ptr<struct SUBTITLES::STYLE::style>& overlayStyle)
+    std::shared_ptr<const SUBTITLES::STYLE::style> overlayStyle)
 {
   SUBTITLES::STYLE::renderOpts rOpts;
   // Local copy — L5 active area may override alignment per-overlay
