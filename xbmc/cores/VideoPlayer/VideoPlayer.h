@@ -669,12 +669,15 @@ protected:
 
   void UpdateMenuDomainQueueDepth(bool segmentOpen);
   void DrainStreamsAtBoundary();
+  bool HoldBoundaryForVideoStart();
   bool m_bdTimedStill{false};
   bool m_bdAudioReuse{false};
   bool m_bdVideoReuse{false};
   double m_messageQueueTimeSize{0.0};
   bool m_menuDomainLowLatency{false};
   bool m_discTimeBound{false};
+  bool m_boundaryStartWait{false};
+  XbmcThreads::EndTime<> m_boundaryStartTimer;
   bool m_menuDomainClampPending{false};
   bool m_menuDomainSegment{false};
   bool m_menuDomainFillPending{false};

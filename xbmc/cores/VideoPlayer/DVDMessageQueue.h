@@ -13,6 +13,7 @@
 #include "threads/Event.h"
 
 #include <algorithm>
+#include <initializer_list>
 #include <atomic>
 #include <list>
 #include <string>
@@ -80,6 +81,17 @@ public:
   {
     std::unique_lock<CCriticalSection> lock(m_section);
     return !m_messages.empty() || !m_prioMessages.empty();
+  }
+  // True when a message of a type not in 'ignored' is queued.
+  bool HasMessagesExcept(std::initializer_list<CDVDMsg::Message> ignored) const
+  {
+    std::unique_lock<CCriticalSection> lock(m_section);
+    auto other = [&](const auto& item) {
+      return std::none_of(ignored.begin(), ignored.end(),
+                          [&](CDVDMsg::Message type) { return item.message->IsType(type); });
+    };
+    return std::any_of(m_messages.begin(), m_messages.end(), other) ||
+           std::any_of(m_prioMessages.begin(), m_prioMessages.end(), other);
   }
   unsigned GetPacketCount(CDVDMsg::Message type);
   bool ReceivedAbortRequest() { return m_bAbortRequest; }

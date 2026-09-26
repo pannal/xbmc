@@ -27266,67 +27266,67 @@ msgstr ""
 #. Label for setting "Use correct colors for PGS"
 #: system/settings/settings.xml
 msgctxt "#69198"
-msgid "Use correct colors for PGS"
+msgid "Correct HDR colors for PGS and disc graphics"
 msgstr ""
 
 #. Help text for setting "Use correct colors for PGS"
 #: system/settings/settings.xml
 msgctxt "#69199"
-msgid "Convert PGS subtitle colors from BT.2020 PQ to SDR BT.709 for correct display. In Dolby Vision mode, the DV compositor reprocesses OSD colors, so fine-tuning settings below may have limited effect. Disable if subtitle colors appear wrong on non-HDR content."
+msgid "Convert PGS subtitles and supported Blu-ray navigation graphics from BT.2020 PQ to SDR BT.709 for correct display. This switch and the settings below are shared by both. In Dolby Vision mode, the DV compositor reprocesses OSD colors, so the fine-tuning settings below may have limited effect. Disable if colors appear wrong on non-HDR content."
 msgstr ""
 
 #. Label for setting "PGS brightness"
 #: system/settings/settings.xml
 msgctxt "#69200"
-msgid "PGS brightness"
+msgid "Graphics brightness"
 msgstr ""
 
 #. Help text for setting "PGS brightness"
 #: system/settings/settings.xml
 msgctxt "#69201"
-msgid "Controls brightness of PGS subtitles. 100% is accurate per BT.2408 (203 nits reference). Increase if subtitles appear too dim, decrease if they are too bright."
+msgid "Controls brightness of converted PGS subtitles and supported Blu-ray navigation graphics (shared setting). 100% is accurate per BT.2408 (203 nits reference). Increase if they appear too dim, decrease if they are too bright."
 msgstr ""
 
 #. Label for setting "PGS color saturation"
 #: system/settings/settings.xml
 msgctxt "#69202"
-msgid "PGS color saturation"
+msgid "Graphics color saturation"
 msgstr ""
 
 #. Help text for setting "PGS color saturation"
 #: system/settings/settings.xml
 msgctxt "#69203"
-msgid "Adjust color saturation of converted PGS subtitles. 100% is accurate. Increase if colors appear washed out, decrease to desaturate."
+msgid "Adjust color saturation of converted PGS subtitles and supported Blu-ray navigation graphics (shared setting). 100% is accurate. Increase if colors appear washed out, decrease to desaturate."
 msgstr ""
 
 #. Label for setting "PGS Reinhard tonemap"
 #: system/settings/settings.xml
 msgctxt "#69204"
-msgid "Use Reinhard tonemap for PGS"
+msgid "Use Reinhard tonemap for graphics"
 msgstr ""
 
 #. Help text for setting "PGS Reinhard tonemap"
 #: system/settings/settings.xml
 msgctxt "#69205"
-msgid "Use Reinhard soft rolloff instead of hard clipping when converting PGS subtitles. Preserves more detail in bright highlights but makes the overall image slightly darker."
+msgid "Use Reinhard soft rolloff instead of hard clipping when converting PGS subtitles and supported Blu-ray navigation graphics (shared setting). Preserves more detail in bright highlights but makes the overall image slightly darker."
 msgstr ""
 
 #. Group label for image-based subtitle settings
 #: system/settings/settings.xml
 msgctxt "#69206"
-msgid "Image based subtitles"
+msgid "Image-based subtitles and disc graphics"
 msgstr ""
 
 #. Label for setting "PGS tonemap mode"
 #: system/settings/settings.xml
 msgctxt "#69207"
-msgid "PGS tonemap mode"
+msgid "Graphics tonemap mode"
 msgstr ""
 
 #. Help text for setting "PGS tonemap mode"
 #: system/settings/settings.xml
 msgctxt "#69208"
-msgid "Select the tonemapping algorithm for PGS subtitles. Classic: BT.709 gamut + per-channel tonemap. Linear: BT.709 gamut + luminance-based tonemap (preserves color ratios). Luma: BT.2020 native + luminance-based tonemap (no gamut conversion)."
+msgid "Select the tonemapping algorithm for PGS subtitles and supported Blu-ray navigation graphics (shared setting). Classic: BT.709 gamut + per-channel tonemap. Linear: BT.709 gamut + luminance-based tonemap (preserves color ratios). Luma: BT.2020 native + luminance-based tonemap (no gamut conversion)."
 msgstr ""
 
 #. Option label for PGS tonemap mode "Classic"

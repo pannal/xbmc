@@ -946,6 +946,7 @@ bool CVideoPlayer::OpenInputStream()
   // ahead, so the disc VM reaches end-of-playlist and jumps on (TNG S1D1: a
   // 2:39 intro cut after ~40s, its menu drawn early). Bound disc read-ahead
   // in time as well; other inputs keep data-only fullness.
+  m_boundaryStartWait = false;
   m_discTimeBound = m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) ||
                     m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD);
   m_VideoPlayerAudio->SetMaxTimeSize(m_messageQueueTimeSize, m_discTimeBound);
@@ -1931,6 +1932,17 @@ void CVideoPlayer::Process()
             }
           }
         }
+      }
+
+      // A short clip can be read to its end before its video starts (decoder
+      // open and a display mode switch take longer than reading a few seconds
+      // of intro). Hold a natural boundary until that video is in sync so the
+      // drain below plays it out instead of flushing it. Player messages and
+      // start-up sync keep running on each pass; the hold is bounded.
+      if (HoldBoundaryForVideoStart())
+      {
+        CThread::Sleep(10ms);
+        continue;
       }
 
       // if there is another stream available, reopen demuxer
@@ -5390,6 +5402,31 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
     m_pDemuxer->SetSpeed(DVD_PLAYSPEED_NORMAL);
 }
 
+bool CVideoPlayer::HoldBoundaryForVideoStart()
+{
+#if defined(HAVE_LIBBLURAY)
+  if (auto bluray = std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
+      bluray && bluray->HasNaturalChainBoundary() && m_CurrentVideo.id >= 0 &&
+      m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC &&
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoBdBoundaryDrain)
+  {
+    if (!m_boundaryStartWait)
+    {
+      m_boundaryStartWait = true;
+      m_boundaryStartTimer.Set(5000ms);
+      CLog::Log(LOGDEBUG, "CVideoPlayer - holding a natural disc boundary until the ending "
+                          "video starts");
+    }
+    if (!m_boundaryStartTimer.IsTimePast())
+      return true;
+    CLog::Log(LOGWARNING, "CVideoPlayer - ending video did not start within 5s, continuing "
+                          "the disc boundary");
+  }
+  m_boundaryStartWait = false;
+#endif
+  return false;
+}
+
 void CVideoPlayer::DrainStreamsAtBoundary()
 {
   if (m_bAbortRequest || m_playSpeed != DVD_PLAYSPEED_NORMAL)
@@ -5403,11 +5440,18 @@ void CVideoPlayer::DrainStreamsAtBoundary()
       m_CurrentAudio.id >= 0 && m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC;
   if (!videoActive && !audioActive)
   {
+    CLog::Log(LOGDEBUG,
+              "CVideoPlayer::DrainStreamsAtBoundary - skipped: no stream in sync (video id {} "
+              "sync {}, audio id {} sync {})",
+              m_CurrentVideo.id, m_CurrentVideo.syncState, m_CurrentAudio.id,
+              m_CurrentAudio.syncState);
     return;
   }
 
   const double videoSecs = videoActive ? m_VideoPlayerVideo->GetQueueTimeSize() : 0.0;
   const double audioSecs = audioActive ? m_VideoPlayerAudio->GetQueueTimeSize() : 0.0;
+  CLog::Log(LOGDEBUG, "CVideoPlayer::DrainStreamsAtBoundary - draining (video {}{:.1f}s, audio {}{:.1f}s)",
+            videoActive ? "" : "inactive ", videoSecs, audioActive ? "" : "inactive ", audioSecs);
   if (videoActive)
     m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN), 0);
 
@@ -5420,18 +5464,26 @@ void CVideoPlayer::DrainStreamsAtBoundary()
   double lastAudioPts = audioActive ? m_VideoPlayerAudio->GetCurrentPts() : DVD_NOPTS_VALUE;
 
   XbmcThreads::EndTime<> quietTimer(100ms);
+  const char* exitReason = "abort";
+  bool heldForDisplay = false;
   while (true)
   {
     if (m_bAbortRequest)
     {
       break;
     }
-    if (m_messenger.HasMessages())
+    // A stream player posts an A/V parameter note while it plays out, e.g.
+    // across a refresh-rate switch; that note waits. Anything else needs the
+    // player thread, so the drain ends. That includes PLAYER_STARTED: its
+    // sender waits in SYNC_WAITSYNC for the resync only this thread sends.
+    if (m_messenger.HasMessagesExcept({CDVDMsg::PLAYER_AVCHANGE}))
     {
+      exitReason = "message pending";
       break;
     }
     if (totalTimer.IsTimePast())
     {
+      exitReason = "ceiling";
       break;
     }
 
@@ -5447,7 +5499,10 @@ void CVideoPlayer::DrainStreamsAtBoundary()
     if (videoBusy || audioBusy)
       quietTimer.Set(100ms);
     else if (quietTimer.IsTimePast())
+    {
+      exitReason = "drained";
       break;
+    }
 
     bool progressed = false;
     if (videoActive)
@@ -5468,15 +5523,27 @@ void CVideoPlayer::DrainStreamsAtBoundary()
         progressed = true;
       }
     }
-    if (progressed)
+    // A display reset (refresh-rate switch) pauses the clock on purpose;
+    // no progress while it lasts is not a stall. Giving up there flushed
+    // the rest of the clip (the tail of an intro's audio).
+    if (m_displayLost)
+      heldForDisplay = true;
+    if (progressed || m_displayLost)
       stallTimer.Set(1500ms);
     else if (stallTimer.IsTimePast())
     {
+      exitReason = "stalled";
       break;
     }
 
     CThread::Sleep(25ms);
   }
+
+  CLog::Log(LOGDEBUG,
+            "CVideoPlayer::DrainStreamsAtBoundary - ended: {} (queued video {:.1f}s audio {:.1f}s, "
+            "ceiling {}ms{})",
+            exitReason, videoSecs, audioSecs, ceiling.count(),
+            heldForDisplay ? ", held through a display reset" : "");
 }
 
 // since we call ffmpeg functions to decode, this is being called in the same thread as ::Process() is
