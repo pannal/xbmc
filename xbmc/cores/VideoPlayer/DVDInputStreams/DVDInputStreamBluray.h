@@ -256,6 +256,8 @@ protected:
   // The current playlist's video is PQ (HDR10 or Dolby Vision); its HDMV
   // menu graphics then follow the same BT.2020 PQ policy as its PGS.
   std::atomic_bool m_pqAuthoredGraphics{false};
+  // subtitles.discmenuhdr, read once at Open (DiscMenuHdrMode()).
+  int m_discMenuHdrMode = 0;
   std::atomic_bool m_aborted{false};
   std::mutex m_seamOffsetMutex;
   int m_seamGeneration = 0;

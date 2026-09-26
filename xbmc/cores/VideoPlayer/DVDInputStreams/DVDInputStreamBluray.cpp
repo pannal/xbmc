@@ -176,6 +176,9 @@ BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFile(const std::string& filena
 bool CDVDInputStreamBluray::Open()
 {
   m_aborted = false;
+  // One mode for the whole disc session: graphics already delivered keep the
+  // tag they were given, so a change mid-disc applies from the next playback.
+  m_discMenuHdrMode = DiscMenuHdrMode();
 
   if(m_player == nullptr)
     return false;
@@ -1724,7 +1727,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     const bool pq = ov->plane == BD_OVERLAY_IG && TagGraphicsAsPq();
     // IG of a PQ playlist can also take the disc menu composite's raw route.
     const bool pqMenu =
-        ov->plane == BD_OVERLAY_IG && m_pqAuthoredGraphics && DiscMenuHdrMode() != 2;
+        ov->plane == BD_OVERLAY_IG && m_pqAuthoredGraphics && m_discMenuHdrMode != 2;
 
     if (ov->palette)
     {
@@ -1856,7 +1859,7 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     // On a PQ playlist they can take the disc menu composite's raw route: UHD
     // discs author their BD-J artwork as BT.2020 PQ (pannal/CoreELEC#120).
     // Nothing reports SDR BD-J artwork, so the user can keep BD-J off it.
-    overlay->m_isPqMenuGraphics = m_pqAuthoredGraphics && DiscMenuHdrMode() == 0;
+    overlay->m_isPqMenuGraphics = m_pqAuthoredGraphics && m_discMenuHdrMode == 0;
     overlay->m_menuVisible = overlay->m_isPqMenuGraphics && overlay->HasVisiblePixels();
 
     OverlayClear(plane, ov->x, ov->y, ov->w, ov->h);

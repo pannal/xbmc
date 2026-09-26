@@ -108,6 +108,7 @@ public:
  std::atomic_bool m_pqAuthoredGraphics=false;
  bool TagGraphicsAsPq() const;
  int DiscMenuHdrMode() const;
+ int m_discMenuHdrMode=0;
  void UpdateGraphicsRegime();
  std::shared_ptr<CDVDOverlay> m_pendingOverlayGroup;
  std::atomic<std::thread::id> m_readingThread{};
@@ -265,10 +266,13 @@ int main(){
  ov.palette_update_flag=0;ov.w=4;ov.h=2;ov.img=runs;
  g_pgsHdrToSdr=true;
  // subtitles.discmenuhdr: "HDMV only" keeps IG on the route; "Convert" keeps IG on #66's tag only.
- g_discMenuHdr=1;b.OverlayCallback(&ov);assert(b.m_planes[1].o.front()->m_isPqMenuGraphics);
- g_discMenuHdr=2;b.OverlayCallback(&ov);
+ b.m_discMenuHdrMode=1;b.OverlayCallback(&ov);assert(b.m_planes[1].o.front()->m_isPqMenuGraphics);
+ b.m_discMenuHdrMode=2;b.OverlayCallback(&ov);
  assert(!b.m_planes[1].o.front()->m_isPqMenuGraphics&&b.m_planes[1].o.front()->pqMenuPalette.empty());
  assert(b.m_planes[1].o.front()->m_isHdrPq&&b.m_planes[1].o.front()->palette[1]==1099);
+ // The mode is the one read at Open: changing the setting mid-disc changes nothing.
+ b.m_discMenuHdrMode=0;g_discMenuHdr=2;assert(b.DiscMenuHdrMode()==2);
+ b.OverlayCallback(&ov);assert(b.m_planes[1].o.front()->m_isPqMenuGraphics);
  g_discMenuHdr=0;b.m_pqAuthoredGraphics=false;
  // PG children retain subtitle identity even in a disc-composition envelope.
  ov.plane=BD_OVERLAY_PG;ov.cmd=BD_OVERLAY_INIT;b.OverlayCallback(&ov);ov.cmd=BD_OVERLAY_DRAW;ov.img=runs;b.OverlayCallback(&ov);
@@ -298,8 +302,10 @@ int main(){
   CDVDOverlayImage keep(*v,v->x+1,v->y,1,1);assert(keep.m_menuVisible);}
  canvas[3]&=~0x80000000u;
  // "HDMV only" and "Convert" keep BD-J untagged and off the route.
- g_discMenuHdr=1;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isPqMenuGraphics&&!b.m_planes[1].o.front()->m_isHdrPq);
- g_discMenuHdr=2;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isPqMenuGraphics);
+ b.m_discMenuHdrMode=1;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isPqMenuGraphics&&!b.m_planes[1].o.front()->m_isHdrPq);
+ b.m_discMenuHdrMode=2;b.OverlayCallbackARGB(&argb);assert(!b.m_planes[1].o.front()->m_isPqMenuGraphics);
+ // Nor for BD-J: the setting changed to "Convert" mid-disc keeps the Open-time mode.
+ b.m_discMenuHdrMode=0;g_discMenuHdr=2;b.OverlayCallbackARGB(&argb);assert(b.m_planes[1].o.front()->m_isPqMenuGraphics);
  g_discMenuHdr=0;b.m_pqAuthoredGraphics=false;
  b.OverlayCallbackARGB(&argb);rgba=b.m_planes[1].o.front();
  uint32_t copied[4];memcpy(copied,rgba->pixels.data(),16);assert(copied[0]==3&&copied[1]==4&&copied[2]==7&&copied[3]==8);

@@ -347,13 +347,12 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   if (!rendered)
     return;
 
-  // Ignore errors - eglSwapBuffers() sometimes fails during modeswaps on AML,
-  // there is probably nothing we can do about it
-  m_pGLContext.TrySwapBuffers();
-
-  // The frame just swapped is the first one in the new encoding: switch the
-  // OSD's interpretation with it, not a frame early.
-  ApplyPendingKernelSwitch();
+  // eglSwapBuffers() sometimes fails during modeswaps on AML; there is nothing
+  // to do about it. The frame just swapped is the first one in the new
+  // encoding: switch the OSD's interpretation with it, not a frame early. A
+  // failed swap presented nothing new, so the switches stay pending.
+  if (m_pGLContext.TrySwapBuffers())
+    ApplyPendingKernelSwitch();
 }
 
 void CWinSystemAmlogicGLESContext::QueueKernelSwitch(const char* path, int value)
