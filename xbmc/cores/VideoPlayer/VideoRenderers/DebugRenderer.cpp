@@ -137,7 +137,7 @@ void CDebugRenderer::CRenderer::Render(int idx, float depth)
           ConvertLibass(*ovAss, it->pts, updateStyle, m_debugOverlayStyle);
 
       if (o)
-        OVERLAY::CRenderer::Render(o.get());
+        OVERLAY::CRenderer::Render(o);
     }
   }
   ReleaseUnused();

@@ -40,6 +40,8 @@ def main():
     assert 'ClearFrameSelection' not in function(rm, 'void CRenderManager::DiscardBuffer()')
     frame_move = function(rm, 'void CRenderManager::FrameMove()')
     assert frame_move.index('ClearFrameSelection();') < frame_move.index('UpdateResolution();')
+    if 'aml_dv_engage_stale_deferred_disc();' in frame_move:
+        assert frame_move.index('UpdateResolution();') < frame_move.index('aml_dv_engage_stale_deferred_disc();')
     # The only full PrepareNextRender change is the ownership guard; retain all
     # scheduler formulas and tests by extracting its complete production body.
     selection = function(rh, 'struct FrameSelection\n') + ';'
@@ -95,6 +97,8 @@ constexpr int NUM_BUFFERS=5,LOGERROR=1,LOGDEBUG=2,LOGAVTIMING=3,CAPTURESTATE_FAI
 constexpr DWORD RENDER_FLAG_BOT=1,RENDER_FLAG_TOP=2,RENDER_FLAG_FIELD0=4,RENDER_FLAG_FIELD1=8,RENDER_FLAG_NOOSD=16;
 constexpr double DVD_TIME_BASE=1000000;
 double DVD_MSEC_TO_TIME(double v){return v*1000;}
+// Optional merged disc-hold callback; policy is covered by test-dv-disc-hold.py.
+void aml_dv_engage_stale_deferred_disc(){}
 struct CLog {template<class... T> static void Log(T&&...){} template<class... T> static void LogFC(T&&...) {}};
 namespace XbmcThreads {template<class = void> struct EndTime {bool past=false;void Set(std::chrono::milliseconds){past=false;}bool IsTimePast(){return past;}};}
 struct Event {void notifyAll(){}};
@@ -145,7 +149,7 @@ public:
   std::shared_ptr<COverlay> Convert(const CDVDOverlay& o,double pts) {
     evaluated.push_back(pts);auto r=std::make_shared<COverlay>();r->value=&o;return r;
   }
-  void Render(COverlay* o){drawn.push_back(o->value);}
+  void Render(std::shared_ptr<COverlay> o){drawn.push_back(o->value);}
 };
 }
 using namespace OVERLAY;
