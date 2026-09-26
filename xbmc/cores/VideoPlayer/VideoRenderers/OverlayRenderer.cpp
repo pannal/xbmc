@@ -72,6 +72,14 @@ void CRenderer::SetOverlays(OverlayBatch overlays, int index)
   m_buffers[index] = std::move(overlays);
 }
 
+CRenderer::OverlayBatch CRenderer::GetOverlays(int index)
+{
+  std::unique_lock<CCriticalSection> lock(m_section);
+  if (index < 0 || index >= NUM_BUFFERS)
+    return {};
+  return m_buffers[index];
+}
+
 void CRenderer::Release(std::vector<SElement>& list)
 {
   list.clear();
@@ -121,11 +129,15 @@ void CRenderer::ReleaseCache()
   m_textureid++;
 }
 
-void CRenderer::ReleaseUnused()
+void CRenderer::ReleaseUnused(const OverlayBatch& selected)
 {
   for (auto it = m_textureCache.begin(); it != m_textureCache.end(); )
   {
-    bool found = false;
+    // A retained selection can outlive its slot's CPU list. Keep its cache
+    // entries reachable until this synchronous draw has finished as well.
+    bool found = std::any_of(selected.begin(), selected.end(), [&it](const SElement& e) {
+      return e.overlay_dvd && e.overlay_dvd->m_textureid == it->first;
+    });
     for (auto& buffer : m_buffers)
     {
       for (auto& dvdoverlay : buffer)
@@ -160,6 +172,12 @@ bool IsPqMenuImage(const std::shared_ptr<CDVDOverlay>& o)
 void CRenderer::Render(int idx, float depth)
 {
   std::unique_lock<CCriticalSection> lock(m_section);
+  Render(m_buffers[idx]);
+}
+
+void CRenderer::Render(const OverlayBatch& overlays)
+{
+  std::unique_lock<CCriticalSection> lock(m_section);
 
   // While the disc menu composite is active its PQ menu graphics are drawn by
   // RenderPqMenu into their own layer; everything else renders as before.
@@ -167,8 +185,7 @@ void CRenderer::Render(int idx, float depth)
   const bool menuComposite =
       winSystem->IsMenuCompositeActive() || winSystem->IsMenuCompositePending();
 
-  std::vector<SElement>& list = m_buffers[idx];
-  for(std::vector<SElement>::iterator it = list.begin(); it != list.end(); ++it)
+  for (auto it = overlays.begin(); it != overlays.end(); ++it)
   {
     if (it->overlay_dvd)
     {
@@ -182,14 +199,14 @@ void CRenderer::Render(int idx, float depth)
     }
   }
 
-  ReleaseUnused();
+  ReleaseUnused(overlays);
 }
 
-void CRenderer::RenderPqMenu(int idx)
+void CRenderer::RenderPqMenu(const OverlayBatch& overlays)
 {
   std::unique_lock<CCriticalSection> lock(m_section);
 
-  for (auto& e : m_buffers[idx])
+  for (auto& e : overlays)
   {
     if (!IsPqMenuImage(e.overlay_dvd))
       continue;
@@ -199,12 +216,10 @@ void CRenderer::RenderPqMenu(int idx)
   }
 }
 
-bool CRenderer::HasPqMenuOverlay(int idx)
+bool CRenderer::HasPqMenuOverlay(const OverlayBatch& overlays)
 {
   std::unique_lock<CCriticalSection> lock(m_section);
-  if (idx < 0 || idx >= NUM_BUFFERS)
-    return false;
-  for (const auto& e : m_buffers[idx])
+  for (const auto& e : overlays)
   {
     // Only visible menu graphics keep the composite engaged.
     if (IsPqMenuImage(e.overlay_dvd) &&
@@ -375,14 +390,13 @@ void CRenderer::Render(COverlay* o)
   o->Render(state);
 }
 
-bool CRenderer::HasOverlay(int idx)
+bool CRenderer::HasOverlay(const OverlayBatch& overlays)
 {
   bool hasOverlay = false;
 
   std::unique_lock<CCriticalSection> lock(m_section);
 
-  std::vector<SElement>& list = m_buffers[idx];
-  for(std::vector<SElement>::iterator it = list.begin(); it != list.end(); ++it)
+  for (auto it = overlays.begin(); it != overlays.end(); ++it)
   {
     if (it->overlay_dvd)
     {
@@ -393,11 +407,11 @@ bool CRenderer::HasOverlay(int idx)
   return hasOverlay;
 }
 
-bool CRenderer::HasTextOverlay(int idx)
+bool CRenderer::HasTextOverlay(const OverlayBatch& overlays)
 {
   std::unique_lock<CCriticalSection> lock(m_section);
 
-  for (const auto& e : m_buffers[idx])
+  for (const auto& e : overlays)
   {
     if (e.overlay_dvd &&
         (e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_TEXT) ||
@@ -407,11 +421,11 @@ bool CRenderer::HasTextOverlay(int idx)
   return false;
 }
 
-bool CRenderer::HasImageOverlay(int idx)
+bool CRenderer::HasImageOverlay(const OverlayBatch& overlays)
 {
   std::unique_lock<CCriticalSection> lock(m_section);
 
-  for (const auto& e : m_buffers[idx])
+  for (const auto& e : overlays)
   {
     if (e.overlay_dvd && !e.overlay_dvd->IsDiscMenuOverlay() &&
         e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
@@ -420,12 +434,10 @@ bool CRenderer::HasImageOverlay(int idx)
   return false;
 }
 
-bool CRenderer::HasDiscMenuOverlay(int idx)
+bool CRenderer::HasDiscMenuOverlay(const OverlayBatch& overlays)
 {
   std::unique_lock<CCriticalSection> lock(m_section);
-  if (idx < 0 || idx >= NUM_BUFFERS)
-    return false;
-  for (const auto& e : m_buffers[idx])
+  for (const auto& e : overlays)
   {
     if (e.overlay_dvd && e.overlay_dvd->IsDiscMenuOverlay() &&
         e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
@@ -434,7 +446,7 @@ bool CRenderer::HasDiscMenuOverlay(int idx)
   return false;
 }
 
-bool CRenderer::HasImageSubOutsideActiveArea(int idx, int l5Top, int l5Bottom)
+bool CRenderer::HasImageSubOutsideActiveArea(const OverlayBatch& overlays, int l5Top, int l5Bottom)
 {
   std::unique_lock<CCriticalSection> lock(m_section);
 
@@ -445,7 +457,7 @@ bool CRenderer::HasImageSubOutsideActiveArea(int idx, int l5Top, int l5Bottom)
   float activeTopFrac = static_cast<float>(l5Top) / m_rs.Height();
   float activeBotFrac = 1.0f - static_cast<float>(l5Bottom) / m_rs.Height();
 
-  for (const auto& e : m_buffers[idx])
+  for (const auto& e : overlays)
   {
     if (!e.overlay_dvd || e.overlay_dvd->IsDiscMenuOverlay() ||
         !e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))

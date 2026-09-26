@@ -246,6 +246,7 @@ bool CRenderManager::Configure()
   std::unique_lock<CCriticalSection> lock(m_statelock);
   std::unique_lock<CCriticalSection> lock2(m_presentlock);
   std::unique_lock<CCriticalSection> lock3(m_datalock);
+  ClearFrameSelection();
   InvalidateReservations();
 
   if (m_pRenderer)
@@ -360,6 +361,9 @@ bool CRenderManager::IsPresenting()
 
 void CRenderManager::FrameMove()
 {
+  // Also expires attempts which never reached Render (inactive GUI, skipped
+  // rendering or failed BeginRender), before a possible display update.
+  ClearFrameSelection();
   bool firstFrame = false;
   UpdateResolution();
 
@@ -423,6 +427,7 @@ void CRenderManager::ProcessPresentationQueue()
   }
 
   m_bRenderGUI = true;
+  SelectFrame();
 }
 
 void CRenderManager::RetireBuffer(int index)
@@ -434,22 +439,42 @@ void CRenderManager::RetireBuffer(int index)
   m_free.push_back(index);
 }
 
+void CRenderManager::SelectFrame()
+{
+  // Called under m_presentlock after queue processing on the main thread.
+  // Once presentation starts, current/past slots remain renderer-owned until
+  // the next queue pass. Before that, source 0 is only the startup placeholder.
+  m_frameSelection = std::make_shared<const FrameSelection>(FrameSelection{
+      m_presentsource, m_presentsourcePast, m_Queue[m_presentsource],
+      m_overlays.GetOverlays(m_presentsource)});
+}
+
+void CRenderManager::ClearFrameSelection()
+{
+  std::unique_lock<CCriticalSection> lock(m_presentlock);
+  m_frameSelection.reset();
+}
+
 void CRenderManager::UpdateGuiPresentationState(bool firstFrame)
 {
-  aml_set_disc_menu_visible(m_overlays.HasDiscMenuOverlay(m_presentsource));
+  const auto frame = m_frameSelection;
+  if (!frame)
+    return;
+
+  aml_set_disc_menu_visible(m_overlays.HasDiscMenuOverlay(frame->overlays));
 
   // Disc menu composite: report PQ menu graphics before the frame is drawn,
   // in or out of fullscreen video (Kodi's own windows cover them and uncover
   // them again at any moment), so the composite is engaged when they are.
   CServiceBroker::GetWinSystem()->RequestMenuComposite(
-      !m_pRenderer->IsGuiLayer() && m_overlays.HasPqMenuOverlay(m_presentsource));
+      !m_pRenderer->IsGuiLayer() && m_overlays.HasPqMenuOverlay(frame->overlays));
 
   // Hardware video can skip Render(gui=true) when no overlays are present.
   // Keep the track-enabled policy live here, including gaps and paused frames.
   // The visible mode still evaluates overlap in Render; clear it here when
   // there is no overlay (also handles switching away from track-enabled mode).
   const int subsSignalMode = aml_dv_l5_subs_signal_mode();
-  if (subsSignalMode != 2 || !m_overlays.HasOverlay(m_presentsource))
+  if (subsSignalMode != 2 || !m_overlays.HasOverlay(frame->overlays))
     aml_dv_set_subtitles(subsSignalMode == 1 && m_subtitleEnabled.load() &&
                          m_appPlayer->GetSubtitleCount() > 0);
 
@@ -477,6 +502,7 @@ void CRenderManager::PreInit()
   std::unique_lock<CCriticalSection> lock(m_statelock);
   std::unique_lock<CCriticalSection> lock2(m_presentlock);
   std::unique_lock<CCriticalSection> lock3(m_datalock);
+  ClearFrameSelection();
   InvalidateReservations();
 
   if (!m_pRenderer)
@@ -515,6 +541,7 @@ void CRenderManager::UnInit()
   std::unique_lock<CCriticalSection> lock(m_statelock);
   std::unique_lock<CCriticalSection> lock2(m_presentlock);
   std::unique_lock<CCriticalSection> lock3(m_datalock);
+  ClearFrameSelection();
   InvalidateReservations();
 
   m_overlays.UnInit();
@@ -553,6 +580,7 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
 
     if (m_pRenderer)
     {
+      ClearFrameSelection();
       m_overlays.Flush();
       m_debugRenderer.Flush();
 
@@ -777,7 +805,11 @@ void CRenderManager::ManageCaptures()
 
 void CRenderManager::RenderCapture(CRenderCapture* capture)
 {
-  if (!m_pRenderer || !m_pRenderer->RenderCapture(m_presentsource, capture))
+  // Both callers execute capture rendering on main. Before the first frame
+  // selection, preserve the existing current-source fallback (including AML's
+  // hardware screenshot path); never select a queued frame just for capture.
+  const int source = m_frameSelection ? m_frameSelection->source : m_presentsource;
+  if (!m_pRenderer || !m_pRenderer->RenderCapture(source, capture))
     capture->SetState(CAPTURESTATE_FAILED);
 }
 
@@ -925,19 +957,23 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       return;
   }
 
+  const auto frame = m_frameSelection;
+  if (!frame)
+    return;
+
   if (!gui && m_pRenderer->IsGuiLayer())
     return;
 
   if (!gui || m_pRenderer->IsGuiLayer())
   {
-    const SPresent& m = m_Queue[m_presentsource];
+    const SPresent& m = frame->present;
 
     if( m.presentmethod == PRESENT_METHOD_BOB )
-      PresentFields(clear, flags, alpha);
+      PresentFields(*frame, clear, flags, alpha);
     else if( m.presentmethod == PRESENT_METHOD_BLEND )
-      PresentBlend(clear, flags, alpha);
+      PresentBlend(*frame, clear, flags, alpha);
     else
-      PresentSingle(clear, flags, alpha);
+      PresentSingle(*frame, clear, flags, alpha);
   }
 
   if (gui)
@@ -945,7 +981,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     if (!m_pRenderer->IsGuiLayer())
       m_pRenderer->Update();
 
-    m_renderedOverlay = m_overlays.HasOverlay(m_presentsource);
+    m_renderedOverlay = m_overlays.HasOverlay(frame->overlays);
     bool restrictSubsToActiveArea = aml_dv_use_active_area();
     CRect src, dst, view;
     m_pRenderer->GetVideoRect(src, dst, view);
@@ -962,7 +998,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     if (subsSignalMode == 2)
     {
       // When visible: signal for text subs on screen
-      signalSubtitles = m_overlays.HasTextOverlay(m_presentsource);
+      signalSubtitles = m_overlays.HasTextOverlay(frame->overlays);
 
       // Resolve effective L5 bars (source, falling back to detected, then
       // auto-letterbox geometry). autoLbActive tracks the player-added
@@ -1049,10 +1085,10 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
         // in-picture source bars are present at the same time (the sink
         // masks their sum, so a sub in the padding is still swallowed).
         if (autoLbActive)
-          signalSubtitles = m_overlays.HasImageOverlay(m_presentsource);
+          signalSubtitles = m_overlays.HasImageOverlay(frame->overlays);
         else
           signalSubtitles = m_overlays.HasImageSubOutsideActiveArea(
-              m_presentsource, sigTop, sigBottom);
+              frame->overlays, sigTop, sigBottom);
       }
     }
     if (subsSignalMode == 2)
@@ -1067,22 +1103,22 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
     // A GUI-layer renderer draws the video inside this GUI pass, where the
     // composite would re-encode it: keep the existing path there.
-    const bool pqMenu = !m_pRenderer->IsGuiLayer() && m_overlays.HasPqMenuOverlay(m_presentsource);
+    const bool pqMenu = !m_pRenderer->IsGuiLayer() && m_overlays.HasPqMenuOverlay(frame->overlays);
     winSystem->RequestMenuComposite(pqMenu);
     if (winSystem->BeginMenuOverlayRender())
     {
       if (pqMenu)
-        m_overlays.RenderPqMenu(m_presentsource);
+        m_overlays.RenderPqMenu(frame->overlays);
       winSystem->EndMenuOverlayRender();
     }
 
-    m_overlays.Render(m_presentsource);
+    m_overlays.Render(frame->overlays);
 
     if (m_renderDebug)
     {
       if (m_renderDebugVideo)
       {
-        DEBUG_INFO_VIDEO video = m_pRenderer->GetDebugInfo(m_presentsource);
+        DEBUG_INFO_VIDEO video = m_pRenderer->GetDebugInfo(frame->source);
         DEBUG_INFO_RENDER render = CServiceBroker::GetWinSystem()->GetDebugInfo();
 
         m_debugRenderer.SetInfo(video, render);
@@ -1116,7 +1152,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     }
   }
 
-  const SPresent& m = m_Queue[m_presentsource];
+  const SPresent& m = frame->present;
 
   {
     std::unique_lock<CCriticalSection> lock(m_presentlock);
@@ -1149,8 +1185,9 @@ bool CRenderManager::IsGuiLayer()
     if (!m_pRenderer)
       return false;
 
+    std::unique_lock<CCriticalSection> presentLock(m_presentlock);
     if ((m_pRenderer->IsGuiLayer() && IsPresenting()) ||
-        m_renderedOverlay || m_overlays.HasOverlay(m_presentsource))
+        m_renderedOverlay || (m_frameSelection && m_overlays.HasOverlay(m_frameSelection->overlays)))
       return true;
 
     if (m_renderDebug && m_debugTimer.IsTimePast())
@@ -1174,53 +1211,53 @@ bool CRenderManager::IsVideoLayer()
 }
 
 /* simple present method */
-void CRenderManager::PresentSingle(bool clear, DWORD flags, DWORD alpha)
+void CRenderManager::PresentSingle(const FrameSelection& frame, bool clear, DWORD flags, DWORD alpha)
 {
-  const SPresent& m = m_Queue[m_presentsource];
+  const SPresent& m = frame.present;
 
   if (m.presentfield == FS_BOT)
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT, alpha);
+    m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_BOT, alpha);
   else if (m.presentfield == FS_TOP)
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP, alpha);
+    m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_TOP, alpha);
   else
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags, alpha);
+    m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags, alpha);
 }
 
 /* new simpler method of handling interlaced material, *
  * we just render the two fields right after eachother */
-void CRenderManager::PresentFields(bool clear, DWORD flags, DWORD alpha)
+void CRenderManager::PresentFields(const FrameSelection& frame, bool clear, DWORD flags, DWORD alpha)
 {
-  const SPresent& m = m_Queue[m_presentsource];
+  const SPresent& m = frame.present;
 
   if(m_presentstep == PRESENT_FRAME)
   {
     if( m.presentfield == FS_BOT)
-      m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_FIELD0, alpha);
+      m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_FIELD0, alpha);
     else
-      m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_FIELD0, alpha);
+      m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_FIELD0, alpha);
   }
   else
   {
     if( m.presentfield == FS_TOP)
-      m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_FIELD1, alpha);
+      m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_FIELD1, alpha);
     else
-      m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_FIELD1, alpha);
+      m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_FIELD1, alpha);
   }
 }
 
-void CRenderManager::PresentBlend(bool clear, DWORD flags, DWORD alpha)
+void CRenderManager::PresentBlend(const FrameSelection& frame, bool clear, DWORD flags, DWORD alpha)
 {
-  const SPresent& m = m_Queue[m_presentsource];
+  const SPresent& m = frame.present;
 
   if( m.presentfield == FS_BOT )
   {
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_NOOSD, alpha);
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, false, flags | RENDER_FLAG_TOP, alpha / 2);
+    m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_NOOSD, alpha);
+    m_pRenderer->RenderUpdate(frame.source, frame.past, false, flags | RENDER_FLAG_TOP, alpha / 2);
   }
   else
   {
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_NOOSD, alpha);
-    m_pRenderer->RenderUpdate(m_presentsource, m_presentsourcePast, false, flags | RENDER_FLAG_BOT, alpha / 2);
+    m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_NOOSD, alpha);
+    m_pRenderer->RenderUpdate(frame.source, frame.past, false, flags | RENDER_FLAG_BOT, alpha / 2);
   }
 }
 
@@ -1662,7 +1699,9 @@ void CRenderManager::PrepareNextRender()
   {
     m_lateframes = 0;
     m_presentstep = PRESENT_FLIP;
-    m_presentsourcePast = m_presentsource;
+    // Before the first presentation, source 0 is only a placeholder. It is
+    // not a past frame and may alias the new source or an unpublished slot.
+    m_presentsourcePast = m_presentstarted ? m_presentsource : -1;
     m_presentsource = m_queued.front();
     m_presentstarted = true;
     m_queued.pop_front();

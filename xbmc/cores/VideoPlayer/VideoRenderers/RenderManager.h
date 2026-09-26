@@ -163,9 +163,11 @@ public:
 
 protected:
 
-  void PresentSingle(bool clear, DWORD flags, DWORD alpha);
-  void PresentFields(bool clear, DWORD flags, DWORD alpha);
-  void PresentBlend(bool clear, DWORD flags, DWORD alpha);
+  struct FrameSelection;
+
+  void PresentSingle(const FrameSelection& frame, bool clear, DWORD flags, DWORD alpha);
+  void PresentFields(const FrameSelection& frame, bool clear, DWORD flags, DWORD alpha);
+  void PresentBlend(const FrameSelection& frame, bool clear, DWORD flags, DWORD alpha);
 
   void PrepareNextRender();
   bool IsPresenting();
@@ -237,6 +239,18 @@ protected:
     EPRESENTMETHOD presentmethod;
   } m_Queue[NUM_BUFFERS]{};
 
+  // Selection identity and list membership are stable until the next FrameMove
+  // or main-thread lifecycle cancellation. Payloads are still shared; this is
+  // not an immutable draw result or an asynchronous renderer-buffer lease.
+  struct FrameSelection
+  {
+    int source;
+    int past;
+    SPresent present;
+    OVERLAY::CRenderer::OverlayBatch overlays;
+  };
+  std::shared_ptr<const FrameSelection> m_frameSelection;
+
   std::deque<int> m_free;
   std::deque<int> m_queued;
   std::deque<int> m_discard;
@@ -287,6 +301,8 @@ protected:
 private:
   // Called synchronously by FrameMove on the application thread.
   void ProcessPresentationQueue();
+  void SelectFrame();
+  void ClearFrameSelection();
   void UpdateGuiPresentationState(bool firstFrame);
 
   // Reserve/Invalidate/Retire are called with m_presentlock held.

@@ -114,7 +114,9 @@ namespace OVERLAY {
 
     void AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts, int index);
     void SetOverlays(OverlayBatch overlays, int index);
+    OverlayBatch GetOverlays(int index);
     virtual void Render(int idx, float depth = 0.0f);
+    void Render(const OverlayBatch& overlays);
 
     /*!
      * \brief Release resources
@@ -129,15 +131,15 @@ namespace OVERLAY {
     void Reset();
 
     void Release(int idx);
-    bool HasOverlay(int idx);
-    bool HasTextOverlay(int idx);
-    bool HasImageOverlay(int idx);
-    bool HasDiscMenuOverlay(int idx);
+    bool HasOverlay(const OverlayBatch& overlays);
+    bool HasTextOverlay(const OverlayBatch& overlays);
+    bool HasImageOverlay(const OverlayBatch& overlays);
+    bool HasDiscMenuOverlay(const OverlayBatch& overlays);
     // PQ-authored disc menu graphics (IG, BD-J) in this buffer.
-    bool HasPqMenuOverlay(int idx);
+    bool HasPqMenuOverlay(const OverlayBatch& overlays);
     // Only those, drawn raw, for the disc menu composite's PQ layer.
-    void RenderPqMenu(int idx);
-    bool HasImageSubOutsideActiveArea(int idx, int l5Top, int l5Bottom);
+    void RenderPqMenu(const OverlayBatch& overlays);
+    bool HasImageSubOutsideActiveArea(const OverlayBatch& overlays, int l5Top, int l5Bottom);
     void SetVideoRect(CRect &source, CRect &dest, CRect &view);
     void SetStereoMode(const std::string &stereomode);
     /*!
@@ -184,7 +186,7 @@ namespace OVERLAY {
 
     void Release(std::vector<SElement>& list);
     void ReleaseCache();
-    void ReleaseUnused();
+    void ReleaseUnused(const OverlayBatch& selected = {});
 
     /*!
      * \brief Load and store settings locally

@@ -56,7 +56,9 @@ def main():
 
     declaration = function(header, 'class BufferReservation') + ';'
     element = function(oh, 'struct SElement') + ';'
-    source = PRELUDE.replace('@ELEMENT@', element).replace('@RESERVATION@', declaration)
+    selection = function(header, 'struct FrameSelection\n') + ';'
+    source = (PRELUDE.replace('@ELEMENT@', element).replace('@RESERVATION@', declaration)
+              .replace('@SELECTION@', selection))
     source += '\n'.join(function(rm, name) for name in [
         'CRenderManager::BufferReservation::~BufferReservation()',
         'CRenderManager::BufferReservation::BufferReservation(',
@@ -65,8 +67,10 @@ def main():
         'void CRenderManager::InvalidateReservations()', 'void CRenderManager::RetireBuffer(',
         'bool CRenderManager::AddVideoPicture(', 'int CRenderManager::WaitForBuffer(',
         'void CRenderManager::DiscardBuffer()', 'void CRenderManager::ProcessPresentationQueue()',
-        'bool CRenderManager::Flush('])
+        'bool CRenderManager::Flush(', 'void CRenderManager::SelectFrame()',
+        'void CRenderManager::ClearFrameSelection()'])
     source += '\n' + function(ov, 'void CRenderer::SetOverlays(')
+    source += '\n' + function(ov, 'CRenderer::OverlayBatch CRenderer::GetOverlays(')
     source += '\n' + function(ov, 'void CRenderer::Release(std::vector<SElement>&')
     source += '\n' + function(ov, 'void CRenderer::Release(int idx)')
     source += '\n' + function(gles, 'void CLinuxRendererGLES::AddVideoPicture(')
@@ -189,6 +193,7 @@ public:
   CCriticalSection m_section;
   std::vector<SElement> m_buffers[NUM_BUFFERS];
   void SetOverlays(OverlayBatch,int);
+  OverlayBatch GetOverlays(int);
   void Release(std::vector<SElement>&);
   void Release(int);
   void Flush(){for(int i=0;i<NUM_BUFFERS;++i)Release(i);}
@@ -203,6 +208,10 @@ public:
   enum EPRESENTMETHOD {PRESENT_METHOD_SINGLE,PRESENT_METHOD_BLEND,PRESENT_METHOD_BOB};
   struct SPresent {double pts=0;EFIELDSYNC presentfield=FS_NONE;EPRESENTMETHOD presentmethod=PRESENT_METHOD_SINGLE;};
   SPresent m_Queue[NUM_BUFFERS];
+  @SELECTION@
+  std::shared_ptr<const FrameSelection> m_frameSelection;
+  void SelectFrame();
+  void ClearFrameSelection();
   std::array<uint64_t,NUM_BUFFERS> m_reservations{};
   uint64_t m_nextReservation=0,m_reservationEpoch=0;
   CCriticalSection m_statelock,m_presentlock,m_datalock;
@@ -285,8 +294,10 @@ int main() {
     auto p=picture(ref);assert(submit(r,published,p,{{12,menu(false,0xff123456)}}));
     Reservation old;r.WaitForBuffer(old,stop);r.m_presentstarted=true;r.m_presentsource=0;
     r.m_presentsourcePast=3;r.m_discard.push_back(4);r.m_free.erase(std::find(r.m_free.begin(),r.m_free.end(),4));
+    r.SelectFrame();assert(r.m_frameSelection);
     const auto queued=r.m_queued;const auto discarded=r.m_discard;r.renderer.saveResult=result;
     assert(r.Flush(true,request));assert(r.renderer.lastSaveRequest==request);
+    assert(!r.m_frameSelection);
     assert(!submit(r,old,p));old=Reservation{};
     for(auto& b:r.m_overlays.m_buffers)assert(b.empty());
     if(result) {assert(r.m_queued==queued&&r.m_discard==discarded&&r.m_presentstarted&&r.m_presentsourcePast==3);assert(ref.refs==2);}
