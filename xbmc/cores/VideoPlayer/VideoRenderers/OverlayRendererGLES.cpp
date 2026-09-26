@@ -140,6 +140,20 @@ static void LoadTexture(GLenum target,
   *v = (GLfloat)height / height2;
 }
 
+namespace
+{
+// Disc menu graphics on the composite's raw PQ route: premultiply plainly, the
+// composite recovers the authored colour by dividing by alpha.
+uint32_t PremultiplyPlain(uint32_t c)
+{
+  const uint32_t a = (c >> PIXEL_ASHIFT) & 0xff;
+  const uint32_t r = ((c >> PIXEL_RSHIFT) & 0xff) * a / 255;
+  const uint32_t g = ((c >> PIXEL_GSHIFT) & 0xff) * a / 255;
+  const uint32_t b = ((c >> PIXEL_BSHIFT) & 0xff) * a / 255;
+  return a << PIXEL_ASHIFT | r << PIXEL_RSHIFT | g << PIXEL_GSHIFT | b << PIXEL_BSHIFT;
+}
+} // namespace
+
 std::shared_ptr<COverlay> COverlay::Create(const CDVDOverlayImage& o, CRect& rSource)
 {
   return std::make_shared<COverlayTextureGLES>(o, rSource);
@@ -155,7 +169,35 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 
-  if (o.palette.empty())
+  m_rawPqMenu = o.m_isPqMenuGraphics && CServiceBroker::GetWinSystem()->IsMenuCompositeActive();
+
+  if (m_rawPqMenu)
+  {
+    m_pma = true;
+    const size_t count = static_cast<size_t>(o.width) * o.height;
+    std::vector<uint32_t> rgba(count);
+    if (o.palette.empty())
+    {
+      for (int row = 0; row < o.height; row++)
+      {
+        const uint32_t* src = reinterpret_cast<const uint32_t*>(o.pixels.data() + row * o.linesize);
+        for (int col = 0; col < o.width; col++)
+          rgba[row * o.width + col] = PremultiplyPlain(src[col]);
+      }
+    }
+    else
+    {
+      const std::vector<uint32_t>& pal = o.pqMenuPalette.empty() ? o.palette : o.pqMenuPalette;
+      uint32_t palette[256] = {};
+      for (size_t i = 0; i < pal.size() && i < 256; i++)
+        palette[i] = PremultiplyPlain(pal[i]);
+      for (int row = 0; row < o.height; row++)
+        for (int col = 0; col < o.width; col++)
+          rgba[row * o.width + col] = palette[o.pixels[row * o.linesize + col]];
+    }
+    LoadTexture(GL_TEXTURE_2D, o.width, o.height, o.width * 4, &m_u, &m_v, false, rgba.data());
+  }
+  else if (o.palette.empty())
   {
     m_pma = !!USE_PREMULTIPLIED_ALPHA;
     if (m_pma)
@@ -195,7 +237,7 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
     LoadTexture(GL_TEXTURE_2D, o.width, o.height, o.width * 4, &m_u, &m_v, false, rgba.data());
   }
 
-  m_isHdrPqAuthored = o.m_isHdrPq;
+  m_isHdrPqAuthored = o.m_isHdrPq && !m_rawPqMenu;
   m_isBitmapOverlay = true;
 
   glGenerateMipmap(GL_TEXTURE_2D);

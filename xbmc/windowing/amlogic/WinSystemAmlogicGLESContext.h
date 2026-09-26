@@ -9,10 +9,15 @@
 #pragma once
 
 #include "utils/EGLUtils.h"
+#include "cores/VideoPlayer/VideoRenderers/FrameBufferObject.h"
+#include "rendering/gles/GuiCompositeShaderGLES.h"
 #include "rendering/gles/RenderSystemGLES.h"
 #include "utils/GlobalsHandling.h"
 #include "utils/StreamDetails.h"
 #include "WinSystemAmlogic.h"
+
+#include <chrono>
+#include <memory>
 
 namespace KODI
 {
@@ -47,6 +52,16 @@ public:
 
   bool SupportsStereo(RENDER_STEREO_MODE mode) const override;
 
+  bool BeginRender() override;
+
+  // Disc menu graphics composite, see CWinSystemBase.
+  void RequestMenuComposite(bool menuShown) override;
+  bool IsMenuCompositeActive() const override { return m_menuRoute != MenuRoute::NONE; }
+  void BeginGuiComposite() override;
+  void EndGuiComposite() override;
+  bool BeginMenuOverlayRender() override;
+  void EndMenuOverlayRender() override;
+
   EGLDisplay GetEGLDisplay() const;
   EGLSurface GetEGLSurface() const;
   EGLContext GetEGLContext() const;
@@ -56,8 +71,40 @@ protected:
   void PresentRenderImpl(bool rendered) override;
 
 private:
+  // Where PQ menu graphics can reach the sink raw: the VPP OSD stage in
+  // passthrough (HDR10 out, DV core idle), or DV core2 told the OSD is PQ.
+  enum class MenuRoute
+  {
+    NONE,
+    OSD_VPP,
+    DV_CORE2
+  };
+  MenuRoute MenuCompositeRoute() const;
+  bool EngageMenuComposite(MenuRoute route);
+  void DisengageMenuComposite();
+  float MenuCompositeGuiWhite(MenuRoute route) const;
+  bool EnsureFbo(CFrameBufferObject& fbo, int& width, int& height);
+  void CompositeGui();
+
   CEGLContextUtils m_pGLContext;
   StreamHdrType m_hdrType = StreamHdrType::HDR_TYPE_NONE;
+
+  // Render thread only.
+  bool m_menuShown = false;
+  std::chrono::steady_clock::time_point m_menuGoneSince{};
+  MenuRoute m_menuRoute = MenuRoute::NONE;
+  MenuRoute m_pendingRoute = MenuRoute::NONE;
+  std::chrono::steady_clock::time_point m_pendingRouteSince{};
+  std::unique_ptr<CGuiCompositeShaderGLES> m_compositeShader;
+  CFrameBufferObject m_guiFbo;
+  int m_guiFboWidth = 0;
+  int m_guiFboHeight = 0;
+  bool m_guiFboBound = false;
+  CFrameBufferObject m_menuFbo;
+  int m_menuFboWidth = 0;
+  int m_menuFboHeight = 0;
+  bool m_menuFboHasContent = false;
+  bool m_menuScissor = false;
 };
 
 }

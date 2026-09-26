@@ -8,15 +8,72 @@
 
 #include "VideoSyncAML.h"
 #include "WinSystemAmlogicGLESContext.h"
+#include "ServiceBroker.h"
+#include "guilib/GUIComponent.h"
+#include "guilib/GUIWindowManager.h"
 #include "platform/linux/SysfsPath.h"
+#include "settings/AdvancedSettings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
 #include "utils/log.h"
 #include "threads/SingleLock.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WindowSystemFactory.h"
 
+extern "C"
+{
+#include <libavutil/pixfmt.h>
+}
+
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <string>
+
 using namespace KODI;
 using namespace KODI::WINDOWING::AML;
+
+namespace
+{
+// Kernel switches that let the OSD plane carry BT.2020 PQ (pannal kernel):
+// amvecm skips its OSD SDR->HDR encode, amdolby_vision tells core2 the
+// graphics are HDR RGB.
+constexpr const char* OSD_PQ_PASSTHROUGH = "/sys/module/am_vecm/parameters/osd_pq_passthrough";
+constexpr const char* DV_GRAPHIC_PQ = "/sys/module/amdolby_vision/parameters/dolby_vision_graphic_pq";
+constexpr const char* DV_GRAPHIC_MAX = "/sys/module/amdolby_vision/parameters/dolby_vision_graphic_max";
+// The VPP's OSD SDR->HDR OOTF: a flat gain table, 512 = 10000 nits.
+constexpr const char* VPP_SDR_HDR_GAIN = "/sys/module/am_vecm/parameters/oo_y_lut_sdr_hdr";
+
+// Rendered frames must report no PQ menu graphics for this long before the
+// composite is released, so BD-J clear/redraw cycles do not flap the route.
+// Frames that are not rendered (a static menu, nothing dirty) never release it.
+constexpr auto MENU_RELEASE_DELAY = std::chrono::milliseconds(500);
+
+// Once engaged, a different route must hold this long before it is taken:
+// the DV enable state reads off for ~100 ms while DV re-engages at a playlist
+// change, and following that would flip the kernel switches mid-transition.
+constexpr auto MENU_ROUTE_SETTLE = std::chrono::milliseconds(500);
+
+bool KernelSwitchAvailable(const char* path)
+{
+  CSysfsPath sysfs(path);
+  return sysfs.Exists();
+}
+
+void SetKernelSwitch(const char* path, int value)
+{
+  CSysfsPath sysfs(path);
+  if (!sysfs.Exists())
+    return;
+  try
+  {
+    sysfs.Set(value);
+  }
+  catch (const std::exception&)
+  {
+  }
+}
+} // namespace
 
 void CWinSystemAmlogicGLESContext::Register()
 {
@@ -63,6 +120,9 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 
 bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
 {
+  if (m_menuRoute != MenuRoute::NONE)
+    DisengageMenuComposite();
+
   m_pGLContext.DestroyContext();
   m_pGLContext.Destroy();
   return CWinSystemAmlogic::DestroyWindowSystem();
@@ -251,6 +311,289 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   // Ignore errors - eglSwapBuffers() sometimes fails during modeswaps on AML,
   // there is probably nothing we can do about it
   m_pGLContext.TrySwapBuffers();
+}
+
+void CWinSystemAmlogicGLESContext::RequestMenuComposite(bool menuShown)
+{
+  if (menuShown)
+  {
+    m_menuShown = true;
+    m_menuGoneSince = {};
+  }
+  else if (m_menuShown && m_menuGoneSince == std::chrono::steady_clock::time_point{})
+  {
+    m_menuGoneSince = std::chrono::steady_clock::now();
+  }
+}
+
+// The one place that decides when disc menu graphics take the raw PQ route.
+// Today: only while PQ-authored menu graphics are on screen, and only when the
+// output path already carries HDR (the per-primitive GUI scale is active) or
+// the DV core owns the OSD. Everything else keeps the existing paths.
+CWinSystemAmlogicGLESContext::MenuRoute CWinSystemAmlogicGLESContext::MenuCompositeRoute() const
+{
+  if (!m_menuShown)
+    return MenuRoute::NONE;
+
+  if (GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF ||
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiFrontToBackRendering)
+    return MenuRoute::NONE;
+
+  if (aml_is_dv_enable())
+    return KernelSwitchAvailable(DV_GRAPHIC_PQ) ? MenuRoute::DV_CORE2 : MenuRoute::NONE;
+
+  if (GetGfxContext().IsTransferPQ())
+    return KernelSwitchAvailable(OSD_PQ_PASSTHROUGH) ? MenuRoute::OSD_VPP : MenuRoute::NONE;
+
+  return MenuRoute::NONE;
+}
+
+float CWinSystemAmlogicGLESContext::MenuCompositeGuiWhite(MenuRoute route) const
+{
+  // Match the GUI white the hardware gives the SDR GUI on the same route, so
+  // Kodi's own controls over a menu look as they do without one.
+  if (route == MenuRoute::DV_CORE2)
+  {
+    // core2 maps SDR graphics white to dolby_vision_graphic_max nits; 0 means
+    // its target table, 300 nits for these targets.
+    CSysfsPath graphicMax(DV_GRAPHIC_MAX);
+    const int nits = graphicMax.Exists() ? graphicMax.Get<int>().value_or(0) : 0;
+    return (nits > 0 ? nits : 300) / 10000.0f;
+  }
+
+  // The VPP's OSD SDR->HDR stage multiplies SDR white by oo_y_lut_sdr_hdr
+  // (16/512 by default, 312.5 nits); the per-primitive path scales GUI code
+  // values by the guipeakluminance factor before that.
+  int gain = 16;
+  CSysfsPath gainLut(VPP_SDR_HDR_GAIN);
+  if (gainLut.Exists())
+  {
+    // comma-separated array: the gain at SDR white is the last entry
+    const std::string lut = gainLut.Get<std::string>().value_or("");
+    const size_t comma = lut.find_last_of(',');
+    const int last = std::atoi(lut.c_str() + (comma == std::string::npos ? 0 : comma + 1));
+    if (last > 0)
+      gain = last;
+  }
+  const float scale = std::clamp(GetGuiSdrPeakLuminance(), 0.0f, 1.0f);
+  return gain / 512.0f * std::pow(scale, 2.2f);
+}
+
+bool CWinSystemAmlogicGLESContext::EngageMenuComposite(MenuRoute route)
+{
+  if (!m_compositeShader)
+  {
+    std::string defines;
+    if (UseLimitedColor())
+      defines += "#define KODI_LIMITED_RANGE 1\n";
+    m_compositeShader = std::make_unique<CGuiCompositeShaderGLES>(defines);
+    if (!m_compositeShader->CompileAndLink())
+    {
+      CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext: failed to compile the menu composite shader");
+      m_compositeShader.reset();
+      return false;
+    }
+  }
+
+  const float white = MenuCompositeGuiWhite(route);
+  m_compositeShader->SetSdrPeak(white);
+  if (!m_compositeShader->CreateLUTs(AVCOL_TRC_SMPTE2084))
+  {
+    CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext: failed to create the menu composite LUTs");
+    m_compositeShader.reset();
+    return false;
+  }
+
+  SetKernelSwitch(route == MenuRoute::DV_CORE2 ? DV_GRAPHIC_PQ : OSD_PQ_PASSTHROUGH, 1);
+  m_menuRoute = route;
+  m_menuFboHasContent = false;
+
+  // The GUI FBO starts empty: redraw everything into it.
+  CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+
+  CLog::Log(LOGINFO, "CWinSystemAmlogicGLESContext: disc menu graphics composite on ({}, GUI white {:.0f} nits)",
+            route == MenuRoute::DV_CORE2 ? "DV core2" : "OSD passthrough", white * 10000.0f);
+  return true;
+}
+
+void CWinSystemAmlogicGLESContext::DisengageMenuComposite()
+{
+  SetKernelSwitch(m_menuRoute == MenuRoute::DV_CORE2 ? DV_GRAPHIC_PQ : OSD_PQ_PASSTHROUGH, 0);
+  m_menuRoute = MenuRoute::NONE;
+  m_guiFbo.Cleanup();
+  m_guiFboWidth = m_guiFboHeight = 0;
+  m_menuFbo.Cleanup();
+  m_menuFboWidth = m_menuFboHeight = 0;
+  m_menuFboHasContent = false;
+  m_compositeShader.reset();
+
+  // The back buffer held only the composite; the GUI draws straight to it again.
+  CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+  CLog::Log(LOGINFO, "CWinSystemAmlogicGLESContext: disc menu graphics composite off");
+}
+
+bool CWinSystemAmlogicGLESContext::BeginRender()
+{
+  if (m_menuGoneSince != std::chrono::steady_clock::time_point{} &&
+      std::chrono::steady_clock::now() - m_menuGoneSince > MENU_RELEASE_DELAY)
+  {
+    m_menuShown = false;
+    m_menuGoneSince = {};
+  }
+
+  const MenuRoute want = MenuCompositeRoute();
+  if (want == m_menuRoute)
+  {
+    m_pendingRouteSince = {};
+  }
+  else if (m_menuRoute != MenuRoute::NONE && m_menuShown)
+  {
+    // Engaged with a menu still up: only a route that holds counts.
+    const auto now = std::chrono::steady_clock::now();
+    if (want != m_pendingRoute || m_pendingRouteSince == std::chrono::steady_clock::time_point{})
+    {
+      m_pendingRoute = want;
+      m_pendingRouteSince = now;
+    }
+  }
+
+  const bool settled = m_pendingRouteSince != std::chrono::steady_clock::time_point{} &&
+                       std::chrono::steady_clock::now() - m_pendingRouteSince > MENU_ROUTE_SETTLE;
+  const bool immediate = m_menuRoute == MenuRoute::NONE || !m_menuShown;
+  if (want != m_menuRoute && (immediate || settled))
+  {
+    m_pendingRouteSince = {};
+    if (m_menuRoute != MenuRoute::NONE)
+      DisengageMenuComposite();
+    if (want != MenuRoute::NONE)
+      EngageMenuComposite(want);
+  }
+
+  // Shader regime (per-primitive PQ scale, limited range) follows
+  // IsMenuCompositeActive() in CRenderSystemGLES::BeginRender.
+  return CRenderSystemGLES::BeginRender();
+}
+
+bool CWinSystemAmlogicGLESContext::EnsureFbo(CFrameBufferObject& fbo, int& width, int& height)
+{
+  if (fbo.IsValid() && fbo.IsBound() && width == m_nWidth && height == m_nHeight)
+    return true;
+
+  fbo.Cleanup();
+  if (!fbo.Initialize() || !fbo.CreateAndBindToTexture(GL_TEXTURE_2D, m_nWidth, m_nHeight, GL_RGBA))
+  {
+    CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext: failed to create a {}x{} composite FBO",
+              m_nWidth, m_nHeight);
+    fbo.Cleanup();
+    width = height = 0;
+    return false;
+  }
+  width = m_nWidth;
+  height = m_nHeight;
+  return true;
+}
+
+void CWinSystemAmlogicGLESContext::BeginGuiComposite()
+{
+  m_guiFboBound = false;
+  if (m_menuRoute == MenuRoute::NONE)
+    return;
+
+  const bool fresh = !m_guiFbo.IsValid() || m_guiFboWidth != m_nWidth || m_guiFboHeight != m_nHeight;
+  if (!EnsureFbo(m_guiFbo, m_guiFboWidth, m_guiFboHeight) || !m_guiFbo.BeginRender())
+    return;
+
+  if (fresh)
+  {
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_SCISSOR_TEST);
+    CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+  }
+  m_guiFboBound = true;
+}
+
+bool CWinSystemAmlogicGLESContext::BeginMenuOverlayRender()
+{
+  if (m_menuRoute == MenuRoute::NONE || !m_guiFboBound)
+    return false;
+
+  if (!EnsureFbo(m_menuFbo, m_menuFboWidth, m_menuFboHeight) || !m_menuFbo.BeginRender())
+  {
+    m_guiFbo.BeginRender();
+    return false;
+  }
+
+  // The menu layer is cleared and redrawn whole every time, so the GUI's
+  // dirty-region scissor must not clip it.
+  m_menuScissor = glIsEnabled(GL_SCISSOR_TEST);
+  glDisable(GL_SCISSOR_TEST);
+  glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  return true;
+}
+
+void CWinSystemAmlogicGLESContext::EndMenuOverlayRender()
+{
+  m_menuFboHasContent = true;
+  if (m_menuScissor)
+    glEnable(GL_SCISSOR_TEST);
+  // Back to the GUI pass, which this ran inside of.
+  m_guiFbo.BeginRender();
+}
+
+void CWinSystemAmlogicGLESContext::EndGuiComposite()
+{
+  if (!m_guiFboBound)
+    return;
+  m_guiFbo.EndRender();
+  m_guiFboBound = false;
+  CompositeGui();
+}
+
+void CWinSystemAmlogicGLESContext::CompositeGui()
+{
+  if (!m_compositeShader)
+    return;
+
+  // The back buffer carries only the composite while it is active.
+  glDisable(GL_SCISSOR_TEST);
+  glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, m_guiFbo.Texture());
+
+  // The VPP composites the OSD over video by its stored alpha: keep that alpha
+  // "over" instead of letting the default blend square it.
+  glEnable(GL_BLEND);
+  glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+
+  const float w = static_cast<float>(m_guiFboWidth);
+  const float h = static_cast<float>(m_guiFboHeight);
+  GLfloat proj[16] = {2.0f / w, 0, 0, 0, 0, -2.0f / h, 0, 0, 0, 0, -1, 0, -1.0f, 1.0f, 0, 1};
+
+  m_compositeShader->SetProjection(proj);
+  m_compositeShader->SetHdrTexture(m_menuFboHasContent ? m_menuFbo.Texture() : 0);
+  m_compositeShader->Enable();
+
+  const GLint posLoc = m_compositeShader->GetPosLoc();
+  const GLint texLoc = m_compositeShader->GetTexLoc();
+  GLfloat vert[4][2] = {{0, 0}, {w, 0}, {w, h}, {0, h}};
+  GLfloat tex[4][2] = {{0, 1}, {1, 1}, {1, 0}, {0, 0}};
+  GLubyte idx[4] = {0, 1, 3, 2};
+
+  glVertexAttribPointer(posLoc, 2, GL_FLOAT, GL_FALSE, 0, vert);
+  glVertexAttribPointer(texLoc, 2, GL_FLOAT, GL_FALSE, 0, tex);
+  glEnableVertexAttribArray(posLoc);
+  glEnableVertexAttribArray(texLoc);
+  glDrawElements(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, idx);
+  glDisableVertexAttribArray(posLoc);
+  glDisableVertexAttribArray(texLoc);
+
+  m_compositeShader->Disable();
+  glEnable(GL_SCISSOR_TEST);
 }
 
 EGLDisplay CWinSystemAmlogicGLESContext::GetEGLDisplay() const

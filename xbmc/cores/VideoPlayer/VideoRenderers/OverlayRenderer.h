@@ -84,6 +84,8 @@ namespace OVERLAY {
     bool m_pgsSubtitle{false};
     bool m_isBitmapOverlay{false};
     bool m_discMenuOverlay{false};
+    // Built for the disc menu composite's raw PQ layer (see CWinSystemBase).
+    bool m_rawPqMenu{false};
 
   protected:
     /*!
@@ -123,6 +125,10 @@ namespace OVERLAY {
     bool HasTextOverlay(int idx);
     bool HasImageOverlay(int idx);
     bool HasDiscMenuOverlay(int idx);
+    // PQ-authored disc menu graphics (IG, BD-J) in this buffer.
+    bool HasPqMenuOverlay(int idx);
+    // Only those, drawn raw, for the disc menu composite's PQ layer.
+    void RenderPqMenu(int idx);
     bool HasImageSubOutsideActiveArea(int idx, int l5Top, int l5Bottom);
     void SetVideoRect(CRect &source, CRect &dest, CRect &view);
     void SetStereoMode(const std::string &stereomode);

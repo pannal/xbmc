@@ -21,6 +21,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "windowing/GraphicContext.h"
+#include "windowing/WinSystem.h"
 
 #include <algorithm>
 #include <mutex>
@@ -141,15 +142,31 @@ void CRenderer::ReleaseUnused()
   }
 }
 
+namespace
+{
+bool IsPqMenuImage(const std::shared_ptr<CDVDOverlay>& o)
+{
+  return o && o->IsOverlayType(DVDOVERLAY_TYPE_IMAGE) &&
+         std::static_pointer_cast<CDVDOverlayImage>(o)->m_isPqMenuGraphics;
+}
+} // namespace
+
 void CRenderer::Render(int idx, float depth)
 {
   std::unique_lock<CCriticalSection> lock(m_section);
+
+  // While the disc menu composite is active its PQ menu graphics are drawn by
+  // RenderPqMenu into their own layer; everything else renders as before.
+  const bool menuComposite = CServiceBroker::GetWinSystem()->IsMenuCompositeActive();
 
   std::vector<SElement>& list = m_buffers[idx];
   for(std::vector<SElement>::iterator it = list.begin(); it != list.end(); ++it)
   {
     if (it->overlay_dvd)
     {
+      if (menuComposite && IsPqMenuImage(it->overlay_dvd))
+        continue;
+
       std::shared_ptr<COverlay> o = Convert(*(it->overlay_dvd), it->pts);
 
       if (o)
@@ -158,6 +175,33 @@ void CRenderer::Render(int idx, float depth)
   }
 
   ReleaseUnused();
+}
+
+void CRenderer::RenderPqMenu(int idx)
+{
+  std::unique_lock<CCriticalSection> lock(m_section);
+
+  for (auto& e : m_buffers[idx])
+  {
+    if (!IsPqMenuImage(e.overlay_dvd))
+      continue;
+    std::shared_ptr<COverlay> o = Convert(*(e.overlay_dvd), e.pts);
+    if (o)
+      Render(o.get());
+  }
+}
+
+bool CRenderer::HasPqMenuOverlay(int idx)
+{
+  std::unique_lock<CCriticalSection> lock(m_section);
+  if (idx < 0 || idx >= NUM_BUFFERS)
+    return false;
+  for (const auto& e : m_buffers[idx])
+  {
+    if (IsPqMenuImage(e.overlay_dvd))
+      return true;
+  }
+  return false;
 }
 
 void CRenderer::Render(COverlay* o)
@@ -739,6 +783,13 @@ std::shared_ptr<COverlay> CRenderer::Convert(CDVDOverlay& o, double pts)
     if (it != m_textureCache.end())
       r = it->second;
   }
+
+  // A PQ menu texture is built for one route; rebuild it when the disc menu
+  // composite turns on or off.
+  if (r && o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE) &&
+      static_cast<CDVDOverlayImage&>(o).m_isPqMenuGraphics &&
+      r->m_rawPqMenu != CServiceBroker::GetWinSystem()->IsMenuCompositeActive())
+    r = nullptr;
 
   if (r)
   {

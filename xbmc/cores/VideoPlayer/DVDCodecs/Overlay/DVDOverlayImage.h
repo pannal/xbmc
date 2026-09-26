@@ -45,6 +45,8 @@ public:
     source_width = src.source_width;
     source_height = src.source_height;
     m_isHdrPq = src.m_isHdrPq;
+    m_isPqMenuGraphics = src.m_isPqMenuGraphics;
+    pqMenuPalette = src.pqMenuPalette;
 
     pixels.resize(sub_h * linesize);
 
@@ -85,4 +87,10 @@ public:
   int source_width{0};
   int source_height{0};
   bool m_isHdrPq{false};
+  // Blu-ray menu graphics (HDMV IG, BD-J) of a PQ playlist. While the disc
+  // menu composite is active they are drawn raw into its PQ layer; otherwise
+  // they render as before. pqMenuPalette is the IG palette converted with the
+  // BT.2020 matrix those pixels need on that route.
+  bool m_isPqMenuGraphics{false};
+  std::vector<uint32_t> pqMenuPalette;
 };
