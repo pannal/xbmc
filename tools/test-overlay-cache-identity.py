@@ -4,7 +4,8 @@
 Exercises the complete Convert and ConvertLibass methods, cache retirement,
 and actual SPU highlight replacement with real producer overlay classes.
 Exercises owned ASS output and per-consumer result identity with a fake rasterizer.
-Does not claim frozen bitmap producers, real rasterization or GPU validation. Run with Python 3 and g++; temporary outputs are removed.
+Checks immutable content publication with real overlay classes and container methods.
+Does not claim real rasterization or GPU validation. Temporary outputs are removed.
 """
 import os
 from pathlib import Path
@@ -27,6 +28,9 @@ def main():
                  'DVDCodecs/Overlay/DVDOverlay.h', 'DVDCodecs/Overlay/DVDOverlayImage.h',
                  'DVDOverlayContainer.cpp']:
         assert 'm_textureid' not in (root / name).read_text()
+    # Moving source depth must not silently turn on the previously unused GPU depth.
+    assert 'int m_3dSubtitleDepth{0};' in header and 'bool m_pgsSubtitle{false};' in header
+    assert 'subtitleDepth' not in renderer
     begin = header.index('using TextureCache =')
     cache = header[begin:header.index(';', begin) + 1]
     source = (PRELUDE.replace('@CACHE@', cache)
@@ -42,7 +46,8 @@ def main():
     source += '\n' + function(libass, 'CLibassRenderResult::CLibassRenderResult(')
     source += '\nCLibassRenderResult::~CLibassRenderResult() = default;\n'
     source += function(renderer, 'std::shared_ptr<COverlay> COverlay::Create(const CLibassRenderResult&')
-    source += '\n' + function(container, 'void CDVDOverlayContainer::UpdateOverlayInfo(')
+    for name in ['ProcessAndAddOverlayIfValid(', 'UpdateOverlayInfo(', 'Flush(', 'Clear(']:
+        source += '\n' + function(container, 'void CDVDOverlayContainer::' + name)
     source += TESTS
     with tempfile.TemporaryDirectory(prefix='overlay-cache-test-') as temporary:
         out = Path(temporary)
@@ -69,6 +74,7 @@ PRELUDE = r'''
 #include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlaySpu.h"
@@ -112,6 +118,8 @@ struct CDVDInputStreamNavigator {
 };
 struct CDVDOverlayContainer:CCriticalSection{
   VecOverlays m_overlays;
+  void ProcessAndAddOverlayIfValid(const std::shared_ptr<CDVDOverlay>&);
+  void Flush();void Clear();
   void UpdateOverlayInfo(const std::shared_ptr<CDVDInputStreamNavigator>&,CDVDDemuxSPU*,int);
 };
 namespace OVERLAY {
@@ -151,8 +159,8 @@ public:
   void CreateSubtitlesStyle(){m_overlayStyle=std::make_shared<SUBTITLES::STYLE::style>();}
   void SetOverlays(OverlayBatch,int);void Release(int);void Release(std::vector<SElement>&);
   void ReleaseCache();void ReleaseUnused(const OverlayBatch& selected={});void Flush();void Reset();
-  std::shared_ptr<COverlay> Convert(CDVDOverlay&,double);
-  std::shared_ptr<COverlay> ConvertLibass(CDVDOverlayLibass&,double,bool,const std::shared_ptr<SUBTITLES::STYLE::style>&);
+  std::shared_ptr<COverlay> Convert(const CDVDOverlay&,double);
+  std::shared_ptr<COverlay> ConvertLibass(const CDVDOverlayLibass&,double,bool,const std::shared_ptr<SUBTITLES::STYLE::style>&);
 };
 }
 using namespace OVERLAY;
@@ -166,79 +174,132 @@ std::shared_ptr<CDVDOverlayImage> image(bool bdj,uint32_t color){
   return p;
 }
 int main(){
+  static_assert(!std::is_copy_assignable_v<CDVDOverlayImage> && !std::is_copy_assignable_v<CDVDOverlaySpu>);
+  static_assert(std::is_same_v<decltype(std::declval<const CDVDOverlayImage&>().data_at(0,0)),const uint8_t*>);
+  static_assert(std::is_same_v<decltype(CRenderer::SElement{}.overlay_dvd),std::shared_ptr<const CDVDOverlay>>);
+  // Actual container publication freezes complete payloads and recursive group
+  // membership. Persistent plane children reuse the same owned allocation.
+  for(bool bdj:{false,true}){
+    CDVDOverlayContainer container;auto p=image(bdj,0xff112233);p->x=9;p->source_width=1920;
+    auto group=std::make_shared<CDVDOverlayGroup>();group->SetDiscMenuOverlay(true);group->SetOverlayContainerFlushable(false);
+    group->m_overlays={p};container.ProcessAndAddOverlayIfValid(group);
+    auto old=std::static_pointer_cast<const CDVDOverlayGroup>(group->GetPublishedRenderContent());
+    auto held=std::static_pointer_cast<const CDVDOverlayImage>(old->m_overlays[0]);
+    auto savedPixels=held->pixels;auto savedPalette=held->palette;auto savedPq=held->pqMenuPalette;
+    p->pixels.assign(p->pixels.size(),0);p->palette.assign(p->palette.size(),0);p->pqMenuPalette.assign(p->pqMenuPalette.size(),0);
+    p->x=42;p->source_width=1;p->m_isHdrPq=false;p->m_isPqMenuGraphics=false;p->m_menuVisible=false;p->SetDiscMenuOverlay(false);
+    group->m_overlays.clear();
+    assert(held->pixels==savedPixels&&held->palette==savedPalette&&held->pqMenuPalette==savedPq);
+    assert(held->x==9&&held->source_width==1920&&held->m_isHdrPq&&held->m_isPqMenuGraphics&&held->m_menuVisible&&held->IsDiscMenuOverlay());
+    assert(old->m_overlays.size()==1&&group->GetPublishedRenderContent()==old);
+    auto redraw=std::make_shared<CDVDOverlayGroup>();redraw->SetDiscMenuOverlay(true);redraw->SetOverlayContainerFlushable(false);
+    redraw->m_overlays={p};container.ProcessAndAddOverlayIfValid(redraw);
+    auto persisted=std::static_pointer_cast<const CDVDOverlayGroup>(redraw->GetPublishedRenderContent());
+    assert(persisted!=old&&persisted->m_overlays[0]==held); // edits need explicit publication
+    p->PublishRenderContent();redraw->PublishRenderContent();
+    auto replacement=std::static_pointer_cast<const CDVDOverlayGroup>(redraw->GetPublishedRenderContent());
+    assert(replacement->m_overlays[0]!=held&&old->m_overlays[0]==held);
+    container.Flush();assert(container.m_overlays.size()==1); // disc persistence policy unchanged
+    auto hide=std::make_shared<CDVDOverlayGroup>();hide->SetDiscMenuOverlay(true);
+    container.ProcessAndAddOverlayIfValid(hide);assert(container.m_overlays.size()==1);
+    assert(std::static_pointer_cast<const CDVDOverlayGroup>(hide->GetPublishedRenderContent())->m_overlays.empty());
+    container.Clear();assert(container.m_overlays.empty()&&held->pixels==savedPixels);
+  }
+  // All SPU arrays and crop/field descriptors are copied explicitly; base Clone
+  // aliases and therefore cannot be used as the publication contract.
+  {CDVDOverlayContainer c;auto p=std::make_shared<CDVDOverlaySpu>();p->result[10]=17;p->pTFData=4;p->pBFData=8;
+   p->alpha[1]=5;p->color[2][1]=6;p->highlight_alpha[3]=7;p->highlight_color[2][2]=8;p->crop_i_x_start=11;
+   c.ProcessAndAddOverlayIfValid(p);auto held=std::static_pointer_cast<const CDVDOverlaySpu>(p->GetPublishedRenderContent());
+   p->result[10]=0;p->pTFData=0;p->pBFData=0;p->alpha[1]=0;p->color[2][1]=0;
+   p->highlight_alpha[3]=0;p->highlight_color[2][2]=0;p->crop_i_x_start=0;
+   assert(held->result[10]==17&&held->pTFData==4&&held->pBFData==8&&held->alpha[1]==5&&held->color[2][1]==6);
+   assert(held->highlight_alpha[3]==7&&held->highlight_color[2][2]==8&&held->crop_i_x_start==11);
+   c.ProcessAndAddOverlayIfValid(p);auto changed=p->GetPublishedRenderContent();assert(changed!=held);
+   c.Flush();assert(c.m_overlays.empty()&&held->result[10]==17);}
+
   for(bool bdj:{false,true}){
     CRenderer a,b;auto p=image(bdj,0xff102030);auto* bytes=p->pixels.data();auto* palette=p->palette.data();
-    auto first=a.Convert(*p,1);int uploads=COverlay::created;
-    for(int i=0;i<30;++i)assert(a.Convert(*p,i)==first);
+    auto content=std::static_pointer_cast<const CDVDOverlayImage>(p->GetPublishedRenderContent());
+    auto* ownedBytes=content->pixels.data();auto* ownedPalette=content->palette.data();
+    assert(content.get()!=p.get()&&ownedBytes!=bytes);
+    auto first=a.Convert(*content,1);int uploads=COverlay::created;
+    for(int i=0;i<30;++i)assert(a.Convert(*p->GetPublishedRenderContent(),i)==first);
     assert(COverlay::created==uploads&&p->pixels.data()==bytes&&p->palette.data()==palette);
-    auto other=b.Convert(*p,1);assert(other!=first&&a.Convert(*p,2)==first);
+    auto sameContent=std::static_pointer_cast<const CDVDOverlayImage>(p->GetPublishedRenderContent());
+    assert(sameContent==content&&sameContent->pixels.data()==ownedBytes&&sameContent->palette.data()==ownedPalette);
+    auto other=b.Convert(*p->GetPublishedRenderContent(),1);assert(other!=first&&a.Convert(*p->GetPublishedRenderContent(),2)==first);
     // Cache identity is per-renderer, and converting elsewhere cannot disturb it.
-    b.Flush();assert(a.Convert(*p,3)==first);
+    b.Flush();assert(a.Convert(*p->GetPublishedRenderContent(),3)==first);
     auto replacement=std::static_pointer_cast<CDVDOverlayImage>(p->Clone());
     if(bdj){uint32_t color=0xffabcdef;memcpy(replacement->pixels.data(),&color,4);}else replacement->palette[0]=0xffabcdef;
-    auto second=a.Convert(*replacement,4);assert(second!=first&&second->value==0xffabcdef&&first->value==0xff102030);
-    assert(a.Convert(*p,5)==first);
+    auto second=a.Convert(*replacement->GetPublishedRenderContent(),4);assert(second!=first&&second->value==0xffabcdef&&first->value==0xff102030);
+    assert(a.Convert(*p->GetPublishedRenderContent(),5)==first);
     // PQ raw-route conversion still invalidates only the appropriate texture.
-    auto* window=CServiceBroker::GetWinSystem();window->active=true;auto raw=a.Convert(*p,6);
-    assert(raw!=first&&raw->m_rawPqMenu&&a.Convert(*p,7)==raw);
-    window->active=false;auto converted=a.Convert(*p,8);assert(converted!=raw&&!converted->m_rawPqMenu);
-    auto transparent=image(bdj,0);assert(a.Convert(*transparent,9)->value==0);
+    auto* window=CServiceBroker::GetWinSystem();window->active=true;auto raw=a.Convert(*p->GetPublishedRenderContent(),6);
+    assert(raw!=first&&raw->m_rawPqMenu&&a.Convert(*p->GetPublishedRenderContent(),7)==raw);
+    window->active=false;auto converted=a.Convert(*p->GetPublishedRenderContent(),8);assert(converted!=raw&&!converted->m_rawPqMenu);
+    auto transparent=image(bdj,0);assert(a.Convert(*transparent->GetPublishedRenderContent(),9)->value==0);
     // Clear/hide releases slot membership, while the retained selection keeps
     // only its content reachable until main drops it. No producer copies needed.
     a.SetOverlays({{0,p}},0);CRenderer::OverlayBatch selected={{0,p}};a.SetOverlays({},0);
-    a.ReleaseUnused(selected);assert(a.m_textureCache.size()==1&&a.m_textureCache.count(p));
+    a.ReleaseUnused(selected);assert(a.m_textureCache.size()==1&&a.m_textureCache.count(p->GetPublishedRenderContent()));
     selected.clear();a.ReleaseUnused();assert(a.m_textureCache.empty());
   }
   // Actual container highlight callback replaces shared SPU content. Base Clone
   // aliases, so this test relies on the explicit copy constructor used by COW.
   {CRenderer r;CDVDOverlayContainer container;auto p=std::make_shared<CDVDOverlaySpu>();
-   p->bForced=true;p->highlight_color[0][0]=10;p->result[0]=77;container.m_overlays={p};
-   assert(p->Clone()==p);auto old=r.Convert(*p,0);auto nav=std::make_shared<CDVDInputStreamNavigator>();nav->value=20;
+   p->bForced=true;p->highlight_color[0][0]=10;p->result[0]=77;container.ProcessAndAddOverlayIfValid(p);
+   assert(p->Clone()==p);auto old=r.Convert(*p->GetPublishedRenderContent(),0);auto nav=std::make_shared<CDVDInputStreamNavigator>();nav->value=20;
    container.UpdateOverlayInfo(nav,nullptr,0);auto next=std::static_pointer_cast<CDVDOverlaySpu>(container.m_overlays[0]);
    assert(next!=p&&next->highlight_color[0][0]==20&&next->result[0]==77&&p->highlight_color[0][0]==10);
-   auto prepared=r.Convert(*next,1);assert(prepared!=old&&prepared->value==20&&old->value==10);
+   auto prepared=r.Convert(*next->GetPublishedRenderContent(),1);assert(prepared!=old&&prepared->value==20&&old->value==10);
    nav->value=30;container.UpdateOverlayInfo(nav,nullptr,0);assert(next->highlight_color[0][0]==20&&prepared->value==20);
-   nav->changed=false;container.UpdateOverlayInfo(nav,nullptr,0);assert(r.Convert(*container.m_overlays[0],2)->value==30);}
+   nav->changed=false;container.UpdateOverlayInfo(nav,nullptr,0);assert(r.Convert(*container.m_overlays[0]->GetPublishedRenderContent(),2)->value==30);}
   // Run complete production libass conversion with controlled change/output
   // signals: timing, animation/style and empty output retain their policy.
   {CRenderer r;auto handler=std::make_shared<CDVDSubtitlesLibass>();
    auto p=std::make_shared<CDVDOverlayLibass>(handler,DVDOVERLAY_TYPE_SSA);handler->image.value=1;
-   auto first=r.Convert(*p,100);assert(handler->lastPts==100&&handler->sawStyle&&r.styleLoads==1);
-   handler->changes=0;auto same=r.Convert(*p,101);assert(same==first&&!handler->sawStyle);
-   handler->changes=2;handler->image.value=2;auto animated=r.Convert(*p,102);assert(animated!=first&&animated->value==2);
+   auto first=r.Convert(*p->GetPublishedRenderContent(),100);assert(handler->lastPts==100&&handler->sawStyle&&r.styleLoads==1);
+   handler->changes=0;auto same=r.Convert(*p->GetPublishedRenderContent(),101);assert(same==first&&!handler->sawStyle);
+   handler->changes=2;handler->image.value=2;auto animated=r.Convert(*p->GetPublishedRenderContent(),102);assert(animated!=first&&animated->value==2);
    handler->changes=0;r.m_isSettingsChanged=true;handler->image.value=3;
-   auto styled=r.Convert(*p,103);assert(styled!=animated&&handler->sawStyle&&r.styleLoads==2);
+   auto styled=r.Convert(*p->GetPublishedRenderContent(),103);assert(styled!=animated&&handler->sawStyle&&r.styleLoads==2);
    r.m_activeAreaTopOffset=100;r.m_activeAreaBottomOffset=120;r.m_activeAreaApplyUserPos=true;
-   r.Convert(*p,104);assert(handler->opts.marginsMode==SUBTITLES::STYLE::MarginsMode::INSIDE_ACTIVE_AREA);
+   r.Convert(*p->GetPublishedRenderContent(),104);assert(handler->opts.marginsMode==SUBTITLES::STYLE::MarginsMode::INSIDE_ACTIVE_AREA);
    assert(handler->opts.activeAreaTopMargin==100&&handler->opts.activeAreaBottomMargin==120&&handler->opts.activeAreaApplyUserPos);
-   handler->visible=false;assert(!r.Convert(*p,105));handler->visible=true;handler->changes=2;
-   assert(r.Convert(*p,106));r.Flush();handler->changes=0;
-   auto afterFlush=r.Convert(*p,107);assert(afterFlush&&afterFlush!=styled);
+   handler->visible=false;assert(!r.Convert(*p->GetPublishedRenderContent(),105));handler->visible=true;handler->changes=2;
+   assert(r.Convert(*p->GetPublishedRenderContent(),106));r.Flush();handler->changes=0;
+   auto afterFlush=r.Convert(*p->GetPublishedRenderContent(),107);assert(afterFlush&&afterFlush!=styled);
    // DebugRenderer calls ConvertLibass directly with its own style and cache.
    CRenderer debug;auto debugStyle=std::make_shared<SUBTITLES::STYLE::style>();
-   auto debugImage=debug.ConvertLibass(*p,108,true,debugStyle);handler->changes=0;
-   assert(debug.ConvertLibass(*p,109,false,debugStyle)==debugImage);
+   const auto& published=static_cast<const CDVDOverlayLibass&>(*p->GetPublishedRenderContent());
+   auto debugImage=debug.ConvertLibass(published,108,true,debugStyle);handler->changes=0;
+   assert(debug.ConvertLibass(published,109,false,debugStyle)==debugImage);
    // Another consumer changed the handler output. Its subsequent changes=0
    // must not validate the old texture in r.
-   auto refreshed=r.Convert(*p,110);assert(refreshed!=afterFlush&&r.Convert(*p,111)==refreshed);
-   handler->image.value=7;handler->changes=2;auto changed=debug.ConvertLibass(*p,112,false,debugStyle);
-   handler->changes=0;auto caughtUp=r.Convert(*p,113);
+   auto refreshed=r.Convert(*p->GetPublishedRenderContent(),110);assert(refreshed!=afterFlush&&r.Convert(*p->GetPublishedRenderContent(),111)==refreshed);
+   handler->image.value=7;handler->changes=2;auto changed=debug.ConvertLibass(published,112,false,debugStyle);
+   handler->changes=0;auto caughtUp=r.Convert(*p->GetPublishedRenderContent(),113);
    assert(caughtUp!=refreshed&&caughtUp->value==7&&changed->value==7&&refreshed->value==3);
-   assert(r.Convert(*p,114)==caughtUp);
+   assert(r.Convert(*p->GetPublishedRenderContent(),114)==caughtUp);
    std::weak_ptr<const CLibassRenderResult> weak=handler->result;handler->result.reset();
-   assert(weak.expired());auto rebuilt=r.Convert(*p,115);assert(rebuilt!=caughtUp);
+   assert(weak.expired());auto rebuilt=r.Convert(*p->GetPublishedRenderContent(),115);assert(rebuilt!=caughtUp);
    // Prepared owned bytes do not follow later producer mutation.
    auto held=handler->result;handler->image.value=8;
    assert(COverlay::Create(*held,1920,1080)->value==7);}
-  // Strong cache keys prevent address recycling until main cache retirement.
-  {CRenderer r;auto p=image(false,0xff123456);std::weak_ptr<CDVDOverlay> weak=p;r.Convert(*p,0);p.reset();
-   assert(!weak.expired());int before=COverlay::destroyed;r.ReleaseUnused();
+  // Strong cache keys retain immutable content, independently of its builder.
+  {CRenderer r;auto p=image(false,0xff123456);std::weak_ptr<CDVDOverlay> producer=p;
+   std::weak_ptr<const CDVDOverlay> weak=p->GetPublishedRenderContent();r.Convert(*p->GetPublishedRenderContent(),0);p.reset();
+   assert(producer.expired()&&!weak.expired());int before=COverlay::destroyed;r.ReleaseUnused();
    assert(weak.expired()&&COverlay::destroyed==before+1);}
-  // Scope boundary: uploaded output is independent, but producer payloads have
-  // NOT been frozen. After flush, the altered producer data is still consumed.
-  {CRenderer r;auto p=image(false,0xff123456);auto prepared=r.Convert(*p,0);p->palette[0]=0xffaabbcc;
-   assert(prepared->value==0xff123456&&r.Convert(*p,1)==prepared);
-   r.Flush();assert(r.Convert(*p,2)->value==0xffaabbcc);}
+  // Cache rebuild consumes the frozen publication, not later builder edits.
+  // Explicit replacement publishes new content without altering retained draws.
+  {CRenderer r;auto p=image(false,0xff123456);auto prepared=r.Convert(*p->GetPublishedRenderContent(),0);p->palette[0]=0xffaabbcc;
+   assert(prepared->value==0xff123456&&r.Convert(*p->GetPublishedRenderContent(),1)==prepared);
+   r.Flush();assert(r.Convert(*p->GetPublishedRenderContent(),2)->value==0xff123456);
+   auto selected=p->GetPublishedRenderContent();p->PublishRenderContent();
+   assert(r.Convert(*p->GetPublishedRenderContent(),3)->value==0xffaabbcc);
+   assert(r.Convert(*selected,4)->value==0xff123456);}
 }
 '''
 

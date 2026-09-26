@@ -332,8 +332,8 @@ int main() {
    std::thread consumer;
    r.renderer.onAdd=[&](int idx){consumer=std::thread([&,idx]{std::unique_lock<CCriticalSection> lock(r.m_presentlock);
      assert(r.m_queued==std::deque<int>{idx});assert(r.m_Queue[idx].pts==321);
-     assert(r.m_overlays.m_buffers[idx].size()==2&&r.m_overlays.m_buffers[idx][0].overlay_dvd==image);
-     assert(r.m_overlays.m_buffers[idx][1].overlay_dvd==second&&r.m_overlays.m_buffers[idx][1].pts==318);});};
+     assert(r.m_overlays.m_buffers[idx].size()==2&&r.m_overlays.m_buffers[idx][0].overlay_dvd==image->GetPublishedRenderContent());
+     assert(r.m_overlays.m_buffers[idx][1].overlay_dvd==second->GetPublishedRenderContent()&&r.m_overlays.m_buffers[idx][1].pts==318);});};
    assert(submit(r,s,picture(ref,321),{{319,image},{318,second}}));consumer.join();}
   // Startup publication is accepted before waiting: forced presentation, timeout
   // and abort afterward all keep the accepted frame and clear m_forceNext.
@@ -372,23 +372,23 @@ int main() {
     RefBuffer ref;CRenderManager r;CVideoPlayerVideo v;auto p=picture(ref,-500000);
     auto image=menu(bdj,0xff123456);auto group=std::make_shared<CDVDOverlayGroup>();group->SetDiscMenuOverlay(true);
     group->iPTSStartTime=1000;group->iPTSStopTime=1001;group->m_overlays={image};v.container.items={group};
-    auto batch=v.ProcessOverlays(&p,p.pts);assert(batch.size()==1&&batch[0].overlay_dvd==image);
-    assert(v.ProcessOverlays(&p,9999999).size()==1);assert(group->m_3dSubtitleDepth==0);
+    auto batch=v.ProcessOverlays(&p,p.pts);assert(batch.size()==1&&batch[0].overlay_dvd==image->GetPublishedRenderContent());
+    assert(v.ProcessOverlays(&p,9999999).size()==1);assert(v.ProcessOverlays(&p,9999999)[0].subtitleDepth==0);
     Reservation first;r.WaitForBuffer(first,stop);assert(submit(r,first,p,batch));int a=r.m_queued.back();
     auto replacement=std::static_pointer_cast<CDVDOverlayImage>(image->Clone());
     if(bdj){uint32_t c=0xffabcdef;memcpy(replacement->pixels.data(),&c,4);}else{replacement->palette[0]=0xffabcdef;replacement->pqMenuPalette[0]=0xffabcdef;}
-    group->m_overlays={replacement};p.pts=200;Reservation second;r.WaitForBuffer(second,stop);
+    group->m_overlays={replacement};group->PublishRenderContent();p.pts=200;Reservation second;r.WaitForBuffer(second,stop);
     assert(submit(r,second,p,v.ProcessOverlays(&p,p.pts)));int b=r.m_queued.back();
     assert(a!=b&&r.m_Queue[a].pts==-500000&&r.m_Queue[b].pts==200);
-    assert(r.m_overlays.m_buffers[a][0].overlay_dvd==image&&r.m_overlays.m_buffers[b][0].overlay_dvd==replacement);
+    assert(r.m_overlays.m_buffers[a][0].overlay_dvd==image->GetPublishedRenderContent()&&r.m_overlays.m_buffers[b][0].overlay_dvd==replacement->GetPublishedRenderContent());
     assert(image->pixels!=replacement->pixels||image->palette!=replacement->palette);
     // Flush/reconfigure cancellation with live old menu slots must not install
     // a batch on any other slot, nor mutate a retained picture's menu reference.
     Reservation stale;r.WaitForBuffer(stale,stop);r.InvalidateReservations();
     Reservation fresh;r.WaitForBuffer(fresh,stop);assert(!submit(r,stale,p,batch));
-    stale=Reservation{};assert(r.m_overlays.m_buffers[a][0].overlay_dvd==image);
+    stale=Reservation{};assert(r.m_overlays.m_buffers[a][0].overlay_dvd==image->GetPublishedRenderContent());
     assert(submit(r,fresh,p,{}));assert(r.m_overlays.m_buffers[r.m_queued.back()].empty());
-    group->m_overlays.clear();auto cleared=v.ProcessOverlays(&p,201);assert(cleared.empty());
+    group->m_overlays.clear();group->PublishRenderContent();auto cleared=v.ProcessOverlays(&p,201);assert(cleared.empty());
     r.DiscardBuffer();r.ProcessPresentationQueue();Reservation clear;r.WaitForBuffer(clear,stop);
     assert(submit(r,clear,p,cleared));assert(r.m_overlays.m_buffers[r.m_queued.back()].empty());
     v.container.items.clear();assert(v.ProcessOverlays(&p,202).empty()); // HIDE's empty composition
@@ -401,7 +401,11 @@ int main() {
   {CVideoPlayerVideo v;VideoPicture p;v.m_bRenderSubs=true;v.m_iSubtitleDelay=10;
    auto sub=std::make_shared<CDVDOverlayImage>();sub->iPTSStartTime=100;sub->iPTSStopTime=200;v.container.items={sub};
    assert(v.ProcessOverlays(&p,109).empty());auto b=v.ProcessOverlays(&p,110);assert(b.size()==1&&b[0].pts==100);
-   sub->bForced=true;b=v.ProcessOverlays(&p,110);assert(b.size()==1&&b[0].pts==110);}
+   p.m_3dSubtitleDepth=7;auto depthA=v.ProcessOverlays(&p,110);
+   p.m_3dSubtitleDepth=-3;auto depthB=v.ProcessOverlays(&p,110);
+   assert(depthA[0].subtitleDepth==7&&depthB[0].subtitleDepth==-3);
+   assert(depthA[0].overlay_dvd==depthB[0].overlay_dvd);
+   sub->bForced=true;sub->PublishRenderContent();b=v.ProcessOverlays(&p,110);assert(b.size()==1&&b[0].pts==110);}
 }
 '''
 

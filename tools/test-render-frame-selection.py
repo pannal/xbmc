@@ -3,8 +3,8 @@
 
 Uses real overlay image types and production queue/selection, reporting, menu
 pass, capture and field-render methods. Platform/GPU/clock services are stubs;
-geometry/style placement and lifecycle wiring are checked structurally. This
-is not immutable-payload, libass, full application or device verification.
+geometry/style placement and lifecycle wiring are checked structurally. Includes immutable published bitmap inputs; this is not libass, full application
+or device verification.
 """
 import os
 from pathlib import Path
@@ -128,21 +128,21 @@ struct Renderer {
   void RenderUpdate(int i,int p,bool c,DWORD f,DWORD a){calls.push_back({i,p,c,f,a});}
 };
 namespace OVERLAY {
-struct COverlay {CDVDOverlay* value=nullptr;};
+struct COverlay {const CDVDOverlay* value=nullptr;};
 class CRenderer {
 public:
   @ELEMENT@
   using OverlayBatch=std::vector<SElement>;
   CCriticalSection m_section;OverlayBatch m_buffers[NUM_BUFFERS];
-  std::map<std::shared_ptr<CDVDOverlay>,std::shared_ptr<COverlay>,
-           std::owner_less<std::shared_ptr<CDVDOverlay>>> m_textureCache;
-  std::vector<CDVDOverlay*> drawn;std::vector<double> evaluated;
+  std::map<std::shared_ptr<const CDVDOverlay>,std::shared_ptr<COverlay>,
+           std::owner_less<std::shared_ptr<const CDVDOverlay>>> m_textureCache;
+  std::vector<const CDVDOverlay*> drawn;std::vector<double> evaluated;
   void SetOverlays(OverlayBatch,int);OverlayBatch GetOverlays(int);
   void Release(int);void Release(std::vector<SElement>&);void ReleaseUnused(const OverlayBatch& selected={});
   bool HasOverlay(const OverlayBatch&);bool HasPqMenuOverlay(const OverlayBatch&);
   bool HasDiscMenuOverlay(const OverlayBatch&);bool HasTextOverlay(const OverlayBatch&);bool HasImageOverlay(const OverlayBatch&);
   void Render(const OverlayBatch&);void RenderPqMenu(const OverlayBatch&);
-  std::shared_ptr<COverlay> Convert(CDVDOverlay& o,double pts) {
+  std::shared_ptr<COverlay> Convert(const CDVDOverlay& o,double pts) {
     evaluated.push_back(pts);auto r=std::make_shared<COverlay>();r->value=&o;return r;
   }
   void Render(COverlay* o){drawn.push_back(o->value);}
@@ -230,10 +230,10 @@ int main(){
     // A new palette/canvas list and a later clear cannot change this selection.
     auto changed=menu(bdj,0xffabcdef);r.m_overlays.SetOverlays({{9,changed}},0);
     r.DrawMenus();assert(w->requests.back()==!gui);
-    assert(r.m_overlays.drawn==std::vector<CDVDOverlay*>({old.get(),text.get()}));
+    assert(r.m_overlays.drawn==std::vector<const CDVDOverlay*>({old->GetPublishedRenderContent().get(),text->GetPublishedRenderContent().get()}));
     assert(r.m_overlays.evaluated==std::vector<double>({7,8}));
     r.m_overlays.drawn.clear();r.m_overlays.evaluated.clear();
-    r.m_overlays.SetOverlays({},0);r.DrawMenus();assert(r.m_overlays.drawn.front()==old.get());
+    r.m_overlays.SetOverlays({},0);r.DrawMenus();assert(r.m_overlays.drawn.front()==old->GetPublishedRenderContent().get());
     // Expiration works without any draw/swap completion callback, and occurs
     // before display updates. Paused selection is reacquired each FrameMove.
     std::weak_ptr<const CRenderManager::FrameSelection> previous=r.m_frameSelection;
@@ -243,21 +243,23 @@ int main(){
     assert(discVisible&&!w->requests.back()); // transparent PQ canvas must not engage composite
     r.m_overlays.SetOverlays({{11,changed}},0);r.FrameMove();assert(discVisible);
     auto held=r.m_frameSelection;r.DiscardBuffer();assert(r.m_frameSelection==held);
-    r.m_bRenderGUI=false;r.FrameMove();assert(r.m_frameSelection->overlays[0].overlay_dvd==changed);
+    r.m_bRenderGUI=false;r.FrameMove();assert(r.m_frameSelection->overlays[0].overlay_dvd==changed->GetPublishedRenderContent());
     r.m_overlays.SetOverlays({},0);r.FrameMove();assert(!discVisible);
   }
   // Cache eviction accounts for a detached selected batch, without moving
   // cache destruction into CPU selection destruction or producer callbacks.
   {CRenderManager r;auto image=menu(false,0xff112233);
    r.m_overlays.SetOverlays({{0,image}},0);r.SelectFrame();r.m_overlays.Release(0);
-   r.m_overlays.m_textureCache[image]=std::make_shared<COverlay>();
-   r.m_overlays.ReleaseUnused(r.m_frameSelection->overlays);assert(r.m_overlays.m_textureCache.count(image));
+   r.m_overlays.m_textureCache[image->GetPublishedRenderContent()]=std::make_shared<COverlay>();
+   r.m_overlays.ReleaseUnused(r.m_frameSelection->overlays);assert(r.m_overlays.m_textureCache.count(image->GetPublishedRenderContent()));
    r.ClearFrameSelection();r.m_overlays.ReleaseUnused();assert(r.m_overlays.m_textureCache.empty());}
-  // Explicitly document the slice boundary: payloads and libass render state
-  // are still shared; retaining list identity does not deep-copy mutable data.
+  // Selected bitmap contents are independent of later producer mutation;
+  // libass track/style evaluation remains at its established render point.
   {CRenderManager r;auto image=menu(false,0xff112233);r.m_overlays.SetOverlays({{0,image}},0);r.SelectFrame();
    image->palette[0]=0xff445566;
-   assert(std::static_pointer_cast<CDVDOverlayImage>(r.m_frameSelection->overlays[0].overlay_dvd)->palette[0]==0xff445566);}
+   assert(std::static_pointer_cast<const CDVDOverlayImage>(r.m_frameSelection->overlays[0].overlay_dvd)->palette[0]==0xff112233);
+   image->PublishRenderContent();r.m_overlays.SetOverlays({{0,image}},0);
+   r.FrameMove();assert(std::static_pointer_cast<const CDVDOverlayImage>(r.m_frameSelection->overlays[0].overlay_dvd)->palette[0]==0xff445566);}
   // No render callback on an unconfigured/configure-failure frame can leave the
   // previous selection alive. Real configure/flush/teardown wiring is checked above.
   for(auto state:{CRenderManager::STATE_UNCONFIGURED,CRenderManager::STATE_CONFIGURING}){

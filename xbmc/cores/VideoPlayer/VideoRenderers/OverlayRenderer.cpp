@@ -66,10 +66,7 @@ void CRenderer::AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts, int index
 {
   std::unique_lock<CCriticalSection> lock(m_section);
 
-  SElement   e;
-  e.pts = pts;
-  e.overlay_dvd = std::move(o);
-  m_buffers[index].push_back(e);
+  m_buffers[index].emplace_back(pts, o);
 }
 
 void CRenderer::SetOverlays(OverlayBatch overlays, int index)
@@ -167,10 +164,10 @@ void CRenderer::ReleaseUnused(const OverlayBatch& selected)
 
 namespace
 {
-bool IsPqMenuImage(const std::shared_ptr<CDVDOverlay>& o)
+bool IsPqMenuImage(const std::shared_ptr<const CDVDOverlay>& o)
 {
   return o && o->IsOverlayType(DVDOVERLAY_TYPE_IMAGE) &&
-         std::static_pointer_cast<CDVDOverlayImage>(o)->m_isPqMenuGraphics;
+         std::static_pointer_cast<const CDVDOverlayImage>(o)->m_isPqMenuGraphics;
 }
 } // namespace
 
@@ -228,7 +225,7 @@ bool CRenderer::HasPqMenuOverlay(const OverlayBatch& overlays)
   {
     // Only visible menu graphics keep the composite engaged.
     if (IsPqMenuImage(e.overlay_dvd) &&
-        std::static_pointer_cast<CDVDOverlayImage>(e.overlay_dvd)->m_menuVisible)
+        std::static_pointer_cast<const CDVDOverlayImage>(e.overlay_dvd)->m_menuVisible)
       return true;
   }
   return false;
@@ -468,7 +465,7 @@ bool CRenderer::HasImageSubOutsideActiveArea(const OverlayBatch& overlays, int l
         !e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
       continue;
 
-    const auto& img = static_cast<CDVDOverlayImage&>(*e.overlay_dvd);
+    const auto& img = static_cast<const CDVDOverlayImage&>(*e.overlay_dvd);
     if (img.source_width <= 0 || img.source_height <= 0)
       continue;
 
@@ -636,7 +633,7 @@ void CRenderer::CreateSubtitlesStyle()
 }
 
 std::shared_ptr<COverlay> CRenderer::ConvertLibass(
-    CDVDOverlayLibass& o,
+    const CDVDOverlayLibass& o,
     double pts,
     bool updateStyle,
     const std::shared_ptr<struct SUBTITLES::STYLE::style>& overlayStyle)
@@ -772,13 +769,13 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(
   return overlay;
 }
 
-std::shared_ptr<COverlay> CRenderer::Convert(CDVDOverlay& o, double pts)
+std::shared_ptr<COverlay> CRenderer::Convert(const CDVDOverlay& o, double pts)
 {
   std::shared_ptr<COverlay> r = NULL;
 
   if (o.IsOverlayType(DVDOVERLAY_TYPE_TEXT) || o.IsOverlayType(DVDOVERLAY_TYPE_SSA))
   {
-    CDVDOverlayLibass& ovAss = static_cast<CDVDOverlayLibass&>(o);
+    const CDVDOverlayLibass& ovAss = static_cast<const CDVDOverlayLibass&>(o);
     if (!ovAss.GetLibassHandler())
       return nullptr;
     bool updateStyle = !m_overlayStyle || m_isSettingsChanged;
@@ -804,7 +801,7 @@ std::shared_ptr<COverlay> CRenderer::Convert(CDVDOverlay& o, double pts)
   // A PQ menu texture is built for one route; rebuild it when the disc menu
   // composite turns on or off.
   if (r && o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE) &&
-      static_cast<CDVDOverlayImage&>(o).m_isPqMenuGraphics &&
+      static_cast<const CDVDOverlayImage&>(o).m_isPqMenuGraphics &&
       r->m_rawPqMenu != CServiceBroker::GetWinSystem()->IsMenuCompositeActive())
     r = nullptr;
 
@@ -815,9 +812,9 @@ std::shared_ptr<COverlay> CRenderer::Convert(CDVDOverlay& o, double pts)
   }
 
   if (o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
-    r = COverlay::Create(static_cast<CDVDOverlayImage&>(o), m_rs);
+    r = COverlay::Create(static_cast<const CDVDOverlayImage&>(o), m_rs);
   else if (o.IsOverlayType(DVDOVERLAY_TYPE_SPU))
-    r = COverlay::Create(static_cast<CDVDOverlaySpu&>(o));
+    r = COverlay::Create(static_cast<const CDVDOverlaySpu&>(o));
 
   if (r)
     r->m_discMenuOverlay = o.IsDiscMenuOverlay();

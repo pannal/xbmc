@@ -114,8 +114,19 @@ namespace OVERLAY {
 
     struct SElement
     {
+      SElement() = default;
+      SElement(double timestamp, const std::shared_ptr<const CDVDOverlay>& overlay, int depth = 0)
+        : pts(timestamp),
+          overlay_dvd(overlay ? overlay->GetPublishedRenderContent() : nullptr),
+          subtitleDepth(depth)
+      {
+      }
+
       double pts{0.0};
-      std::shared_ptr<CDVDOverlay> overlay_dvd;
+      std::shared_ptr<const CDVDOverlay> overlay_dvd;
+      // Per-picture metadata only. Do not activate previously unused depth in
+      // converted resources while establishing ownership.
+      int subtitleDepth{0};
     };
     using OverlayBatch = std::vector<SElement>;
 
@@ -175,7 +186,7 @@ namespace OVERLAY {
     void OnViewChange();
 
     void Render(COverlay* o);
-    std::shared_ptr<COverlay> Convert(CDVDOverlay& o, double pts);
+    std::shared_ptr<COverlay> Convert(const CDVDOverlay& o, double pts);
     /*!
     * \brief Convert the overlay to a overlay renderer
     * \param o The overlay to convert
@@ -184,7 +195,7 @@ namespace OVERLAY {
     * \return True if success, false if error
     */
     std::shared_ptr<COverlay> ConvertLibass(
-        CDVDOverlayLibass& o,
+        const CDVDOverlayLibass& o,
         double pts,
         bool updateStyle,
         const std::shared_ptr<struct KODI::SUBTITLES::STYLE::style>& overlayStyle);
@@ -211,8 +222,8 @@ namespace OVERLAY {
     // Content identity belongs to the producer; converted resources belong to
     // this renderer. Holding the key prevents address reuse until main retires
     // the cache entry, without storing renderer state in the producer object.
-    using TextureCache = std::map<std::shared_ptr<CDVDOverlay>, std::shared_ptr<COverlay>,
-                                  std::owner_less<std::shared_ptr<CDVDOverlay>>>;
+    using TextureCache = std::map<std::shared_ptr<const CDVDOverlay>, std::shared_ptr<COverlay>,
+                                  std::owner_less<std::shared_ptr<const CDVDOverlay>>>;
     TextureCache m_textureCache;
     CRect m_rv; // Frame size
     CRect m_rs; // Source size

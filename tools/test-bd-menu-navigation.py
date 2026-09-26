@@ -319,8 +319,20 @@ int main(){
   BD_PG_PALETTE_ENTRY colors[256]{};colors[1].Y=50;colors[1].T=255;BD_PG_RLE_ELEM pixel[]={{1,1}};
   ig.cmd=BD_OVERLAY_DRAW;ig.palette=colors;ig.img=pixel;m.OverlayCallback(&ig);
   ig.cmd=BD_OVERLAY_FLUSH;m.OverlayCallback(&ig);
-  auto retained=std::static_pointer_cast<CDVDOverlayGroup>(delivered.last);assert(retained->m_overlays.size()==1);
-  ig.cmd=BD_OVERLAY_CLEAR;m.OverlayCallback(&ig);assert(delivered.last==retained);
+  auto retained=std::static_pointer_cast<const CDVDOverlayGroup>(delivered.last->GetPublishedRenderContent());assert(retained->m_overlays.size()==1);
+  auto oldImage=std::static_pointer_cast<const CDVDOverlayImage>(retained->m_overlays[0]);
+  auto oldPalette=oldImage->palette;auto oldPixels=oldImage->pixels;
+  m.OverlayCallback(&ig); // another FLUSH, unchanged persistent plane
+  auto repeated=std::static_pointer_cast<const CDVDOverlayGroup>(delivered.last->GetPublishedRenderContent());
+  assert(repeated!=retained&&repeated->m_overlays[0]==oldImage);
+  colors[1].Y=99;ig.cmd=BD_OVERLAY_DRAW;ig.palette_update_flag=1;ig.w=ig.h=0;ig.img=nullptr;
+  m.OverlayCallback(&ig);ig.cmd=BD_OVERLAY_FLUSH;m.OverlayCallback(&ig);
+  auto paletteGroup=std::static_pointer_cast<const CDVDOverlayGroup>(delivered.last->GetPublishedRenderContent());
+  auto newImage=std::static_pointer_cast<const CDVDOverlayImage>(paletteGroup->m_overlays[0]);
+  assert(newImage!=oldImage&&newImage->palette!=oldPalette&&newImage->pixels==oldPixels);
+  assert(oldImage->palette==oldPalette&&oldImage->pixels==oldPixels);
+  ig.palette_update_flag=0;ig.w=ig.h=1;ig.img=pixel;
+  ig.cmd=BD_OVERLAY_CLEAR;m.OverlayCallback(&ig);assert(delivered.last->GetPublishedRenderContent()==paletteGroup);
   ig.cmd=BD_OVERLAY_FLUSH;m.OverlayCallback(&ig);
   assert(std::static_pointer_cast<CDVDOverlayGroup>(delivered.last)->m_overlays.empty());
   assert(retained->m_overlays.size()==1); // old picture batch still owns its graphics
@@ -335,15 +347,36 @@ int main(){
   canvasEvent.cmd=BD_ARGB_OVERLAY_INIT;m.OverlayCallbackARGB(&canvasEvent);
   uint32_t pixel=0xff102030;canvasEvent.cmd=BD_ARGB_OVERLAY_DRAW;canvasEvent.stride=1;canvasEvent.argb=&pixel;
   m.OverlayCallbackARGB(&canvasEvent);canvasEvent.cmd=BD_ARGB_OVERLAY_FLUSH;m.OverlayCallbackARGB(&canvasEvent);
-  auto retained=std::static_pointer_cast<CDVDOverlayGroup>(delivered.last);
-  auto oldImage=std::static_pointer_cast<CDVDOverlayImage>(retained->m_overlays.front());assert(oldImage->m_menuVisible);
+  auto retained=std::static_pointer_cast<const CDVDOverlayGroup>(delivered.last->GetPublishedRenderContent());
+  auto oldImage=std::static_pointer_cast<const CDVDOverlayImage>(retained->m_overlays.front());assert(oldImage->m_menuVisible);
   pixel=0;canvasEvent.cmd=BD_ARGB_OVERLAY_DRAW;m.OverlayCallbackARGB(&canvasEvent);
   canvasEvent.cmd=BD_ARGB_OVERLAY_FLUSH;m.OverlayCallbackARGB(&canvasEvent);
   auto cleared=std::static_pointer_cast<CDVDOverlayGroup>(delivered.last);
-  assert(cleared->m_overlays.size()==1&&!std::static_pointer_cast<CDVDOverlayImage>(cleared->m_overlays.front())->m_menuVisible);
+  assert(cleared->m_overlays.size()==1&&!std::static_pointer_cast<const CDVDOverlayImage>(cleared->m_overlays.front())->m_menuVisible);
   assert(oldImage->m_menuVisible); // clearing a new canvas cannot mutate the previous batch
   canvasEvent.cmd=BD_ARGB_OVERLAY_CLOSE;m.OverlayCallbackARGB(&canvasEvent);
   assert(std::static_pointer_cast<CDVDOverlayGroup>(delivered.last)->m_overlays.empty()&&!m.m_hasMenuOverlay);
+ }
+ // BD-J partial dirty rectangles preserve unaffected published plane objects.
+ {Player delivered;CDVDInputStreamBluray m;m.m_player=&delivered;
+  BD_ARGB_OVERLAY d{};d.plane=1;d.w=4;d.h=1;d.cmd=BD_ARGB_OVERLAY_INIT;m.OverlayCallbackARGB(&d);
+  uint32_t pixels[]={0xff010203,0xff040506,0xff070809,0xff0a0b0c};
+  d.cmd=BD_ARGB_OVERLAY_DRAW;d.w=2;d.stride=4;d.argb=pixels;m.OverlayCallbackARGB(&d);
+  d.x=2;d.argb=pixels+2;m.OverlayCallbackARGB(&d);d.cmd=BD_ARGB_OVERLAY_FLUSH;m.OverlayCallbackARGB(&d);
+  auto old=std::static_pointer_cast<const CDVDOverlayGroup>(delivered.last->GetPublishedRenderContent());assert(old->m_overlays.size()==2);
+  std::shared_ptr<const CDVDOverlayImage> left,right;
+  for(const auto& o:old->m_overlays){auto image=std::static_pointer_cast<const CDVDOverlayImage>(o);if(image->x==0)left=image;else if(image->x==2)right=image;}
+  assert(left&&right);auto oldLeft=left->pixels;auto oldRight=right->pixels;
+  m.OverlayCallbackARGB(&d);auto same=std::static_pointer_cast<const CDVDOverlayGroup>(delivered.last->GetPublishedRenderContent());
+  assert(same->m_overlays==old->m_overlays);
+  pixels[0]=0xffabcdef;d.cmd=BD_ARGB_OVERLAY_DRAW;d.x=0;d.w=1;d.argb=pixels;m.OverlayCallbackARGB(&d);
+  d.cmd=BD_ARGB_OVERLAY_FLUSH;m.OverlayCallbackARGB(&d);
+  auto changed=std::static_pointer_cast<const CDVDOverlayGroup>(delivered.last->GetPublishedRenderContent());
+  bool keptRight=false,replacedLeft=false;
+  for(const auto& o:changed->m_overlays){auto image=std::static_pointer_cast<const CDVDOverlayImage>(o);
+    if(image->x==2){keptRight=true;assert(image==right&&image->pixels==oldRight);}
+    if(image->x==0){replacedLeft=true;assert(image!=left&&image->width==1);}}
+  assert(keptRight&&replacedLeft&&left->pixels==oldLeft&&right->pixels==oldRight);
  }
  // Exercise actual offset producer and source-extracted duplicate-reentry gate.
  for(int i=1;i<=3;++i){b.m_atTitleEnd=true;b.Reenter(135000,90000);assert(b.m_seamGeneration==i&&b.m_seamTimeOffset==i*0.5);b.Reenter(135000,90000);assert(b.m_seamGeneration==i&&b.m_seamTimeOffset==i*0.5);}

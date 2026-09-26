@@ -12,6 +12,7 @@
 #include <atomic>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 enum DVDOverlayType
@@ -35,7 +36,6 @@ public:
     iPTSStopTime = 0LL;
     bForced = false;
     replace = false;
-    m_3dSubtitleDepth = 0;
     m_enableTextAlign = false;
     m_overlayContainerFlushable = true;
     m_setForcedMargins = false;
@@ -48,12 +48,15 @@ public:
     iPTSStopTime  = src.iPTSStopTime;
     bForced       = src.bForced;
     replace = src.replace;
-    m_3dSubtitleDepth = 0;
     m_enableTextAlign = src.m_enableTextAlign;
     m_overlayContainerFlushable = src.m_overlayContainerFlushable;
     m_setForcedMargins = src.m_setForcedMargins;
     m_discMenuOverlay = src.m_discMenuOverlay;
   }
+
+  // Content versions are replaced by construction/publication, not assigned
+  // between builders (which would also copy another builder's publication).
+  CDVDOverlay& operator=(const CDVDOverlay&) = delete;
 
   virtual ~CDVDOverlay() = default;
 
@@ -64,6 +67,20 @@ public:
    * after rendering
    */
   virtual std::shared_ptr<CDVDOverlay> Clone() { return shared_from_this(); }
+
+  // Builders are published under their producer/container lock. Unchanged
+  // content reuses this version; after an in-place content edit the owner must
+  // explicitly republish. Copies of builders start without a cached version.
+  std::shared_ptr<const CDVDOverlay> GetPublishedRenderContent() const
+  {
+    if (m_isRenderContent)
+      return shared_from_this();
+    if (!m_renderContent)
+      CacheRenderContent();
+    return m_renderContent;
+  }
+
+  void PublishRenderContent() { CacheRenderContent(); }
 
   /*
    * \brief Enable the use of text alignment (left/center/right).
@@ -106,16 +123,32 @@ public:
   bool bForced; // display, no matter what
   bool replace; // replace by next nomatter what stoptime it has
 
-  int m_3dSubtitleDepth;
 protected:
+  virtual std::shared_ptr<CDVDOverlay> CreateRenderContent() const
+  {
+    return std::make_shared<CDVDOverlay>(*this);
+  }
+
   DVDOverlayType m_type;
   bool m_enableTextAlign;
   bool m_overlayContainerFlushable;
   bool m_setForcedMargins;
   bool m_discMenuOverlay{false};
+
+private:
+  void CacheRenderContent() const
+  {
+    auto content = CreateRenderContent();
+    content->m_isRenderContent = true;
+    m_renderContent = std::move(content);
+  }
+
+  bool m_isRenderContent{false};
+  mutable std::shared_ptr<const CDVDOverlay> m_renderContent;
 };
 
 using VecOverlays = std::vector<std::shared_ptr<CDVDOverlay>>;
+using VecRenderOverlays = std::vector<std::shared_ptr<const CDVDOverlay>>;
 
 class CDVDOverlayGroup : public CDVDOverlay
 {
@@ -128,5 +161,14 @@ public:
   }
 
   CDVDOverlayGroup(const CDVDOverlayGroup& src) : CDVDOverlay(src), m_overlays(src.m_overlays) {}
-  VecOverlays m_overlays;
+  VecRenderOverlays m_overlays;
+
+protected:
+  std::shared_ptr<CDVDOverlay> CreateRenderContent() const override
+  {
+    auto content = std::make_shared<CDVDOverlayGroup>(*this);
+    for (auto& overlay : content->m_overlays)
+      overlay = overlay->GetPublishedRenderContent();
+    return content;
+  }
 };

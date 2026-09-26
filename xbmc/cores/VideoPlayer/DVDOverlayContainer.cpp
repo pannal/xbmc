@@ -25,6 +25,10 @@ void CDVDOverlayContainer::ProcessAndAddOverlayIfValid(const std::shared_ptr<CDV
     return;
   std::unique_lock<CCriticalSection> lock(*this);
 
+  // Freeze content before publishing it to picture selection. Timing remains
+  // container-owned; unchanged group children retain their published versions.
+  pOverlay->PublishRenderContent();
+
   // Menu compositions and subtitles have independent lifetimes. A menu redraw
   // must neither expire subtitles nor be replaced by a forced subtitle.
   if (pOverlay->IsDiscMenuOverlay())
@@ -194,6 +198,7 @@ void CDVDOverlayContainer::UpdateOverlayInfo(
         // A changed highlight belongs to the replacement object's content
         // identity. Renderer cache state is never written into this overlay.
         pStream->GetCurrentButtonInfo(*pOverlaySpu, pSpu, iAction);
+        pOverlaySpu->PublishRenderContent();
 
       }
     }

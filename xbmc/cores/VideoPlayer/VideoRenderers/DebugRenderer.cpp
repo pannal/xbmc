@@ -125,7 +125,7 @@ void CDebugRenderer::CRenderer::Render(int idx, float depth)
   {
     if (it->overlay_dvd)
     {
-      auto ovAss = std::static_pointer_cast<CDVDOverlayLibass>(it->overlay_dvd);
+      auto ovAss = std::static_pointer_cast<const CDVDOverlayLibass>(it->overlay_dvd);
       if (!ovAss || !ovAss->GetLibassHandler())
         continue;
 

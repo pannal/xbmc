@@ -32,6 +32,12 @@ public:
   */
   std::shared_ptr<CDVDSubtitlesLibass> GetLibassHandler() const { return m_libass; }
 
+protected:
+  std::shared_ptr<CDVDOverlay> CreateRenderContent() const override
+  {
+    return std::make_shared<CDVDOverlayLibass>(*this);
+  }
+
 private:
   std::shared_ptr<CDVDSubtitlesLibass> m_libass;
 };

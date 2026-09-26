@@ -94,4 +94,10 @@ public:
   // should be used on the highlighted areas
   int highlight_color[4][3];
   int highlight_alpha[4];
+
+protected:
+  std::shared_ptr<CDVDOverlay> CreateRenderContent() const override
+  {
+    return std::make_shared<CDVDOverlaySpu>(*this);
+  }
 };

@@ -589,8 +589,8 @@ void CVideoPlayerVideo::Process()
       bool bPacketDrop = std::static_pointer_cast<CDVDMsgDemuxerPacket>(pMsg)->GetPacketDrop();
 
       // Carry 3D MVC subtitle depth (ss_offset_sequence_id from MPLS) into
-      // the video picture so ProcessOverlays can apply the correct stereo
-      // depth offset to PGS subtitles via CDVDOverlay::m_3dSubtitleDepth.
+      // the video picture and per-picture overlay metadata. This does not
+      // change the renderer's existing effective subtitle depth.
       m_iSubtitlePlane = pPacket->subtitlePlane;
 
       if (m_stalled)
@@ -1011,7 +1011,7 @@ OVERLAY::CRenderer::OverlayBatch CVideoPlayerVideo::ProcessOverlays(const VideoP
   if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
     m_pOverlayContainer->CleanUp(subsPts);
 
-  VecOverlays overlays;
+  VecRenderOverlays overlays;
 
   {
     std::unique_lock<CCriticalSection> lock(*m_pOverlayContainer);
@@ -1039,22 +1039,21 @@ OVERLAY::CRenderer::OverlayBatch CVideoPlayerVideo::ProcessOverlays(const VideoP
            (pOverlay->iPTSStopTime > pts2 || pOverlay->iPTSStopTime == 0LL)))
       {
 
-        if (!pOverlay->IsDiscMenuOverlay())
-          pOverlay->m_3dSubtitleDepth = pSource->m_3dSubtitleDepth;
-
-        if(pOverlay->IsOverlayType(DVDOVERLAY_TYPE_GROUP))
+        const auto content = pOverlay->GetPublishedRenderContent();
+        if (content->IsOverlayType(DVDOVERLAY_TYPE_GROUP))
           overlays.insert(overlays.end(),
-                          static_cast<CDVDOverlayGroup&>(*pOverlay).m_overlays.begin(),
-                          static_cast<CDVDOverlayGroup&>(*pOverlay).m_overlays.end());
+                          static_cast<const CDVDOverlayGroup&>(*content).m_overlays.begin(),
+                          static_cast<const CDVDOverlayGroup&>(*content).m_overlays.end());
         else
-          overlays.push_back(pOverlay);
+          overlays.push_back(content);
       }
     }
 
-    for(it = overlays.begin(); it != overlays.end(); ++it)
+    for (auto it = overlays.begin(); it != overlays.end(); ++it)
     {
       double pts2 = (*it)->bForced ? pts : subsPts;
-      batch.push_back({pts2, *it});
+      const int depth = (*it)->IsDiscMenuOverlay() ? 0 : pSource->m_3dSubtitleDepth;
+      batch.emplace_back(pts2, *it, depth);
     }
   }
   return batch;

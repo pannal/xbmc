@@ -50,7 +50,7 @@ public:
 
     pixels.resize(sub_h * linesize);
 
-    uint8_t* s = src.data_at(sub_x, sub_y);
+    const uint8_t* s = src.data_at(sub_x, sub_y);
     uint8_t* t = pixels.data();
 
     for (int row = 0; row < sub_h; ++row)
@@ -95,10 +95,10 @@ public:
     return false;
   }
 
-  uint8_t* data_at(int sub_x, int sub_y) const
+  const uint8_t* data_at(int sub_x, int sub_y) const
   {
     const int bpp = palette.empty() ? 4 : 1;
-    return const_cast<uint8_t*>(pixels.data() + ((sub_y - y) * linesize + (sub_x - x) * bpp));
+    return pixels.data() + ((sub_y - y) * linesize + (sub_x - x) * bpp);
   }
 
   std::vector<uint8_t> pixels;
@@ -121,4 +121,10 @@ public:
   // Menu graphics with something visible: only these engage the composite, so
   // a transparent BD-J canvas left up during the film does not.
   bool m_menuVisible{false};
+
+protected:
+  std::shared_ptr<CDVDOverlay> CreateRenderContent() const override
+  {
+    return std::make_shared<CDVDOverlayImage>(*this);
+  }
 };

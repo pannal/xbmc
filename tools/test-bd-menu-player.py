@@ -48,13 +48,15 @@ def main():
     methods += ('\nstruct QueueFullness {\n  int dataLevel=0, timeLevel=0; bool m_timeBound=false;\n'
                 '  int GetLevel(bool data_level) const {return data_level ? dataLevel : timeLevel;}\n  '
                 + function(queue, 'bool IsFull() const') + '\n};\n')
-    source = PRELUDE + constants + '\n' + methods + TESTS
+    header = (ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h').read_text()
+    prelude = PRELUDE.replace('@ELEMENT@', function(header, 'struct SElement') + ';')
+    source = prelude + constants + '\n' + methods + TESTS
     with tempfile.TemporaryDirectory(prefix='bd-menu-player-') as temporary:
         cpp = pathlib.Path(temporary) / 'test.cpp'
         binary = pathlib.Path(temporary) / 'test'
         cpp.write_text(source)
         subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++17', '-Wall', '-Wextra', '-Werror',
-                        '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                        '-Wno-unused-parameter', '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
                         '-I', str(ROOT / 'xbmc'), str(cpp), '-o', str(binary)], check=True)
         subprocess.run([str(binary)], check=True)
     print('BD menu player policy: PASS (ASan/UBSan; deterministic host stubs)')
@@ -62,6 +64,7 @@ def main():
 
 PRELUDE = r'''
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
+#include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -204,17 +207,8 @@ struct CVideoPlayer {
   void HandleStill(int,int*);
 };
 using CCriticalSection=std::recursive_mutex;
-constexpr int DVDOVERLAY_TYPE_GROUP=1;
-struct CDVDOverlay {
-  virtual ~CDVDOverlay()=default;
-  bool menu=false,bForced=false; int type=0,m_3dSubtitleDepth=0;
-  double iPTSStartTime=0,iPTSStopTime=0;
-  bool IsDiscMenuOverlay() const {return menu;}
-  bool IsOverlayType(int value) const {return type==value;}
-};
-using VecOverlays=std::vector<std::shared_ptr<CDVDOverlay>>;
-struct CDVDOverlayGroup : CDVDOverlay {VecOverlays m_overlays;};
 struct CDVDOverlayLibass : CDVDOverlay {
+  CDVDOverlayLibass():CDVDOverlay(DVDOVERLAY_TYPE_SSA){}
   bool active=true; CDVDOverlayLibass* GetLibassHandler() {return this;}
   bool EventActive(double) const {return active;}
 };
@@ -226,7 +220,7 @@ struct OverlayContainer : CCriticalSection {
 struct VideoPicture {int m_3dSubtitleDepth=7;};
 namespace OVERLAY {
 struct CRenderer {
-  struct SElement {double pts; std::shared_ptr<CDVDOverlay> overlay_dvd;};
+  @ELEMENT@
   using OverlayBatch=std::vector<SElement>;
 };
 }
@@ -424,13 +418,13 @@ int main() {
   }
   // Menu compositions remain visible with subtitles disabled and negative clip timestamps.
   { CVideoPlayerVideo v;v.m_bRenderSubs=false;VideoPicture picture;
-    auto group=std::make_shared<CDVDOverlayGroup>();group->menu=true;group->type=DVDOVERLAY_TYPE_GROUP;
-    group->iPTSStartTime=-1;auto image=std::make_shared<CDVDOverlay>();image->menu=true;
+    auto group=std::make_shared<CDVDOverlayGroup>();group->SetDiscMenuOverlay(true);
+    group->iPTSStartTime=-1;auto image=std::make_shared<CDVDOverlay>(DVDOVERLAY_TYPE_IMAGE);image->SetDiscMenuOverlay(true);
     group->m_overlays={image};v.container.items={group};auto batch=v.ProcessOverlays(&picture,-500000);
-    assert(batch.size()==1 && batch[0].overlay_dvd==image && group->m_3dSubtitleDepth==0);
+    assert(batch.size()==1 && batch[0].overlay_dvd==image->GetPublishedRenderContent() && batch[0].subtitleDepth==0);
   }
   // Ordinary and forced subtitles still honor visibility and authored intervals.
-  { CVideoPlayerVideo v;VideoPicture picture;auto sub=std::make_shared<CDVDOverlay>();
+  { CVideoPlayerVideo v;VideoPicture picture;auto sub=std::make_shared<CDVDOverlay>(DVDOVERLAY_TYPE_IMAGE);
     sub->iPTSStartTime=100;sub->iPTSStopTime=200;v.container.items={sub};
     assert(v.ProcessOverlays(&picture,99).empty());
     assert(v.ProcessOverlays(&picture,100).size()==1);
