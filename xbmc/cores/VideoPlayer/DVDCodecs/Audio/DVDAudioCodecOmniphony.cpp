@@ -174,6 +174,25 @@ constexpr unsigned int OMNI_REFILL_YIELDS = 2;
 constexpr size_t OMNI_REFILL_ROOM_DIVISOR = 4;
 
 /*!
+ * \brief How far below OMNI_FEED_QUEUE_MAX and OMNI_FEED_QUEUE_MS counts as a
+ * backlog the helper does not need adding to.
+ *
+ * Half the feed threshold, of both of them. At or above it GetData stops
+ * asking for packets and lets the reserve go out at the sink's pace - see
+ * there for why that, and not holding the reserve, is what a backlog calls for.
+ *
+ * Half rather than anything closer to the threshold because feeding starts
+ * again from below it, and a packet fed from there has to land short of
+ * AwaitRoom's wait. On the object path a packet is an access unit or a few,
+ * kilobytes each. On the decoded path it is whatever one frame decodes to, as
+ * float, and a long lossless frame is the most of that - 4096 samples of eight
+ * channels is 128 KB and 85 ms - against the 205 KB and 500 ms left above the
+ * mark. A frame larger still is held back by DrainStaging's own brake at the
+ * threshold, which leaves at most one OMNI_PCM_WRITE_FRAMES chunk to wait for.
+ */
+constexpr size_t OMNI_BACKLOG_DIVISOR = 2;
+
+/*!
  * \brief How often GetData reports the reserve to the debug log.
  *
  * Nothing outside this codec reads GetBufferSize, and the only other reading
@@ -235,18 +254,27 @@ constexpr size_t OMNI_PUMP_HOLD_FRAMES = static_cast<size_t>(OMNI_DEFAULT_RATE) 
 constexpr unsigned int OMNI_PRIME_MS = 500;
 
 /*!
- * \brief The same, for a seek, where far less is needed.
+ * \brief The same, for a seek, where less is needed.
  *
  * Most of what a cold start pays for is one-off and survives a seek: the helper
  * process, the engine loaded into it, the HRIR set, the allocated buffers and
  * the pages behind them. orender_reset flushes decoder and renderer state and
- * keeps everything else, so what a seek faces is refilling filter state, not
- * warming up from nothing. Banking a full second again would put the whole
- * cold-start delay on every scrub for a deficit that is not there. Trimmed
- * again with the sink's own 0.8 s counted: what a seek has to cover is the
- * moment before ActiveAE has refilled, not a warm-up.
+ * keeps everything else, so a seek faces no warm-up. Banking a full second
+ * again would put the whole cold-start delay on every scrub.
+ *
+ * What a seek does face is the passage it lands in, with nothing banked. It
+ * throws the reserve away, and the reserve only comes back as fast as the
+ * helper outruns the sink - which in a heavy passage it barely does. Across one
+ * session every one of nine seeks restarted on 150 ms with the helper's queue
+ * at its limit and then ran on about 5 ms for seconds; the two that landed
+ * where the helper was running short stuttered until the next seek, while full
+ * plays crossed the same passages with the reserve barely touched. Priming is
+ * the one moment the helper banks ahead whatever its surplus, since the clock
+ * is held until it is done, so it is where a seek gets its cushion. 250 ms is a
+ * hundred more than that session had, for about a tenth of a second more
+ * before playback resumes - priming 150 ms there took 157 to 204 ms.
  */
-constexpr unsigned int OMNI_PRIME_MS_SEEK = 150;
+constexpr unsigned int OMNI_PRIME_MS_SEEK = 250;
 
 //! The longest priming may hold playback. A helper that cannot fill the bank in
 //! this long is not going to, and silence is worse than starting short.
@@ -3146,11 +3174,31 @@ void CDVDAudioCodecOmniphony::GetData(DVDAudioFrame& frame)
    * the reserve fills. OMNI_REFILL_YIELDS of them puts in twice what goes out.
    * It is self-limiting from both ends. The helper only converts input into
    * reserve as fast as it renders, so the surplus lands in its input queue, and
-   * once that is no longer low the allowance drops back to one and the reserve
-   * merely holds - which is the right answer for a renderer that is already
-   * flat out, since feeding it harder would only park the audio thread in
-   * AwaitRoom. At the other end the reserve reaches OMNI_BANK_MS, this stops
-   * firing, and AddData's refusal takes over.
+   * once that is no longer low the allowance drops back to one. At the other
+   * end the reserve reaches OMNI_BANK_MS, this stops firing, and AddData's
+   * refusal takes over.
+   *
+   * And once the helper has a real backlog - OMNI_BACKLOG_DIVISOR - it drops
+   * to none, and the reserve is spent. One empty answer per block looks like
+   * holding the reserve steady, and so it does, but only by tying every block
+   * the sink is given to a packet the player must first hand over, and at a
+   * helper that is falling behind that packet is the one AwaitRoom makes wait
+   * for room. Kodi could then pass audio on no faster than the helper took it
+   * in, so a renderer running short had the sink running as short, and the
+   * second banked for that sat untouched beside it - whole minutes of a
+   * session stuttered that way, every correction landing while the helper's
+   * queue sat at the threshold, and most of them with close to a second still
+   * banked. Answering with blocks instead keeps the player in its own
+   * priority-only loop, taking audio at the pace the sink plays it, and the
+   * reserve covers the shortfall for as long as it lasts. Nothing is refused: the player is
+   * simply not sent back for a packet the helper has no use for yet, holding
+   * as it does hundreds of milliseconds of work already. Its queue drains back
+   * below the mark as it renders, feeding resumes one for one, and it settles
+   * there - never near enough AwaitRoom's threshold for a feed to wait - until
+   * the helper recovers and the queue falls to where refilling starts. What
+   * this cannot do is make a renderer faster than it is: a shortfall that
+   * outlasts the reserve is still heard, only later by however long the
+   * reserve held out against it.
    *
    * The allowance is also what bounds the starvation this had in its first
    * shape. Answering empty on every call - which is what re-arming per feed
@@ -3174,8 +3222,9 @@ void CDVDAudioCodecOmniphony::GetData(DVDAudioFrame& frame)
    * leave one uncounted and the next call reads a feed that arrived before it,
    * and yields on a player that has since gone quiet.
    */
-  const bool helperHasRoom = m_helper && !QueueBeyond(OMNI_REFILL_ROOM_DIVISOR);
-  const unsigned int allowance = helperHasRoom ? OMNI_REFILL_YIELDS : 1;
+  unsigned int allowance = 0;
+  if (m_helper && !QueueBeyond(OMNI_BACKLOG_DIVISOR))
+    allowance = QueueBeyond(OMNI_REFILL_ROOM_DIVISOR) ? 1 : OMNI_REFILL_YIELDS;
   if (m_yieldsSinceServe < allowance && m_fedSinceYield &&
       GetBufferSize() < FramesFor(OMNI_BANK_MS))
   {
