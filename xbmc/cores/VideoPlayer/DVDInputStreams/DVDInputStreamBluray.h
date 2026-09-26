@@ -206,7 +206,9 @@ protected:
   static void OverlayInit (SPlane& plane, int w, int h);
   bool ProcessItem(int playitem);
   void FreePrevTitleInfo();
-  void StashBoundaryClip();
+  void StashBoundaryClip(bool titleOnly = false);
+  bool RestoreTitleOnlyStash();
+  void RestoreTitleOnlyStashForEvent();
   void UpdateSeamTimeOffset(uint64_t previousOut, uint64_t nextIn);
   void ResetSeamTimeOffset(const char* reason);
   static bool AreClipVideoStreamsCompatible(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b);
@@ -236,6 +238,11 @@ protected:
   uint32_t m_prevPlaylist = MAX_PLAYLIST_ID + 1;
   bool m_prevWasMVC = false;
   bool m_prevFlipEyes = false;
+  // The stash was made for a title change alone; the playlist may play on.
+  bool m_prevTitleOnly = false;
+  // Clip that was playing when a title-only stash was restored in the current
+  // reopen; a playlist change in the same queue re-stashes the table with it.
+  int m_restoredBoundaryClip = -1;
   std::atomic_bool m_menu{false};
   std::atomic_bool m_isInMainMenu{false};
   std::atomic_bool m_currentTitleIsBdj{false};
