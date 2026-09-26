@@ -84,6 +84,7 @@ private:
   void DisengageMenuComposite();
   float MenuCompositeGuiWhite(MenuRoute route) const;
   bool EnsureFbo(CFrameBufferObject& fbo, int& width, int& height);
+  bool EnsureCompositeFbos();
   void CompositeGui();
 
   CEGLContextUtils m_pGLContext;
@@ -91,6 +92,8 @@ private:
 
   // Render thread only.
   bool m_menuShown = false;
+  bool m_menuReported = false; // this frame's GUI pass reported menu visibility
+  bool m_menuEngageFailed = false; // held off until the menu is released
   std::chrono::steady_clock::time_point m_menuGoneSince{};
   MenuRoute m_menuRoute = MenuRoute::NONE;
   MenuRoute m_pendingRoute = MenuRoute::NONE;

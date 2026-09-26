@@ -11,6 +11,7 @@
 #include "ServiceBroker.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
+#include "guilib/WindowIDs.h"
 #include "platform/linux/SysfsPath.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
@@ -60,6 +61,19 @@ bool KernelSwitchAvailable(const char* path)
   return sysfs.Exists();
 }
 
+void MarkGuiDirty()
+{
+  // At exit the GUI is gone before the window system.
+  if (CGUIComponent* gui = CServiceBroker::GetGUI())
+    gui->GetWindowManager().MarkDirty();
+}
+
+bool IsFullscreenVideoActive()
+{
+  CGUIComponent* gui = CServiceBroker::GetGUI();
+  return gui && gui->GetWindowManager().IsWindowActive(WINDOW_FULLSCREEN_VIDEO);
+}
+
 void SetKernelSwitch(const char* path, int value)
 {
   CSysfsPath sysfs(path);
@@ -91,6 +105,10 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
   {
     return false;
   }
+
+  // A previous Kodi that died with a disc menu up left its switch set.
+  SetKernelSwitch(OSD_PQ_PASSTHROUGH, 0);
+  SetKernelSwitch(DV_GRAPHIC_PQ, 0);
 
   if (!m_pGLContext.CreateDisplay(m_nativeDisplay))
   {
@@ -315,6 +333,7 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
 
 void CWinSystemAmlogicGLESContext::RequestMenuComposite(bool menuShown)
 {
+  m_menuReported = true;
   if (menuShown)
   {
     m_menuShown = true;
@@ -332,7 +351,7 @@ void CWinSystemAmlogicGLESContext::RequestMenuComposite(bool menuShown)
 // the DV core owns the OSD. Everything else keeps the existing paths.
 CWinSystemAmlogicGLESContext::MenuRoute CWinSystemAmlogicGLESContext::MenuCompositeRoute() const
 {
-  if (!m_menuShown)
+  if (!m_menuShown || m_menuEngageFailed)
     return MenuRoute::NONE;
 
   if (GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF ||
@@ -340,7 +359,13 @@ CWinSystemAmlogicGLESContext::MenuRoute CWinSystemAmlogicGLESContext::MenuCompos
     return MenuRoute::NONE;
 
   if (aml_is_dv_enable())
+  {
+    // The video processor modes (DV processed for a non-DV display) replace
+    // core2's graphics curve with an SDR one: PQ graphics are unvalidated there.
+    if (aml_dv_video_processor_mode() != 0)
+      return MenuRoute::NONE;
     return KernelSwitchAvailable(DV_GRAPHIC_PQ) ? MenuRoute::DV_CORE2 : MenuRoute::NONE;
+  }
 
   if (GetGfxContext().IsTransferPQ())
     return KernelSwitchAvailable(OSD_PQ_PASSTHROUGH) ? MenuRoute::OSD_VPP : MenuRoute::NONE;
@@ -404,12 +429,24 @@ bool CWinSystemAmlogicGLESContext::EngageMenuComposite(MenuRoute route)
     return false;
   }
 
+  // Both layers must exist before the output is switched: without them the
+  // GUI and the menus would reach a PQ plane unconverted.
+  if (!EnsureCompositeFbos())
+  {
+    m_guiFbo.Cleanup();
+    m_guiFboWidth = m_guiFboHeight = 0;
+    m_menuFbo.Cleanup();
+    m_menuFboWidth = m_menuFboHeight = 0;
+    m_compositeShader.reset();
+    return false;
+  }
+
   SetKernelSwitch(route == MenuRoute::DV_CORE2 ? DV_GRAPHIC_PQ : OSD_PQ_PASSTHROUGH, 1);
   m_menuRoute = route;
   m_menuFboHasContent = false;
 
   // The GUI FBO starts empty: redraw everything into it.
-  CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+  MarkGuiDirty();
 
   CLog::Log(LOGINFO, "CWinSystemAmlogicGLESContext: disc menu graphics composite on ({}, GUI white {:.0f} nits)",
             route == MenuRoute::DV_CORE2 ? "DV core2" : "OSD passthrough", white * 10000.0f);
@@ -428,17 +465,26 @@ void CWinSystemAmlogicGLESContext::DisengageMenuComposite()
   m_compositeShader.reset();
 
   // The back buffer held only the composite; the GUI draws straight to it again.
-  CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+  MarkGuiDirty();
   CLog::Log(LOGINFO, "CWinSystemAmlogicGLESContext: disc menu graphics composite off");
 }
 
 bool CWinSystemAmlogicGLESContext::BeginRender()
 {
+  // Outside fullscreen video (a skin's video preview, a window over playback)
+  // the GUI pass never reports: a frame without a report there is no menu.
+  // In fullscreen a missing report is a renderer reconfiguring, which keeps
+  // the state it had.
+  if (!m_menuReported && !IsFullscreenVideoActive())
+    RequestMenuComposite(false);
+  m_menuReported = false;
+
   if (m_menuGoneSince != std::chrono::steady_clock::time_point{} &&
       std::chrono::steady_clock::now() - m_menuGoneSince > MENU_RELEASE_DELAY)
   {
     m_menuShown = false;
     m_menuGoneSince = {};
+    m_menuEngageFailed = false;
   }
 
   const MenuRoute want = MenuCompositeRoute();
@@ -465,8 +511,15 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
     m_pendingRouteSince = {};
     if (m_menuRoute != MenuRoute::NONE)
       DisengageMenuComposite();
-    if (want != MenuRoute::NONE)
-      EngageMenuComposite(want);
+    if (want != MenuRoute::NONE && !EngageMenuComposite(want))
+      m_menuEngageFailed = true;
+  }
+  else if (m_menuRoute != MenuRoute::NONE && !EnsureCompositeFbos())
+  {
+    // A layer could not be recreated (resolution change): fall back before
+    // this frame's shaders are chosen, and stay off until the menu is released.
+    DisengageMenuComposite();
+    m_menuEngageFailed = true;
   }
 
   // Shader regime (per-primitive PQ scale, limited range) follows
@@ -493,24 +546,37 @@ bool CWinSystemAmlogicGLESContext::EnsureFbo(CFrameBufferObject& fbo, int& width
   return true;
 }
 
-void CWinSystemAmlogicGLESContext::BeginGuiComposite()
+bool CWinSystemAmlogicGLESContext::EnsureCompositeFbos()
 {
-  m_guiFboBound = false;
-  if (m_menuRoute == MenuRoute::NONE)
-    return;
-
-  const bool fresh = !m_guiFbo.IsValid() || m_guiFboWidth != m_nWidth || m_guiFboHeight != m_nHeight;
-  if (!EnsureFbo(m_guiFbo, m_guiFboWidth, m_guiFboHeight) || !m_guiFbo.BeginRender())
-    return;
-
-  if (fresh)
+  const bool freshGui = !m_guiFbo.IsValid() || m_guiFboWidth != m_nWidth || m_guiFboHeight != m_nHeight;
+  if (!EnsureFbo(m_guiFbo, m_guiFboWidth, m_guiFboHeight) ||
+      !EnsureFbo(m_menuFbo, m_menuFboWidth, m_menuFboHeight))
+    return false;
+  if (freshGui)
   {
+    // A new GUI layer starts empty: clear it and redraw everything into it.
+    m_guiFbo.BeginRender();
     glDisable(GL_SCISSOR_TEST);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glEnable(GL_SCISSOR_TEST);
-    CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+    m_guiFbo.EndRender();
+    MarkGuiDirty();
   }
+  return true;
+}
+
+void CWinSystemAmlogicGLESContext::BeginGuiComposite()
+{
+  m_guiFboBound = false;
+  // The menu layer is sampled only if this frame's GUI pass drew into it.
+  m_menuFboHasContent = false;
+  if (m_menuRoute == MenuRoute::NONE)
+    return;
+
+  // BeginRender made sure both layers exist.
+  if (!m_guiFbo.BeginRender())
+    return;
   m_guiFboBound = true;
 }
 
@@ -519,7 +585,7 @@ bool CWinSystemAmlogicGLESContext::BeginMenuOverlayRender()
   if (m_menuRoute == MenuRoute::NONE || !m_guiFboBound)
     return false;
 
-  if (!EnsureFbo(m_menuFbo, m_menuFboWidth, m_menuFboHeight) || !m_menuFbo.BeginRender())
+  if (!m_menuFbo.BeginRender())
   {
     m_guiFbo.BeginRender();
     return false;
