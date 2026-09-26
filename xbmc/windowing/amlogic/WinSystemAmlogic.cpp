@@ -160,10 +160,11 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
   }
 
   // A disc session's first DV engage waits for this mode set (aml_dv_open), so
-  // the sink locks once, into DV at the title's mode. When the mode is not
-  // changing, no mode set follows and the engage re-evaluates HDMI itself.
-  aml_dv_engage_deferred_disc(aml_display_mode_changing(res) ||
-                              (m_force_mode_switch && aml_has_frac_rate_policy()));
+  // the sink locks once, into DV at the title's mode. Without a real mode set
+  // it stays pending for CRenderManager::UpdateResolution, which applies it
+  // after its trigger reset so the update aml_dv_on() requests is kept.
+  if (aml_display_mode_changing(res) || (m_force_mode_switch && aml_has_frac_rate_policy()))
+    aml_dv_engage_deferred_disc(true);
 
   aml_set_native_resolution(res, m_framebuffer_name, m_stereo_mode, m_force_mode_switch);
   // reset force mode switch
