@@ -9,6 +9,7 @@
 #pragma once
 
 #include "DVDAudioCodec.h"
+#include "OmniphonyCommandQueue.h"
 #include "OmniphonyTimeline.h"
 #include "cores/AudioEngine/Utils/AEAudioFormat.h"
 #include "cores/AudioEngine/Utils/AELimiter.h"
@@ -272,8 +273,9 @@ private:
     bool Start(const std::string& exe);
     void Stop();
 
-    //! \brief Queue one command. False means the helper is gone.
-    bool Send(uint8_t op, const void* payload, size_t len);
+    //! \brief Queue one command, carrying \p us microseconds of audio where it
+    //! carries any that can be told. False means the helper is gone.
+    bool Send(uint8_t op, const void* payload, size_t len, double us = 0.0);
 
     /*!
      * \brief Take everything rendered so far.
@@ -286,6 +288,11 @@ private:
 
     //! \brief Bytes queued for the helper that it has not taken off us yet.
     size_t Queued();
+    //! \brief The audio in those, in microseconds, as far as it can be told.
+    double QueuedUs();
+
+    //! \brief Whether a reset has been sent that the helper has not answered.
+    bool ResetPending();
 
     //! \brief The rate in the latest stream report not yet taken, or 0 if
     //! there is none. Leaves the reports where they are - see SettleRate.
@@ -297,7 +304,9 @@ private:
      * The pipe can hold a second or more of audio that belongs to where the
      * film used to be, and OP_RESET does not flush it - the helper has already
      * written it. This clears what has arrived; the rest, still in flight, is
-     * dropped as it is parsed - see \ref m_resets.
+     * dropped as it is parsed - see \ref m_resets. Audio still queued here and
+     * not yet started on is taken back instead of being sent ahead of the
+     * reset - see COmniphonyCommandQueue.
      *
      * The OP_RESET is sent from in here rather than by the caller afterwards,
      * because emptying the bank and arming the drop have to be one operation
@@ -310,7 +319,7 @@ private:
 
   private:
     //! \brief \ref Send, for a caller that already holds \ref m_lock.
-    bool SendLocked(uint8_t op, const void* payload, size_t len);
+    bool SendLocked(uint8_t op, const void* payload, size_t len, double us = 0.0);
 
     void Process() override;
     bool ParseFrames();
@@ -332,8 +341,7 @@ private:
     int m_out{-1}; //!< our end of the helper's stdout
     int m_err{-1}; //!< our end of the helper's stderr - see DrainDiagnostics
     std::string m_errLine; //!< unterminated stderr text; the pump's, then Stop's once joined
-    std::vector<uint8_t> m_pending; //!< queued for the helper
-    size_t m_pendingSent{0}; //!< how much of m_pending has been written already
+    COmniphonyCommandQueue m_queue; //!< queued for the helper and not yet written
     std::vector<uint8_t> m_acc; //!< partial frames, only ever touched by Process
     Rendered m_ready; //!< rendered and not yet collected
     size_t m_readyFrames{0};
@@ -480,6 +488,9 @@ private:
    * helper died and the caller must fall back.
    */
   bool AwaitRoom();
+  //! \brief Whether the helper's input queue is past a \p divisor th of either
+  //! of its limits, the byte one or the time one - see OMNI_FEED_QUEUE_MS.
+  bool QueueBeyond(unsigned int divisor);
   //! \brief Throw away rendered audio and the clock that described it, and
   //! reset the helper if there is one. False means the helper is gone; a caller
   //! without one gets true, having nothing to reset and nothing to fail.
@@ -682,6 +693,9 @@ private:
   bool m_priming{true};
   int m_primeFrames{0};
   XbmcThreads::EndTime<> m_primeDeadline;
+  //! How long the helper has to answer the latest reset - see
+  //! OMNI_RESET_TIMEOUT_MS. The priming deadline does not run until it has.
+  XbmcThreads::EndTime<> m_resetDeadline;
 
   AEAudioFormat m_format;
   //! Replaced by UpdateName() during Open(), which is before anything can ask.

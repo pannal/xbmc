@@ -139,6 +139,22 @@ constexpr unsigned int OMNI_BANK_MS = 1500;
 constexpr size_t OMNI_FEED_QUEUE_MAX = OMNI_MAX_PENDING / 10;
 
 /*!
+ * \brief The same limit, in time.
+ *
+ * Bytes alone say nothing about how long the queue lasts. OMNI_FEED_QUEUE_MAX
+ * is over five seconds of 640 kbit/s E-AC3, as much or more of Dolby Digital,
+ * and a small part of that of a lossless stream, and all of it is audio the
+ * renderer works through ahead of anything asked of it later - the reserve
+ * overshot to six seconds on such a stream while the player waited out a
+ * refresh-rate change. The queue is there to keep the renderer busy while the
+ * reserve refills, not to be a reserve of its own, so a second of it is
+ * plenty; whichever limit is reached first applies. Only audio whose length
+ * can be told counts here, so a stream that cannot be timed is held to the
+ * byte limit as before.
+ */
+constexpr unsigned int OMNI_FEED_QUEUE_MS = 1000;
+
+/*!
  * \brief Empty answers GetData may give between two served blocks.
  *
  * The ratio of input to output while the reserve is refilling: two empty
@@ -148,11 +164,12 @@ constexpr size_t OMNI_FEED_QUEUE_MAX = OMNI_MAX_PENDING / 10;
 constexpr unsigned int OMNI_REFILL_YIELDS = 2;
 
 /*!
- * \brief How far below OMNI_FEED_QUEUE_MAX counts as "the helper has room".
+ * \brief How far below OMNI_FEED_QUEUE_MAX and OMNI_FEED_QUEUE_MS counts as
+ * "the helper has room".
  *
- * A quarter of the feed threshold. Below it the helper is close to running out
- * of input and can absorb more; at or above it, it already has a backlog and
- * feeding harder would only wait in AwaitRoom.
+ * A quarter of the feed threshold, of both of them. Below it the helper is
+ * close to running out of input and can absorb more; at or above it, it
+ * already has a backlog and feeding harder would only wait in AwaitRoom.
  */
 constexpr size_t OMNI_REFILL_ROOM_DIVISOR = 4;
 
@@ -234,6 +251,20 @@ constexpr unsigned int OMNI_PRIME_MS_SEEK = 150;
 //! The longest priming may hold playback. A helper that cannot fill the bank in
 //! this long is not going to, and silence is worse than starting short.
 constexpr unsigned int OMNI_PRIME_TIMEOUT_MS = 2500;
+
+/*!
+ * \brief The longest the helper has to answer a reset.
+ *
+ * Separate from the priming timeout, which it comes before: until the latest
+ * reset is answered everything the helper renders belongs to the position
+ * being left and is dropped, so the renderer cannot yet be judged on what it
+ * produces. Timing priming from the seek instead is what made a seek behind a
+ * full queue fall back to software decoding - the helper was busy, not broken,
+ * and answered a tenth of a second after it had been given up on. Once the
+ * answer is in, priming gets its full allowance. A helper that takes longer
+ * than this to answer at all is stuck, and is treated as one.
+ */
+constexpr unsigned int OMNI_RESET_TIMEOUT_MS = 5000;
 
 /*!
  * \brief The longest GetFormat waits for the engine to report its rate.
@@ -643,24 +674,26 @@ void CDVDAudioCodecOmniphony::CHelper::Stop()
   // The final drain closes the descriptor.
   if (m_err >= 0)
     DrainDiagnostics(true);
-  m_pending.clear();
-  m_pendingSent = 0;
+  m_queue.Clear();
   m_acc.clear();
   m_ready = Rendered{};
   m_readyFrames = 0;
 }
 
-bool CDVDAudioCodecOmniphony::CHelper::Send(uint8_t op, const void* payload, size_t len)
+bool CDVDAudioCodecOmniphony::CHelper::Send(uint8_t op, const void* payload, size_t len, double us)
 {
   std::unique_lock<CCriticalSection> lock(m_lock);
-  return SendLocked(op, payload, len);
+  return SendLocked(op, payload, len, us);
 }
 
-bool CDVDAudioCodecOmniphony::CHelper::SendLocked(uint8_t op, const void* payload, size_t len)
+bool CDVDAudioCodecOmniphony::CHelper::SendLocked(uint8_t op,
+                                                  const void* payload,
+                                                  size_t len,
+                                                  double us)
 {
   if (m_broken || m_in < 0)
     return false;
-  if (m_pending.size() - m_pendingSent + OMNI_HDR_LEN + len > OMNI_MAX_PENDING)
+  if (m_queue.Bytes() + OMNI_HDR_LEN + len > OMNI_MAX_PENDING)
   {
     m_broken = true;
     return false;
@@ -674,12 +707,10 @@ bool CDVDAudioCodecOmniphony::CHelper::SendLocked(uint8_t op, const void* payloa
   PutU32(hdr + 8, static_cast<uint32_t>(len));
   PutU32(hdr + 12, 0);
 
-  m_pending.insert(m_pending.end(), hdr, hdr + OMNI_HDR_LEN);
-  if (len)
-  {
-    const uint8_t* p = static_cast<const uint8_t*>(payload);
-    m_pending.insert(m_pending.end(), p, p + len);
-  }
+  const auto kind = op == OP_FEED    ? COmniphonyCommandQueue::Kind::Audio
+                    : op == OP_RESET ? COmniphonyCommandQueue::Kind::Reset
+                                     : COmniphonyCommandQueue::Kind::Control;
+  m_queue.Push(kind, hdr, OMNI_HDR_LEN, static_cast<const uint8_t*>(payload), len, us);
 
   // Counted here, where a reset is queued, rather than at the seek that caused
   // it: this is the only place that knows one actually went out. A reset the
@@ -836,7 +867,7 @@ void CDVDAudioCodecOmniphony::CHelper::Process()
     bool room;
     {
       std::unique_lock<CCriticalSection> lock(m_lock);
-      haveWork = m_in >= 0 && m_pendingSent < m_pending.size();
+      haveWork = m_in >= 0 && m_queue.Bytes() > 0;
       room = m_readyFrames < OMNI_PUMP_HOLD_FRAMES;
     }
 
@@ -930,28 +961,9 @@ void CDVDAudioCodecOmniphony::CHelper::Process()
     if (inIdx >= 0 && (fds[inIdx].revents & POLLOUT))
     {
       std::unique_lock<CCriticalSection> lock(m_lock);
-      const ssize_t put =
-          write(m_in, m_pending.data() + m_pendingSent, m_pending.size() - m_pendingSent);
+      const ssize_t put = write(m_in, m_queue.Data(), m_queue.Bytes());
       if (put > 0)
-      {
-        m_pendingSent += static_cast<size_t>(put);
-        if (m_pendingSent == m_pending.size())
-        {
-          m_pending.clear();
-          m_pendingSent = 0;
-        }
-        // A helper that stays behind never lets the queue empty, and what has
-        // already gone out was then kept for as long as that lasted - the
-        // limit on the queue counts only what is still waiting. Dropped once
-        // there is at least as much of it as is waiting, so no byte is moved
-        // more often than a byte is written.
-        else if (m_pendingSent >= (1u << 18) && m_pendingSent >= m_pending.size() - m_pendingSent)
-        {
-          m_pending.erase(m_pending.begin(),
-                          m_pending.begin() + static_cast<std::ptrdiff_t>(m_pendingSent));
-          m_pendingSent = 0;
-        }
-      }
+        m_queue.Written(static_cast<size_t>(put));
       else if (put < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
       {
         m_broken = true;
@@ -1002,7 +1014,19 @@ bool CDVDAudioCodecOmniphony::CHelper::Collect(Rendered& out, int timeoutMs)
 size_t CDVDAudioCodecOmniphony::CHelper::Queued()
 {
   std::unique_lock<CCriticalSection> lock(m_lock);
-  return m_pending.size() - m_pendingSent;
+  return m_queue.Bytes();
+}
+
+double CDVDAudioCodecOmniphony::CHelper::QueuedUs()
+{
+  std::unique_lock<CCriticalSection> lock(m_lock);
+  return m_queue.Us();
+}
+
+bool CDVDAudioCodecOmniphony::CHelper::ResetPending()
+{
+  std::unique_lock<CCriticalSection> lock(m_lock);
+  return m_resets > 0;
 }
 
 unsigned int CDVDAudioCodecOmniphony::CHelper::ReportedRate()
@@ -1038,7 +1062,18 @@ bool CDVDAudioCodecOmniphony::CHelper::Resync()
    * still queued when the seek completes: the listener hears a fragment of
    * where they just left. Small window, ordinary occurrence - the pump runs
    * continuously and the caller does several things between the two.
+   *
+   * The audio still waiting to be written goes too, before the reset joins the
+   * queue rather than after it. The helper answers a reset only once it has
+   * decoded and rendered everything queued ahead of it, and all of that would
+   * be dropped on arrival here. Behind a full queue that was seconds: a
+   * 640 kbit/s E-AC3 stream fills OMNI_FEED_QUEUE_MAX with five of them, which
+   * an S922X took 2.6s to render - longer than priming waits - so a seek taken
+   * while it was full fell back to software decoding with the renderer working
+   * flat out on audio nobody would hear. A reset still unsent is superseded by
+   * this one, and was counted when it was queued, so it is uncounted here.
    */
+  m_resets -= m_queue.DropStale();
   return SendLocked(OP_RESET, nullptr, 0);
 }
 
@@ -1602,6 +1637,7 @@ bool CDVDAudioCodecOmniphony::DropRendered()
   // interleaved with the pump - see there. A caller with no helper has nothing
   // to reset and nothing to fail.
   const bool reset = m_helper ? m_helper->Resync() : true;
+  m_resetDeadline.Set(std::chrono::milliseconds(OMNI_RESET_TIMEOUT_MS));
 
   // These fields describe decoded frames from the discarded timeline. Clear
   // the visible input row now; new frames will publish their own description.
@@ -1674,12 +1710,18 @@ bool CDVDAudioCodecOmniphony::AwaitRoom()
   // GetData, on this same thread, so a wait for it here could only ever wait
   // out the budget.
   XbmcThreads::EndTime<> budget{std::chrono::milliseconds(OMNI_FEED_BUDGET_MS)};
-  while (m_helper->Queued() > OMNI_FEED_QUEUE_MAX && !budget.IsTimePast())
+  while (QueueBeyond(1) && !budget.IsTimePast())
   {
     if (!Collect(OMNI_PUMP_SLICE_MS))
       return false;
   }
   return true;
+}
+
+bool CDVDAudioCodecOmniphony::QueueBeyond(unsigned int divisor)
+{
+  return m_helper->Queued() > OMNI_FEED_QUEUE_MAX / divisor ||
+         m_helper->QueuedUs() > OMNI_FEED_QUEUE_MS * 1000.0 / divisor;
 }
 
 void CDVDAudioCodecOmniphony::UpdateName()
@@ -2360,11 +2402,16 @@ bool CDVDAudioCodecOmniphony::DrainStaging()
      * OMNI_MAX_PENDING is fatal rather than merely full. Left here they cost
      * nothing and are sent as soon as the helper has taken what it has.
      */
-    if (m_helper->Queued() > OMNI_FEED_QUEUE_MAX)
+    if (QueueBeyond(1))
       break;
 
+    // The header, where one leads the staging, is counted as samples: a few
+    // bytes, against the thousand frames of a chunk.
     const size_t len = std::min(chunk, m_staging.size() - sent);
-    if (!m_helper->Send(OP_FEED, m_staging.data() + sent, len))
+    const double us = m_pcm && m_pcm->Rate() > 0
+                          ? static_cast<double>(len / frame) * 1000000.0 / m_pcm->Rate()
+                          : 0.0;
+    if (!m_helper->Send(OP_FEED, m_staging.data() + sent, len, us))
       return false;
     m_fed = true;
     sent += len;
@@ -2638,7 +2685,8 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
         FallBack("the stream is not at the rate the renderer was opened at");
         return m_fallback ? m_fallback->AddData(packet) : false;
       }
-      if (!m_helper->Send(OP_FEED, m_buffer, m_dataSize))
+      const double us = OmniphonyAccessUnitUs(m_parser.GetStreamInfo());
+      if (!m_helper->Send(OP_FEED, m_buffer, m_dataSize, us))
       {
         FallBack("the helper stopped accepting data");
         return m_fallback ? m_fallback->AddData(packet) : false;
@@ -2647,7 +2695,7 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
       // The unit just framed is the last thing to have left the parser, so it
       // ends where what the parser still holds begins.
       const uint64_t end = m_parsed - m_parser.GetBufferSize();
-      m_timeline.Feed(end - m_dataSize, OmniphonyAccessUnitUs(m_parser.GetStreamInfo()));
+      m_timeline.Feed(end - m_dataSize, us);
     }
   }
 
@@ -2954,6 +3002,22 @@ void CDVDAudioCodecOmniphony::GetData(DVDAudioFrame& frame)
   // audio yet" and leaves the clock stopped, which is exactly the point.
   if (m_priming)
   {
+    // The allowance starts once the helper has answered the latest reset -
+    // see OMNI_RESET_TIMEOUT_MS. Until then nothing it renders is kept, so an
+    // empty bank says nothing about the renderer, and the deadline is held
+    // back rather than allowed to run out on a helper that is only busy.
+    if (m_helper->ResetPending())
+    {
+      if (m_resetDeadline.IsTimePast())
+      {
+        FallBack("the helper did not answer a reset");
+        return;
+      }
+      m_primeDeadline.Set(std::chrono::milliseconds(OMNI_PRIME_TIMEOUT_MS));
+      m_fedSinceYield = false;
+      return;
+    }
+
     // Empty answers too, and counted as such for the reason the refill below
     // gives - priming that runs out of patience on a thin bank drops straight
     // into that test, and it must not read a feed from before all this.
@@ -3008,9 +3072,10 @@ void CDVDAudioCodecOmniphony::GetData(DVDAudioFrame& frame)
   if (m_reserveLogged.IsTimePast())
   {
     m_reserveLogged.Set(std::chrono::milliseconds(OMNI_RESERVE_LOG_MS));
-    CLog::Log(LOGDEBUG, "CDVDAudioCodecOmniphony: reserve {}ms of {}, helper queue {}kB",
+    CLog::Log(LOGDEBUG, "CDVDAudioCodecOmniphony: reserve {}ms of {}, helper queue {}kB ({}ms)",
               GetBufferSize() * 1000 / static_cast<int>(m_rate), OMNI_BANK_MS,
-              m_helper ? m_helper->Queued() / 1024 : 0);
+              m_helper ? m_helper->Queued() / 1024 : 0,
+              m_helper ? static_cast<int>(m_helper->QueuedUs() / 1000.0) : 0);
   }
 
   // Nothing rendered yet - an empty answer all the same, and one the player
@@ -3109,8 +3174,7 @@ void CDVDAudioCodecOmniphony::GetData(DVDAudioFrame& frame)
    * leave one uncounted and the next call reads a feed that arrived before it,
    * and yields on a player that has since gone quiet.
    */
-  const bool helperHasRoom =
-      m_helper && m_helper->Queued() < OMNI_FEED_QUEUE_MAX / OMNI_REFILL_ROOM_DIVISOR;
+  const bool helperHasRoom = m_helper && !QueueBeyond(OMNI_REFILL_ROOM_DIVISOR);
   const unsigned int allowance = helperHasRoom ? OMNI_REFILL_YIELDS : 1;
   if (m_yieldsSinceServe < allowance && m_fedSinceYield &&
       GetBufferSize() < FramesFor(OMNI_BANK_MS))
