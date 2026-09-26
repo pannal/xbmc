@@ -166,6 +166,15 @@ unsigned int aml_dv_dolby_vision_mode();
 void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries colorPrimaries = AVCOL_PRI_UNSPECIFIED, bool swDecoded = false);
 void aml_dv_close();
 bool aml_dv_playback_active();
+// Hold DV_MODE_ON_DEMAND's DV output across the decoder closes of a Blu-ray
+// disc session's segment swaps; false releases it (DV off if no decoder is open).
+void aml_dv_set_disc_hold(bool hold);
+// A disc session's first DV engage, deferred by aml_dv_open() until the mode
+// set: called right before it (atModeSet), and after the resolution update as
+// a fallback when no mode set happens. No-op when nothing is deferred.
+void aml_dv_engage_deferred_disc(bool atModeSet);
+// Last resort, polled per GUI frame: engage a deferral no mode set took up.
+void aml_dv_engage_stale_deferred_disc();
 void aml_dv_set_osd_max(int max);
 void aml_dv_set_osd_brightness(int nits);
 void aml_dv_set_hdr10_osd_brightness(int nits);

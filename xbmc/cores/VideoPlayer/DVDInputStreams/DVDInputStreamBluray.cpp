@@ -490,6 +490,10 @@ bool CDVDInputStreamBluray::Open()
     }
   }
 
+  // Keep DV output up across this disc's segment swaps (DV mode on demand).
+  aml_dv_set_disc_hold(true);
+  m_dvDiscHold = true;
+
   // Process any events that occurred during opening
   while (bd_get_event(m_bd, &m_event))
     ProcessEvent();
@@ -528,6 +532,11 @@ void CDVDInputStreamBluray::Close()
   m_endOfTitleSpinStart = {};
   m_atTitleEnd = false;
   m_bdStillActive = false;
+  if (m_dvDiscHold)
+  {
+    m_dvDiscHold = false;
+    aml_dv_set_disc_hold(false);
+  }
 }
 
 void CDVDInputStreamBluray::ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming)
