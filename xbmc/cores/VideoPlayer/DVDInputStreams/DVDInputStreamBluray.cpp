@@ -72,6 +72,28 @@ bool EndOfTitleReadStalled(uint32_t event,
   return since != std::chrono::steady_clock::time_point{} &&
          now - since >= std::chrono::milliseconds(END_OF_TITLE_SPIN_TIMEOUT_MS);
 }
+
+// The display's 3D capability as a Blu-ray 3D disc should see it. Some discs
+// refuse a display that answers no: Frozen 3D parks its title on playlist 90
+// (one PlayItem, one frame, infinite still) with no path forward. "Simulate
+// 3D display" lets them take their normal route; only the base view is
+// presented, so the film plays in 2D. 3D output (the MVC demux and output
+// mode) still follows aml_display_support_3d(), so a 3D display whose
+// capability an AVR or scaler strips from EDID also gets the route, in 2D.
+bool EffectiveDisplaySupports3D()
+{
+  if (aml_display_support_3d())
+    return true;
+  const auto settings = CServiceBroker::GetSettingsComponent();
+  if (settings && settings->GetSettings() &&
+      settings->GetSettings()->GetBool(CSettings::SETTING_BLURAY_SIMULATE3DDISPLAY))
+  {
+    CLog::Log(LOGINFO, "CDVDInputStreamBluray: \"Simulate 3D display\" is on - reporting 3D "
+                       "display capability the connected display does not report");
+    return true;
+  }
+  return false;
+}
 } // namespace
 
 #define LIBBLURAY_BYTESEEK 0
@@ -322,11 +344,11 @@ bool CDVDInputStreamBluray::Open()
   // unforced and register.c refuses it once profile 6 (0x0310) is declared,
   // so PSR21/23 stay 0 even on a 3D display, and BD-J derives a UHD persona
   // from PSR31 that pre-UHD 3D Xlets do not understand. Declare what
-  // psr_init_3D would have, but keep PSR21/PSR23 on the real display rather
-  // than asserting 3D unconditionally. UHD discs are untouched.
+  // psr_init_3D would have, but keep PSR21/PSR23 on the (effective) display
+  // rather than asserting 3D unconditionally. UHD discs are untouched.
   if (disc_info->content_exist_3D)
   {
-    const bool display3d = aml_display_support_3d();
+    const bool display3d = EffectiveDisplaySupports3D();
     const uint32_t displayCap =
         display3d ? (BLURAY_DCAP_1080p_720p_3D | BLURAY_DCAP_720p_50Hz_3D |
                      BLURAY_DCAP_NO_3D_CLASSES_REQUIRED | BLURAY_DCAP_INTERLACED_3D)
