@@ -366,6 +366,7 @@ void CRenderManager::FrameMove()
   ClearFrameSelection();
   bool firstFrame = false;
   UpdateResolution();
+  aml_dv_engage_stale_deferred_disc();
 
   {
     std::unique_lock<CCriticalSection> lock(m_statelock);
@@ -1313,6 +1314,12 @@ void CRenderManager::UpdateResolution(bool force)
       }
       m_bTriggerUpdateResolution = false;
       m_hdrType_override = StreamHdrType::HDR_TYPE_NONE;
+      // No mode set (refresh switching off, already at the title's mode, or a
+      // window change without a mode switch): a disc session's deferred first
+      // DV engage is applied here instead.
+      // After the reset, so the resolution update aml_dv_on() may request
+      // (DV-Std colour depth, 60 Hz VS10 to DV) is kept for the next frame.
+      aml_dv_engage_deferred_disc(false);
       m_playerPort->VideoParamsChange();
     }
   }

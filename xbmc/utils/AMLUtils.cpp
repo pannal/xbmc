@@ -81,6 +81,28 @@ static unsigned int s_dvModeCached = DOLBY_VISION_OUTPUT_MODE_BYPASS;
 // Tracks whether DV playback is active (between aml_dv_open/aml_dv_close).
 // Used by CreateNewWindow to avoid restoring IPT during playback-start mode switches.
 static bool s_dvPlaybackActive = false;
+// A Blu-ray disc session holds DV_MODE_ON_DEMAND's DV output across the
+// decoder closes of its segment swaps (aml_dv_set_disc_hold). Guarded by the
+// DV-core lock, like s_dvPlaybackActive.
+static bool s_dvDiscHold = false;
+// The first DV engage of a disc session, deferred from aml_dv_open() to the
+// mode set that follows (aml_dv_engage_deferred_disc). Guarded by the DV-core
+// lock.
+static bool s_dvDiscDeferred = false;
+static unsigned int s_dvDiscDeferredMode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+// Set while that engage runs inside the mode set: the HDMI output is
+// re-evaluated by the mode set itself, at the new mode.
+static bool s_dvEngagingAtModeSet = false;
+// When that deferral was made (steady clock, ms; 0 = none), for the last-resort
+// engage from CRenderManager::FrameMove. Read without the DV-core lock.
+static std::atomic<int64_t> s_dvDiscDeferredSinceMs{0};
+
+static int64_t aml_steady_ms()
+{
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
 
 // Last canonical /sys/class/display/mode value we wrote.
 //
@@ -1108,9 +1130,10 @@ unsigned int aml_dv_on(unsigned int mode, bool force_hdmi)
       // Skip on a forced re-assert: we're already at the final resolution, so
       // the update is redundant — and re-triggering it from the post-switch
       // hook (aml_dv_display_trigger) would re-enter CreateNewWindow and loop.
-      if (!force_hdmi)
+      if (!force_hdmi && !s_dvEngagingAtModeSet)
         aml_dv_trigger_update_resolution(StreamHdrType::HDR_TYPE_DOLBYVISION); // Required for 60Hz VS10 > DV.
-      aml_dv_display_auto_now();
+      if (!s_dvEngagingAtModeSet)
+        aml_dv_display_auto_now();
     }
     else if (dv_non_ipt) {
       // Any transition into a VS10 non-IPT output mode needs the HDMI TX
@@ -1578,10 +1601,37 @@ void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries 
 
     unsigned int vs10_mode = aml_vs10_by_hdrtype(hdrType, bitDepth);
 
-    if (vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
-      vs10_mode = aml_dv_on(vs10_mode);
-    else if (aml_is_dv_enable()) // DV BYPASS, and it is on - then switch it off.
-      aml_dv_off();
+    // First DV engage of a disc session (DV not up yet): engaging here would
+    // raise DV at the display mode the GUI is in, and the mode set for the
+    // title follows 1-1.5 s later, so the sink would lock twice (into DV at
+    // the GUI's mode, then again at the title's). Enable the core now - the
+    // decoder sets up DV decoding only when it is enabled - but leave the
+    // output in bypass, and switch the output mode in the mode set
+    // (aml_dv_engage_deferred_disc).
+    // Also when an earlier segment's engage is still deferred (it closed before
+    // its mode set): the core is enabled then, but its output is not.
+    const bool outputUp = aml_is_dv_enable() && !s_dvDiscDeferred;
+    const bool defer = vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS && s_dvDiscHold &&
+                       dv_mode == DV_MODE_ON_DEMAND && !outputUp;
+    if (defer)
+    {
+      s_dvDiscDeferred = true;
+      s_dvDiscDeferredMode = vs10_mode;
+      s_dvDiscDeferredSinceMs = aml_steady_ms();
+      CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_policy", DOLBY_VISION_FORCE_OUTPUT_MODE);
+      CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_enable", "Y");
+      CLog::Log(LOGINFO, "AMLUtils::{} - disc session: DV output mode [{}] deferred to the mode set",
+                __FUNCTION__, aml_dv_output_mode_to_string(vs10_mode));
+    }
+    else
+    {
+      s_dvDiscDeferred = false;
+      s_dvDiscDeferredSinceMs = 0;
+      if (vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
+        vs10_mode = aml_dv_on(vs10_mode);
+      else if (aml_is_dv_enable()) // DV BYPASS, and it is on - then switch it off.
+        aml_dv_off();
+    }
 
     bool content_is_dv(hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION);
     CLog::Log(LOGINFO, "AMLUtils::{} - DV is [{}], requested with vs10 mode: [{}], set for: [{}]",  __FUNCTION__, aml_is_dv_enable(), aml_dv_output_mode_to_string(vs10_mode), content_is_dv ? "content" : "mapping");
@@ -1617,9 +1667,101 @@ void aml_dv_close()
     return;
   }
 
+  // Disc session: the same, for the segment swaps of a Blu-ray. Each swap
+  // closes the decoder; switching DV off there sends the sink DV -> SDR and
+  // the next segment's aml_dv_open() back to DV within a few hundred ms, a
+  // double HDMI re-lock that was seen to leave the sink at "no signal" until
+  // the next mode set. A next segment whose output mode differs still
+  // switches in its own aml_dv_open(). aml_dv_set_disc_hold(false) releases.
+  if (s_dvDiscHold && aml_dv_mode() == DV_MODE_ON_DEMAND)
+  {
+    // A deferred first engage stays pending: a short first segment can close
+    // before its mode set, and the next one takes the deferral over.
+    // What aml_dv_off() would stop: the next segment may not restart the
+    // active-area detect, and its L5 values must not carry over.
+    aml_dv_detect_active_area_stop();
+    aml_dv_dump_state("dv_close/post(disc_hold_skip)");
+    return;
+  }
+
+  s_dvDiscDeferred = false;
+  s_dvDiscDeferredSinceMs = 0;
   if (aml_is_dv_enable())
     aml_dv_off();
   aml_dv_dump_state("dv_close/post");
+}
+
+void aml_dv_set_disc_hold(bool hold)
+{
+  CDVCoreGuard dvlock(__FUNCTION__);
+  if (hold)
+  {
+    s_dvDiscHold = aml_dv_mode() == DV_MODE_ON_DEMAND;
+    CLog::Log(LOGINFO, "AMLUtils::{} - disc session DV hold {}", __FUNCTION__,
+              s_dvDiscHold ? "on" : "off (DV mode is not on demand)");
+    return;
+  }
+
+  const bool wasHeld = s_dvDiscHold;
+  s_dvDiscHold = false;
+  s_dvDiscDeferred = false;
+  s_dvDiscDeferredSinceMs = 0;
+  if (!wasHeld)
+    return;
+
+  // The last decoder may have closed under the hold, leaving DV on for the GUI.
+  // A decoder still open switches it off in its own aml_dv_close(). Not only
+  // on demand: a mode changed to off mid-disc would otherwise leave DV on, as
+  // aml_dv_open() does nothing in that mode. Mode on keeps it for the GUI.
+  const bool release = !s_dvPlaybackActive && aml_dv_mode() != DV_MODE_ON &&
+                       aml_is_dv_enable();
+  CLog::Log(LOGINFO, "AMLUtils::{} - disc session DV hold released{}", __FUNCTION__,
+            release ? ", switching DV off" : "");
+  if (release)
+  {
+    aml_dv_off();
+    aml_dv_dump_state("disc_hold/release");
+  }
+}
+
+void aml_dv_engage_deferred_disc(bool atModeSet)
+{
+  CDVCoreGuard dvlock(__FUNCTION__);
+  if (!s_dvDiscDeferred)
+    return;
+  // Between two segments (no decoder open) it stays pending for the next one;
+  // that segment's aml_dv_open() re-arms the last-resort timer.
+  if (!s_dvPlaybackActive)
+  {
+    s_dvDiscDeferredSinceMs = 0;
+    return;
+  }
+  s_dvDiscDeferred = false;
+  s_dvDiscDeferredSinceMs = 0;
+  if (!aml_is_dv_enable())
+    return;
+
+  CLog::Log(LOGINFO, "AMLUtils::{} - disc session: engaging DV output mode [{}] {}", __FUNCTION__,
+            aml_dv_output_mode_to_string(s_dvDiscDeferredMode),
+            atModeSet ? "before the mode set" : "without a mode set");
+  s_dvEngagingAtModeSet = atModeSet;
+  aml_dv_on(s_dvDiscDeferredMode);
+  s_dvEngagingAtModeSet = false;
+  aml_dv_dump_state("disc_deferred/engaged");
+}
+
+void aml_dv_engage_stale_deferred_disc()
+{
+  // The mode set normally follows the decoder open by ~1.5 s. Past this, none
+  // is coming (e.g. playback not fullscreen): engage without one rather than
+  // leave the title without DV output.
+  constexpr int64_t STALE_MS = 3000;
+  const int64_t since = s_dvDiscDeferredSinceMs.load();
+  if (since == 0 || aml_steady_ms() - since < STALE_MS)
+    return;
+  CLog::Log(LOGINFO, "AMLUtils::{} - disc session: no mode set within {} ms", __FUNCTION__,
+            STALE_MS);
+  aml_dv_engage_deferred_disc(false);
 }
 
 bool aml_dv_playback_active()
