@@ -46,7 +46,9 @@ def main():
     # scheduler formulas and tests by extracting its complete production body.
     selection = function(rh, 'struct FrameSelection\n') + ';'
     element = function(oh, 'struct SElement') + ';'
-    source = PRELUDE.replace('@ELEMENT@', element).replace('@SELECTION@', selection)
+    source = (PRELUDE.replace('@ELEMENT@', element).replace('@SELECTION@', selection)
+              .replace('@PASS@', function(rh, 'struct VideoRenderPass') + ';')
+              .replace('@DRAW@', function(rh, 'struct PreparedVideoDraw') + ';'))
     source += function(ov, 'bool IsPqMenuImage(')
     for name in ['SetOverlays', 'Release(int', 'Release(std::vector', 'ReleaseUnused',
                  'Render(const OverlayBatch&', 'RenderPqMenu', 'HasPqMenuOverlay',
@@ -56,8 +58,9 @@ def main():
     source += '\n' + function(ov, 'CRenderer::OverlayBatch CRenderer::GetOverlays(')
     for name in ['SelectFrame', 'ClearFrameSelection', 'FrameMove', 'ProcessPresentationQueue',
                  'RetireBuffer', 'PrepareNextRender', 'DiscardBuffer', 'UpdateGuiPresentationState',
-                 'RenderCapture', 'PresentSingle', 'PresentFields', 'PresentBlend']:
+                 'RenderCapture', 'SubmitVideoDraw']:
         source += '\n' + function(rm, 'void CRenderManager::' + name + '(')
+    source += '\n' + function(rm, 'CRenderManager::PreparedVideoDraw CRenderManager::PrepareVideoDraw(')
     for name in ['IsGuiLayer', 'IsPresenting']:
         source += '\n' + function(rm, 'bool CRenderManager::' + name + '(')
     start = render.index('    CWinSystemBase* winSystem =')
@@ -79,6 +82,7 @@ def main():
 
 PRELUDE = r'''
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -161,6 +165,8 @@ struct CRenderManager {
   struct SPresent{double pts=0;EFIELDSYNC presentfield=FS_NONE;EPRESENTMETHOD presentmethod=PRESENT_METHOD_SINGLE;};
   SPresent m_Queue[NUM_BUFFERS];
   @SELECTION@
+  @PASS@
+  @DRAW@
   std::shared_ptr<const FrameSelection> m_frameSelection;
   CCriticalSection m_statelock,m_presentlock;
   Renderer renderer;Renderer* m_pRenderer=&renderer;OVERLAY::CRenderer m_overlays;
@@ -181,9 +187,8 @@ struct CRenderManager {
   void SelectFrame();void ClearFrameSelection();void FrameMove();void ProcessPresentationQueue();void RetireBuffer(int);
   void PrepareNextRender();void DiscardBuffer();void UpdateGuiPresentationState(bool);void RenderCapture(CRenderCapture*);
   bool IsGuiLayer();bool IsPresenting();void DrawMenus();
-  void PresentSingle(const FrameSelection&,bool,DWORD,DWORD);
-  void PresentFields(const FrameSelection&,bool,DWORD,DWORD);
-  void PresentBlend(const FrameSelection&,bool,DWORD,DWORD);
+  static PreparedVideoDraw PrepareVideoDraw(const FrameSelection&,EPRESENTSTEP,bool,DWORD,DWORD);
+  void SubmitVideoDraw(const PreparedVideoDraw&);
 };
 '''
 
@@ -216,13 +221,15 @@ int main(){
   {CRenderManager r;r.m_presentsource=2;r.m_presentsourcePast=1;
    r.m_Queue[2]={321,CRenderManager::FS_TOP,CRenderManager::PRESENT_METHOD_BOB};r.SelectFrame();
    r.m_presentsource=4;r.m_presentsourcePast=3;r.m_Queue[2].presentfield=CRenderManager::FS_BOT;
-   const auto& f=*r.m_frameSelection;r.m_presentstep=CRenderManager::PRESENT_FRAME;r.PresentFields(f,true,0,255);
-   r.m_presentstep=CRenderManager::PRESENT_FRAME2;r.PresentFields(f,false,0,255);
+   const auto& f=*r.m_frameSelection;r.m_presentstep=CRenderManager::PRESENT_FRAME;r.SubmitVideoDraw(r.PrepareVideoDraw(f,r.m_presentstep,true,0,255));
+   r.m_presentstep=CRenderManager::PRESENT_FRAME2;r.SubmitVideoDraw(r.PrepareVideoDraw(f,r.m_presentstep,false,0,255));
    assert(r.renderer.calls[0].source==2&&r.renderer.calls[0].past==1);
    assert(r.renderer.calls[0].flags==(RENDER_FLAG_TOP|RENDER_FLAG_FIELD0));
    assert(r.renderer.calls[1].flags==(RENDER_FLAG_BOT|RENDER_FLAG_FIELD1));
-   r.PresentSingle(f,false,0,255);assert(r.renderer.calls.back().flags==RENDER_FLAG_TOP);
-   r.PresentBlend(f,true,0,255);assert(r.renderer.calls.back().alpha==127);
+   auto other=f;other.present.presentmethod=CRenderManager::PRESENT_METHOD_SINGLE;
+   r.SubmitVideoDraw(r.PrepareVideoDraw(other,r.m_presentstep,false,0,255));assert(r.renderer.calls.back().flags==RENDER_FLAG_TOP);
+   other.present.presentmethod=CRenderManager::PRESENT_METHOD_BLEND;
+   r.SubmitVideoDraw(r.PrepareVideoDraw(other,r.m_presentstep,true,0,255));assert(r.renderer.calls.back().alpha==127);
    CRenderCapture capture;r.RenderCapture(&capture);assert(r.renderer.captureSource==2);
    r.ClearFrameSelection();r.RenderCapture(&capture);assert(r.renderer.captureSource==4);
    r.renderer.captureOk=false;r.RenderCapture(&capture);assert(capture.state==CAPTURESTATE_FAILED);}

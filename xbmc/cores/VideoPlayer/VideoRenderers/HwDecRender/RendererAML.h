@@ -41,9 +41,17 @@ public:
   virtual bool Supports(ERENDERFEATURE feature) const override;
 
 private:
+  // Submission rectangles only. Buffer/codec and final display conversion
+  // remain live under the existing synchronous ownership and generation gates.
+  struct PreparedVideoGeometry
+  {
+    CRect source;
+    CRect destination;
+  };
+
   // Called synchronously, in order, by RenderUpdate on its calling thread.
-  void PrepareVideoLayer();
-  void CommitVideoLayer(int index);
+  PreparedVideoGeometry PrepareVideoLayer();
+  void CommitVideoLayer(int index, const PreparedVideoGeometry& geometry);
   void PollVideoLayer();
 
   void Reset();

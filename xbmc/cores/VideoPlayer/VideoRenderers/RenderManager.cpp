@@ -967,14 +967,10 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
   if (!gui || m_pRenderer->IsGuiLayer())
   {
-    const SPresent& m = frame->present;
-
-    if( m.presentmethod == PRESENT_METHOD_BOB )
-      PresentFields(*frame, clear, flags, alpha);
-    else if( m.presentmethod == PRESENT_METHOD_BLEND )
-      PresentBlend(*frame, clear, flags, alpha);
-    else
-      PresentSingle(*frame, clear, flags, alpha);
+    const auto step =
+        frame->present.presentmethod == PRESENT_METHOD_BOB ? m_presentstep : PRESENT_IDLE;
+    const PreparedVideoDraw draw = PrepareVideoDraw(*frame, step, clear, flags, alpha);
+    SubmitVideoDraw(draw);
   }
 
   if (gui)
@@ -1211,54 +1207,48 @@ bool CRenderManager::IsVideoLayer()
   return false;
 }
 
-/* simple present method */
-void CRenderManager::PresentSingle(const FrameSelection& frame, bool clear, DWORD flags, DWORD alpha)
+CRenderManager::PreparedVideoDraw CRenderManager::PrepareVideoDraw(const FrameSelection& frame,
+                                                                 EPRESENTSTEP step,
+                                                                 bool clear,
+                                                                 DWORD flags,
+                                                                 DWORD alpha)
 {
-  const SPresent& m = frame.present;
+  PreparedVideoDraw draw{frame.source, frame.past};
+  const auto field = frame.present.presentfield;
 
-  if (m.presentfield == FS_BOT)
-    m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_BOT, alpha);
-  else if (m.presentfield == FS_TOP)
-    m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_TOP, alpha);
+  if (frame.present.presentmethod == PRESENT_METHOD_BOB)
+  {
+    if (step == PRESENT_FRAME)
+      flags |= (field == FS_BOT ? RENDER_FLAG_BOT : RENDER_FLAG_TOP) | RENDER_FLAG_FIELD0;
+    else
+      flags |= (field == FS_TOP ? RENDER_FLAG_BOT : RENDER_FLAG_TOP) | RENDER_FLAG_FIELD1;
+  }
+  else if (frame.present.presentmethod == PRESENT_METHOD_BLEND)
+  {
+    draw.passes[0] = {
+        clear, flags | (field == FS_BOT ? RENDER_FLAG_BOT : RENDER_FLAG_TOP) | RENDER_FLAG_NOOSD, alpha};
+    draw.passes[1] = {false, flags | (field == FS_BOT ? RENDER_FLAG_TOP : RENDER_FLAG_BOT), alpha / 2};
+    draw.count = 2;
+    return draw;
+  }
   else
-    m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags, alpha);
+  {
+    if (field == FS_BOT)
+      flags |= RENDER_FLAG_BOT;
+    else if (field == FS_TOP)
+      flags |= RENDER_FLAG_TOP;
+  }
+
+  draw.passes[0] = {clear, flags, alpha};
+  return draw;
 }
 
-/* new simpler method of handling interlaced material, *
- * we just render the two fields right after eachother */
-void CRenderManager::PresentFields(const FrameSelection& frame, bool clear, DWORD flags, DWORD alpha)
+void CRenderManager::SubmitVideoDraw(const PreparedVideoDraw& draw)
 {
-  const SPresent& m = frame.present;
-
-  if(m_presentstep == PRESENT_FRAME)
+  for (unsigned int i = 0; i < draw.count; ++i)
   {
-    if( m.presentfield == FS_BOT)
-      m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_FIELD0, alpha);
-    else
-      m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_FIELD0, alpha);
-  }
-  else
-  {
-    if( m.presentfield == FS_TOP)
-      m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_FIELD1, alpha);
-    else
-      m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_FIELD1, alpha);
-  }
-}
-
-void CRenderManager::PresentBlend(const FrameSelection& frame, bool clear, DWORD flags, DWORD alpha)
-{
-  const SPresent& m = frame.present;
-
-  if( m.presentfield == FS_BOT )
-  {
-    m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_BOT | RENDER_FLAG_NOOSD, alpha);
-    m_pRenderer->RenderUpdate(frame.source, frame.past, false, flags | RENDER_FLAG_TOP, alpha / 2);
-  }
-  else
-  {
-    m_pRenderer->RenderUpdate(frame.source, frame.past, clear, flags | RENDER_FLAG_TOP | RENDER_FLAG_NOOSD, alpha);
-    m_pRenderer->RenderUpdate(frame.source, frame.past, false, flags | RENDER_FLAG_BOT, alpha / 2);
+    const auto& pass = draw.passes[i];
+    m_pRenderer->RenderUpdate(draw.source, draw.past, pass.clear, pass.flags, pass.alpha);
   }
 }
 

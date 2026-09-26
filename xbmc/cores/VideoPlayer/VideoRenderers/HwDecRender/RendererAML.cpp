@@ -172,17 +172,18 @@ bool CRendererAML::Flush(bool saveBuffers)
 
 void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha)
 {
-  PrepareVideoLayer();
-  CommitVideoLayer(index);
+  const PreparedVideoGeometry geometry = PrepareVideoLayer();
+  CommitVideoLayer(index, geometry);
   PollVideoLayer();
 }
 
-void CRendererAML::PrepareVideoLayer()
+CRendererAML::PreparedVideoGeometry CRendererAML::PrepareVideoLayer()
 {
   ManageRenderArea();
+  return {m_sourceRect, m_destRect};
 }
 
-void CRendererAML::CommitVideoLayer(int index)
+void CRendererAML::CommitVideoLayer(int index, const PreparedVideoGeometry& geometry)
 {
   CVideoBuffer* videoBuffer = m_buffers[index].videoBuffer;
   if (videoBuffer)
@@ -194,7 +195,8 @@ void CRendererAML::CommitVideoLayer(int index)
       if (pts != m_prevVPts)
       {
         amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, amli->m_presentationGeneration);
-        amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect, amli->m_presentationGeneration);
+        amli->m_amlCodec->SetVideoRect(geometry.source, geometry.destination,
+                                     amli->m_presentationGeneration);
         amli->m_amlCodec = nullptr; //Mark frame as processed
         m_prevVPts = pts;
       }

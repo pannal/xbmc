@@ -163,12 +163,6 @@ public:
 
 protected:
 
-  struct FrameSelection;
-
-  void PresentSingle(const FrameSelection& frame, bool clear, DWORD flags, DWORD alpha);
-  void PresentFields(const FrameSelection& frame, bool clear, DWORD flags, DWORD alpha);
-  void PresentBlend(const FrameSelection& frame, bool clear, DWORD flags, DWORD alpha);
-
   void PrepareNextRender();
   bool IsPresenting();
   bool IsGuiLayer();
@@ -250,6 +244,31 @@ protected:
     OVERLAY::CRenderer::OverlayBatch overlays;
   };
   std::shared_ptr<const FrameSelection> m_frameSelection;
+
+  struct VideoRenderPass
+  {
+    bool clear;
+    DWORD flags;
+    DWORD alpha;
+  };
+
+  // Per-Render values, not a buffer lease. BOB's step is sampled at the actual
+  // draw, independently of the longer-lived FrameSelection. These inputs are
+  // consumed synchronously; backend geometry still evaluates in RenderUpdate.
+  struct PreparedVideoDraw
+  {
+    int source;
+    int past;
+    std::array<VideoRenderPass, 2> passes{};
+    unsigned int count{1};
+  };
+
+  static PreparedVideoDraw PrepareVideoDraw(const FrameSelection& frame,
+                                           EPRESENTSTEP step,
+                                           bool clear,
+                                           DWORD flags,
+                                           DWORD alpha);
+  void SubmitVideoDraw(const PreparedVideoDraw& draw);
 
   std::deque<int> m_free;
   std::deque<int> m_queued;
