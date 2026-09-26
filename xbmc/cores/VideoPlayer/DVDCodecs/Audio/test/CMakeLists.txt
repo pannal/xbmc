@@ -1,4 +1,5 @@
-set(SOURCES TestOmniphonyPcmStream.cpp
+set(SOURCES TestOmniphonyCommandQueue.cpp
+            TestOmniphonyPcmStream.cpp
             TestOmniphonyRateCheck.cpp
             TestOmniphonySpatialBed.cpp
             TestOmniphonyTimeline.cpp)

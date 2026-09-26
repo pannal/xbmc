@@ -15,11 +15,13 @@ endif()
 # and the factory keeps the ordinary decoders; see DVDFactoryCodec.cpp.
 if(CORE_SYSTEM_NAME STREQUAL linux)
   list(APPEND SOURCES DVDAudioCodecOmniphony.cpp
+                      OmniphonyCommandQueue.cpp
                       OmniphonyPcmSource.cpp
                       OmniphonyPcmStream.cpp
                       OmniphonyRateCheck.cpp
                       OmniphonyTimeline.cpp)
   list(APPEND HEADERS DVDAudioCodecOmniphony.h
+                      OmniphonyCommandQueue.h
                       OmniphonyPcmSource.h
                       OmniphonyPcmStream.h
                       OmniphonyTimeline.h)
