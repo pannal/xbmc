@@ -54,8 +54,8 @@ constexpr unsigned int DV_FLAG_FORCE_DOVI_LL = 0x4000;
 constexpr auto ROUTE_INPUTS_REFRESH = std::chrono::milliseconds(250);
 
 // The first engage of the VPP route waits this long: while DV re-engages at a
-// playlist change its enable state reads off for ~100 ms, which would look
-// like HDR10 output.
+// playlist change it reads as off or in bypass for ~350 ms, which would look
+// like HDR10 output (MenuCompositeRoute() also takes no route then).
 constexpr auto OSD_ROUTE_FIRST_SETTLE = std::chrono::milliseconds(250);
 
 unsigned int ReadUint(const char* path)
@@ -70,7 +70,7 @@ unsigned int ReadUint(const char* path)
 constexpr auto MENU_RELEASE_DELAY = std::chrono::milliseconds(500);
 
 // Once engaged, a different route must hold this long before it is taken:
-// the DV enable state reads off for ~100 ms while DV re-engages at a playlist
+// DV reads as off or in bypass for ~350 ms while it re-engages at a playlist
 // change, and following that would flip the kernel switches mid-transition.
 constexpr auto MENU_ROUTE_SETTLE = std::chrono::milliseconds(500);
 
@@ -422,8 +422,9 @@ CWinSystemAmlogicGLESContext::MenuRoute CWinSystemAmlogicGLESContext::MenuCompos
   }
 
   // The DV core owned the output at the last decoder open but reads as off
-  // or in bypass now: a DV restart at a playlist change (~0.5 s), not an
-  // HDR10 session. The VPP route would engage, then flip to the DV one.
+  // or in bypass now: treated as a DV restart at a playlist change
+  // (~350 ms), not an HDR10 session. The VPP route would engage, then flip
+  // to the DV one.
   if (aml_dv_core_at_open())
     return MenuRoute::NONE;
 
@@ -634,7 +635,8 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
   const bool settled = m_pendingRouteSince != std::chrono::steady_clock::time_point{} &&
                        now - m_pendingRouteSince >
                            (firstOsd ? OSD_ROUTE_FIRST_SETTLE : MENU_ROUTE_SETTLE);
-  const bool immediate = (m_menuRoute == MenuRoute::NONE && !firstOsd) || !m_menuShown;
+  const bool immediate =
+      (m_menuRoute == MenuRoute::NONE && !firstOsd) || !m_menuShown || m_menuEngageFailed;
   if (want != m_menuRoute && (immediate || settled))
   {
     m_pendingRouteSince = {};
