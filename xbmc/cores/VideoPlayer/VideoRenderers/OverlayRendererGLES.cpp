@@ -142,8 +142,9 @@ static void LoadTexture(GLenum target,
 
 namespace
 {
-// Disc menu graphics on the composite's raw PQ route: premultiply plainly, the
-// composite recovers the authored colour by dividing by alpha.
+// Disc menu graphics on the composite's raw PQ route: premultiply plainly; the
+// composite passes the premultiplied PQ values through and the display
+// pipeline blends them, so opaque pixels reach it exactly as authored.
 uint32_t PremultiplyPlain(uint32_t c)
 {
   const uint32_t a = (c >> PIXEL_ASHIFT) & 0xff;

@@ -8,11 +8,16 @@
 
 #version 100
 
+// The LUTs hold values down to ~1e-6 (fp16 subnormals, flushed on Mali).
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
 precision mediump float;
+#endif
 varying vec2 v_tex;
 uniform sampler2D u_samp;       // GUI FBO texture (premultiplied, gamma encoded)
-uniform sampler2D u_lutDegamma; // gamma-encoded -> linear LUT (the OSD's 2.2 power)
-uniform sampler2D u_lutTF;      // gamma-encoded -> PQ LUT at the GUI white
+uniform sampler2D u_lutDegamma; // GUI code -> linear, the route's SDR decode (0..1 = white)
+uniform sampler2D u_lutTF;      // 2.2-encoded linear -> PQ at the GUI white
 uniform sampler2D u_hdr;        // PQ-authored disc menu graphics,
                                 // premultiplied, already in the output encoding
 uniform float u_hasHdr;         // 1.0 when u_hdr holds content this frame
@@ -44,18 +49,31 @@ void main()
   if (gui.a == 0.0 && hdr.a == 0.0)
     discard;
 
-  // Encode the premultiplied GUI value, as the OSD's SDR->HDR stage does with
-  // the back buffer: a translucent GUI then keeps the brightness it has
-  // without a disc menu.
-  vec3 linear = vec3(lut(u_lutDegamma, gui.r),
-                     lut(u_lutDegamma, gui.g),
-                     lut(u_lutDegamma, gui.b));
-  linear = max(bt709_to_bt2020 * linear, vec3(0.0));
+  vec3 result = vec3(0.0);
+  if (gui.a > 0.0)
+  {
+    // Encode the premultiplied GUI value, as the hardware does with the back
+    // buffer: a translucent GUI then keeps the brightness it has without a
+    // disc menu.
+    vec3 linear = vec3(lut(u_lutDegamma, gui.r),
+                       lut(u_lutDegamma, gui.g),
+                       lut(u_lutDegamma, gui.b));
+    linear = max(bt709_to_bt2020 * linear, vec3(0.0));
 
-  // Back to the gamma domain for the PQ LUT: PQ is steep near black, and a LUT
-  // indexed in linear light has too few entries there.
-  vec3 g = pow(min(linear, vec3(1.0)), vec3(1.0 / 2.2));
-  vec3 result = vec3(lut(u_lutTF, g.r), lut(u_lutTF, g.g), lut(u_lutTF, g.b));
+    // Back to a gamma domain for the PQ LUT: PQ is steep near black, and a
+    // LUT indexed in linear light has too few entries there.
+    vec3 g = pow(min(linear, vec3(1.0)), vec3(1.0 / 2.2));
+    result = vec3(lut(u_lutTF, g.r), lut(u_lutTF, g.g), lut(u_lutTF, g.b));
+
+    // The hardware encoded the GUI to PQ at ~12 bits; this goes out at 8.
+    // An ordered dither (4x4 Bayer, +-0.5 LSB) keeps gradients from banding.
+    vec2 p = floor(gl_FragCoord.xy);
+    vec2 p1 = mod(p, 2.0);
+    vec2 p2 = mod(floor(p / 2.0), 2.0);
+    float bayer = (4.0 * mod(2.0 * p1.x + 3.0 * p1.y, 4.0) +
+                   mod(2.0 * p2.x + 3.0 * p2.y, 4.0) + 0.5) / 16.0;
+    result = max(result + (bayer - 0.5) / 255.0, vec3(0.0));
+  }
 
   // GUI over the disc menu graphics, premultiplied: the graphics are already
   // in the output encoding and pass through untransformed.

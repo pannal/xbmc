@@ -262,6 +262,9 @@ void CalculateVSVDBPayload_2();
 void aml_dv_enable_fel();
 void aml_hevc_nal_skip_policy(const int value);
 void aml_set_transfer_pq(StreamHdrType hdrType, unsigned int bitDepth);
+// The decision aml_set_transfer_pq made at the last decoder/renderer open.
+// Unlike the graphic context's flag, a renderer flush does not clear it.
+bool aml_transfer_pq_at_open();
 bool aml_has_frac_rate_policy();
 void aml_video_mute(bool mute);
 void aml_set_audio_passthrough(bool passthrough);

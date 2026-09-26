@@ -21,9 +21,24 @@ public:
 
   void SetProjection(const GLfloat* proj) { m_proj = proj; }
 
-  // GUI reference white, in PQ-normalized units (nits / 10000). Takes effect on
-  // the next CreateLUTs, which bakes it into the PQ LUT.
-  void SetSdrPeak(float peak) { m_sdrPeak = peak; }
+  // How the hardware decodes the SDR GUI on the active route: a BT.1886 curve
+  // (a pure power when blackLift is 0) with white at `white` (PQ-normalized,
+  // nits / 10000) and black at blackLift * white. inputScale is the factor
+  // Kodi's per-primitive path applies to GUI code values before that decode.
+  // Takes effect on the next CreateLUTs.
+  struct GuiTransfer
+  {
+    float gamma = 2.2f;
+    float blackLift = 0.0f;
+    float inputScale = 1.0f;
+    float white = 203.0f / 10000.0f;
+    bool operator==(const GuiTransfer& o) const
+    {
+      return gamma == o.gamma && blackLift == o.blackLift && inputScale == o.inputScale &&
+             white == o.white;
+    }
+  };
+  void SetGuiTransfer(const GuiTransfer& transfer) { m_transfer = transfer; }
 
   bool CreateLUTs(int colorTransfer);
 
@@ -44,11 +59,11 @@ private:
   static constexpr int LUT_SIZE = 256;
 
   GLuint CreateLUTTexture(const std::vector<float>& data);
-  static std::vector<float> GenerateDegammaLUT();
-  static std::vector<float> GeneratePQLUT(float sdrPeak);
+  static std::vector<float> GenerateDegammaLUT(const GuiTransfer& transfer);
+  static std::vector<float> GeneratePQLUT(float white);
 
   const GLfloat* m_proj{nullptr};
-  float m_sdrPeak{203.0f / 10000.0f};
+  GuiTransfer m_transfer;
 
   GLuint m_lutDegammaTexId{0};
   GLuint m_lutTFTexId{0};

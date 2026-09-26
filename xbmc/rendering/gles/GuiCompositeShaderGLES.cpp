@@ -33,10 +33,9 @@ float ForwardPQ(float L)
   return std::pow((ST2084_c1 + ST2084_c2 * Lm1) / (1.0f + ST2084_c3 * Lm1), ST2084_m2);
 }
 
-// The Amlogic OSD SDR->HDR stage decodes the GUI with a pure 2.2 power
-// (eo_y_lut_sdr), and dolby_core2_set's VP curve is the same power; matching
-// it keeps Kodi's own controls over a disc menu as they look without one.
-constexpr float GUI_GAMMA = 2.2f;
+// The shader re-encodes linear light with this power to index the PQ LUT: PQ
+// is steep near black, where a linear-light index has too few entries.
+constexpr float INDEX_GAMMA = 2.2f;
 
 } // namespace
 
@@ -144,28 +143,33 @@ GLuint CGuiCompositeShaderGLES::CreateLUTTexture(const std::vector<float>& data)
   return texId;
 }
 
-std::vector<float> CGuiCompositeShaderGLES::GenerateDegammaLUT()
+std::vector<float> CGuiCompositeShaderGLES::GenerateDegammaLUT(const GuiTransfer& t)
 {
+  // BT.1886, normalized to white: L = a * max(V + b, 0)^gamma with the black
+  // at blackLift. blackLift 0 is a pure power.
+  const double gamma = static_cast<double>(t.gamma);
+  const double lb = std::pow(static_cast<double>(t.blackLift), 1.0 / gamma);
+  const double a = std::pow(1.0 - lb, gamma);
+  const double b = lb / (1.0 - lb);
   std::vector<float> lut(LUT_SIZE);
   for (int i = 0; i < LUT_SIZE; i++)
   {
-    float x = static_cast<float>(i) / (LUT_SIZE - 1);
-    lut[i] = std::pow(x, GUI_GAMMA);
+    const double v = static_cast<double>(t.inputScale) * i / (LUT_SIZE - 1);
+    lut[i] = static_cast<float>(a * std::pow(std::max(v + b, 0.0), gamma));
   }
   return lut;
 }
 
-std::vector<float> CGuiCompositeShaderGLES::GeneratePQLUT(float sdrPeak)
+std::vector<float> CGuiCompositeShaderGLES::GeneratePQLUT(float white)
 {
-  // PQ is display-referred (absolute luminance). sdrPeak is in PQ-normalized
+  // PQ is display-referred (absolute luminance). white is in PQ-normalized
   // units (nits / 10000), e.g. 300 nits = 0.03. The LUT is indexed by the
-  // gamma-encoded value (the shader re-encodes after the gamut matrix): PQ is
-  // steep near black, where a linear-light index has too few entries.
+  // INDEX_GAMMA-encoded linear value the shader computes after the gamut matrix.
   std::vector<float> lut(LUT_SIZE);
   for (int i = 0; i < LUT_SIZE; i++)
   {
     float x = static_cast<float>(i) / (LUT_SIZE - 1);
-    lut[i] = ForwardPQ(std::pow(x, GUI_GAMMA) * sdrPeak);
+    lut[i] = ForwardPQ(std::pow(x, INDEX_GAMMA) * white);
   }
   return lut;
 }
@@ -175,9 +179,9 @@ bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer)
   // Build into locals and only commit on success. Deleting the live textures up
   // front would leave the shader sampling destroyed/zero texture names on any
   // failure - the GUI composites to solid black, and a caller that retries (a
-  // live SetSdrPeak change) would thrash glDeleteTextures/glTexImage2D every
+  // live transfer change) would thrash glDeleteTextures/glTexImage2D every
   // frame. Failure must be a no-op so the previous LUTs keep working.
-  GLuint degamma = CreateLUTTexture(GenerateDegammaLUT());
+  GLuint degamma = CreateLUTTexture(GenerateDegammaLUT(m_transfer));
   if (!degamma)
   {
     CLog::Log(LOGERROR, "CGuiCompositeShaderGLES::CreateLUTs - failed to create degamma LUT");
@@ -192,7 +196,7 @@ bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer)
     return false;
   }
 
-  GLuint tf = CreateLUTTexture(GeneratePQLUT(m_sdrPeak));
+  GLuint tf = CreateLUTTexture(GeneratePQLUT(m_transfer.white));
   if (!tf)
   {
     CLog::Log(LOGERROR, "CGuiCompositeShaderGLES::CreateLUTs - failed to create PQ LUT");
@@ -201,7 +205,7 @@ bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer)
   }
   CLog::Log(LOGDEBUG,
             "CGuiCompositeShaderGLES::CreateLUTs - created PQ LUT ({} entries, {:.0f} nits)",
-            LUT_SIZE, m_sdrPeak * 10000.0f);
+            LUT_SIZE, m_transfer.white * 10000.0f);
 
   if (m_lutDegammaTexId)
     glDeleteTextures(1, &m_lutDegammaTexId);

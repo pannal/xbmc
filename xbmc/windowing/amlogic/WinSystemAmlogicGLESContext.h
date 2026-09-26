@@ -82,7 +82,7 @@ private:
   MenuRoute MenuCompositeRoute() const;
   bool EngageMenuComposite(MenuRoute route);
   void DisengageMenuComposite();
-  float MenuCompositeGuiWhite(MenuRoute route) const;
+  CGuiCompositeShaderGLES::GuiTransfer MenuCompositeGuiTransfer(MenuRoute route) const;
   bool EnsureFbo(CFrameBufferObject& fbo, int& width, int& height);
   bool EnsureCompositeFbos();
   void CompositeGui();
@@ -109,11 +109,14 @@ private:
   MenuRoute m_menuRoute = MenuRoute::NONE;
   RouteInputs m_routeInputs;
   std::chrono::steady_clock::time_point m_routeInputsRead{};
-  // The stream HDR type the output was last seen PQ for while a menu is up.
-  StreamHdrType m_pqOutputHdrType = StreamHdrType::HDR_TYPE_NONE;
-  // Kernel switch to set after the next swap.
-  const char* m_pendingSwitchPath = nullptr;
-  int m_pendingSwitchValue = 0;
+  CGuiCompositeShaderGLES::GuiTransfer m_guiTransfer;
+  // Kernel switches to set after the next swap (a route change sets two).
+  struct PendingSwitch
+  {
+    const char* path = nullptr;
+    int value = 0;
+  };
+  PendingSwitch m_pendingSwitches[2];
   MenuRoute m_pendingRoute = MenuRoute::NONE;
   std::chrono::steady_clock::time_point m_pendingRouteSince{};
   std::unique_ptr<CGuiCompositeShaderGLES> m_compositeShader;

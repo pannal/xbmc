@@ -46,6 +46,9 @@ constexpr const char* DV_GRAPHIC_MAX = "/sys/module/amdolby_vision/parameters/do
 constexpr const char* VPP_SDR_HDR_GAIN = "/sys/module/am_vecm/parameters/oo_y_lut_sdr_hdr";
 constexpr const char* DV_OUTPUT_MODE = "/sys/module/amdolby_vision/parameters/dolby_vision_mode";
 constexpr const char* DV_LL_POLICY = "/sys/module/amdolby_vision/parameters/dolby_vision_ll_policy";
+constexpr const char* DV_GRAPHIC_MIN = "/sys/module/amdolby_vision/parameters/dolby_vision_graphic_min";
+constexpr const char* DV_FLAGS = "/sys/module/amdolby_vision/parameters/dolby_vision_flags";
+constexpr unsigned int DV_FLAG_FORCE_DOVI_LL = 0x4000;
 
 // Route inputs are sysfs reads: refresh them at most this often.
 constexpr auto ROUTE_INPUTS_REFRESH = std::chrono::milliseconds(250);
@@ -157,6 +160,7 @@ bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
   if (m_menuRoute != MenuRoute::NONE)
     DisengageMenuComposite();
   ApplyPendingKernelSwitch(); // no more swaps to wait for
+  m_compositeShader.reset();   // while its context exists
 
   m_pGLContext.DestroyContext();
   m_pGLContext.Destroy();
@@ -354,20 +358,28 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
 
 void CWinSystemAmlogicGLESContext::QueueKernelSwitch(const char* path, int value)
 {
-  // Two changes before a swap (engage and release in one frame): the earlier
-  // one is superseded only for the same switch.
-  if (m_pendingSwitchPath && m_pendingSwitchPath != path)
-    ApplyPendingKernelSwitch();
-  m_pendingSwitchPath = path;
-  m_pendingSwitchValue = value;
+  // A route change queues the old switch off and the new one on in the same
+  // frame: both wait for the swap. A second change of the same switch before
+  // then supersedes the first.
+  for (PendingSwitch& p : m_pendingSwitches)
+  {
+    if (p.path == path || !p.path)
+    {
+      p.path = path;
+      p.value = value;
+      return;
+    }
+  }
 }
 
 void CWinSystemAmlogicGLESContext::ApplyPendingKernelSwitch()
 {
-  if (!m_pendingSwitchPath)
-    return;
-  SetKernelSwitch(m_pendingSwitchPath, m_pendingSwitchValue);
-  m_pendingSwitchPath = nullptr;
+  for (PendingSwitch& p : m_pendingSwitches)
+  {
+    if (p.path)
+      SetKernelSwitch(p.path, p.value);
+    p.path = nullptr;
+  }
 }
 
 void CWinSystemAmlogicGLESContext::RequestMenuComposite(bool menuShown)
@@ -398,7 +410,8 @@ CWinSystemAmlogicGLESContext::MenuRoute CWinSystemAmlogicGLESContext::MenuCompos
     return MenuRoute::NONE;
 
   const RouteInputs& in = m_routeInputs;
-  if (in.dvEnable)
+  // With the DV core in bypass the OSD goes through the VPP: the HDR10 test.
+  if (in.dvEnable && in.dvOutputMode != DOLBY_VISION_OUTPUT_MODE_BYPASS)
   {
     // The video processor modes (DV processed for a non-DV display) replace
     // core2's graphics curve with an SDR one: PQ graphics are unvalidated there.
@@ -408,49 +421,55 @@ CWinSystemAmlogicGLESContext::MenuRoute CWinSystemAmlogicGLESContext::MenuCompos
     return in.dvSwitch ? MenuRoute::DV_CORE2 : MenuRoute::NONE;
   }
 
-  // HDR10 output. The renderer clears the PQ transfer flag on a flush (a seek
-  // or a menu jump) and sets it again only when a decoder opens: while the
-  // stream it was set for plays on, the output is still PQ.
-  const bool pqOutput =
-      GetGfxContext().IsTransferPQ() ||
-      (m_pqOutputHdrType != StreamHdrType::HDR_TYPE_NONE &&
-       GetGfxContext().GetHDRType() == m_pqOutputHdrType);
-  if (pqOutput)
+  // HDR10 output. CRendererAML::Reset (a renderer flush or teardown) clears
+  // the context's PQ transfer flag without the output changing; the decision
+  // made at the last decoder open is what the output still carries.
+  if (aml_transfer_pq_at_open())
     return in.osdSwitch ? MenuRoute::OSD_VPP : MenuRoute::NONE;
 
   return MenuRoute::NONE;
 }
 
-float CWinSystemAmlogicGLESContext::MenuCompositeGuiWhite(MenuRoute route) const
+CGuiCompositeShaderGLES::GuiTransfer CWinSystemAmlogicGLESContext::MenuCompositeGuiTransfer(
+    MenuRoute route) const
 {
-  // Match the GUI white the hardware gives the SDR GUI on the same route, so
-  // Kodi's own controls over a menu look as they do without one.
+  // Decode the GUI the way the hardware decodes the SDR GUI on the same route,
+  // so Kodi's own controls over a menu look as they do without one. The
+  // per-primitive path scales GUI code values by the guipeakluminance factor
+  // whenever the output is PQ; the hardware then decodes the scaled value.
+  CGuiCompositeShaderGLES::GuiTransfer t;
+  t.inputScale = aml_transfer_pq_at_open() ? std::clamp(GetGuiSdrPeakLuminance(), 0.0f, 1.0f) : 1.0f;
+
   if (route == MenuRoute::DV_CORE2)
   {
-    // core2 maps SDR graphics white to dolby_vision_graphic_max nits; 0 means
-    // its target table (amdolby_vision dv_target_graphics_max / _LL_max).
+    // core2 decodes SDR graphics with BT.1886 (gamma 2.4) between
+    // dolby_vision_graphic_min (1/10000 nit) and dolby_vision_graphic_max
+    // nits; a max of 0 means its target table (amdolby_vision
+    // dv_target_graphics_max / _LL_max).
     unsigned int nits = ReadUint(DV_GRAPHIC_MAX);
     if (nits == 0)
     {
-      const bool dvSource = GetGfxContext().GetHDRType() ==
-                            StreamHdrType::HDR_TYPE_DOLBYVISION;
+      const StreamHdrType hdr = GetGfxContext().GetHDRType();
+      const bool hdrSource =
+          hdr == StreamHdrType::HDR_TYPE_HDR10 || hdr == StreamHdrType::HDR_TYPE_HDR10PLUS;
+      const bool ll = ReadUint(DV_LL_POLICY) >= DOLBY_VISION_LL_YUV422 ||
+                      (ReadUint(DV_FLAGS) & DV_FLAG_FORCE_DOVI_LL);
       if (m_routeInputs.dvOutputMode == DOLBY_VISION_OUTPUT_MODE_HDR10)
         nits = 316;
-      else if (ReadUint(DV_LL_POLICY) >= DOLBY_VISION_LL_YUV422 && !dvSource)
+      else if (ll && hdrSource)
         nits = 210;
       else
         nits = 300;
     }
-    // The per-primitive path scales GUI code values by the guipeakluminance
-    // factor whenever it is active; core2 then decodes them.
-    const float scale =
-        GetGfxContext().IsTransferPQ() ? std::clamp(GetGuiSdrPeakLuminance(), 0.0f, 1.0f) : 1.0f;
-    return nits / 10000.0f * std::pow(scale, 2.2f);
+    t.gamma = 2.4f;
+    t.white = nits / 10000.0f;
+    t.blackLift = ReadUint(DV_GRAPHIC_MIN) / 10000.0f / nits;
+    return t;
   }
 
-  // The VPP's OSD SDR->HDR stage multiplies SDR white by oo_y_lut_sdr_hdr
-  // (16/512 by default, 312.5 nits); the per-primitive path scales GUI code
-  // values by the guipeakluminance factor before that.
+  // The VPP's OSD SDR->HDR stage decodes with a pure 2.2 power (eo_y_lut_sdr)
+  // and multiplies SDR white by oo_y_lut_sdr_hdr (16/512 by default, 312.5
+  // nits).
   int gain = 16;
   CSysfsPath gainLut(VPP_SDR_HDR_GAIN);
   if (gainLut.Exists())
@@ -462,8 +481,9 @@ float CWinSystemAmlogicGLESContext::MenuCompositeGuiWhite(MenuRoute route) const
     if (last > 0)
       gain = last;
   }
-  const float scale = std::clamp(GetGuiSdrPeakLuminance(), 0.0f, 1.0f);
-  return gain / 512.0f * std::pow(scale, 2.2f);
+  t.gamma = 2.2f;
+  t.white = gain / 512.0f;
+  return t;
 }
 
 bool CWinSystemAmlogicGLESContext::EngageMenuComposite(MenuRoute route)
@@ -482,12 +502,11 @@ bool CWinSystemAmlogicGLESContext::EngageMenuComposite(MenuRoute route)
     }
   }
 
-  const float white = MenuCompositeGuiWhite(route);
-  m_compositeShader->SetSdrPeak(white);
+  m_guiTransfer = MenuCompositeGuiTransfer(route);
+  m_compositeShader->SetGuiTransfer(m_guiTransfer);
   if (!m_compositeShader->CreateLUTs(AVCOL_TRC_SMPTE2084))
   {
     CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext: failed to create the menu composite LUTs");
-    m_compositeShader.reset();
     return false;
   }
 
@@ -499,7 +518,6 @@ bool CWinSystemAmlogicGLESContext::EngageMenuComposite(MenuRoute route)
     m_guiFboWidth = m_guiFboHeight = 0;
     m_menuFbo.Cleanup();
     m_menuFboWidth = m_menuFboHeight = 0;
-    m_compositeShader.reset();
     return false;
   }
 
@@ -510,8 +528,12 @@ bool CWinSystemAmlogicGLESContext::EngageMenuComposite(MenuRoute route)
   // The GUI FBO starts empty: redraw everything into it.
   MarkGuiDirty();
 
-  CLog::Log(LOGINFO, "CWinSystemAmlogicGLESContext: disc menu graphics composite on ({}, GUI white {:.0f} nits)",
-            route == MenuRoute::DV_CORE2 ? "DV core2" : "OSD passthrough", white * 10000.0f);
+  CLog::Log(LOGINFO,
+            "CWinSystemAmlogicGLESContext: disc menu graphics composite on ({}, GUI white {:.0f} "
+            "nits, gamma {:.1f}, black {:.4f} nits, scale {:.2f})",
+            route == MenuRoute::DV_CORE2 ? "DV core2" : "OSD passthrough",
+            m_guiTransfer.white * 10000.0f, m_guiTransfer.gamma,
+            m_guiTransfer.blackLift * m_guiTransfer.white * 10000.0f, m_guiTransfer.inputScale);
   return true;
 }
 
@@ -524,7 +546,7 @@ void CWinSystemAmlogicGLESContext::DisengageMenuComposite()
   m_menuFbo.Cleanup();
   m_menuFboWidth = m_menuFboHeight = 0;
   m_menuFboHasContent = false;
-  m_compositeShader.reset();
+  // The shader stays compiled for the next menu (a Mali compile is a hitch).
 
   // The back buffer held only the composite; the GUI draws straight to it again.
   MarkGuiDirty();
@@ -553,7 +575,9 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
   }
 
   const auto now = std::chrono::steady_clock::now();
-  if (now - m_routeInputsRead > ROUTE_INPUTS_REFRESH)
+  // Only while a menu is shown or engaged: the plain GUI reads nothing.
+  if ((m_menuShown || m_menuRoute != MenuRoute::NONE) &&
+      now - m_routeInputsRead > ROUTE_INPUTS_REFRESH)
   {
     m_routeInputs.dvEnable = aml_is_dv_enable();
     m_routeInputs.dvVideoProcessor = aml_dv_video_processor_mode();
@@ -561,11 +585,19 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
     m_routeInputs.dvSwitch = KernelSwitchAvailable(DV_GRAPHIC_PQ);
     m_routeInputs.osdSwitch = KernelSwitchAvailable(OSD_PQ_PASSTHROUGH);
     m_routeInputsRead = now;
+
+    // Follow the GUI decode while engaged (graphic max/min, guipeakluminance).
+    if (m_menuRoute != MenuRoute::NONE && m_compositeShader)
+    {
+      const CGuiCompositeShaderGLES::GuiTransfer t = MenuCompositeGuiTransfer(m_menuRoute);
+      if (!(t == m_guiTransfer))
+      {
+        m_compositeShader->SetGuiTransfer(t);
+        if (m_compositeShader->CreateLUTs(AVCOL_TRC_SMPTE2084))
+          m_guiTransfer = t;
+      }
+    }
   }
-  if (!m_menuShown)
-    m_pqOutputHdrType = StreamHdrType::HDR_TYPE_NONE;
-  else if (GetGfxContext().IsTransferPQ())
-    m_pqOutputHdrType = GetGfxContext().GetHDRType();
 
   const MenuRoute want = MenuCompositeRoute();
   if (want == m_menuRoute)
@@ -678,6 +710,9 @@ bool CWinSystemAmlogicGLESContext::BeginMenuOverlayRender()
 
   if (!m_menuFbo.BeginRender())
   {
+    // This frame's menus are lost; fall back to the existing paths from the
+    // next one.
+    m_menuEngageFailed = true;
     m_guiFbo.BeginRender();
     return false;
   }
@@ -715,6 +750,7 @@ void CWinSystemAmlogicGLESContext::CompositeGui()
     return;
 
   // The back buffer carries only the composite while it is active.
+  glViewport(0, 0, m_guiFboWidth, m_guiFboHeight);
   glDisable(GL_SCISSOR_TEST);
   glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
   glClear(GL_COLOR_BUFFER_BIT);

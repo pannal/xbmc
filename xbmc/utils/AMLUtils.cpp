@@ -3307,6 +3307,13 @@ void aml_hevc_nal_skip_policy(const int value)
   CSysfsPath("/sys/module/amvdec_h265/parameters/nal_skip_policy", value);  
 }
 
+static std::atomic<bool> s_transferPqAtOpen{false};
+
+bool aml_transfer_pq_at_open()
+{
+  return s_transferPqAtOpen;
+}
+
 void aml_set_transfer_pq(StreamHdrType hdrType, unsigned int bitDepth) {
 
   // Configure GUI/OSD for HDR PQ when display is in HDR PQ mode
@@ -3337,6 +3344,7 @@ void aml_set_transfer_pq(StreamHdrType hdrType, unsigned int bitDepth) {
           CStreamDetails::HdrTypeToString(hdrType),
           hdr ? "set" : "not set");
 
+  s_transferPqAtOpen = hdr;
   CServiceBroker::GetWinSystem()->GetGfxContext().SetTransferPQ(hdr);
 }
 

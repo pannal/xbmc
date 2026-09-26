@@ -81,7 +81,7 @@ void bd_free_title_info(BLURAY_TITLE_INFO* t) {delete[] t->clips[0].video_stream
 static std::queue<BD_EVENT> queuedEvents;
 int bd_get_event(BLURAY*,BD_EVENT* e) {if(queuedEvents.empty())return 0;*e=queuedEvents.front();queuedEvents.pop();return 1;}
 struct CDVDInputStream {enum ENextStream {NEXTSTREAM_NONE,NEXTSTREAM_OPEN,NEXTSTREAM_RETRY};};
-static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e,bool bt2020) { return e.Y+(bt2020?1000u:0u); }
+static uint32_t build_rgba(const BD_PG_PALETTE_ENTRY& e,bool bt2020) { return uint32_t(e.T)<<24|(e.Y+(bt2020?1000u:0u)); }
 bool g_pgsHdrToSdr=true;
 int g_discMenuHdr=0;
 namespace real {
@@ -239,6 +239,16 @@ int main(){
  assert(tagged!=valid&&tagged->m_isHdrPq&&tagged->palette[1]==1099);
  // The same IG can take the disc menu composite's raw route, on the BT.2020 matrix.
  assert(tagged->m_isPqMenuGraphics&&tagged->pqMenuPalette.size()==256&&tagged->pqMenuPalette[1]==1099);
+ // Its palette alpha is 0: nothing visible, so it does not engage the composite.
+ assert(!tagged->m_menuVisible);
+ // A fade-in through a palette-only update makes it visible (and back).
+ pal[1].T=255;ov.palette_update_flag=1;ov.w=ov.h=0;ov.img=nullptr;b.OverlayCallback(&ov);
+ assert(b.m_planes[1].o.front()->m_menuVisible);
+ pal[1].T=0;b.OverlayCallback(&ov);assert(!b.m_planes[1].o.front()->m_menuVisible);
+ ov.palette_update_flag=0;ov.w=4;ov.h=2;ov.img=runs;
+ // Drawn with a visible palette entry in use, it is visible straight away.
+ pal[2].T=128;b.OverlayCallback(&ov);assert(b.m_planes[1].o.front()->m_menuVisible);pal[2].T=0;
+ b.OverlayCallback(&ov);
  // A palette-only update keeps each image on the matrix its tag was drawn with.
  ov.palette_update_flag=1;ov.w=ov.h=0;ov.img=nullptr;b.OverlayCallback(&ov);
  assert(b.m_planes[1].o.front()->m_isHdrPq&&b.m_planes[1].o.front()->palette[1]==1099);

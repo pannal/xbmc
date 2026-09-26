@@ -27368,7 +27368,7 @@ msgstr ""
 #. Help text for setting "HDR disc menu graphics"
 #: system/settings/settings.xml
 msgctxt "#69215"
-msgid "How Blu-ray menu graphics authored in HDR (BT.2020 PQ) are shown on an HDR10 or Dolby Vision output. As authored: while such a menu is on screen, its graphics reach the display unconverted and Kodi's own controls keep their usual brightness; the graphics settings above do not apply to them. As authored, HDMV menus only: Java (BD-J) menus are shown as SDR, as before; use this if a disc's Java menu looks too bright. Convert: HDMV menus use the conversion above and Java menus are shown as SDR. Needs kernel support; not used in Dolby Vision video processor mode."
+msgid "How Blu-ray menu graphics authored in HDR (BT.2020 PQ) are shown on an HDR10 or Dolby Vision output. As authored: while such a menu is on screen, its graphics reach the display unconverted and Kodi's own controls keep their usual brightness; the graphics settings above do not apply to them. As authored, HDMV menus only: Java (BD-J) menus are shown as SDR, as before; use this if a disc's Java menu looks too bright. Convert: HDMV menus use the PGS HDR conversion above when it is enabled, and Java menus are shown as SDR. Needs kernel support; not used for 3D, for SDR output from the Dolby Vision core, or in Dolby Vision video processor mode."
 msgstr ""
 
 #. Option for setting "HDR disc menu graphics"
