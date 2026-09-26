@@ -185,7 +185,34 @@ namespace OVERLAY {
      */
     void OnViewChange();
 
-    void Render(COverlay* o);
+    // Values prepared at the existing per-overlay draw point, after conversion.
+    // This describes placement only, not backend style/route or context validity.
+    struct SRenderGeometry
+    {
+      SRenderState state;
+      COverlay::EPosition position;
+      COverlay::EAlign alignment;
+      float sourceWidth;
+      float sourceHeight;
+      bool bitmap;
+      bool discMenu;
+      CRect source;
+      CRect destination;
+      CRect view;
+      int activeAreaTop;
+      int activeAreaBottom;
+      int subtitleBaseline{0};
+      int stereoDepth{0};
+      float bitmapZoom{1.0f};
+    };
+
+    SRenderGeometry PrepareRenderGeometry(const COverlay& overlay) const;
+    static SRenderState CalculateRenderState(const SRenderGeometry& geometry);
+
+    // Synchronous submission only: retains the conversion until Render returns
+    // (including a backend no-op or unwind). Must stay on the current owning
+    // thread/context; neither this reference nor return proves GPU completion.
+    void Render(std::shared_ptr<COverlay> overlay);
     std::shared_ptr<COverlay> Convert(const CDVDOverlay& o, double pts);
     /*!
     * \brief Convert the overlay to a overlay renderer

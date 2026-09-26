@@ -197,7 +197,7 @@ void CRenderer::Render(const OverlayBatch& overlays)
       std::shared_ptr<COverlay> o = Convert(*(it->overlay_dvd), it->pts);
 
       if (o)
-        Render(o.get());
+        Render(o);
     }
   }
 
@@ -214,7 +214,7 @@ void CRenderer::RenderPqMenu(const OverlayBatch& overlays)
       continue;
     std::shared_ptr<COverlay> o = Convert(*(e.overlay_dvd), e.pts);
     if (o)
-      Render(o.get());
+      Render(o);
   }
 }
 
@@ -231,16 +231,55 @@ bool CRenderer::HasPqMenuOverlay(const OverlayBatch& overlays)
   return false;
 }
 
-void CRenderer::Render(COverlay* o)
+CRenderer::SRenderGeometry CRenderer::PrepareRenderGeometry(const COverlay& overlay) const
 {
-  SRenderState state;
-  state.x = o->m_x;
-  state.y = o->m_y;
-  state.width = o->m_width;
-  state.height = o->m_height;
+  SRenderGeometry geometry{{overlay.m_x, overlay.m_y, overlay.m_width, overlay.m_height},
+                           overlay.m_pos,
+                           overlay.m_align,
+                           overlay.m_source_width,
+                           overlay.m_source_height,
+                           overlay.m_isBitmapOverlay,
+                           overlay.m_discMenuOverlay,
+                           m_rs,
+                           m_rd,
+                           m_rv,
+                           m_activeAreaTopOffset,
+                           m_activeAreaBottomOffset};
 
-  COverlay::EPosition pos = o->m_pos;
-  COverlay::EAlign align = o->m_align;
+  // Preserve the conditional service reads of the original draw path. In
+  // particular, disc menus do not acquire subtitle depth or bitmap placement.
+  if ((geometry.position == COverlay::POSITION_RELATIVE ||
+       geometry.position == COverlay::POSITION_ABSOLUTE) &&
+      geometry.alignment == COverlay::ALIGN_SUBTITLE)
+  {
+    const RESOLUTION_INFO resInfo =
+        CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
+    geometry.subtitleBaseline = resInfo.iSubtitles - resInfo.Overscan.top;
+  }
+  if (!geometry.discMenu)
+    geometry.stereoDepth = GetStereoscopicDepth(overlay.m_pgsSubtitle, overlay.m_3dSubtitleDepth);
+  if (geometry.bitmap && !geometry.discMenu)
+  {
+    geometry.bitmapZoom = static_cast<float>(
+                              CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+                                  CSettings::SETTING_SUBTITLES_BITMAPZOOM)) /
+                          100.0f;
+  }
+  return geometry;
+}
+
+void CRenderer::Render(std::shared_ptr<COverlay> overlay)
+{
+  const SRenderGeometry geometry = PrepareRenderGeometry(*overlay);
+  SRenderState state = CalculateRenderState(geometry);
+  overlay->Render(state);
+}
+
+SRenderState CRenderer::CalculateRenderState(const SRenderGeometry& geometry)
+{
+  SRenderState state = geometry.state;
+  COverlay::EPosition pos = geometry.position;
+  COverlay::EAlign align = geometry.alignment;
 
   if (pos == COverlay::POSITION_RELATIVE)
   {
@@ -251,26 +290,29 @@ void CRenderer::Render(COverlay* o)
 
     if (align == COverlay::ALIGN_SCREEN || align == COverlay::ALIGN_SUBTITLE)
     {
-      scale_x = m_rv.Width();
-      scale_y = m_rv.Height();
+      scale_x = geometry.view.Width();
+      scale_y = geometry.view.Height();
       scale_w = scale_x;
       scale_h = scale_y;
     }
     else if (align == COverlay::ALIGN_SCREEN_AR)
     {
       // Align to screen by keeping aspect ratio to fit into the screen area
-      float source_width = o->m_source_width > 0 ? o->m_source_width : m_rs.Width();
-      float source_height = o->m_source_height > 0 ? o->m_source_height : m_rs.Height();
-      float ratio = std::min<float>(m_rv.Width() / source_width, m_rv.Height() / source_height);
-      scale_x = m_rv.Width();
-      scale_y = m_rv.Height();
+      float source_width =
+          geometry.sourceWidth > 0 ? geometry.sourceWidth : geometry.source.Width();
+      float source_height =
+          geometry.sourceHeight > 0 ? geometry.sourceHeight : geometry.source.Height();
+      float ratio =
+          std::min<float>(geometry.view.Width() / source_width, geometry.view.Height() / source_height);
+      scale_x = geometry.view.Width();
+      scale_y = geometry.view.Height();
       scale_w = ratio;
       scale_h = ratio;
     }
     else if (align == COverlay::ALIGN_VIDEO)
     {
-      scale_x = m_rs.Width();
-      scale_y = m_rs.Height();
+      scale_x = geometry.source.Width();
+      scale_y = geometry.source.Height();
       scale_w = scale_x;
       scale_h = scale_y;
     }
@@ -290,43 +332,39 @@ void CRenderer::Render(COverlay* o)
     {
       if (align == COverlay::ALIGN_SUBTITLE)
       {
-        RESOLUTION_INFO resInfo = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
-        state.x += m_rv.x1 + m_rv.Width() * 0.5f;
-        state.y += m_rv.y1 + (resInfo.iSubtitles - resInfo.Overscan.top);
+        state.x += geometry.view.x1 + geometry.view.Width() * 0.5f;
+        state.y += geometry.view.y1 + geometry.subtitleBaseline;
       }
       else
       {
-        state.x += m_rv.x1;
-        state.y += m_rv.y1;
+        state.x += geometry.view.x1;
+        state.y += geometry.view.y1;
       }
     }
     else if (align == COverlay::ALIGN_VIDEO)
     {
-      float scale_x = m_rd.Width() / m_rs.Width();
-      float scale_y = m_rd.Height() / m_rs.Height();
+      float scale_x = geometry.destination.Width() / geometry.source.Width();
+      float scale_y = geometry.destination.Height() / geometry.source.Height();
 
       state.x *= scale_x;
       state.y *= scale_y;
       state.width *= scale_x;
       state.height *= scale_y;
 
-      state.x += m_rd.x1;
-      state.y += m_rd.y1;
+      state.x += geometry.destination.x1;
+      state.y += geometry.destination.y1;
     }
   }
 
-  if (!o->m_discMenuOverlay)
-    state.x += GetStereoscopicDepth(o->m_pgsSubtitle, o->m_3dSubtitleDepth);
+  if (!geometry.discMenu)
+    state.x += geometry.stereoDepth;
 
-  if (o->m_isBitmapOverlay && !o->m_discMenuOverlay)
+  if (geometry.bitmap && !geometry.discMenu)
   {
-    float zoom = static_cast<float>(
-                     CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
-                         CSettings::SETTING_SUBTITLES_BITMAPZOOM)) /
-                 100.0f;
+    const float zoom = geometry.bitmapZoom;
     if (zoom != 1.0f)
     {
-      if (o->m_pos == COverlay::POSITION_RELATIVE)
+      if (geometry.position == COverlay::POSITION_RELATIVE)
       {
         // x/y are center-based; shift center down by half the height difference
         // so the scaled subtitle visually centers within its old bounding box
@@ -353,18 +391,19 @@ void CRenderer::Render(COverlay* o)
   // PGS on a cropped 2.4:1 encode) are authored into those bars, so they need
   // moving just like video-anchored ones — L5 masking would swallow them.
   // For POSITION_RELATIVE subs, state.y is the center; for others it's the top edge.
-  if (o->m_isBitmapOverlay && !o->m_discMenuOverlay &&
-      (m_activeAreaTopOffset > 0 || m_activeAreaBottomOffset > 0))
+  if (geometry.bitmap && !geometry.discMenu &&
+      (geometry.activeAreaTop > 0 || geometry.activeAreaBottom > 0))
   {
-    float activeTop = m_rv.y1 + static_cast<float>(m_activeAreaTopOffset);
-    float activeBottom = m_rv.y2 - static_cast<float>(m_activeAreaBottomOffset);
+    float activeTop = geometry.view.y1 + static_cast<float>(geometry.activeAreaTop);
+    float activeBottom = geometry.view.y2 - static_cast<float>(geometry.activeAreaBottom);
     float activeHeight = activeBottom - activeTop;
     // Reference rect the sub was positioned against: the view for
     // screen-anchored subs, the video rect for video-anchored ones.
-    const CRect& ref = (o->m_align == COverlay::ALIGN_SCREEN_AR) ? m_rv : m_rd;
+    const CRect& ref =
+        (geometry.alignment == COverlay::ALIGN_SCREEN_AR) ? geometry.view : geometry.destination;
     float refHeight = ref.Height();
 
-    bool centerBased = (o->m_pos == COverlay::POSITION_RELATIVE);
+    bool centerBased = (geometry.position == COverlay::POSITION_RELATIVE);
     float halfH = centerBased ? state.height * 0.5f : 0.0f;
     float subTop = state.y - halfH;
     float subBottom = state.y + (centerBased ? halfH : state.height);
@@ -389,7 +428,7 @@ void CRenderer::Render(COverlay* o)
     }
   }
 
-  o->Render(state);
+  return state;
 }
 
 bool CRenderer::HasOverlay(const OverlayBatch& overlays)
