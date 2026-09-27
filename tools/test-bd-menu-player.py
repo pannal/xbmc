@@ -349,6 +349,11 @@ int main() {
   { CVideoPlayer p;p.video.eos=true;p.video.stalled=true;p.m_renderManager.queued=1;auto start=TestClock::now();
     p.DrainStreamsAtBoundary();assert(TestClock::now()-start<=150ms);
   }
+  // More than the one re-fed picture is real content still to be shown.
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=true;p.m_renderManager.queued=2;auto start=TestClock::now();
+    onSleep=[&] { if(TestClock::now()-start>=200ms)p.m_renderManager.queued=1; };
+    p.DrainStreamsAtBoundary();onSleep={};assert(TestClock::now()-start>=250ms); // not before the blocker cleared (200 ms)
+  }
   // Outside still-frame output a queued picture is real content and holds it.
   { CVideoPlayer p;p.video.eos=true;p.video.stalled=false;p.m_renderManager.queued=1;auto start=TestClock::now();
     onSleep=[&] { if(TestClock::now()-start>=200ms)p.m_renderManager.queued=0; };
@@ -367,6 +372,20 @@ int main() {
       else p.audio.pts+=1; };
     p.DrainStreamsAtBoundary();onSleep={};auto elapsed=TestClock::now()-start;
     assert(elapsed>=732ms && elapsed<=875ms);
+  }
+  // A display reset pauses the sink with real audio in it: the play-out wait
+  // doesn't run through it, it is measured again once the display is back.
+  { CVideoPlayer p;p.audio.stalled=true;p.audio.sink=DVD_MSEC_TO_TIME(432);p.m_displayLost=true;
+    auto start=TestClock::now();onSleep=[&] { if(TestClock::now()-start>=1000ms)p.m_displayLost=false; };
+    p.DrainStreamsAtBoundary();onSleep={};auto elapsed=TestClock::now()-start;
+    assert(elapsed>=1432ms && elapsed<=1575ms);
+  }
+  // Data returning before the wait ran out disarms it; it starts again when audio runs out again.
+  { CVideoPlayer p;p.audio.stalled=true;p.audio.sink=DVD_MSEC_TO_TIME(432);auto start=TestClock::now();
+    onSleep=[&] { auto t=TestClock::now()-start;
+      p.audio.data=(t>=200ms && t<400ms);if(p.audio.data)p.audio.pts+=1; };
+    p.DrainStreamsAtBoundary();onSleep={};auto elapsed=TestClock::now()-start;
+    assert(elapsed>=832ms && elapsed<=975ms);
   }
   // Out of packets but not yet stalled (the stream player still expects data): the
   // passthrough delay alone doesn't end it; the stall timer bounds it as before.

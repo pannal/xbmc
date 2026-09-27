@@ -5554,7 +5554,8 @@ void CVideoPlayer::DrainStreamsAtBoundary()
     // Video is played out when the decoder reported EOF and nothing is left
     // to render, or when the stream player ran out of packets long enough to
     // switch to still-frame output. That output repeats the last picture, so
-    // one picture stays queued and no progress is reported. The Amlogic decoder
+    // one picture stays queued (more are real frames) and no progress is
+    // reported. The Amlogic decoder
     // returns EOF only once its buffer level reads empty or its drain timeout
     // (5 s) passes.
     videoHasData = videoActive && m_VideoPlayerVideo->HasData();
@@ -5562,7 +5563,7 @@ void CVideoPlayer::DrainStreamsAtBoundary()
     videoStill = videoActive && m_VideoPlayerVideo->IsStalled();
     renderQueued = queued;
     const bool videoBusy =
-        videoActive && (videoHasData || (videoStill ? false : !videoEos || queued > 0));
+        videoActive && (videoHasData || (videoStill ? queued > 1 : !videoEos || queued > 0));
 
     // Audio is played out when the sink delay drops, or, once the stream
     // player ran out of packets, when the delay the sink held at that point
@@ -5570,7 +5571,10 @@ void CVideoPlayer::DrainStreamsAtBoundary()
     // AVR chain) and never drops below 50 ms.
     audioHasData = audioActive && m_VideoPlayerAudio->HasData();
     audioSinkDelay = audioActive ? m_VideoPlayerAudio->GetSinkDelay() : 0.0;
-    const bool audioOut = audioActive && !audioHasData && m_VideoPlayerAudio->IsStalled();
+    // A display reset pauses the sink with real audio still in it: measure
+    // again once the display is back.
+    const bool audioOut =
+        audioActive && !audioHasData && m_VideoPlayerAudio->IsStalled() && !m_displayLost;
     if (!audioOut)
       audioPlayOutArmed = false;
     else if (!audioPlayOutArmed)

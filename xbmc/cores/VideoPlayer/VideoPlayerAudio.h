@@ -138,7 +138,7 @@ protected:
   BitstreamStats m_audioStats;
 
   int m_speed;
-  bool m_stalled;
+  std::atomic_bool m_stalled;
   bool m_paused;
   IDVDStreamPlayer::ESyncState m_syncState;
   XbmcThreads::EndTime<> m_syncTimer;
