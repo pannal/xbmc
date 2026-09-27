@@ -5520,6 +5520,9 @@ void CVideoPlayer::DrainStreamsAtBoundary()
 
   XbmcThreads::EndTime<> quietTimer(100ms);
   const char* exitReason = "abort";
+  bool videoHasData = false, videoEos = false, videoStill = false, audioHasData = false;
+  int renderQueued = 0;
+  double audioSinkDelay = 0.0;
   bool heldForDisplay = false;
   while (true)
   {
@@ -5546,11 +5549,20 @@ void CVideoPlayer::DrainStreamsAtBoundary()
     double renderPts = DVD_NOPTS_VALUE;
     if (videoActive)
       m_renderManager.GetStats(late, renderPts, queued, discard);
-    const bool videoBusy = videoActive && (m_VideoPlayerVideo->HasData() ||
-                                           !m_VideoPlayerVideo->IsEOS() || queued > 0);
-    const bool audioBusy =
-        audioActive && (m_VideoPlayerAudio->HasData() ||
-                        m_VideoPlayerAudio->GetSinkDelay() > DVD_MSEC_TO_TIME(50));
+    // Played out: the decoder reported EOF, or the stream player ran out of
+    // packets long enough to switch to still-frame output (it repeats the last
+    // picture and reports no progress). The Amlogic decoder returns EOF only
+    // once its buffer level reads empty or its drain timeout (5 s) passes, so
+    // waiting for EOF alone ended every drain on the stall timer below.
+    videoHasData = videoActive && m_VideoPlayerVideo->HasData();
+    videoEos = videoActive && m_VideoPlayerVideo->IsEOS();
+    videoStill = videoActive && m_VideoPlayerVideo->IsStalled();
+    renderQueued = queued;
+    audioHasData = audioActive && m_VideoPlayerAudio->HasData();
+    audioSinkDelay = audioActive ? m_VideoPlayerAudio->GetSinkDelay() : 0.0;
+    const bool videoBusy =
+        videoActive && (videoHasData || !(videoEos || videoStill) || queued > 0);
+    const bool audioBusy = audioActive && (audioHasData || audioSinkDelay > DVD_MSEC_TO_TIME(50));
     if (videoBusy || audioBusy)
       quietTimer.Set(100ms);
     else if (quietTimer.IsTimePast())
@@ -5596,9 +5608,11 @@ void CVideoPlayer::DrainStreamsAtBoundary()
 
   CLog::Log(LOGDEBUG,
             "CVideoPlayer::DrainStreamsAtBoundary - ended: {} (queued video {:.1f}s audio {:.1f}s, "
-            "ceiling {}ms{})",
+            "ceiling {}ms{}; last check: video data {} eos {} still {} render queued {}, "
+            "audio data {} sink {:.0f}ms)",
             exitReason, videoSecs, audioSecs, ceiling.count(),
-            heldForDisplay ? ", held through a display reset" : "");
+            heldForDisplay ? ", held through a display reset" : "", videoHasData, videoEos,
+            videoStill, renderQueued, audioHasData, audioSinkDelay / 1000.0);
 }
 
 // since we call ffmpeg functions to decode, this is being called in the same thread as ::Process() is

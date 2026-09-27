@@ -319,7 +319,7 @@ int main() {
     q.m_timeBound=true;assert(q.IsFull());q.timeLevel=99;assert(!q.IsFull());
   }
   // Draining must include decoder, renderer and sink output despite empty input queues.
-  { CVideoPlayer p;p.video.eos=false;p.audio.sink=DVD_MSEC_TO_TIME(200);p.m_renderManager.queued=1;
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=false;p.audio.sink=DVD_MSEC_TO_TIME(200);p.m_renderManager.queued=1;
     auto start=TestClock::now();onSleep=[&] {
       auto elapsed=TestClock::now()-start;
       if(elapsed>=50ms)p.video.eos=true;
@@ -329,16 +329,37 @@ int main() {
     p.DrainStreamsAtBoundary();onSleep={};
     assert(p.video.drainMessages==1 && TestClock::now()-start>=275ms);
   }
-  { CVideoPlayer p;p.video.eos=false;auto start=TestClock::now();
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=false;auto start=TestClock::now();
     p.DrainStreamsAtBoundary();assert(TestClock::now()-start<=1525ms); // stalled decoder is bounded
   }
+  // A decoder that never reports EOF (Amlogic: stale buffer level) is played
+  // out once the stream player switches to still-frame output: the drain ends
+  // on "quiet", not on the stall timer.
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=false;auto start=TestClock::now();
+    onSleep=[&] { if(TestClock::now()-start>=300ms)p.video.stalled=true; };
+    p.DrainStreamsAtBoundary();onSleep={};auto elapsed=TestClock::now()-start;
+    assert(elapsed>=350ms && elapsed<=450ms); // 100 ms quiet after the last busy check, not 1.5 s
+  }
+  // Still-frame output doesn't end it while packets or rendered pictures remain, or audio plays.
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=true;p.video.data=true;auto start=TestClock::now();
+    onSleep=[&] { if(TestClock::now()-start>=200ms)p.video.data=false; };
+    p.DrainStreamsAtBoundary();onSleep={};assert(TestClock::now()-start>=250ms); // not before the blocker cleared (200 ms)
+  }
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=true;p.m_renderManager.queued=1;auto start=TestClock::now();
+    onSleep=[&] { if(TestClock::now()-start>=200ms)p.m_renderManager.queued=0; };
+    p.DrainStreamsAtBoundary();onSleep={};assert(TestClock::now()-start>=250ms); // not before the blocker cleared (200 ms)
+  }
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=true;p.audio.sink=DVD_MSEC_TO_TIME(200);
+    auto start=TestClock::now();onSleep=[&] { if(TestClock::now()-start>=200ms)p.audio.sink=0; };
+    p.DrainStreamsAtBoundary();onSleep={};assert(TestClock::now()-start>=250ms); // not before the blocker cleared (200 ms)
+  }
   // A display reset pauses the clock on purpose: hold through it, then stall-time normally.
-  { CVideoPlayer p;p.video.eos=false;p.m_displayLost=true;auto start=TestClock::now();
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=false;p.m_displayLost=true;auto start=TestClock::now();
     onSleep=[&] { if(TestClock::now()-start>=3000ms)p.m_displayLost=false; };
     p.DrainStreamsAtBoundary();onSleep={};auto elapsed=TestClock::now()-start;
     assert(elapsed>3000ms && elapsed<=4550ms);
   }
-  { CVideoPlayer p;p.video.eos=false;p.m_displayLost=true;auto start=TestClock::now();
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=false;p.m_displayLost=true;auto start=TestClock::now();
     p.DrainStreamsAtBoundary();auto elapsed=TestClock::now()-start;
     assert(elapsed>=8000ms && elapsed<=8025ms); // a display that never returns is bounded by the ceiling
   }
@@ -346,14 +367,14 @@ int main() {
     p.DrainStreamsAtBoundary();assert(TestClock::now()==start); // user/control work remains responsive
   }
   // An A/V change note queued during the play-out does not end it.
-  { CVideoPlayer p;p.m_messenger.queued={CDVDMsg::PLAYER_AVCHANGE};p.video.eos=false;
+  { CVideoPlayer p;p.m_messenger.queued={CDVDMsg::PLAYER_AVCHANGE};p.video.eos=false;p.video.stalled=false;
     auto start=TestClock::now();onSleep=[&] { if(TestClock::now()-start>=400ms)p.video.eos=true; };
     p.DrainStreamsAtBoundary();onSleep={};assert(TestClock::now()-start>=400ms);
   }
   // A start note ends it at once: its sender waits in SYNC_WAITSYNC and makes no
   // progress until the player thread handles the note and resyncs it.
   { CVideoPlayer p;p.m_messenger.queued={CDVDMsg::PLAYER_AVCHANGE,CDVDMsg::PLAYER_STARTED};
-    p.video.eos=false;p.video.data=true;auto start=TestClock::now();int passes=0;
+    p.video.eos=false;p.video.stalled=false;p.video.data=true;auto start=TestClock::now();int passes=0;
     onSleep=[&] { ++passes; }; // no response arrives, so neither stream progresses
     p.DrainStreamsAtBoundary();onSleep={};
     assert(TestClock::now()==start && passes==0 && p.video.drainMessages==1);
