@@ -37,6 +37,8 @@ extern "C"
 #define BD_EVENT_MENU_OVERLAY -1
 #define BD_EVENT_MENU_ERROR   -2
 #define BD_EVENT_ENC_ERROR    -3
+// The retained composition again, at the time of the newest one queued.
+#define BD_EVENT_MENU_OVERLAY_REPOST -4
 
 #define HDMV_PID_VIDEO            0x1011
 #define HDMV_PID_VIDEO_EL         0x1015
@@ -201,6 +203,7 @@ protected:
 
   void OverlayFlush(int64_t pts);
   void DeliverParkedOverlayIfDue();
+  void DeliverMenuComposition(std::shared_ptr<CDVDOverlay> composition, int64_t pts);
   void OverlayClose(bool deferrable = false, int closingPlane = -1);
   static void OverlayClear(SPlane& plane, int x, int y, int w, int h);
   static void OverlayInit (SPlane& plane, int w, int h);
@@ -301,6 +304,8 @@ protected:
   mutable CCriticalSection m_overlayLock;
   SPlane m_planes[2];
   std::shared_ptr<CDVDOverlay> m_pendingOverlayGroup;
+  int64_t m_pendingOverlayPts = -1; // libbluray pts of m_pendingOverlayGroup
+  static constexpr int64_t REPOST_PTS = -2; // OverlayFlush: repost of the retained composition
   std::atomic<std::thread::id> m_readingThread{};
   enum EHoldState
   {

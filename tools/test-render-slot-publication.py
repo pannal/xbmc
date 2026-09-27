@@ -77,6 +77,10 @@ def main():
     source += '\n' + function(gles, 'void CLinuxRendererGLES::AddVideoPicture(')
     source += '\n' + function(gles, 'void CLinuxRendererGLES::ReleaseBuffer(')
     source += '\n' + function(vp, 'OVERLAY::CRenderer::OverlayBatch CVideoPlayerVideo::ProcessOverlays(')
+    container = (path / 'DVDOverlayContainer.cpp').read_text()
+    for name in ('bool CDVDOverlayContainer::IsDiscMenuDue(',
+                 'std::shared_ptr<CDVDOverlay> CDVDOverlayContainer::GetDueDiscMenu('):
+        source += '\n' + function(container, name).replace('CDVDOverlayContainer::', 'OverlayContainer::')
     source += TESTS
     with tempfile.TemporaryDirectory(prefix='render-slot-test-') as temporary:
         out = Path(temporary)
@@ -105,6 +109,7 @@ PRELUDE = r'''
 #include <utility>
 #include <vector>
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
 using namespace std::chrono_literals;
 using CCriticalSection = std::recursive_mutex;
 constexpr int NUM_BUFFERS=5, LOGWARNING=1, LOGERROR=2, LOGDEBUG=3;
@@ -245,9 +250,11 @@ struct CDVDOverlayLibass : CDVDOverlay {
   bool EventActive(double) const{return true;}
 };
 struct OverlayContainer : CCriticalSection {
-  VecOverlays items;
+  VecOverlays items;VecOverlays& m_overlays=items;
   void CleanUp(double) {} // event delivery/container expiry covered by BD navigation harness
   VecOverlays* GetOverlays(){return &items;}
+  std::shared_ptr<CDVDOverlay> GetDueDiscMenu(double pts);
+  static bool IsDiscMenuDue(const CDVDOverlay& overlay, double pts);
 };
 struct IDVDStreamPlayer {enum {SYNC_INSYNC};};
 struct CVideoPlayerVideo {
@@ -373,7 +380,8 @@ int main() {
   for(bool bdj:{false,true}) {
     RefBuffer ref;CRenderManager r;CVideoPlayerVideo v;auto p=picture(ref,-500000);
     auto image=menu(bdj,0xff123456);auto group=std::make_shared<CDVDOverlayGroup>();group->SetDiscMenuOverlay(true);
-    group->iPTSStartTime=1000;group->iPTSStopTime=1001;group->m_overlays={image};v.container.items={group};
+    // Untimed (libbluray pts -1): no start, and a stop time does not expire it.
+    group->iPTSStartTime=DVD_NOPTS_VALUE;group->iPTSStopTime=1001;group->m_overlays={image};v.container.items={group};
     auto batch=v.ProcessOverlays(&p,p.pts);assert(batch.size()==1&&batch[0].overlay_dvd==image->GetPublishedRenderContent());
     assert(v.ProcessOverlays(&p,9999999).size()==1);assert(v.ProcessOverlays(&p,9999999)[0].subtitleDepth==0);
     Reservation first;r.WaitForBuffer(first,stop);assert(submit(r,first,p,batch));int a=r.m_queued.back();

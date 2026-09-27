@@ -46,6 +46,19 @@ public:
   void Flush();
 
   void CleanUp(double pts); // validates all overlays against current pts
+
+  /*!
+   * \brief The disc menu composition to show with the picture at pts
+   *
+   * \details The newest composition that is due. Compositions it supersedes are
+   * removed. A composition is due when it is untimed, when its start time has
+   * been reached, or when its start time is further ahead than read-ahead can
+   * explain.
+   */
+  std::shared_ptr<CDVDOverlay> GetDueDiscMenu(double pts);
+  static bool IsDiscMenuDue(const CDVDOverlay& overlay, double pts);
+  //! Start of the newest disc menu composition: DVD_NOPTS_VALUE once shown or when none.
+  double GetNewestDiscMenuStart();
   size_t GetSize();
 
   void UpdateOverlayInfo(const std::shared_ptr<CDVDInputStreamNavigator>& pStream,

@@ -10,6 +10,8 @@
 
 #include "DVDCodecs/Overlay/DVDOverlay.h"
 #include "DVDInputStreams/DVDInputStreamNavigator.h"
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
+#include "utils/log.h"
 
 #include <memory>
 #include <mutex>
@@ -33,9 +35,13 @@ void CDVDOverlayContainer::ProcessAndAddOverlayIfValid(const std::shared_ptr<CDV
   // must neither expire subtitles nor be replaced by a forced subtitle.
   if (pOverlay->IsDiscMenuOverlay())
   {
-    m_overlays.erase(std::remove_if(m_overlays.begin(), m_overlays.end(), [](const auto& overlay)
-                                    { return overlay->IsDiscMenuOverlay(); }),
-                     m_overlays.end());
+    // An untimed composition is the menu's current state and replaces every
+    // other. A timed one waits for its picture (GetDueDiscMenu): the
+    // composition on screen stays until then.
+    if (pOverlay->iPTSStartTime == DVD_NOPTS_VALUE)
+      m_overlays.erase(std::remove_if(m_overlays.begin(), m_overlays.end(), [](const auto& overlay)
+                                      { return overlay->IsDiscMenuOverlay(); }),
+                       m_overlays.end());
     m_overlays.emplace_back(pOverlay);
     return;
   }
@@ -128,6 +134,55 @@ void CDVDOverlayContainer::CleanUp(double pts)
 
 }
 
+bool CDVDOverlayContainer::IsDiscMenuDue(const CDVDOverlay& overlay, double pts)
+{
+  // Longer than disc read-ahead (16 s demux queues plus decoder depth): the
+  // start time is not on this picture's clock, so it must not hide the menu.
+  constexpr double MAX_LEAD = 30.0 * DVD_TIME_BASE;
+
+  const double start = overlay.iPTSStartTime;
+  return start == DVD_NOPTS_VALUE || pts == DVD_NOPTS_VALUE || start <= pts ||
+         start - pts > MAX_LEAD;
+}
+
+double CDVDOverlayContainer::GetNewestDiscMenuStart()
+{
+  std::unique_lock<CCriticalSection> lock(*this);
+  const auto newest = std::find_if(m_overlays.rbegin(), m_overlays.rend(), [](const auto& overlay)
+                                   { return overlay->IsDiscMenuOverlay(); });
+  return newest == m_overlays.rend() ? DVD_NOPTS_VALUE : (*newest)->iPTSStartTime;
+}
+
+std::shared_ptr<CDVDOverlay> CDVDOverlayContainer::GetDueDiscMenu(double pts)
+{
+  std::unique_lock<CCriticalSection> lock(*this);
+
+  auto due = m_overlays.end();
+  for (auto it = m_overlays.begin(); it != m_overlays.end(); ++it)
+  {
+    if ((*it)->IsDiscMenuOverlay() && IsDiscMenuDue(**it, pts))
+      due = it;
+  }
+  if (due == m_overlays.end())
+    return nullptr;
+
+  // Older compositions, shown or pending, are superseded once a newer one is due.
+  due = m_overlays.erase(std::remove_if(m_overlays.begin(), due, [](const auto& overlay)
+                                        { return overlay->IsDiscMenuOverlay(); }),
+                         due);
+
+  // Once shown, a composition is the menu's current state until replaced.
+  CDVDOverlay& shown = **due;
+  if (shown.iPTSStartTime != DVD_NOPTS_VALUE)
+  {
+    CLog::Log(LOGDEBUG, "CDVDOverlayContainer - disc menu composition due {:.3f} shown at {:.3f}",
+              shown.iPTSStartTime / DVD_TIME_BASE,
+              pts == DVD_NOPTS_VALUE ? -1.0 : pts / DVD_TIME_BASE);
+    shown.iPTSStartTime = DVD_NOPTS_VALUE;
+  }
+  return *due;
+}
+
 void CDVDOverlayContainer::Flush()
 {
   std::unique_lock<CCriticalSection> lock(*this);
@@ -149,7 +204,10 @@ void CDVDOverlayContainer::Clear()
 size_t CDVDOverlayContainer::GetSize()
 {
   std::unique_lock<CCriticalSection> lock(*this);
-  return m_overlays.size();
+  // Menu pages waiting for their picture count as the one menu composition.
+  const auto menus = std::count_if(m_overlays.begin(), m_overlays.end(),
+                                   [](const auto& overlay) { return overlay->IsDiscMenuOverlay(); });
+  return m_overlays.size() - menus + std::min<size_t>(menus, 1);
 }
 
 bool CDVDOverlayContainer::ContainsOverlayType(DVDOverlayType type)
