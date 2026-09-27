@@ -235,6 +235,9 @@ public:
   // About to engage: PQ menu graphics are held back rather than drawn on the
   // existing path for the few frames until it does.
   virtual bool IsMenuCompositePending() const { return false; }
+  // Is the GUI plane converted to an HDR output encoding after Kodi draws it?
+  // Overlays are premultiplied for that conversion when it is.
+  virtual bool IsGuiOutputHdr();
   // Around the GUI pass of a frame.
   // True means this command path is usable/completed, not presentation.
   virtual bool BeginGuiComposite() { return true; }

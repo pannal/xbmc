@@ -51,6 +51,14 @@ COverlay::COverlay()
 
 COverlay::~COverlay() = default;
 
+bool COverlay::PlainPremultiplyDiscMenu(const CDVDOverlayImage& o)
+{
+  // PQ-tagged graphics go through the PQ-to-SDR shader, whose un-premultiply
+  // divides by alpha: exact only for a plain premultiply, on any output.
+  return o.IsDiscMenuOverlay() &&
+         (o.m_isHdrPq || !CServiceBroker::GetWinSystem()->IsGuiOutputHdr());
+}
+
 CRenderer::CRenderer()
 {
   CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->RegisterObserver(this);
@@ -851,6 +859,13 @@ std::shared_ptr<COverlay> CRenderer::Convert(const CDVDOverlay& o, double pts)
       r->m_rawPqMenu != CServiceBroker::GetWinSystem()->IsMenuCompositeActive())
     r = nullptr;
 
+  // Likewise disc menu graphics when the output changes between SDR and HDR.
+  const bool plainPmaMenu =
+      o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE) &&
+      COverlay::PlainPremultiplyDiscMenu(static_cast<const CDVDOverlayImage&>(o));
+  if (r && r->m_plainPmaMenu != plainPmaMenu)
+    r = nullptr;
+
   if (r)
   {
     r->m_discMenuOverlay = o.IsDiscMenuOverlay();
@@ -863,7 +878,11 @@ std::shared_ptr<COverlay> CRenderer::Convert(const CDVDOverlay& o, double pts)
     r = COverlay::Create(static_cast<const CDVDOverlaySpu&>(o));
 
   if (r)
+  {
     r->m_discMenuOverlay = o.IsDiscMenuOverlay();
+    // Only the GLES texture premultiplies by it; the flag keys the cache.
+    r->m_plainPmaMenu = plainPmaMenu;
+  }
 
   m_textureCache[o.shared_from_this()] = r;
 

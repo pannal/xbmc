@@ -40,7 +40,8 @@ def main():
                       'void CRenderer::Release(int', 'void CRenderer::ReleaseCache()',
                       'void CRenderer::ReleaseUnused(', 'void CRenderer::Flush()',
                       'void CRenderer::Reset()', 'std::shared_ptr<COverlay> CRenderer::ConvertLibass(',
-                      'std::shared_ptr<COverlay> CRenderer::Convert(']:
+                      'std::shared_ptr<COverlay> CRenderer::Convert(',
+                      'bool COverlay::PlainPremultiplyDiscMenu(']:
         source += '\n' + function(renderer, signature)
     libass = (root / 'DVDSubtitles/DVDSubtitlesLibass.cpp').read_text()
     source += '\n' + function(libass, 'CLibassRenderResult::CLibassRenderResult(')
@@ -91,7 +92,8 @@ struct CRect {float w=1920,h=1080;float Width() const{return w;}float Height() c
 struct RESOLUTION_INFO {int iSubtitles=1000;float fPixelRatio=1;struct{int top=0;}Overscan;};
 struct Gfx {RESOLUTION_INFO info;RESOLUTION_INFO GetResInfo(){return info;}int GetVideoResolution(){return 0;}
   void SetResInfo(int,const RESOLUTION_INFO& r){info=r;}};
-struct Window {bool active=false;Gfx gfx;bool IsMenuCompositeActive(){return active;}Gfx& GetGfxContext(){return gfx;}};
+struct Window {bool active=false,guiHdr=false;Gfx gfx;bool IsMenuCompositeActive(){return active;}
+  bool IsGuiOutputHdr(){return guiHdr;}Gfx& GetGfxContext(){return gfx;}};
 struct CServiceBroker {static Window* GetWinSystem(){static Window w;return &w;}};
 struct ass_image {int w=1,h=1,stride=1;unsigned char* bitmap=nullptr;
   uint32_t color=0;int dst_x=0,dst_y=0;ASS_Image* next=nullptr;int type=0;};
@@ -126,7 +128,8 @@ namespace OVERLAY {
 struct COverlay {
   bool valid=true;bool IsValid()const{return valid;}
   std::weak_ptr<const CLibassRenderResult> m_libassResult;
-  static int created,destroyed;uint32_t value=0;bool m_rawPqMenu=false,m_discMenuOverlay=false;
+  static int created,destroyed;uint32_t value=0;bool m_rawPqMenu=false,m_discMenuOverlay=false,m_plainPmaMenu=false;
+  static bool PlainPremultiplyDiscMenu(const CDVDOverlayImage& o);
   ~COverlay(){assert(std::this_thread::get_id()==ownerThread);++destroyed;}
   static std::shared_ptr<COverlay> New(uint32_t value){
     assert(std::this_thread::get_id()==ownerThread);++created;auto p=std::make_shared<COverlay>();p->value=value;return p;
@@ -239,6 +242,20 @@ int main(){
     auto* window=CServiceBroker::GetWinSystem();window->active=true;auto raw=a.Convert(*p->GetPublishedRenderContent(),6);
     assert(raw!=first&&raw->m_rawPqMenu&&a.Convert(*p->GetPublishedRenderContent(),7)==raw);
     window->active=false;auto converted=a.Convert(*p->GetPublishedRenderContent(),8);assert(converted!=raw&&!converted->m_rawPqMenu);
+    // Disc menu premultiply follows the GUI output: a texture built for SDR
+    // output is not reused once the GUI is converted to HDR, and back.
+    // PQ-tagged menu graphics stay plain on both, so keep their texture.
+    assert(converted->m_plainPmaMenu&&a.Convert(*p->GetPublishedRenderContent(),10)==converted);
+    window->guiHdr=true;assert(a.Convert(*p->GetPublishedRenderContent(),11)==converted);window->guiHdr=false;
+    auto sdrMenu=image(bdj,0xff708090);sdrMenu->m_isHdrPq=false;sdrMenu->m_isPqMenuGraphics=false;sdrMenu->PublishRenderContent();
+    auto sdrTex=a.Convert(*sdrMenu->GetPublishedRenderContent(),12);assert(sdrTex->m_plainPmaMenu);
+    window->guiHdr=true;auto hdrOut=a.Convert(*sdrMenu->GetPublishedRenderContent(),13);
+    assert(hdrOut!=sdrTex&&!hdrOut->m_plainPmaMenu&&a.Convert(*sdrMenu->GetPublishedRenderContent(),14)==hdrOut);
+    window->guiHdr=false;auto sdrOut=a.Convert(*sdrMenu->GetPublishedRenderContent(),15);assert(sdrOut!=hdrOut&&sdrOut->m_plainPmaMenu);
+    // Not disc menu graphics (subtitles): never plain, and the output flip keeps the texture.
+    auto subtitle=image(bdj,0xff405060);subtitle->SetDiscMenuOverlay(false);subtitle->PublishRenderContent();
+    auto subTex=a.Convert(*subtitle->GetPublishedRenderContent(),16);assert(!subTex->m_plainPmaMenu);
+    window->guiHdr=true;assert(a.Convert(*subtitle->GetPublishedRenderContent(),17)==subTex);window->guiHdr=false;
     auto transparent=image(bdj,0);assert(a.Convert(*transparent->GetPublishedRenderContent(),9)->value==0);
     // Clear/hide releases slot membership, while the retained selection keeps
     // only its content reachable until main drops it. No producer copies needed.

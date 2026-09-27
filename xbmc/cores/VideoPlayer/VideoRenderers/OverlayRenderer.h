@@ -93,6 +93,14 @@ namespace OVERLAY {
     bool m_discMenuOverlay{false};
     // Built for the disc menu composite's raw PQ layer (see CWinSystemBase).
     bool m_rawPqMenu{false};
+    // Disc menu graphics premultiplied plainly (see PlainPremultiplyDiscMenu).
+    bool m_plainPmaMenu{false};
+
+    // Disc menu graphics are authored for blending as drawn, which is how the
+    // GUI blends them. The linear-light premultiply is kept only where the
+    // display pipeline converts the GUI plane to an HDR encoding, and never for
+    // PQ-tagged graphics.
+    static bool PlainPremultiplyDiscMenu(const CDVDOverlayImage& o);
     // Per-conversion identity, never the handler's most recent changes flag.
     std::weak_ptr<const CLibassRenderResult> m_libassResult;
 
