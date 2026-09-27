@@ -43,7 +43,8 @@ def harness(revision=None):
         # Expose only state inspection to preserve accepted consumed-marker asserts.
         buffer_class = function(buffer_header, 'class CAMLVideoBuffer :').replace('private:', 'public:') + ';'
         for signature in ['void CAMLVideoBuffer::Set(', 'CAMLSession::Permit CAMLVideoBuffer::AcquirePresentation()',
-                          'void CAMLVideoBuffer::Commit(', 'void CAMLVideoBuffer::Poll(', 'void CAMLVideoBuffer::Drop()']:
+                          'void CAMLVideoBuffer::Commit(', 'void CAMLVideoBuffer::Poll(',
+                          ('bool ' if 'bool CAMLVideoBuffer::Drop()' in buffer_source else 'void ') + 'CAMLVideoBuffer::Drop()']:
             buffer_methods += '\n' + function(buffer_source, signature)
         source = source.replace('@AMLBUFFER@', buffer_class)
     else:
@@ -243,6 +244,7 @@ struct CAMLCodec{
   CAMLSession session;
   CAMLCodec(){auto request=session.Fence();assert(session.BeginMutation(request));assert(session.Complete(request,true));}
   uint64_t GetOperationEpoch() const{return session.Epoch();}
+  bool IsOperationInvalidated(uint64_t epoch) const{return session.IsInvalidated(epoch);}
   CAMLSession::Permit AcquirePresentation(uint64_t epoch,bool retirement=false){return session.Acquire(epoch,retirement);}
   bool IsPresentationPermit(const CAMLSession::Permit& permit,uint64_t epoch) const{return session.Matches(permit,epoch);}
   int ReleaseFrame(int index,uint64_t generation,const CAMLSession::Permit& permit,bool drop=false){

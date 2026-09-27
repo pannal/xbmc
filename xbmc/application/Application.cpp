@@ -49,6 +49,9 @@
 #include "cores/FFmpeg.h"
 #include "cores/IPlayer.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderLifecycle.h"
+#ifdef HAS_LIBAMCODEC
+#include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
+#endif
 #include "cores/playercorefactory/PlayerCoreFactory.h"
 #include "dialogs/GUIDialogBusy.h"
 #include "dialogs/GUIDialogCache.h"
@@ -1861,6 +1864,11 @@ void CApplication::UnlockFrameMoveGuard()
 void CApplication::FrameMove(bool processEvents, bool processGUI)
 {
   CRenderLifecycle::ProcessAll();
+  if (auto* window = CServiceBroker::GetWinSystem())
+    window->GetGfxContext().ProcessPendingVideoResolution();
+#ifdef HAS_LIBAMCODEC
+  CAMLVideoBufferPool::ProcessReturns();
+#endif
   const auto appPlayer = GetComponent<CApplicationPlayer>();
   bool renderGUI = GetComponent<CApplicationPowerHandling>()->GetRenderGUI();
   if (processEvents)

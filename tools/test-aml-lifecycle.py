@@ -2,7 +2,9 @@
 """Host production AML lifecycle/recovery and wrapper-cleanup checks.
 
 Extracts actual public lifecycle methods, full AddData and wrapper Close/reset cleanup;
-uses the real AMLSession and full PollFrame/SetPollDevice methods. The poll syscall
+uses the real AMLSession and full PollFrame/SetPollDevice and SetSpeed methods.
+Controlled write callbacks exercise display fencing inside an admitted AddData;
+requested/applied speed and wrapper cleanup are checked across display fencing. The poll syscall
 and sync event are recording stubs. Internal decoder Open/Reset/Close, packet writers,
 FFmpeg allocation and platform settings are controlled stubs. Generation tests
 model the documented successful-open increment; they do not execute real Open.
@@ -30,7 +32,8 @@ def harness():
         'bool CAMLCodec::Reset()', 'bool CAMLCodec::ReopenDecoder()',
         'bool CAMLCodec::BeginLifecycle(', 'bool CAMLCodec::ContinueLifecycle()',
         'void CAMLCodec::WaitForLifecycle()', 'bool CAMLCodec::AddData(',
-        'int CAMLCodec::PollFrame(', 'void CAMLCodec::SetPollDevice('])
+        'int CAMLCodec::PollFrame(', 'void CAMLCodec::SetPollDevice(',
+        'void CAMLCodec::SetSpeed(', 'void CAMLCodec::SetSpeedInternal('])
     methods += '\n' + '\n'.join(function(wrapper, signature) for signature in [
         'void CDVDVideoCodecAmlogic::Close(', 'void CDVDVideoCodecAmlogic::Reset(',
         'bool CDVDVideoCodecAmlogic::LifecyclePending()',
@@ -66,12 +69,19 @@ def main():
     source = harness()
     if args.negative_controls:
         controls = [
+            ('speed marks applied before driver update', 'm_requestedSpeed = speed;',
+             'm_requestedSpeed = speed; m_speed = speed;'),
+            ('decoder ignores closed display admission', 'if (!operation)',
+             'if (false && !operation)'),
+            ('decoder permit ends before write', 'auto operation = m_session.AcquireDecoder();',
+             'auto operation = [](CAMLSession& session) { auto held=session.AcquireDecoder(); '
+             'return static_cast<bool>(held); }(m_session);'),
             ('mutation bypasses permits',
              'if (!m_session.BeginMutation(m_lifecycleRequest))',
              'if (false && !m_session.BeginMutation(m_lifecycleRequest))'),
             ('pending reset cleanup runs early',
-             'm_Codec->LifecyclePending() && !m_Codec->ContinueLifecycle()',
-             'false && m_Codec->LifecyclePending() && !m_Codec->ContinueLifecycle()'),
+             'm_Codec && !m_Codec->ContinueLifecycle()',
+             'false && m_Codec && !m_Codec->ContinueLifecycle()'),
             ('internal loop recovery bypasses gate',
              '// Decoder got stuck; Reset\n    Reset();',
              '// Decoder got stuck; Reset\n    ResetInternal();'),
@@ -80,8 +90,12 @@ def main():
              'if (false && !success && m_decoderNeedsClose)'),
             ('cleanup keeps freed config pointer', 'am_private->vcodec.config = nullptr;',
              '(void)am_private->vcodec.config;'),
-            ('completed failure forgotten', 'return !m_lifecycleFailed;', 'return true;'),
-            ('wrapper ignores terminal failure', 'if (LifecycleFailed())', 'if (false && LifecycleFailed())'),
+            ('completed failure forgotten', 'if (m_lifecycleFailed || m_session.DisplayBlocked())',
+             'if (m_session.DisplayBlocked())'),
+            # The wrapper now also calls core ContinueLifecycle unconditionally;
+            # removing its first guard is redundant, so inject false completion.
+            ('wrapper reports terminal failure complete', 'if (LifecycleFailed())\n    return false;',
+             'if (LifecycleFailed())\n    return true;'),
             ('poll accepts foreign session', 'if (!m_session.Matches(permit, permit.Epoch()))',
              'if (false && !m_session.Matches(permit, permit.Epoch()))'),
             ('poll changes timeout policy', 'poll(codec_poll_fd, 1, 50);', 'poll(codec_poll_fd, 1, 0);'),
@@ -92,7 +106,7 @@ def main():
             print('Rejected runtime negative control:', name)
     else:
         compile_run(source)
-        print('AML lifecycle: PASS (production lifecycle, PollFrame/SetPollDevice, full AddData and wrapper cleanup; '
+        print('AML lifecycle: PASS (production lifecycle, poll, speed, full AddData and wrapper cleanup; '
               'ASan/UBSan; stub decoder internals and packet/device interfaces)')
 
 
@@ -130,6 +144,9 @@ constexpr double DVD_TIME_BASE=1000000,DVD_NOPTS_VALUE=-1000000;
 constexpr int PLAYER_SUCCESS=0,STREAM_TYPE_STREAM=1,STATE_HASPTS=1,KEYFRAME_PTS_ONLY=2;
 constexpr uint64_t UINT64_0=0;
 constexpr unsigned int RW_WAIT_TIME=1;
+constexpr int DVD_PLAYSPEED_NORMAL=1000,DVD_PLAYSPEED_PAUSE=0;
+constexpr int TRICKMODE_NONE=0,TRICKMODE_FFFB=1,TRICKMODE_I=2;
+constexpr int VFORMAT_H264=4,VFORMAT_H264_4K2K=5;
 void usleep(unsigned int) {} // Error-policy waits do not sleep in this fixture.
 int calc_chunk_size(size_t size) {return static_cast<int>(size);}
 struct Packet {uint8_t* data{}; size_t size{}; void* buf{};};
@@ -138,6 +155,7 @@ struct am_packet_t {
   int newflag{},isvalid{},avduration{}; double avpts{},avdts{};
 };
 struct Private {
+  int video_format=VFORMAT_H264;
   struct {void* config{nullptr}; int config_len{0};} vcodec;
   struct {int dec_mode{0}; uintptr_t param{0};} gcodec;
   struct {size_t size{0}; uint8_t* data{};} hdr_buf;
@@ -148,12 +166,18 @@ struct Private {
 void av_buffer_unref(void**) {}
 int av_grow_packet(Packet*,size_t) {assert(false && "extradata path is not exercised"); return -1;}
 void set_header_info(Private*) {}
+std::function<void()> writeHook;
 int write_av_packet(Private* state,am_packet_t* packet) {
+  if(writeHook) writeHook();
   ++state->writes;
   if(state->write==Private::Write::ERROR) return -1;
   if(state->write==Private::Write::SUCCESS) packet->isvalid=0;
   return PLAYER_SUCCESS;
 }
+struct Dll {
+  std::vector<int> modes;
+  template<class Codec> void codec_set_cntl_mode(Codec*,int mode) { modes.push_back(mode); }
+};
 class CAMLCodec {
 public:
   enum class Lifecycle {NONE,OPEN,RESET,REOPEN,CLOSE};
@@ -161,6 +185,11 @@ public:
   Lifecycle m_lifecycle{Lifecycle::NONE};
   CAMLSession::Request m_lifecycleRequest;
   bool m_lifecycleFailed{false};
+  bool m_speedPending{false};
+  int m_speed=DVD_PLAYSPEED_NORMAL,m_requestedSpeed=DVD_PLAYSPEED_NORMAL;
+  Dll dll; Dll* m_dll=&dll;
+  std::chrono::system_clock::time_point m_tp_last_frame;
+  void SetSpeed(int); void SetSpeedInternal(int);
   @FAILED_METHOD@
   bool m_opened{false},openSucceeds{true},m_decoderNeedsClose{false};
   bool acquireDevice{true},deviceAcquired{false},holdActive{false},m_dvOpened{false};
@@ -242,6 +271,66 @@ public:
 };
 '''
 TESTS = r'''
+void SpeedDuringDisplay() {
+  CAMLCodec codec; assert(codec.OpenDecoder());
+  codec.SetSpeed(2000);
+  assert(codec.m_speed==2000 && !codec.m_speedPending);
+  assert((codec.dll.modes==std::vector<int>{TRICKMODE_FFFB}));
+  codec.SetSpeed(2000); assert(codec.dll.modes.size()==1);
+  const auto epoch=codec.m_session.Epoch();
+  auto display=CAMLSession::FenceDisplay();
+  codec.SetSpeed(DVD_PLAYSPEED_PAUSE);
+  assert(codec.m_speed==2000 && codec.m_speedPending);
+  assert(codec.dll.modes.size()==1 && !codec.ContinueLifecycle());
+  assert(CAMLSession::TryBeginDisplay(display));
+  codec.SetSpeed(DVD_PLAYSPEED_NORMAL); // Last requested speed survives, applied speed does not lie.
+  assert(codec.m_speed==2000 && codec.m_speedPending && codec.dll.modes.size()==1);
+  assert(CAMLSession::EndDisplay(display,CAMLSession::DisplayPhase::WAITING_FOR_RESET));
+  assert(!codec.ContinueLifecycle() && codec.dll.modes.size()==1);
+  assert(CAMLSession::EndDisplay(display,CAMLSession::DisplayPhase::READY));
+  assert(codec.ContinueLifecycle() && !codec.m_speedPending);
+  assert(codec.m_speed==DVD_PLAYSPEED_NORMAL && codec.m_session.Epoch()==epoch);
+  assert((codec.dll.modes==std::vector<int>{TRICKMODE_FFFB,TRICKMODE_NONE}));
+  codec.SetSpeed(DVD_PLAYSPEED_PAUSE);
+  assert(codec.m_speed==DVD_PLAYSPEED_PAUSE && codec.dll.modes.size()==3);
+  CAMLCodec unopened; unopened.SetSpeed(2000);
+  assert(unopened.m_speed==2000 && !unopened.m_speedPending && unopened.dll.modes.empty());
+}
+void DecoderDisplayAdmission() {
+  CAMLCodec codec; assert(codec.OpenDecoder());
+  uint8_t packet[1]{};
+  const auto epoch=codec.m_session.Epoch();
+  auto display=CAMLSession::FenceDisplay();
+  assert(!codec.AddData(packet,1,1,1) && codec.storage.writes==0);
+  assert(CAMLSession::TryBeginDisplay(display));
+  assert(!codec.AddData(packet,1,1,1) && codec.storage.writes==0);
+  assert(CAMLSession::EndDisplay(display,CAMLSession::DisplayPhase::READY));
+  bool inside=false;
+  writeHook=[&] {
+    inside=true;
+    display=CAMLSession::FenceDisplay();
+    // Admission cannot overlook an AddData already inside its driver write.
+    assert(!CAMLSession::TryBeginDisplay(display));
+  };
+  assert(codec.AddData(packet,1,1,1)); writeHook={};
+  assert(inside && codec.storage.writes==1);
+  assert(CAMLSession::TryBeginDisplay(display));
+  assert(CAMLSession::EndDisplay(display,CAMLSession::DisplayPhase::READY));
+  assert(codec.m_session.Epoch()==epoch);
+
+  CDVDVideoCodecAmlogic wrapper;
+  assert(wrapper.m_Codec->OpenDecoder());
+  wrapper.m_packages.emplace_back(new uint8_t[1],1,false,1.0);
+  const int initialFreed=freed;
+  display=CAMLSession::FenceDisplay();
+  wrapper.Reset(); // Reset may overtake a fenced but unstarted display request.
+  assert(wrapper.m_resetCleanupPending && wrapper.m_packages.size()==1);
+  assert(!wrapper.ContinueLifecycle() && freed==initialFreed);
+  assert(CAMLSession::TryBeginDisplay(display));
+  assert(CAMLSession::EndDisplay(display,CAMLSession::DisplayPhase::READY));
+  assert(wrapper.ContinueLifecycle() && !wrapper.m_resetCleanupPending);
+  assert(wrapper.m_packages.empty() && freed==initialFreed+1);
+}
 void PollSessionAndDescriptor() {
   CAMLCodec original,replacement;
   original.nextDescriptor=42; replacement.nextDescriptor=84;
@@ -536,6 +625,7 @@ void InternalRecovery() {
   assert(!codec.LifecyclePending() && codec.trace.size()==before);
 }
 int main() {
+  SpeedDuringDisplay(); DecoderDisplayAdmission();
   PollSessionAndDescriptor(); PendingThroughActualPoll();
   FreshReset(); PendingAndReopen(); CloseSupersedes(); FailedOpen();
   WaitPinsOriginalSession(); WrapperCleanup(false); WrapperCleanup(true); InternalRecovery();

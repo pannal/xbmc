@@ -111,6 +111,7 @@ struct CResolutionUtils {
 };
 
 // ---- the display and the DV core --------------------------------------------
+bool g_windowReady = true;
 bool g_modeChanging = false;  // what aml_display_mode_changing() reports
 bool g_forceSwitch = false;   // CWinSystemAmlogic::m_force_mode_switch
 bool g_fracPolicy = true;     // aml_has_frac_rate_policy()
@@ -163,9 +164,10 @@ struct CGfxContext {
   bool IsFullScreenVideo() { return true; }
   bool IsFullScreenRoot() { return true; }
   void SetHDRType(StreamHdrType) {}
-  void SetVideoResolution(RESOLUTION, bool) { CreateNewWindow(RESOLUTION_INFO{}); }
+  bool SetVideoResolution(RESOLUTION, bool) { if (!g_windowReady) return false; CreateNewWindow(RESOLUTION_INFO{}); return true; }
 };
 struct CWinSystem {
+  bool IsDisplayReadyForVideo() const { return g_windowReady; }
   CGfxContext g;
   CGfxContext& GetGfxContext() { return g; }
 };
@@ -224,6 +226,23 @@ void test_mode_set() {
   check(g_modeSets == 1, "mode set: no mode set");
   check(!s_dvDiscDeferred && !g_render.m_bTriggerUpdateResolution,
         "mode set: deferral or trigger left behind");
+}
+
+void test_pending_window() {
+  g_modeChanging = true; g_forceSwitch = false; g_refreshSwitching = 1;
+  deferred_open(); g_windowReady = false;
+  g_render.m_hdrType_override = StreamHdrType::HDR_TYPE_HDR10;
+  g_render.UpdateResolution();
+  check(g_engages.empty() && g_modeSets == 0 && s_dvDiscDeferred,
+        "pending admission: native engage must wait for the window");
+  check(g_render.m_bTriggerUpdateResolution &&
+        g_render.m_hdrType_override == StreamHdrType::HDR_TYPE_HDR10,
+        "pending admission: resolution/HDR intent lost");
+  g_windowReady = true; g_render.UpdateResolution();
+  check(g_engages.size() == 1 && g_engages[0].atModeSet && g_modeSets == 1,
+        "resumed window: engage must still precede native mode set");
+  check(!g_render.m_bTriggerUpdateResolution && !s_dvDiscDeferred,
+        "resumed window: intent did not complete");
 }
 
 void test_window_without_mode_switch() {
@@ -294,11 +313,12 @@ void test_no_decoder_waits_quietly() {
 int main() {
   try {
     test_mode_set();
+    test_pending_window();
     test_window_without_mode_switch();
     test_forced_switch();
     test_refresh_switching_off();
     test_no_decoder_waits_quietly();
-    std::cout << "PASS: 5 disc DV deferred-engage scenarios\n";
+    std::cout << "PASS: 6 disc DV deferred-engage scenarios\n";
   } catch (const std::exception& e) {
     std::cerr << "FAIL: " << e.what() << '\n';
     return 1;

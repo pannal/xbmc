@@ -16,9 +16,10 @@
 #include "cores/VideoPlayer/Buffers/VideoBuffer.h"
 #include "utils/BitstreamConverter.h"
 
-#include <set>
 #include <atomic>
 #include <memory>
+#include <mutex>
+#include <set>
 
 class CAMLCodec;
 struct mpeg2_sequence;
@@ -40,7 +41,7 @@ public:
   void Commit(const CAMLSession::Permit& permit, const CRect& source,
               const CRect& destination, int& previousPts);
   void Poll(const CAMLSession::Permit& permit) const;
-  void Drop();
+  bool Drop();
   std::shared_ptr<CAMLCodec> Codec() const { return m_codec; }
   uint64_t OperationEpoch() const { return m_operationEpoch; }
 
@@ -64,8 +65,21 @@ public:
 
   virtual CVideoBuffer* Get() override;
   virtual void Return(int id) override;
+  static void ProcessReturns();
+  static constexpr size_t MAX_BUFFERS = 32; // Renderer slots plus decoder/output reservations.
+  // Every acquired or deferred ID holds one token, including old pools. Never
+  // take a driver frame without capacity for its eventual return obligation.
+  static constexpr size_t MAX_OUTSTANDING_BUFFERS = 128;
 
 private:
+  void ProcessPendingReturns();
+  bool HasPendingReturns();
+  static void QueueReturns(const std::shared_ptr<CAMLVideoBufferPool>& pool);
+  static std::atomic<size_t> s_outstandingBuffers;
+  static std::mutex s_returnMutex;
+  static bool s_processingReturns;
+  static std::vector<std::shared_ptr<CAMLVideoBufferPool>> s_returnPools;
+  std::set<int> m_pendingReturns;
   CCriticalSection m_criticalSection;;
   std::vector<CAMLVideoBuffer*> m_videoBuffers;
   std::vector<int> m_freeBuffers;

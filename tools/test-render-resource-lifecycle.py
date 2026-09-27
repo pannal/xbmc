@@ -28,7 +28,7 @@ def main():
     base = (ROOT / 'xbmc/rendering/RenderSystem.h').read_text()
     create = function(aml, 'bool CWinSystemAmlogicGLESContext::CreateNewWindow(')
     # This is only wiring coverage, not execution of mode-switch/DV callbacks.
-    destroy = create.index('DestroyWindow();')
+    destroy = create.index('if (!DestroyWindow())')
     surface = create.index('if (!m_pGLContext.CreateSurface(')
     bind = create.index('if (!m_pGLContext.BindContext())')
     invalidation = create.index('InvalidateRenderTarget();')
@@ -67,6 +67,7 @@ def main():
                       'void CWinSystemAmlogicGLESContext::CancelGuiComposite()',
                       'bool CWinSystemAmlogicGLESContext::SetFullScreen(',
                       'bool CWinSystemAmlogicGLESContext::ResizeWindow(',
+                      'bool CWinSystemAmlogicGLESContext::ResetRenderSystem(',
                       'bool CWinSystemAmlogicGLESContext::EngageMenuComposite(',
                       'void CWinSystemAmlogicGLESContext::DisengageMenuComposite()',
                       'bool CWinSystemAmlogicGLESContext::BeginRender()',
@@ -88,6 +89,7 @@ def main():
 
 PRELUDE = r'''
 #include "rendering/RenderResource.h"
+#include "windowing/amlogic/AMLDisplayLifecycle.h"
 #include "rendering/gles/TextureResources.h"
 #include <algorithm>
 #include <cassert>
@@ -225,6 +227,9 @@ public:
   bool DestroyWindow();bool EngageMenuComposite(MenuRoute);void DisengageMenuComposite();
   void CancelGuiComposite();bool SetFullScreen(bool,RESOLUTION_INFO&,bool);
   bool ResizeWindow(int,int,int,int);
+  bool ResetRenderSystem(int,int);
+  CAMLDisplayLifecycle m_displayLifecycle;
+  bool m_displayGeometryReady=false,m_delayDispReset=false;
   bool createWindowSucceeds=true;
   bool CreateNewWindow(const std::string&,bool,RESOLUTION_INFO&)
   {events.push_back("create window");return createWindowSucceeds;}

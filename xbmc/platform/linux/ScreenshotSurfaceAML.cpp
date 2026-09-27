@@ -13,6 +13,7 @@
 #include "rendering/RenderSystem.h"
 #include "threads/SingleLock.h"
 #include "ScreenshotSurfaceAML.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h"
 #include "utils/Screenshot.h"
 #include "utils/ScreenshotAML.h"
 #include "utils/log.h"
@@ -30,6 +31,8 @@ std::unique_ptr<IScreenshotSurface> CScreenshotSurfaceAML::CreateSurface()
 
 bool CScreenshotSurfaceAML::Capture()
 {
+  // Resolve the original session before GUI rendering can deliver callbacks.
+  const auto video = CAMLCodec::GetCaptureSource();
   std::unique_lock<CCriticalSection> lock(CServiceBroker::GetWinSystem()->GetGfxContext());
   auto* winsystem = CServiceBroker::GetWinSystem();
   auto* renderSystem = CServiceBroker::GetRenderSystem();
@@ -83,6 +86,8 @@ bool CScreenshotSurfaceAML::Capture()
   delete [] surface;
 
   // Captures the current visible videobuffer and blend it into m_buffer (captured overlay)
-  CScreenshotAML::CaptureVideoFrame(m_buffer, m_width, m_height);
+  auto permit = video.Acquire();
+  if (permit)
+    CScreenshotAML::CaptureVideoFrame(m_buffer, m_width, m_height);
   return true;
 }

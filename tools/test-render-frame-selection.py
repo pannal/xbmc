@@ -102,12 +102,15 @@ constexpr DWORD RENDER_FLAG_BOT=1,RENDER_FLAG_TOP=2,RENDER_FLAG_FIELD0=4,RENDER_
 constexpr double DVD_TIME_BASE=1000000;
 double DVD_MSEC_TO_TIME(double v){return v*1000;}
 // Optional merged disc-hold callback; policy is covered by test-dv-disc-hold.py.
-void aml_dv_engage_stale_deferred_disc(){}
+int staleEngages=0;
+void aml_dv_engage_stale_deferred_disc(){++staleEngages;}
 struct CLog {template<class... T> static void Log(T&&...){} template<class... T> static void LogFC(T&&...) {}};
 namespace XbmcThreads {template<class = void> struct EndTime {bool past=false;void Set(std::chrono::milliseconds){past=false;}bool IsTimePast(){return past;}};}
 struct Event {void notifyAll(){}};
 struct Gfx {float GetFPS(){return 50.0f;}};
 struct CWinSystemBase {
+  bool displayReady=true;
+  bool IsDisplayReadyForVideo() const {return displayReady;}
   Gfx gfx;bool active=false,pending=false;int begin=0,end=0;std::vector<bool> requests;
   Gfx& GetGfxContext(){return gfx;}
   bool IsMenuCompositeActive(){return active;}
@@ -272,6 +275,12 @@ int main(){
    assert(std::static_pointer_cast<const CDVDOverlayImage>(r.m_frameSelection->overlays[0].overlay_dvd)->palette[0]==0xff112233);
    image->PublishRenderContent();r.m_overlays.SetOverlays({{0,image}},0);
    r.FrameMove();assert(std::static_pointer_cast<const CDVDOverlayImage>(r.m_frameSelection->overlays[0].overlay_dvd)->palette[0]==0xff445566);}
+  // The stale DV fallback cannot bypass pending, delayed or failed display
+  // admission; its timer remains owned by AMLUtils and resumes once ready.
+  {CRenderManager r;auto* w=CServiceBroker::GetWinSystem();
+   const int before=staleEngages;w->displayReady=false;r.FrameMove();
+   assert(staleEngages==before);
+   w->displayReady=true;r.FrameMove();assert(staleEngages==before+1);}
   // No render callback on an unconfigured/configure-failure frame can leave the
   // previous selection alive. Real configure/flush/teardown wiring is checked above.
   for(auto state:{CRenderManager::STATE_UNCONFIGURED,CRenderManager::STATE_CONFIGURING}){

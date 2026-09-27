@@ -28,7 +28,7 @@ def harness():
     methods = '\n'.join(function(source, signature) for signature in [
         'void CAMLVideoBuffer::Set(', 'CAMLSession::Permit CAMLVideoBuffer::AcquirePresentation()',
         'void CAMLVideoBuffer::Commit(', 'void CAMLVideoBuffer::Poll(',
-        'void CAMLVideoBuffer::Drop()', 'void CAMLVideoBufferPool::Return('])
+        'bool CAMLVideoBuffer::Drop()', 'void CAMLVideoBufferPool::Return('])
     return PRELUDE + buffer + POOL + methods + TESTS
 
 
@@ -57,6 +57,7 @@ PRELUDE = r'''
 #include <cassert>
 #include <functional>
 #include <string>
+#include <set>
 #include <thread>
 #include <vector>
 using namespace std::chrono_literals;
@@ -100,6 +101,7 @@ public:
     assert(session.Complete(request,true));
   }
   uint64_t GetOperationEpoch() const {return session.Epoch();}
+  bool IsOperationInvalidated(uint64_t epoch) const {return session.IsInvalidated(epoch);}
   CAMLSession::Permit AcquirePresentation(uint64_t epoch,bool retirement=false) {
     return session.Acquire(epoch,retirement);
   }
@@ -125,11 +127,16 @@ public:
 };
 '''
 POOL = r'''
-class CAMLVideoBufferPool {
+class CAMLVideoBufferPool:public std::enable_shared_from_this<CAMLVideoBufferPool> {
 public:
+  static inline std::atomic<size_t> s_outstandingBuffers{0};
   CCriticalSection m_criticalSection;
   std::vector<CAMLVideoBuffer*> m_videoBuffers;
   std::vector<int> m_freeBuffers;
+  std::set<int> m_pendingReturns;
+  // These original normal-return tests must never defer. The dedicated display
+  // fixture executes real QueueReturns/ProcessReturns with retained real pools.
+  static void QueueReturns(const std::shared_ptr<CAMLVideoBufferPool>&){assert(false);}
   void Return(int);
 };
 '''
@@ -345,7 +352,9 @@ void PoolUnlock() {
     assert(!pool.m_criticalSection.held);
     assert(pool.m_freeBuffers.empty());
   };
+  ++CAMLVideoBufferPool::s_outstandingBuffers; // This fixture manually seeds one acquired ID.
   pool.Return(0);
+  assert(CAMLVideoBufferPool::s_outstandingBuffers==0);
   assert((pool.m_freeBuffers==std::vector<int>{0}));
   assert((codec->trace==std::vector<std::string>{"drop"}));
 }
@@ -360,7 +369,7 @@ def negative_controls():
     original_header = (ROOT / 'xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLSession.h').read_text()
     controls = [
         ('wrong presentation owner admitted', 'header',
-         '(!retirement && std::this_thread::get_id() != m_owner) ||', 'false ||'),
+         '(!retirement && std::this_thread::get_id() != m_state->owner) ||', 'false ||'),
         ('foreign request accepted', 'header',
          'request.identity == m_state && ', ''),
         ('mutation skips live counts', 'header',
@@ -369,12 +378,12 @@ def negative_controls():
          '!m_codec->IsPresentationPermit(permit, m_operationEpoch)', '!permit'),
         ('retirement permit presents', 'source',
          'permit.IsRetirement() || previousPts', 'previousPts'),
-        ('duplicate drop claim', 'source',
+        ('required drop claim skipped', 'source',
          'if (m_consumption.compare_exchange_strong(expected, Consumption::CLAIMED))',
-         'if (true || m_consumption.compare_exchange_strong(expected, Consumption::CLAIMED))'),
+         'if (false && m_consumption.compare_exchange_strong(expected, Consumption::CLAIMED))'),
         ('pool lock held across QBUF', 'source',
-         'buffer = m_videoBuffers[id];\n  }\n  buffer->Drop();',
-         'buffer = m_videoBuffers[id];\n    buffer->Drop();\n  }'),
+         'buffer = m_videoBuffers[id];\n  }\n  const bool returned = buffer->Drop();',
+         'buffer = m_videoBuffers[id];\n    buffer->Drop();\n  }\n  const bool returned = buffer->Drop();'),
     ]
     with tempfile.TemporaryDirectory(prefix='aml-session-negative-') as temporary:
         out = Path(temporary)

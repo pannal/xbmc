@@ -66,6 +66,8 @@ public:
   virtual bool CreateNewWindow(const std::string& name, bool fullScreen, RESOLUTION_INFO& res) = 0;
   virtual bool DestroyWindow(){ return false; }
   virtual bool ResizeWindow(int newWidth, int newHeight, int newLeft, int newTop) = 0;
+  virtual bool IsDisplayChangePending() const { return false; }
+  virtual bool IsDisplayReadyForVideo() const { return true; }
   virtual bool SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays) = 0;
   virtual bool DisplayHardwareScalingEnabled() { return false; }
   virtual void UpdateDisplayHardwareScaling(const RESOLUTION_INFO& resInfo) { }

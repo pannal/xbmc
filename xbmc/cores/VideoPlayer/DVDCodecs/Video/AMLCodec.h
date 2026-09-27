@@ -66,6 +66,23 @@ public:
   CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints);
   virtual ~CAMLCodec();
 
+  struct CaptureSource
+  {
+    std::shared_ptr<CAMLCodec> codec;
+    uint64_t epoch{0};
+    CAMLSession::Permit Acquire() const
+    {
+      std::lock_guard<std::mutex> lock(s_captureMutex);
+      // The device reads the current global video output. A GUI callback may
+      // have replaced it since the snapshot; never substitute the new session.
+      if (!codec || s_captureCodec.lock() != codec)
+        return {};
+      return codec->AcquirePresentation(epoch);
+    }
+  };
+  static CaptureSource GetCaptureSource();
+  static void SetCaptureSource(const std::shared_ptr<CAMLCodec>& codec);
+
   bool          OpenDecoder();
   bool          CloseDecoder();
   bool          Reset();
@@ -78,6 +95,7 @@ public:
   bool          LifecycleFailed() const { return m_lifecycleFailed; }
   bool          LifecyclePending() const { return m_lifecycle != Lifecycle::NONE; }
   void          WaitForLifecycle();
+  bool IsOperationInvalidated(uint64_t epoch) const { return m_session.IsInvalidated(epoch); }
   uint64_t      GetOperationEpoch() const { return m_session.Epoch(); }
   CAMLSession::Permit AcquirePresentation(uint64_t epoch, bool retirement = false)
   {
@@ -111,10 +129,15 @@ private:
   void CloseDecoderInternal();
   void ResetInternal();
   void SetPollDevice(int device);
+  static std::mutex s_captureMutex;
+  static std::weak_ptr<CAMLCodec> s_captureCodec;
   CAMLSession m_session;
   Lifecycle m_lifecycle{Lifecycle::NONE};
   CAMLSession::Request m_lifecycleRequest;
   bool m_lifecycleFailed{false};
+  bool m_speedPending{false};
+  int m_requestedSpeed{0};
+  void SetSpeedInternal(int speed);
 
   void          ShowMainVideo(const bool show);
   // Hide video output across a decode (re)start (startup / seek flush) until the

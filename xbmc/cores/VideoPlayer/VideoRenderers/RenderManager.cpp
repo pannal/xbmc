@@ -401,7 +401,8 @@ void CRenderManager::FrameMove()
   bool firstFrame = m_configuredFramePending;
   m_configuredFramePending = false;
   UpdateResolution();
-  aml_dv_engage_stale_deferred_disc();
+  if (CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())
+    aml_dv_engage_stale_deferred_disc();
 
   {
     std::unique_lock<CCriticalSection> lock(m_statelock);
@@ -1368,7 +1369,8 @@ void CRenderManager::UpdateResolution(bool force)
   
         RESOLUTION res = CResolutionUtils::ChooseBestResolution(m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
         CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(actual_hdrType);
-        CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
+        if (!CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false))
+          return; // Retain resolution/HDR intent until actual window completion.
         UpdateLatencyTweak();
 
         CLog::Log(LOGINFO, "CRenderManager::{} After - Set fps [{}] width [{}] height [{}] stereomode empty [{}] hdr type [{}]",
@@ -1377,6 +1379,8 @@ void CRenderManager::UpdateResolution(bool force)
         if (m_pRenderer) 
           m_pRenderer->Update();
       }
+      if (!CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())
+        return; // Do not bypass a pending/failed display with the no-mode DV engage.
       m_bTriggerUpdateResolution = false;
       m_hdrType_override = StreamHdrType::HDR_TYPE_NONE;
       // No mode set (refresh switching off, already at the title's mode, or a

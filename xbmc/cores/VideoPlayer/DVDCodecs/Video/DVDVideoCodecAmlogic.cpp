@@ -6,6 +6,7 @@
  *  See LICENSES/README.md for more information.
  */
 
+#include <algorithm>
 #include <cstdio>
 #include <math.h>
 
@@ -35,10 +36,21 @@ CAMLVideoBufferPool::~CAMLVideoBufferPool()
 
 CVideoBuffer* CAMLVideoBufferPool::Get()
 {
-  std::unique_lock<CCriticalSection> lock(m_criticalSection);
+  size_t outstanding = s_outstandingBuffers.load();
+  do
+  {
+    if (outstanding >= MAX_OUTSTANDING_BUFFERS)
+      return nullptr;
+  } while (!s_outstandingBuffers.compare_exchange_weak(outstanding, outstanding + 1));
 
+  std::unique_lock<CCriticalSection> lock(m_criticalSection);
   if (m_freeBuffers.empty())
   {
+    if (m_videoBuffers.size() >= MAX_BUFFERS)
+    {
+      --s_outstandingBuffers;
+      return nullptr;
+    }
     m_freeBuffers.push_back(m_videoBuffers.size());
     m_videoBuffers.push_back(new CAMLVideoBuffer(static_cast<int>(m_videoBuffers.size())));
   }
@@ -90,10 +102,10 @@ void CAMLVideoBuffer::Poll(const CAMLSession::Permit& permit) const
     m_codec->PollFrame(permit);
 }
 
-void CAMLVideoBuffer::Drop()
+bool CAMLVideoBuffer::Drop()
 {
-  if (!m_codec)
-    return;
+  if (!m_codec || m_consumption == Consumption::CONSUMED)
+    return true;
   auto permit = m_codec->AcquirePresentation(m_operationEpoch, true);
   if (permit)
   {
@@ -102,15 +114,24 @@ void CAMLVideoBuffer::Drop()
     {
       m_codec->ReleaseFrame(m_bufferIndex, m_presentationGeneration, permit, true);
       m_consumption = Consumption::CONSUMED;
+      return true;
     }
+    return expected == Consumption::CONSUMED;
   }
-  else
+  if (m_codec->IsOperationInvalidated(m_operationEpoch))
   {
-    // Retirement admission stays open while a mutation is pending. Rejection
-    // means reset/close already took responsibility for the old device index.
+    // Only decoder mutation owns tombstoning an old driver index. A display
+    // fence preserves both the index and the pool capacity until valid return.
     m_consumption = Consumption::CONSUMED;
+    return true;
   }
+  return false;
 }
+
+std::atomic<size_t> CAMLVideoBufferPool::s_outstandingBuffers{0};
+std::mutex CAMLVideoBufferPool::s_returnMutex;
+bool CAMLVideoBufferPool::s_processingReturns{false};
+std::vector<std::shared_ptr<CAMLVideoBufferPool>> CAMLVideoBufferPool::s_returnPools;
 
 void CAMLVideoBufferPool::Return(int id)
 {
@@ -119,12 +140,78 @@ void CAMLVideoBufferPool::Return(int id)
     std::unique_lock<CCriticalSection> lock(m_criticalSection);
     buffer = m_videoBuffers[id];
   }
-  buffer->Drop();
-  std::unique_lock<CCriticalSection> lock(m_criticalSection);
-  m_freeBuffers.push_back(id);
+  const bool returned = buffer->Drop();
+  {
+    std::unique_lock<CCriticalSection> lock(m_criticalSection);
+    if (returned)
+    {
+      m_freeBuffers.push_back(id);
+      --s_outstandingBuffers;
+    }
+    else
+      m_pendingReturns.insert(id);
+  }
+  if (!returned)
+    QueueReturns(std::static_pointer_cast<CAMLVideoBufferPool>(shared_from_this()));
 }
 
-/***************************************************************************/
+void CAMLVideoBufferPool::QueueReturns(const std::shared_ptr<CAMLVideoBufferPool>& pool)
+{
+  // One retained entry per bounded pool. It is external to the codec/session,
+  // avoiding a session -> callback -> pool -> codec ownership cycle.
+  std::lock_guard<std::mutex> lock(s_returnMutex);
+  // A concurrent pump may have settled the ID before this enqueue. Do not
+  // enqueue an empty pool. Settled entries in the active pump are pruned below.
+  if (pool->HasPendingReturns() &&
+      std::find(s_returnPools.begin(), s_returnPools.end(), pool) == s_returnPools.end())
+    s_returnPools.push_back(pool);
+}
+
+bool CAMLVideoBufferPool::HasPendingReturns()
+{
+  std::unique_lock<CCriticalSection> lock(m_criticalSection);
+  return !m_pendingReturns.empty();
+}
+
+void CAMLVideoBufferPool::ProcessPendingReturns()
+{
+  std::vector<std::pair<int, CAMLVideoBuffer*>> pending;
+  {
+    std::unique_lock<CCriticalSection> lock(m_criticalSection);
+    for (int id : m_pendingReturns)
+      pending.emplace_back(id, m_videoBuffers[id]);
+  }
+  for (const auto& [id, buffer] : pending)
+  {
+    // Capacity cannot be republished until QBUF or actual epoch invalidation.
+    if (buffer->Drop())
+    {
+      std::unique_lock<CCriticalSection> lock(m_criticalSection);
+      m_pendingReturns.erase(id);
+      m_freeBuffers.push_back(id);
+      --s_outstandingBuffers;
+    }
+  }
+}
+
+void CAMLVideoBufferPool::ProcessReturns()
+{
+  std::vector<std::shared_ptr<CAMLVideoBufferPool>> pools;
+  {
+    std::lock_guard<std::mutex> lock(s_returnMutex);
+    if (s_processingReturns)
+      return;
+    s_processingReturns = true;
+    pools = s_returnPools;
+  }
+  for (const auto& pool : pools)
+    pool->ProcessPendingReturns();
+  std::lock_guard<std::mutex> lock(s_returnMutex);
+  s_returnPools.erase(std::remove_if(s_returnPools.begin(), s_returnPools.end(),
+                                     [](const auto& pool) { return !pool->HasPendingReturns(); }),
+                      s_returnPools.end());
+  s_processingReturns = false;
+}
 
 CDVDVideoCodecAmlogic::CDVDVideoCodecAmlogic(CProcessInfo &processInfo)
   : CDVDVideoCodec(processInfo)
@@ -838,6 +925,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       }
 
       m_videoBufferPool = std::shared_ptr<CAMLVideoBufferPool>(new CAMLVideoBufferPool());
+      CAMLCodec::SetCaptureSource(m_Codec);
 
       m_opened = true;
       set_osd_max = true;
@@ -894,7 +982,7 @@ bool CDVDVideoCodecAmlogic::ContinueLifecycle()
 {
   if (LifecycleFailed())
     return false;
-  if (m_Codec && m_Codec->LifecyclePending() && !m_Codec->ContinueLifecycle())
+  if (m_Codec && !m_Codec->ContinueLifecycle())
     return false;
   if (m_resetCleanupPending)
   {
@@ -935,6 +1023,12 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
   if (!m_Codec)
     return VC_ERROR;
 
+  if (!m_videoBufferPool)
+    return VC_BUFFER;
+  auto* reserved = static_cast<CAMLVideoBuffer*>(m_videoBufferPool->Get());
+  if (!reserved)
+    return VC_NONE;
+
   VCReturn retVal = m_Codec->GetPicture(m_videobuffer);
 
   if (retVal == VC_PICTURE)
@@ -942,11 +1036,14 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
     pVideoPicture->videoBuffer = nullptr;
     pVideoPicture->SetParams(m_videobuffer);
 
-    pVideoPicture->videoBuffer = m_videoBufferPool->Get();
+    pVideoPicture->videoBuffer = reserved;
     static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(m_Codec,
      m_Codec->GetOMXPts(), m_Codec->GetAmlDuration(), m_Codec->GetBufferIndex(),
      m_Codec->GetPresentationGeneration());
   }
+
+  if (retVal != VC_PICTURE)
+    reserved->Release();
 
   // check for mpeg2 aspect ratio changes
   if (m_mpeg2_sequence && pVideoPicture->pts >= m_mpeg2_sequence_pts)

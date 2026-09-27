@@ -3,7 +3,9 @@
 
 Extracts complete AML video capture, AML/GLES RenderCapture and AML/GLES screenshot
 Capture methods. Checks bytes, failure states, composition cancellation, stale
-readback suppression and geometry/matrix restoration. ASan/UBSan do not prove GPU
+readback suppression and geometry/matrix restoration. Direct screenshot source
+admission is an always-open session stand-in here; test-aml-screenshot-admission.py
+executes the production source snapshot/admission protocol. ASan/UBSan do not prove GPU
 or driver behavior, nor detect reads of uninitialized memory; differing initialized
 nonblend inputs verify output independence instead.
 """
@@ -159,6 +161,13 @@ struct CAMLCodec {
   CAMLSession session;
   CAMLCodec(){auto request=session.Fence();assert(session.BeginMutation(request));assert(session.Complete(request,true));}
   CAMLSession::Permit AcquirePresentation(uint64_t epoch){return session.Acquire(epoch);}
+  // This fixture isolates capture outcomes. The direct-admission fixture tests
+  // the production registry, exact source epoch, and lifecycle rejection.
+  struct CaptureSource {
+    std::shared_ptr<CAMLCodec> codec;
+    CAMLSession::Permit Acquire() const {return codec->AcquirePresentation(codec->session.Epoch());}
+  };
+  static CaptureSource GetCaptureSource(){return {std::make_shared<CAMLCodec>()};}
 };
 struct CVideoBuffer {virtual ~CVideoBuffer()=default;};
 struct CAMLVideoBuffer:CVideoBuffer {

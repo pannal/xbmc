@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <vector>
 
 // Device admission is independent of allocation lifetime and successful-open
 // generation. The serialized decoder owner mutates; presentation/returns obtain
@@ -28,10 +30,21 @@ class CAMLSession
     bool open{false};
     bool fenced{true};
     bool mutating{false};
+    bool displayFenced{false};
+    bool displayActive{false};
+    std::thread::id owner;
   };
 
 public:
-  explicit CAMLSession(std::thread::id owner = std::this_thread::get_id()) : m_owner(owner) {}
+  explicit CAMLSession(std::thread::id owner = std::this_thread::get_id())
+  {
+    std::lock_guard<std::mutex> registry(s_registryMutex);
+    m_state->owner = owner;
+    m_state->displayFenced = s_displayPhase != DisplayPhase::READY;
+    m_state->displayActive = s_displayPhase == DisplayPhase::MUTATING;
+    PruneSessions();
+    s_sessions.emplace_back(m_state);
+  }
 
   class Permit
   {
@@ -83,8 +96,8 @@ public:
   Permit Acquire(uint64_t epoch, bool retirement = false)
   {
     std::lock_guard<std::mutex> lock(m_state->mutex);
-    if ((!retirement && std::this_thread::get_id() != m_owner) ||
-        !m_state->open || m_state->mutating || epoch != m_state->epoch ||
+    if ((!retirement && std::this_thread::get_id() != m_state->owner) ||
+        !m_state->open || m_state->mutating || m_state->displayFenced || epoch != m_state->epoch ||
         (m_state->fenced && !retirement))
       return {};
     ++(retirement ? m_state->retiring : m_state->active);
@@ -116,9 +129,12 @@ public:
 
   bool BeginMutation(const Request& request)
   {
+    // Serialize the decision with pre-display admission, including registration
+    // of a new codec while a display request is already fenced.
+    std::lock_guard<std::mutex> registry(s_registryMutex);
     std::lock_guard<std::mutex> lock(m_state->mutex);
     if (request.identity != m_state || request.serial != m_state->request || request.epoch != m_state->epoch ||
-        m_state->active || m_state->retiring || m_state->mutating)
+        m_state->active || m_state->retiring || m_state->mutating || m_state->displayActive)
       return false;
     m_state->mutating = true;
     // Mutation now owns invalidation of outstanding old device indices. Late
@@ -139,7 +155,129 @@ public:
     return true;
   }
 
+  // Rejection during an ordinary display transition is temporary. Only actual
+  // decoder mutation/close owns invalidation of these driver indices.
+  bool IsInvalidated(uint64_t epoch) const
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    return !m_state->open || epoch != m_state->epoch || m_state->mutating;
+  }
+
+  bool DisplayBlocked() const
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    return m_state->displayFenced;
+  }
+
+  Permit AcquireDecoder()
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    if (!m_state->open || m_state->mutating || m_state->fenced || m_state->displayFenced)
+      return {};
+    ++m_state->active;
+    return Permit(m_state, m_state->epoch, false);
+  }
+
+  enum class DisplayPhase { READY, PENDING, MUTATING, WAITING_FOR_RESET, FAILED };
+  struct DisplayRequest
+  {
+    uint64_t serial{0};
+    std::thread::id owner;
+    explicit operator bool() const { return serial != 0; }
+  };
+
+  static DisplayRequest FenceDisplay()
+  {
+    std::lock_guard<std::mutex> registry(s_registryMutex);
+    if (s_displayPhase == DisplayPhase::MUTATING)
+      return {};
+    if (s_displayPhase != DisplayPhase::PENDING)
+      s_cancelDisplayReady = s_displayPhase == DisplayPhase::READY;
+    s_displayPhase = DisplayPhase::PENDING;
+    s_displayOwner = std::this_thread::get_id();
+    ++s_displaySerial;
+    ForSessions([](State& state) { state.displayFenced = true; });
+    return {s_displaySerial, s_displayOwner};
+  }
+
+  static bool TryBeginDisplay(const DisplayRequest& request)
+  {
+    std::lock_guard<std::mutex> registry(s_registryMutex);
+    if (!MatchesDisplay(request) || s_displayPhase != DisplayPhase::PENDING)
+      return false;
+    bool ready = true;
+    ForSessions([&](State& state) {
+      ready = ready && !state.active && !state.retiring && !state.mutating;
+    });
+    if (!ready)
+      return false;
+    ForSessions([](State& state) { state.displayActive = true; });
+    s_displayPhase = DisplayPhase::MUTATING;
+    return true;
+  }
+
+  // A failed bind/reset retains admission fencing, while ending the actual
+  // mutation lets decoder reset/close invalidate its own old return obligations.
+  static bool EndDisplay(const DisplayRequest& request, DisplayPhase phase)
+  {
+    std::lock_guard<std::mutex> registry(s_registryMutex);
+    if (!MatchesDisplay(request) ||
+        (s_displayPhase != DisplayPhase::MUTATING &&
+         s_displayPhase != DisplayPhase::WAITING_FOR_RESET) ||
+        (phase != DisplayPhase::READY && phase != DisplayPhase::WAITING_FOR_RESET &&
+         phase != DisplayPhase::FAILED))
+      return false;
+    s_displayPhase = phase;
+    ForSessions([&](State& state) {
+      state.displayActive = false;
+      state.displayFenced = phase != DisplayPhase::READY;
+      state.idle.notify_all();
+    });
+    return true;
+  }
+
+  static bool CancelDisplay(const DisplayRequest& request)
+  {
+    std::lock_guard<std::mutex> registry(s_registryMutex);
+    if (!MatchesDisplay(request) || s_displayPhase != DisplayPhase::PENDING)
+      return false;
+    s_displayPhase = s_cancelDisplayReady ? DisplayPhase::READY : DisplayPhase::FAILED;
+    ForSessions([](State& state) { state.displayFenced = !s_cancelDisplayReady; });
+    return true;
+  }
+
 private:
-  const std::thread::id m_owner;
+  static bool MatchesDisplay(const DisplayRequest& request)
+  {
+    return request.serial != 0 && request.serial == s_displaySerial &&
+           request.owner == s_displayOwner && request.owner == std::this_thread::get_id();
+  }
+
+  static void PruneSessions()
+  {
+    s_sessions.erase(std::remove_if(s_sessions.begin(), s_sessions.end(),
+                                   [](const auto& state) { return state.expired(); }),
+                     s_sessions.end());
+  }
+
+  template<class Action> static void ForSessions(Action action)
+  {
+    PruneSessions();
+    for (auto& weak : s_sessions)
+    {
+      if (auto state = weak.lock())
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        action(*state);
+      }
+    }
+  }
+
+  static inline std::mutex s_registryMutex;
+  static inline std::vector<std::weak_ptr<State>> s_sessions;
+  static inline uint64_t s_displaySerial{0};
+  static inline std::thread::id s_displayOwner;
+  static inline bool s_cancelDisplayReady{true};
+  static inline DisplayPhase s_displayPhase{DisplayPhase::READY};
   const std::shared_ptr<State> m_state{std::make_shared<State>()};
 };

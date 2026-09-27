@@ -325,6 +325,7 @@ int main()
 
 AML = r'''
 #include "rendering/gles/TextureResources.h"
+#include "windowing/amlogic/AMLDisplayLifecycle.h"
 using CCriticalSection=std::recursive_mutex;
 constexpr int GL_SCISSOR_TEST=1;
 bool scissor{true};
@@ -370,6 +371,8 @@ public:
   std::array<PendingSwitch,2> m_pendingSwitches;
   bool m_delayDispReset{false},m_guiFboBound{false},m_menuFboHasContent{false},m_menuEngageFailed{false};
   bool composite{true};
+  CAMLDisplayLifecycle m_displayLifecycle;
+  bool m_displayGeometryReady{false};
   MenuRoute m_menuRoute{MenuRoute::NONE};
   RenderTargetToken m_guiTarget;
   std::shared_ptr<CGLESTextureResources> m_guiResources;

@@ -390,21 +390,36 @@ bool CGraphicContext::IsValidResolution(RESOLUTION res)
 }
 
 // call SetVideoResolutionInternal and ensure its done from mainthread
-void CGraphicContext::SetVideoResolution(RESOLUTION res, bool forceUpdate)
+bool CGraphicContext::SetVideoResolution(RESOLUTION res, bool forceUpdate)
 {
   if (CServiceBroker::GetAppMessenger()->IsProcessThread())
   {
-    SetVideoResolutionInternal(res, forceUpdate);
+    return SetVideoResolutionInternal(res, forceUpdate);
   }
   else
   {
     CServiceBroker::GetAppMessenger()->SendMsg(TMSG_SETVIDEORESOLUTION, res, forceUpdate ? 1 : 0);
+    // Dispatch is not a native/context completion acknowledgment.
+    return false;
   }
 }
 
-void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdate)
+void CGraphicContext::ProcessPendingVideoResolution()
 {
+  if (!m_pendingVideoResolution)
+    return;
+  const auto request = *m_pendingVideoResolution;
+  SetVideoResolutionInternal(request.resolution, request.forceUpdate);
+}
+
+bool CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdate)
+{
+  // A newer main-thread request supersedes the one pending quiescence. No
+  // native mutation from that old request has started; storage stays bounded.
+  m_pendingVideoResolution.reset();
   RESOLUTION lastRes = m_Resolution;
+  const bool lastFullScreen = m_bFullScreenRoot;
+  const bool lastSettingFullScreen = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_fullScreen;
 #if defined(HAS_LIBAMCODEC)
   forceUpdate = true;
 #endif
@@ -418,7 +433,7 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   // If we are switching to the same resolution and same window/full-screen, no need to do anything
   if (!forceUpdate && res == lastRes && m_bFullScreenRoot == CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_fullScreen)
   {
-    return;
+    return true;
   }
 
   if (res >= RES_DESKTOP)
@@ -482,7 +497,11 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   }
   else
   {
-    // Reset old state
+    if (CServiceBroker::GetWinSystem()->IsDisplayChangePending())
+      m_pendingVideoResolution = ResolutionRequest{res, forceUpdate};
+    // Reset provisional state while admission is pending or rebinding failed.
+    m_bFullScreenRoot = lastFullScreen;
+    CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_fullScreen = lastSettingFullScreen;
     m_iScreenWidth = origScreenWidth;
     m_iScreenHeight = origScreenHeight;
     m_fFPSOverride = origFPSOverride;
@@ -500,6 +519,7 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
       m_Resolution = RES_DESKTOP;
     }
   }
+  return switched;
 }
 
 void CGraphicContext::ApplyVideoResolution(RESOLUTION res)

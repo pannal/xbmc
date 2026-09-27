@@ -1924,8 +1924,27 @@ void CAMLCodec::SetProcessInfoVideoDetails()
   }
 }
 
+std::mutex CAMLCodec::s_captureMutex;
+std::weak_ptr<CAMLCodec> CAMLCodec::s_captureCodec;
+
+void CAMLCodec::SetCaptureSource(const std::shared_ptr<CAMLCodec>& codec)
+{
+  std::lock_guard<std::mutex> lock(s_captureMutex);
+  s_captureCodec = codec;
+}
+
+CAMLCodec::CaptureSource CAMLCodec::GetCaptureSource()
+{
+  std::lock_guard<std::mutex> lock(s_captureMutex);
+  auto codec = s_captureCodec.lock();
+  const uint64_t epoch = codec ? codec->GetOperationEpoch() : 0;
+  return {std::move(codec), epoch};
+}
+
 bool CAMLCodec::OpenDecoder()
 {
+  if (m_opened && !LifecyclePending())
+    return true;
   return BeginLifecycle(Lifecycle::OPEN);
 }
 
@@ -1960,7 +1979,13 @@ bool CAMLCodec::BeginLifecycle(Lifecycle operation)
 bool CAMLCodec::ContinueLifecycle()
 {
   if (m_lifecycle == Lifecycle::NONE)
-    return !m_lifecycleFailed;
+  {
+    if (m_lifecycleFailed || m_session.DisplayBlocked())
+      return false;
+    if (m_speedPending)
+      SetSpeed(m_requestedSpeed);
+    return !m_speedPending;
+  }
   if (!m_session.BeginMutation(m_lifecycleRequest))
     return false;
 
@@ -2452,7 +2477,7 @@ bool CAMLCodec::OpenDecoderInternal()
   m_opened = true;
   // vcodec is open, update speed if it was
   // changed before VideoPlayer called OpenDecoder.
-  SetSpeed(m_speed);
+  SetSpeedInternal(m_speed);
   SetPollDevice(am_private->vcodec.cntl_handle);
 
   {
@@ -2635,7 +2660,7 @@ void CAMLCodec::ResetInternal()
   m_no_data_since_reset = true;
   m_stillFrameDrain = {};
 
-  SetSpeed(m_speed);
+  SetSpeedInternal(m_speed);
 
   SetPollDevice(am_private->vcodec.cntl_handle);
 }
@@ -2643,6 +2668,9 @@ void CAMLCodec::ResetInternal()
 bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 {
   if (LifecyclePending() && !ContinueLifecycle())
+    return false;
+  auto operation = m_session.AcquireDecoder();
+  if (!operation)
     return false;
   int data_len, free_len;
   int chunk_size = calc_chunk_size(iSize);
@@ -3028,6 +3056,9 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
 {
   if (LifecyclePending() && !ContinueLifecycle())
     return CDVDVideoCodec::VC_NONE;
+  auto operation = m_session.AcquireDecoder();
+  if (!operation)
+    return CDVDVideoCodec::VC_NONE;
   if (!m_opened)
     return CDVDVideoCodec::VC_ERROR;
 
@@ -3315,6 +3346,23 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
 }
 
 void CAMLCodec::SetSpeed(int speed)
+{
+  if (!m_opened)
+  {
+    m_speed = speed;
+    m_speedPending = false;
+    return;
+  }
+  m_requestedSpeed = speed;
+  m_speedPending = true;
+  auto permit = m_session.AcquireDecoder();
+  if (!permit)
+    return;
+  SetSpeedInternal(speed);
+  m_speedPending = false;
+}
+
+void CAMLCodec::SetSpeedInternal(int speed)
 {
   if (m_speed == speed)
     return;

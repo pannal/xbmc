@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "AMLDisplayLifecycle.h"
 #include "utils/EGLUtils.h"
 #include "cores/VideoPlayer/VideoRenderers/FrameBufferObject.h"
 #include "rendering/gles/GuiCompositeShaderGLES.h"
@@ -41,6 +42,12 @@ public:
   bool InitWindowSystem() override;
   bool DestroyWindowSystem() override;
   bool DestroyRenderSystem() override;
+  bool ResetRenderSystem(int width, int height) override;
+  bool IsDisplayChangePending() const override { return m_displayLifecycle.Pending(); }
+  bool IsDisplayReadyForVideo() const override
+  {
+    return m_displayLifecycle.Ready() && m_displayGeometryReady && !m_delayDispReset && CanRender();
+  }
   bool CreateNewWindow(const std::string& name,
                        bool fullScreen,
                        RESOLUTION_INFO& res) override;
@@ -113,6 +120,8 @@ private:
     bool osdSwitch = false;
   };
 
+  CAMLDisplayLifecycle m_displayLifecycle;
+  bool m_displayGeometryReady{false};
   CEGLContextUtils m_pGLContext;
   StreamHdrType m_hdrType = StreamHdrType::HDR_TYPE_NONE;
 

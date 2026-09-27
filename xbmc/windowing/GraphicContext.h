@@ -17,6 +17,7 @@
 #include "utils/TransformMatrix.h" // for the members m_guiTransform etc.
 
 #include <map>
+#include <optional>
 #include <stack>
 #include <string>
 #include <vector>
@@ -82,7 +83,8 @@ public:
   void SetFullScreenVideo(bool bOnOff);
   bool IsFullScreenVideo() const;
   bool IsValidResolution(RESOLUTION res);
-  void SetVideoResolution(RESOLUTION res, bool forceUpdate);
+  bool SetVideoResolution(RESOLUTION res, bool forceUpdate);
+  void ProcessPendingVideoResolution();
   void ApplyModeChange(RESOLUTION res);
   void ApplyWindowResize(int newWidth, int newHeight);
   RESOLUTION GetVideoResolution() const;
@@ -232,7 +234,13 @@ public:
 protected:
 
   void UpdateCameraPosition(const CPoint &camera, const float &factor);
-  void SetVideoResolutionInternal(RESOLUTION res, bool forceUpdate);
+  bool SetVideoResolutionInternal(RESOLUTION res, bool forceUpdate);
+  struct ResolutionRequest
+  {
+    RESOLUTION resolution;
+    bool forceUpdate;
+  };
+  std::optional<ResolutionRequest> m_pendingVideoResolution; // main only; one latest request
   void ApplyVideoResolution(RESOLUTION res);
   void UpdateInternalStateWithResolution(RESOLUTION res);
 

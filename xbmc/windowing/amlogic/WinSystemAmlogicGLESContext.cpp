@@ -150,6 +150,7 @@ void CWinSystemAmlogicGLESContext::ReleaseCompositeResources()
 
 bool CWinSystemAmlogicGLESContext::DestroyRenderSystem()
 {
+  m_displayGeometryReady = false;
   // Application cleanup unbinds the surface before DestroyWindowSystem. Retire
   // these main-owned resources now, without changing route/kernel-switch timing.
   ReleaseCompositeResources();
@@ -214,6 +215,9 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
                                                bool fullScreen,
                                                RESOLUTION_INFO& res)
 {
+  CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
+  if (!display)
+    return false;
   RESOLUTION_INFO current_resolution;
   current_resolution.iWidth = current_resolution.iHeight = 0;
   RENDER_STEREO_MODE stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
@@ -285,16 +289,22 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
       current_resolution.iScreenWidth == res.iScreenWidth && current_resolution.iScreenHeight == res.iScreenHeight &&
       m_bFullScreen == fullScreen && current_resolution.fRefreshRate == res.fRefreshRate &&
       (current_resolution.dwFlags & D3DPRESENTFLAG_MODEMASK) == (res.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
-      m_stereo_mode == stereo_mode && m_bWindowCreated &&
+      m_stereo_mode == stereo_mode && m_bWindowCreated && IsPrimaryContextCurrent() &&
       !force_mode_switch_by_dv &&
       (fractional_rate == cur_fractional_rate))
   {
     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
+    display.Finish(m_displayGeometryReady && !m_delayDispReset && CanRender()
+                       ? CAMLDisplayLifecycle::Phase::READY
+                       : CAMLDisplayLifecycle::Phase::WAITING_FOR_RESET);
     return true;
   }
 
-  // destroy old window, then create a new one
-  DestroyWindow();
+  // Admission precedes both the native mode change and destruction of the old
+  // surface. Only a later successful geometry reset may reopen this session.
+  m_displayGeometryReady = false;
+  if (!DestroyWindow())
+    return false;
 
   // check if a forced mode switch is required
   if (((current_resolution.iWidth == res.iWidth && current_resolution.iHeight == res.iHeight &&
@@ -343,11 +353,13 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
       (*i)->OnResetDisplay();
   }
 
+  display.Finish(CAMLDisplayLifecycle::Phase::WAITING_FOR_RESET);
   return true;
 }
 
 bool CWinSystemAmlogicGLESContext::DestroyWindow()
 {
+  m_displayGeometryReady = false;
   InvalidateRenderTarget();
   CancelGuiComposite();
   m_pGLContext.DestroySurface();
@@ -356,14 +368,31 @@ bool CWinSystemAmlogicGLESContext::DestroyWindow()
 
 bool CWinSystemAmlogicGLESContext::ResizeWindow(int newWidth, int newHeight, int newLeft, int newTop)
 {
-  return CRenderSystemGLES::ResetRenderSystem(newWidth, newHeight);
+  return ResetRenderSystem(newWidth, newHeight);
 }
 
 bool CWinSystemAmlogicGLESContext::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays)
 {
-  if (!CreateNewWindow("", fullScreen, res))
+  CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
+  if (!display || !CreateNewWindow("", fullScreen, res) ||
+      !ResetRenderSystem(res.iWidth, res.iHeight))
     return false;
-  return CRenderSystemGLES::ResetRenderSystem(res.iWidth, res.iHeight);
+  display.Finish(m_delayDispReset ? CAMLDisplayLifecycle::Phase::WAITING_FOR_RESET
+                                 : CAMLDisplayLifecycle::Phase::READY);
+  return true;
+}
+
+bool CWinSystemAmlogicGLESContext::ResetRenderSystem(int width, int height)
+{
+  CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
+  if (!display)
+    return false;
+  m_displayGeometryReady = CRenderSystemGLES::ResetRenderSystem(width, height) && CanRender();
+  if (!m_displayGeometryReady)
+    return false;
+  display.Finish(m_delayDispReset ? CAMLDisplayLifecycle::Phase::WAITING_FOR_RESET
+                                 : CAMLDisplayLifecycle::Phase::READY);
+  return true;
 }
 
 void CWinSystemAmlogicGLESContext::SetVSyncImpl(bool enable)
@@ -391,6 +420,10 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
       (*i)->OnResetDisplay();
     aml_hdr10plus_vsif_hold(false);
   }
+  // OnResetDisplay is record/post-only under m_resourceSection. Binding and
+  // geometry, plus this exact transaction's delayed reset, establish readiness.
+  if (!m_delayDispReset && m_displayGeometryReady && CanRender())
+    m_displayLifecycle.Resume();
   m_presentResult = PresentResult::SKIPPED;
   if (!rendered)
     return;
