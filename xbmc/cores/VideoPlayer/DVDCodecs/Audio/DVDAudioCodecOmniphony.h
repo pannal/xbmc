@@ -811,7 +811,8 @@ private:
   bool m_reportedFallback{false};
   CProcessInfo& m_processInfo;
   bool m_failed{false};
-  //! True after the one end-of-stream FLUSH has been sent to this helper.
+  //! True after the one end-of-stream FLUSH has been sent to this helper, until
+  //! a seek or more input shows the stream had not ended - see AddData.
   bool m_drained{false};
 
   /*!
