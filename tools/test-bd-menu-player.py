@@ -345,9 +345,34 @@ int main() {
     onSleep=[&] { if(TestClock::now()-start>=200ms)p.video.data=false; };
     p.DrainStreamsAtBoundary();onSleep={};assert(TestClock::now()-start>=250ms); // not before the blocker cleared (200 ms)
   }
-  { CVideoPlayer p;p.video.eos=false;p.video.stalled=true;p.m_renderManager.queued=1;auto start=TestClock::now();
+  // Still-frame output re-feeds the last picture, so one stays queued: that doesn't hold the drain.
+  { CVideoPlayer p;p.video.eos=true;p.video.stalled=true;p.m_renderManager.queued=1;auto start=TestClock::now();
+    p.DrainStreamsAtBoundary();assert(TestClock::now()-start<=150ms);
+  }
+  // Outside still-frame output a queued picture is real content and holds it.
+  { CVideoPlayer p;p.video.eos=true;p.video.stalled=false;p.m_renderManager.queued=1;auto start=TestClock::now();
     onSleep=[&] { if(TestClock::now()-start>=200ms)p.m_renderManager.queued=0; };
     p.DrainStreamsAtBoundary();onSleep={};assert(TestClock::now()-start>=250ms); // not before the blocker cleared (200 ms)
+  }
+  // Passthrough: the sink delay stays constant (432 ms on an AVR chain). Once audio ran
+  // out of packets, the delay held at that point plays out and the drain ends, not at 1.5 s.
+  { CVideoPlayer p;p.audio.stalled=true;p.audio.sink=DVD_MSEC_TO_TIME(432);auto start=TestClock::now();
+    p.DrainStreamsAtBoundary();auto elapsed=TestClock::now()-start;
+    assert(elapsed>=432ms && elapsed<=575ms);
+  }
+  // The play-out wait starts only when audio runs out, and restarts if data returns.
+  { CVideoPlayer p;p.audio.stalled=false;p.audio.sink=DVD_MSEC_TO_TIME(432);p.audio.data=true;auto start=TestClock::now();
+    onSleep=[&] { auto t=TestClock::now()-start;
+      if(t>=300ms){p.audio.data=false;p.audio.stalled=true;p.audio.pts+=1;} // last packets consumed by 300 ms
+      else p.audio.pts+=1; };
+    p.DrainStreamsAtBoundary();onSleep={};auto elapsed=TestClock::now()-start;
+    assert(elapsed>=732ms && elapsed<=875ms);
+  }
+  // Out of packets but not yet stalled (the stream player still expects data): the
+  // passthrough delay alone doesn't end it; the stall timer bounds it as before.
+  { CVideoPlayer p;p.audio.stalled=false;p.audio.sink=DVD_MSEC_TO_TIME(432);auto start=TestClock::now();
+    p.DrainStreamsAtBoundary();auto elapsed=TestClock::now()-start;
+    assert(elapsed>=1500ms && elapsed<=1525ms);
   }
   { CVideoPlayer p;p.video.eos=false;p.video.stalled=true;p.audio.sink=DVD_MSEC_TO_TIME(200);
     auto start=TestClock::now();onSleep=[&] { if(TestClock::now()-start>=200ms)p.audio.sink=0; };

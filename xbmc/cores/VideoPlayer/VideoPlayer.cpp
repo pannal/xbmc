@@ -5523,6 +5523,8 @@ void CVideoPlayer::DrainStreamsAtBoundary()
   bool videoHasData = false, videoEos = false, videoStill = false, audioHasData = false;
   int renderQueued = 0;
   double audioSinkDelay = 0.0;
+  bool audioPlayOutArmed = false;
+  XbmcThreads::EndTime<> audioPlayOut;
   bool heldForDisplay = false;
   while (true)
   {
@@ -5549,20 +5551,37 @@ void CVideoPlayer::DrainStreamsAtBoundary()
     double renderPts = DVD_NOPTS_VALUE;
     if (videoActive)
       m_renderManager.GetStats(late, renderPts, queued, discard);
-    // Played out: the decoder reported EOF, or the stream player ran out of
-    // packets long enough to switch to still-frame output (it repeats the last
-    // picture and reports no progress). The Amlogic decoder returns EOF only
-    // once its buffer level reads empty or its drain timeout (5 s) passes, so
-    // waiting for EOF alone ended every drain on the stall timer below.
+    // Video is played out when the decoder reported EOF and nothing is left
+    // to render, or when the stream player ran out of packets long enough to
+    // switch to still-frame output. That output repeats the last picture, so
+    // one picture stays queued and no progress is reported. The Amlogic decoder
+    // returns EOF only once its buffer level reads empty or its drain timeout
+    // (5 s) passes.
     videoHasData = videoActive && m_VideoPlayerVideo->HasData();
     videoEos = videoActive && m_VideoPlayerVideo->IsEOS();
     videoStill = videoActive && m_VideoPlayerVideo->IsStalled();
     renderQueued = queued;
+    const bool videoBusy =
+        videoActive && (videoHasData || (videoStill ? false : !videoEos || queued > 0));
+
+    // Audio is played out when the sink delay drops, or, once the stream
+    // player ran out of packets, when the delay the sink held at that point
+    // has passed. A passthrough sink keeps a constant delay (432 ms on an
+    // AVR chain) and never drops below 50 ms.
     audioHasData = audioActive && m_VideoPlayerAudio->HasData();
     audioSinkDelay = audioActive ? m_VideoPlayerAudio->GetSinkDelay() : 0.0;
-    const bool videoBusy =
-        videoActive && (videoHasData || !(videoEos || videoStill) || queued > 0);
-    const bool audioBusy = audioActive && (audioHasData || audioSinkDelay > DVD_MSEC_TO_TIME(50));
+    const bool audioOut = audioActive && !audioHasData && m_VideoPlayerAudio->IsStalled();
+    if (!audioOut)
+      audioPlayOutArmed = false;
+    else if (!audioPlayOutArmed)
+    {
+      audioPlayOutArmed = true;
+      audioPlayOut.Set(std::chrono::milliseconds(static_cast<int>(
+          std::clamp(audioSinkDelay / 1000.0, 0.0, 1500.0))));
+    }
+    const bool audioBusy =
+        audioActive && (audioHasData || (audioSinkDelay > DVD_MSEC_TO_TIME(50) &&
+                                          !(audioPlayOutArmed && audioPlayOut.IsTimePast())));
     if (videoBusy || audioBusy)
       quietTimer.Set(100ms);
     else if (quietTimer.IsTimePast())
