@@ -73,6 +73,7 @@ public:
   void FlushMessages() override
   {
     m_messageQueue.Flush();
+    m_messageQueue.Flush(CDVDMsg::GENERAL_EOF);
     m_eofPending = false;
   }
 
