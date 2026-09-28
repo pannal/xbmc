@@ -146,11 +146,19 @@ struct CVideoFlushRequest
   std::atomic<State> state{State::PENDING};
 };
 
-class CDVDMsgVideoFlush : public CDVDMsgBool
+class CDVDMsgStreamFlush : public CDVDMsgBool
 {
 public:
-  CDVDMsgVideoFlush(bool sync, std::shared_ptr<CVideoFlushRequest> receipt)
-    : CDVDMsgBool(GENERAL_FLUSH, sync), request(std::move(receipt)) {}
+  CDVDMsgStreamFlush(bool sync, uint64_t generation)
+    : CDVDMsgBool(GENERAL_FLUSH, sync), epoch(generation) {}
+  const uint64_t epoch;
+};
+
+class CDVDMsgVideoFlush : public CDVDMsgStreamFlush
+{
+public:
+  CDVDMsgVideoFlush(bool sync, std::shared_ptr<CVideoFlushRequest> receipt, uint64_t epoch = 0)
+    : CDVDMsgStreamFlush(sync, epoch), request(std::move(receipt)) {}
   ~CDVDMsgVideoFlush() override
   {
     auto pending = CVideoFlushRequest::State::PENDING;

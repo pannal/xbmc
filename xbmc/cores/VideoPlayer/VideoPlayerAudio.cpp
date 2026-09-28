@@ -301,6 +301,7 @@ bool CVideoPlayerAudio::OpenStream(CDVDStreamInfo hints)
     m_messageQueue.Put(std::make_shared<CDVDMsgAudioCodecChange>(hints, std::move(codec)), 0);
   else
   {
+    m_syncEpoch = ++m_syncRequest;
     OpenStream(hints, std::move(codec));
     m_messageQueue.Init();
     CLog::Log(LOGINFO, "Creating audio thread");
@@ -431,6 +432,7 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
     m_messageQueue.WaitUntilEmpty();
 
   // send abort message to the audio queue
+  ++m_syncRequest; // Reject reports still queued by the retiring stream.
   m_messageQueue.Abort();
 
   CLog::Log(LOGINFO, "Waiting for audio thread to exit");
@@ -701,6 +703,7 @@ void CVideoPlayerAudio::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH))
     {
+      m_syncEpoch = std::static_pointer_cast<CDVDMsgStreamFlush>(pMsg)->epoch;
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       m_audioSink.Flush();
       m_stalled = true;
@@ -797,6 +800,7 @@ void CVideoPlayerAudio::Process()
     else if (pMsg->IsType(CDVDMsg::PLAYER_REQUEST_STATE))
     {
       SStateMsg msg;
+      msg.epoch = m_syncEpoch;
       msg.player = VideoPlayer_AUDIO;
       msg.syncState = m_syncState;
       m_messageParent.Put(
@@ -1457,6 +1461,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
       m_syncState = IDVDStreamPlayer::SYNC_WAITSYNC;
       m_stalled = false;
       SStartMsg msg;
+      msg.epoch = m_syncEpoch;
       msg.player = VideoPlayer_AUDIO;
       msg.cachetotal = m_audioSink.GetMaxDelay() * DVD_TIME_BASE;
       msg.cachetime = m_audioSink.GetDelay();
@@ -1564,7 +1569,7 @@ void CVideoPlayerAudio::Flush(bool sync)
   // codec for goes in the reset GENERAL_FLUSH makes - see HasData.
   m_eofPending = false;
   m_messageQueue.Flush();
-  m_messageQueue.Put(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_FLUSH, sync), 1);
+  m_messageQueue.Put(std::make_shared<CDVDMsgStreamFlush>(sync, ++m_syncRequest), 1);
 
   m_audioSink.AbortAddPackets();
 }

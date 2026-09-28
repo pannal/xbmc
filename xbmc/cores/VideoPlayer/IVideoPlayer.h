@@ -12,6 +12,7 @@
 #include "ServiceBroker.h"
 #include "cores/DataCacheCore.h"
 
+#include <atomic>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,6 +25,7 @@
 #define VideoPlayer_ID3 6
 
 class CDVDMsg;
+struct CVideoFlushRequest;
 class CDVDStreamInfo;
 class CProcessInfo;
 
@@ -48,6 +50,7 @@ public:
   virtual bool IsInited() const = 0;
   virtual bool AcceptsData() const = 0;
   virtual bool IsStalled() const = 0;
+  uint64_t GetSyncEpoch() const { return m_syncRequest.load(); }
 
   enum ESyncState
   {
@@ -56,12 +59,18 @@ public:
     SYNC_INSYNC
   };
 protected:
+  // Request identity is published before flushing queued work. Reports carry
+  // the epoch actually applied by the decoder, so late starts cannot re-anchor
+  // the clock after a newer flush or closed stream.
+  std::atomic<uint64_t> m_syncRequest{0};
+  uint64_t m_syncEpoch{0}; // decoder-owned; initialized before thread startup
   CProcessInfo &m_processInfo;
   CDataCacheCore &m_dataCacheCore;
 };
 
 struct SStartMsg
 {
+  uint64_t epoch{0};
   double timestamp;
   int player;
   double cachetime;
@@ -70,6 +79,7 @@ struct SStartMsg
 
 struct SStateMsg
 {
+  uint64_t epoch{0};
   IDVDStreamPlayer::ESyncState syncState;
   int player;
 };
@@ -86,6 +96,7 @@ public:
   virtual void Flush(bool sync) = 0;
   virtual bool IsFlushPending() const { return false; }
   virtual bool FlushFailed() const { return false; }
+  virtual std::shared_ptr<CVideoFlushRequest> GetFlushRequest() const { return {}; }
   bool AcceptsData() const override = 0;
   virtual bool HasData() const = 0;
   virtual void SetMaxTimeSize(double seconds, bool timeBound = false) {}

@@ -1800,14 +1800,28 @@ void CVideoPlayer::Process()
 
   while (!m_bAbortRequest)
   {
-    // check display lost
-    if (m_displayLost)
+    if (ParentLifecyclePending())
     {
-      // Startup/abort may progress, but preserve the display-loss fence on
-      // seeks, resets and player replacement until pre-mutation admission exists.
       m_waitingForVideoFlush = true;
       HandleMessages();
       m_waitingForVideoFlush = false;
+      const bool complete = ContinueParentLifecycle();
+      SynchronizeStreams(false);
+      if (!complete)
+      {
+        CThread::Sleep(10ms);
+        continue;
+      }
+    }
+    // check display lost
+    if (m_displayLost)
+    {
+      // Startup synchronization may progress without admitting seeks, resets
+      // or replacement while the display remains lost.
+      m_waitingForVideoFlush = true;
+      HandleMessages();
+      m_waitingForVideoFlush = false;
+      SynchronizeStreams(false);
       CThread::Sleep(50ms);
       continue;
     }
@@ -1820,6 +1834,8 @@ void CVideoPlayer::Process()
 
     if (m_bAbortRequest)
       break;
+    if (ParentLifecyclePending())
+      continue;
 
     // should we open a new input stream?
     if (!m_pInputStream)
@@ -1863,6 +1879,8 @@ void CVideoPlayer::Process()
 
     // handle eventual seeks due to playspeed
     HandlePlaySpeed();
+    if (ParentLifecyclePending())
+      continue;
 
     // update player state
     UpdatePlayState(200);
@@ -1916,6 +1934,14 @@ void CVideoPlayer::Process()
     DemuxPacket* pPacket = NULL;
     CDemuxStream *pStream = NULL;
     ReadPacket(pPacket, pStream);
+    if (ParentLifecyclePending())
+    {
+      // DVD navigation can initiate a flush inside the demux read. Do not
+      // replay the navigation callback or submit a packet from that old read.
+      if (pPacket)
+        CDVDDemuxUtils::FreeDemuxPacket(pPacket);
+      continue;
+    }
     if (pPacket && !pStream)
     {
       /* probably a empty packet, just free it and move on */
@@ -2712,261 +2738,10 @@ CacheInfo CVideoPlayer::GetCachingTimes()
   return info;
 }
 
-void CVideoPlayer::HandlePlaySpeed()
+void CVideoPlayer::SynchronizeStreams(bool allowRecovery)
 {
-  const bool isInMenu = IsInMenuInternal();
-  const bool tolerateStall =
-      isInMenu || (m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES);
-
-  if (tolerateStall && m_caching != CACHESTATE_DONE)
-    SetCaching(CACHESTATE_DONE);
-
-  if (m_caching == CACHESTATE_FULL)
-  {
-    CacheInfo cache = GetCachingTimes();
-    if (cache.valid)
-    {
-      if (cache.level < 0.0)
-      {
-        CGUIDialogKaiToast::QueueNotification(g_localizeStrings.Get(21454), g_localizeStrings.Get(21455));
-        SetCaching(CACHESTATE_INIT);
-      }
-      // Note: Previously used cache.level >= 1 would keep video stalled
-      // event after cache was full
-      // Talk link: https://github.com/xbmc/xbmc/pull/23760
-      if (cache.time > m_messageQueueTimeSize)
-        SetCaching(CACHESTATE_INIT);
-    }
-    else
-    {
-      if ((!m_VideoPlayerAudio->AcceptsData() && m_CurrentAudio.id >= 0) ||
-          (!m_VideoPlayerVideo->AcceptsData() && m_CurrentVideo.id >= 0))
-        SetCaching(CACHESTATE_INIT);
-    }
-
-    // if audio stream stalled, wait until demux queue filled 10%
-    if (m_pInputStream->IsRealtime() &&
-        (m_CurrentAudio.id < 0 || m_VideoPlayerAudio->GetLevel() > 10))
-    {
-      SetCaching(CACHESTATE_INIT);
-    }
-  }
-
-  if (m_caching == CACHESTATE_INIT)
-  {
-    // if all enabled streams have been inited we are done
-    if ((m_CurrentVideo.id >= 0 || m_CurrentAudio.id >= 0) &&
-        (m_CurrentVideo.id < 0 || m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_STARTING) &&
-        (m_CurrentAudio.id < 0 || m_CurrentAudio.syncState != IDVDStreamPlayer::SYNC_STARTING))
-      SetCaching(CACHESTATE_PLAY);
-
-    // handle exceptions
-    if (m_CurrentAudio.id >= 0 && m_CurrentVideo.id >= 0)
-    {
-      if ((!m_VideoPlayerAudio->AcceptsData() || !m_VideoPlayerVideo->AcceptsData()) &&
-          m_cachingTimer.IsTimePast())
-      {
-        SetCaching(CACHESTATE_DONE);
-      }
-    }
-  }
-
-  if (m_caching == CACHESTATE_PLAY)
-  {
-    // if all enabled streams have started playing we are done
-    if ((m_CurrentVideo.id < 0 || !m_VideoPlayerVideo->IsStalled()) &&
-        (m_CurrentAudio.id < 0 || !m_VideoPlayerAudio->IsStalled()))
-      SetCaching(CACHESTATE_DONE);
-  }
-
-  if (m_caching == CACHESTATE_DONE)
-  {
-    if (m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall)
-    {
-      // take action if audio or video stream is stalled
-      if (((m_VideoPlayerAudio->IsStalled() && m_CurrentAudio.inited) ||
-           (m_VideoPlayerVideo->IsStalled() && m_CurrentVideo.inited)) &&
-          m_syncTimer.IsTimePast())
-      {
-        if (m_pInputStream->IsRealtime())
-        {
-          if ((m_CurrentAudio.id >= 0 && m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
-               m_VideoPlayerAudio->IsStalled()) ||
-              (m_CurrentVideo.id >= 0 && m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
-               (m_VideoPlayerVideo->GetLevel() == 0)))
-          {
-            CLog::Log(LOGDEBUG, "Stream stalled, start buffering. Audio: {} - Video: {}",
-                      m_VideoPlayerAudio->GetLevel(), m_VideoPlayerVideo->GetLevel());
-
-            if (m_VideoPlayerAudio->AcceptsData() && m_VideoPlayerVideo->AcceptsData())
-              SetCaching(CACHESTATE_FULL);
-            else
-              FlushBuffers(DVD_NOPTS_VALUE, false, true);
-          }
-        }
-        else
-        {
-          // start caching if audio and video are running dry
-          if ((m_VideoPlayerAudio->GetLevel() <= 20) || (m_VideoPlayerVideo->GetLevel() <= 20))
-          {
-            SetCaching(CACHESTATE_FULL);
-          }
-          else if (m_CurrentAudio.id >= 0 && m_CurrentAudio.inited &&
-                   m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
-                   m_VideoPlayerAudio->GetLevel() == 0)
-          {
-            CLog::Log(LOGDEBUG,"CVideoPlayer::HandlePlaySpeed - audio stream stalled, triggering re-sync");
-            FlushBuffers(DVD_NOPTS_VALUE, true, true);
-            CDVDMsgPlayerSeek::CMode mode;
-            mode.time = (int)GetUpdatedTime();
-            mode.backward = false;
-            mode.accurate = true;
-            mode.sync = true;
-            m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
-          }
-        }
-      }
-      // care for live streams
-      else if (m_pInputStream->IsRealtime())
-      {
-        // Skip SpeedAdjust for passthrough audio: the message queue level (aq)
-        // drains near-instantly for passthrough since packets are tiny, so aq:0
-        // triggers SpeedAdjust -0.05 immediately and aq>4 is never reached to
-        // restore it. The clock then drifts at -50ms/s for the entire session,
-        // creating persistent sync oscillation in ActiveAE.
-        if (m_CurrentAudio.id >= 0 && !IsPassthrough() &&
-            m_clock.GetClock() > DVD_MSEC_TO_TIME(1000))
-        {
-          double adjust = -1.0; // a unique value
-          if (m_clock.GetSpeedAdjust() >= 0 && m_VideoPlayerAudio->GetLevel() < 1) {
-            CLog::Log(LOGDEBUG, "VideoPlayer:Speed adjust:-0.05 aq:{:d}", m_VideoPlayerAudio->GetLevel());
-             adjust = -0.05;
-          }
-          if (m_clock.GetSpeedAdjust() < 0 && m_VideoPlayerAudio->GetLevel() > 4) {
-            CLog::Log(LOGDEBUG, "VideoPlayer:Speed adjust:0.0 aq:{:d}", m_VideoPlayerAudio->GetLevel());
-            adjust = 0.0;
-          }
-          if (adjust != -1.0)
-          {
-            m_clock.SetSpeedAdjust(adjust);
-          }
-        }
-      }
-
-      // Video feed/drain WEDGE recovery. Distinct from the IsStalled()/buffering
-      // cases above (those have an EMPTY input queue): here the decoder INPUT is
-      // saturated (byte buffer full, !AcceptsData) yet no decoded frame has
-      // reached the screen for a while (render pts frozen) while we are playing.
-      // That is the Amlogic single-thread feed/drain deadlock -- VideoPlayerVideo
-      // is spun inside AddData on codec_write EAGAIN so it never drains
-      // GetPicture; audio and the clock run on. GetFramePts() is the right probe:
-      // it is written only by the render present path, so it freezes exactly when
-      // the pipeline wedges and is not owned by the stuck decode thread. Recover
-      // with the same accurate+sync reseek the audio-stall path uses --
-      // FlushBuffers Abort()s the codec, which trips m_abort and breaks AddData's
-      // spin so the flush completes (this is how a manual seek already recovers
-      // it), giving a clean A/V resync instead of the codec's own loop==100
-      // video-only reset (which leaves audio ahead -> a 2-10x catch-up).
-      {
-        const double rpts = m_renderManager.GetFramePts();
-        const bool saturated =
-            m_CurrentVideo.id >= 0 && m_CurrentVideo.inited &&
-            m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
-            !m_VideoPlayerVideo->AcceptsData();
-
-        if (!saturated || rpts == DVD_NOPTS_VALUE || rpts != m_videoWedgePts)
-        {
-          // output advancing, not rendering yet, or input not saturated: re-arm
-          m_videoWedgePts = rpts;
-          m_videoWedgeStart = std::chrono::steady_clock::now();
-        }
-        else if (std::chrono::steady_clock::now() - m_videoWedgeStart >
-                 std::chrono::milliseconds(2000))
-        {
-          CLog::Log(LOGWARNING,
-                    "CVideoPlayer::HandlePlaySpeed - video output wedged (input "
-                    "full, render pts frozen at {:.3f}s for >2s) - reseeking to recover",
-                    rpts / DVD_TIME_BASE);
-          m_videoWedgePts = DVD_NOPTS_VALUE; // disarm; re-arms next pass
-          FlushBuffers(DVD_NOPTS_VALUE, true, true);
-          CDVDMsgPlayerSeek::CMode mode;
-          mode.time = (int)GetUpdatedTime();
-          mode.backward = false;
-          mode.accurate = true;
-          mode.sync = true;
-          m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
-        }
-      }
-    }
-  }
-
-  // Broken-file gate: both A/V streams stalled for 5+ seconds while we
-  // expect normal forward playback. Corrupt mkv index / mid-stream cluster
-  // breakage manifests here -- the demuxer can't produce packets but isn't
-  // returning EOF either. On some Amlogic setups this leads the kernel codec
-  // into a stall or crash; we abort early instead.
-  //
-  // Corroborated by source read progress: a garbage / zero-filled tail
-  // (aborted unrar, partial download) keeps the demuxer reading at I/O
-  // speed without producing a single packet, while a stalled source (NFS
-  // outage, sleeping disk) reads next to nothing. Only the former is a
-  // broken file; plain starvation is left to the rebuffering path above.
-  //
-  // (Seek-wedge variant -- av_seek_frame stuck on the same kind of corrupt
-  //  source -- is handled separately inside CDVDDemuxFFmpeg::SeekTime, since
-  //  this thread is itself blocked during that case.)
-  const bool brokenFileSetting =
-      m_pDemuxer && m_pInputStream && !m_pInputStream->IsRealtime() &&
-      m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall &&
-      m_CurrentAudio.inited && m_CurrentVideo.inited &&
-      m_VideoPlayerAudio->IsStalled() && m_VideoPlayerVideo->IsStalled() &&
-      CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-          CSettings::SETTING_COREELEC_VIDEOPLAYER_DETECT_BROKEN_FILES);
-  if (brokenFileSetting)
-  {
-    const auto now = std::chrono::steady_clock::now();
-    if (m_brokenFileStallStart == std::chrono::steady_clock::time_point{})
-    {
-      m_brokenFileStallStart = now;
-      m_brokenFileStallBytes = m_pDemuxer->GetSourceReadBytes();
-    }
-    else if (now - m_brokenFileStallStart >= std::chrono::seconds(5))
-    {
-      const int64_t readBytes = m_pDemuxer->GetSourceReadBytes();
-      if (readBytes >= 0 && m_brokenFileStallBytes >= 0 &&
-          readBytes - m_brokenFileStallBytes >= CDVDDemux::BROKEN_SOURCE_MIN_SCAN_BYTES)
-      {
-        if (!m_brokenFileNotified)
-        {
-          m_brokenFileNotified = true;
-          CLog::Log(LOGERROR,
-                    "CVideoPlayer::HandlePlaySpeed - broken file: audio and "
-                    "video both stalled for 5+ seconds during normal playback "
-                    "while the demuxer keeps reading - stopping playback");
-          CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Warning,
-                                                g_localizeStrings.Get(55009),
-                                                g_localizeStrings.Get(55010),
-                                                TOAST_DISPLAY_TIME * 2);
-        }
-        m_pDemuxer->MarkBroken();
-      }
-      else if (!m_brokenFileStallStarveLogged)
-      {
-        m_brokenFileStallStarveLogged = true;
-        CLog::Log(LOGWARNING,
-                  "CVideoPlayer::HandlePlaySpeed - audio and video stalled "
-                  "for 5+ seconds without demuxer read progress - treating "
-                  "as I/O starvation, not a broken file");
-      }
-    }
-  }
-  else
-  {
-    m_brokenFileStallStart = {};
-    m_brokenFileStallBytes = -1;
-    m_brokenFileStallStarveLogged = false;
-  }
-
+  if (!m_pInputStream || ParentLifecyclePending() || m_bAbortRequest || m_bStop)
+    return;
   // sync streams to clock
   if ((m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
       (m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_WAITSYNC))
@@ -3155,7 +2930,7 @@ void CVideoPlayer::HandlePlaySpeed()
     {
       // exceptions for which stream players won't start properly
       // 1. videoplayer has not detected a keyframe within length of demux buffers
-      if (m_CurrentAudio.id >= 0 && m_CurrentVideo.id >= 0 &&
+      if (allowRecovery && m_CurrentAudio.id >= 0 && m_CurrentVideo.id >= 0 &&
           !m_VideoPlayerAudio->AcceptsData() &&
           m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_STARTING &&
           m_VideoPlayerVideo->IsStalled() &&
@@ -3167,6 +2942,273 @@ void CVideoPlayer::HandlePlaySpeed()
       }
     }
   }
+}
+
+void CVideoPlayer::HandlePlaySpeed()
+{
+  const bool isInMenu = IsInMenuInternal();
+  const bool tolerateStall =
+      isInMenu || (m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES);
+
+  if (tolerateStall && m_caching != CACHESTATE_DONE)
+    SetCaching(CACHESTATE_DONE);
+
+  if (m_caching == CACHESTATE_FULL)
+  {
+    CacheInfo cache = GetCachingTimes();
+    if (cache.valid)
+    {
+      if (cache.level < 0.0)
+      {
+        CGUIDialogKaiToast::QueueNotification(g_localizeStrings.Get(21454), g_localizeStrings.Get(21455));
+        SetCaching(CACHESTATE_INIT);
+      }
+      // Note: Previously used cache.level >= 1 would keep video stalled
+      // event after cache was full
+      // Talk link: https://github.com/xbmc/xbmc/pull/23760
+      if (cache.time > m_messageQueueTimeSize)
+        SetCaching(CACHESTATE_INIT);
+    }
+    else
+    {
+      if ((!m_VideoPlayerAudio->AcceptsData() && m_CurrentAudio.id >= 0) ||
+          (!m_VideoPlayerVideo->AcceptsData() && m_CurrentVideo.id >= 0))
+        SetCaching(CACHESTATE_INIT);
+    }
+
+    // if audio stream stalled, wait until demux queue filled 10%
+    if (m_pInputStream->IsRealtime() &&
+        (m_CurrentAudio.id < 0 || m_VideoPlayerAudio->GetLevel() > 10))
+    {
+      SetCaching(CACHESTATE_INIT);
+    }
+  }
+
+  if (m_caching == CACHESTATE_INIT)
+  {
+    // if all enabled streams have been inited we are done
+    if ((m_CurrentVideo.id >= 0 || m_CurrentAudio.id >= 0) &&
+        (m_CurrentVideo.id < 0 || m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_STARTING) &&
+        (m_CurrentAudio.id < 0 || m_CurrentAudio.syncState != IDVDStreamPlayer::SYNC_STARTING))
+      SetCaching(CACHESTATE_PLAY);
+
+    // handle exceptions
+    if (m_CurrentAudio.id >= 0 && m_CurrentVideo.id >= 0)
+    {
+      if ((!m_VideoPlayerAudio->AcceptsData() || !m_VideoPlayerVideo->AcceptsData()) &&
+          m_cachingTimer.IsTimePast())
+      {
+        SetCaching(CACHESTATE_DONE);
+      }
+    }
+  }
+
+  if (m_caching == CACHESTATE_PLAY)
+  {
+    // if all enabled streams have started playing we are done
+    if ((m_CurrentVideo.id < 0 || !m_VideoPlayerVideo->IsStalled()) &&
+        (m_CurrentAudio.id < 0 || !m_VideoPlayerAudio->IsStalled()))
+      SetCaching(CACHESTATE_DONE);
+  }
+
+  if (m_caching == CACHESTATE_DONE)
+  {
+    if (m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall)
+    {
+      // take action if audio or video stream is stalled
+      if (((m_VideoPlayerAudio->IsStalled() && m_CurrentAudio.inited) ||
+           (m_VideoPlayerVideo->IsStalled() && m_CurrentVideo.inited)) &&
+          m_syncTimer.IsTimePast())
+      {
+        if (m_pInputStream->IsRealtime())
+        {
+          if ((m_CurrentAudio.id >= 0 && m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
+               m_VideoPlayerAudio->IsStalled()) ||
+              (m_CurrentVideo.id >= 0 && m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
+               (m_VideoPlayerVideo->GetLevel() == 0)))
+          {
+            CLog::Log(LOGDEBUG, "Stream stalled, start buffering. Audio: {} - Video: {}",
+                      m_VideoPlayerAudio->GetLevel(), m_VideoPlayerVideo->GetLevel());
+
+            if (m_VideoPlayerAudio->AcceptsData() && m_VideoPlayerVideo->AcceptsData())
+              SetCaching(CACHESTATE_FULL);
+            else
+            {
+              FlushBuffers(DVD_NOPTS_VALUE, false, true);
+              return;
+            }
+          }
+        }
+        else
+        {
+          // start caching if audio and video are running dry
+          if ((m_VideoPlayerAudio->GetLevel() <= 20) || (m_VideoPlayerVideo->GetLevel() <= 20))
+          {
+            SetCaching(CACHESTATE_FULL);
+          }
+          else if (m_CurrentAudio.id >= 0 && m_CurrentAudio.inited &&
+                   m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
+                   m_VideoPlayerAudio->GetLevel() == 0)
+          {
+            CLog::Log(LOGDEBUG,"CVideoPlayer::HandlePlaySpeed - audio stream stalled, triggering re-sync");
+            FlushBuffers(DVD_NOPTS_VALUE, true, true, [this] {
+              CDVDMsgPlayerSeek::CMode mode;
+              mode.time = (int)GetUpdatedTime();
+              mode.backward = false;
+              mode.accurate = true;
+              mode.sync = true;
+              m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+            });
+            return;
+          }
+        }
+      }
+      // care for live streams
+      else if (m_pInputStream->IsRealtime())
+      {
+        // Skip SpeedAdjust for passthrough audio: the message queue level (aq)
+        // drains near-instantly for passthrough since packets are tiny, so aq:0
+        // triggers SpeedAdjust -0.05 immediately and aq>4 is never reached to
+        // restore it. The clock then drifts at -50ms/s for the entire session,
+        // creating persistent sync oscillation in ActiveAE.
+        if (m_CurrentAudio.id >= 0 && !IsPassthrough() &&
+            m_clock.GetClock() > DVD_MSEC_TO_TIME(1000))
+        {
+          double adjust = -1.0; // a unique value
+          if (m_clock.GetSpeedAdjust() >= 0 && m_VideoPlayerAudio->GetLevel() < 1) {
+            CLog::Log(LOGDEBUG, "VideoPlayer:Speed adjust:-0.05 aq:{:d}", m_VideoPlayerAudio->GetLevel());
+             adjust = -0.05;
+          }
+          if (m_clock.GetSpeedAdjust() < 0 && m_VideoPlayerAudio->GetLevel() > 4) {
+            CLog::Log(LOGDEBUG, "VideoPlayer:Speed adjust:0.0 aq:{:d}", m_VideoPlayerAudio->GetLevel());
+            adjust = 0.0;
+          }
+          if (adjust != -1.0)
+          {
+            m_clock.SetSpeedAdjust(adjust);
+          }
+        }
+      }
+
+      // Video feed/drain WEDGE recovery. Distinct from the IsStalled()/buffering
+      // cases above (those have an EMPTY input queue): here the decoder INPUT is
+      // saturated (byte buffer full, !AcceptsData) yet no decoded frame has
+      // reached the screen for a while (render pts frozen) while we are playing.
+      // That is the Amlogic single-thread feed/drain deadlock -- VideoPlayerVideo
+      // is spun inside AddData on codec_write EAGAIN so it never drains
+      // GetPicture; audio and the clock run on. GetFramePts() is the right probe:
+      // it is written only by the render present path, so it freezes exactly when
+      // the pipeline wedges and is not owned by the stuck decode thread. Recover
+      // with the same accurate+sync reseek the audio-stall path uses --
+      // FlushBuffers Abort()s the codec, which trips m_abort and breaks AddData's
+      // spin so the flush completes (this is how a manual seek already recovers
+      // it), giving a clean A/V resync instead of the codec's own loop==100
+      // video-only reset (which leaves audio ahead -> a 2-10x catch-up).
+      {
+        const double rpts = m_renderManager.GetFramePts();
+        const bool saturated =
+            m_CurrentVideo.id >= 0 && m_CurrentVideo.inited &&
+            m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
+            !m_VideoPlayerVideo->AcceptsData();
+
+        if (!saturated || rpts == DVD_NOPTS_VALUE || rpts != m_videoWedgePts)
+        {
+          // output advancing, not rendering yet, or input not saturated: re-arm
+          m_videoWedgePts = rpts;
+          m_videoWedgeStart = std::chrono::steady_clock::now();
+        }
+        else if (std::chrono::steady_clock::now() - m_videoWedgeStart >
+                 std::chrono::milliseconds(2000))
+        {
+          CLog::Log(LOGWARNING,
+                    "CVideoPlayer::HandlePlaySpeed - video output wedged (input "
+                    "full, render pts frozen at {:.3f}s for >2s) - reseeking to recover",
+                    rpts / DVD_TIME_BASE);
+          m_videoWedgePts = DVD_NOPTS_VALUE; // disarm; re-arms next pass
+          FlushBuffers(DVD_NOPTS_VALUE, true, true, [this] {
+            CDVDMsgPlayerSeek::CMode mode;
+            mode.time = (int)GetUpdatedTime();
+            mode.backward = false;
+            mode.accurate = true;
+            mode.sync = true;
+            m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+          });
+          return;
+        }
+      }
+    }
+  }
+
+  // Broken-file gate: both A/V streams stalled for 5+ seconds while we
+  // expect normal forward playback. Corrupt mkv index / mid-stream cluster
+  // breakage manifests here -- the demuxer can't produce packets but isn't
+  // returning EOF either. On some Amlogic setups this leads the kernel codec
+  // into a stall or crash; we abort early instead.
+  //
+  // Corroborated by source read progress: a garbage / zero-filled tail
+  // (aborted unrar, partial download) keeps the demuxer reading at I/O
+  // speed without producing a single packet, while a stalled source (NFS
+  // outage, sleeping disk) reads next to nothing. Only the former is a
+  // broken file; plain starvation is left to the rebuffering path above.
+  //
+  // (Seek-wedge variant -- av_seek_frame stuck on the same kind of corrupt
+  //  source -- is handled separately inside CDVDDemuxFFmpeg::SeekTime, since
+  //  this thread is itself blocked during that case.)
+  const bool brokenFileSetting =
+      m_pDemuxer && m_pInputStream && !m_pInputStream->IsRealtime() &&
+      m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall &&
+      m_CurrentAudio.inited && m_CurrentVideo.inited &&
+      m_VideoPlayerAudio->IsStalled() && m_VideoPlayerVideo->IsStalled() &&
+      CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+          CSettings::SETTING_COREELEC_VIDEOPLAYER_DETECT_BROKEN_FILES);
+  if (brokenFileSetting)
+  {
+    const auto now = std::chrono::steady_clock::now();
+    if (m_brokenFileStallStart == std::chrono::steady_clock::time_point{})
+    {
+      m_brokenFileStallStart = now;
+      m_brokenFileStallBytes = m_pDemuxer->GetSourceReadBytes();
+    }
+    else if (now - m_brokenFileStallStart >= std::chrono::seconds(5))
+    {
+      const int64_t readBytes = m_pDemuxer->GetSourceReadBytes();
+      if (readBytes >= 0 && m_brokenFileStallBytes >= 0 &&
+          readBytes - m_brokenFileStallBytes >= CDVDDemux::BROKEN_SOURCE_MIN_SCAN_BYTES)
+      {
+        if (!m_brokenFileNotified)
+        {
+          m_brokenFileNotified = true;
+          CLog::Log(LOGERROR,
+                    "CVideoPlayer::HandlePlaySpeed - broken file: audio and "
+                    "video both stalled for 5+ seconds during normal playback "
+                    "while the demuxer keeps reading - stopping playback");
+          CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Warning,
+                                                g_localizeStrings.Get(55009),
+                                                g_localizeStrings.Get(55010),
+                                                TOAST_DISPLAY_TIME * 2);
+        }
+        m_pDemuxer->MarkBroken();
+      }
+      else if (!m_brokenFileStallStarveLogged)
+      {
+        m_brokenFileStallStarveLogged = true;
+        CLog::Log(LOGWARNING,
+                  "CVideoPlayer::HandlePlaySpeed - audio and video stalled "
+                  "for 5+ seconds without demuxer read progress - treating "
+                  "as I/O starvation, not a broken file");
+      }
+    }
+  }
+  else
+  {
+    m_brokenFileStallStart = {};
+    m_brokenFileStallBytes = -1;
+    m_brokenFileStallStarveLogged = false;
+  }
+
+  SynchronizeStreams(true);
+  if (ParentLifecyclePending())
+    return;
 
   // handle ff/rw
   if (m_playSpeed != DVD_PLAYSPEED_NORMAL && m_playSpeed != DVD_PLAYSPEED_PAUSE)
@@ -3598,6 +3640,7 @@ void CVideoPlayer::SendPlayerMessage(std::shared_ptr<CDVDMsg> pMsg, unsigned int
 
 void CVideoPlayer::OnExit()
 {
+  CancelParentLifecycle();
   CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
 
   // set event to inform openfile something went wrong in case openfile is still waiting for this event
@@ -3674,12 +3717,38 @@ void CVideoPlayer::OnExit()
   });
 }
 
+void CVideoPlayer::FinishSeek(bool trickplay)
+{
+  if (!trickplay)
+    m_processInfo->SeekFinished(0);
+  // DVDs issue a HOP_CHANNEL following the completed seek.
+  if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
+    m_dvd.state = DVDSTATE_SEEK;
+  m_processInfo->SetStateSeeking(false);
+}
+
+void CVideoPlayer::CompleteFileReplacement()
+{
+  m_pDemuxer.reset();
+  m_pSubtitleDemuxer.reset();
+  m_subtitleDemuxerMap.clear();
+  ClearSubtitleSeekCache();
+  m_pCCDemuxer.reset();
+  if (m_pInputStream.use_count() > 1)
+    throw std::runtime_error("m_pInputStream reference count is greater than 1");
+  m_pInputStream.reset();
+
+  m_SelectionStreams.Clear(STREAM_NONE, STREAM_SOURCE_NONE);
+
+  Prepare();
+}
+
 void CVideoPlayer::HandleMessages()
 {
   std::shared_ptr<CDVDMsg> pMsg = nullptr;
 
   int lifecyclePriority = 0;
-  while (m_messenger.Get(pMsg, 0ms, lifecyclePriority, m_waitingForVideoFlush ? 2 : 0) == MSGQ_OK)
+  while (m_messenger.Get(pMsg, 0ms, lifecyclePriority, (m_waitingForVideoFlush || ParentLifecyclePending()) ? 2 : 0) == MSGQ_OK)
   {
     lifecyclePriority = 0;
     if (pMsg->IsType(CDVDMsg::PLAYER_OPENFILE) &&
@@ -3718,34 +3787,11 @@ void CVideoPlayer::HandleMessages()
         m_callback.OnPlayBackStarted(m_item);
       });
 
-      FlushBuffers(DVD_NOPTS_VALUE, true, true);
-      if (m_bAbortRequest || m_bStop)
-        break;
-      auto retirement = m_renderManager.RequestFlush(false, true);
-      m_waitingForVideoFlush = true;
-      while (retirement && !retirement->Wait(10ms) &&
-             (retirement->status == CRenderLifecycle::Status::PENDING ||
-              retirement->status == CRenderLifecycle::Status::EXECUTING) &&
-             !m_bAbortRequest && !m_bStop)
-        HandleMessages();
-      m_waitingForVideoFlush = false;
-      if (!retirement || retirement->status != CRenderLifecycle::Status::COMPLETED)
-      {
-        m_bAbortRequest = true;
-        break;
-      }
-      m_pDemuxer.reset();
-      m_pSubtitleDemuxer.reset();
-      m_subtitleDemuxerMap.clear();
-      ClearSubtitleSeekCache();
-      m_pCCDemuxer.reset();
-      if (m_pInputStream.use_count() > 1)
-        throw std::runtime_error("m_pInputStream reference count is greater than 1");
-      m_pInputStream.reset();
-
-      m_SelectionStreams.Clear(STREAM_NONE, STREAM_SOURCE_NONE);
-
-      Prepare();
+      FlushBuffers(DVD_NOPTS_VALUE, true, true, [this] {
+        m_rendererRetirement = m_renderManager.RequestFlush(false, true);
+        if (!m_rendererRetirement)
+          m_bAbortRequest = true;
+      });
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK) &&
         m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK) == 0 &&
@@ -3841,14 +3887,17 @@ void CVideoPlayer::HandleMessages()
         m_State.dts = start;
         m_State.lastSeek = m_clock.GetAbsoluteClock();
 
-        FlushBuffers(start, msg.GetAccurate(), msg.GetSync());
-        CLog::Log(LOGDEBUG, LOGVIDEO, "CVideoPlayer::HandleMessages: flush buffers: dts:{:.3f} lastSeek:{:.3f} clock:{:.3f}", start / 1000000., m_State.lastSeek / 1000000.0, m_clock.GetClock() / 1000000.0);
+        FlushBuffers(start, msg.GetAccurate(), msg.GetSync(),
+                     [this, start, time, trickplay = msg.GetTrickPlay()] {
+          CLog::Log(LOGDEBUG, LOGVIDEO, "CVideoPlayer::HandleMessages: flush buffers: dts:{:.3f} lastSeek:{:.3f} clock:{:.3f}", start / 1000000., m_State.lastSeek / 1000000.0, m_clock.GetClock() / 1000000.0);
 
-        // The flush emptied the subtitle player; re-emit the event active at the
-        // target so an embedded text subtitle that began before the seek lands
-        // does not vanish until the next event. Coverage starts a fresh run here.
-        m_subtitleSeekNewRun = true;
-        RecallSubtitlesAfterSeek(start, time);
+          // The flush emptied the subtitle player; re-emit the event active at the
+          // target so an embedded text subtitle that began before the seek lands
+          // does not vanish until the next event. Coverage starts a fresh run here.
+          m_subtitleSeekNewRun = true;
+          RecallSubtitlesAfterSeek(start, time);
+          FinishSeek(trickplay);
+        });
       }
       else if (m_pDemuxer)
       {
@@ -3859,25 +3908,15 @@ void CVideoPlayer::HandleMessages()
 
         m_State.dts = start;
 
-        FlushBuffers(start, false, true);
-        m_subtitleSeekNewRun = true;
-        if (m_playSpeed != DVD_PLAYSPEED_PAUSE)
-        {
-          SetPlaySpeed(DVD_PLAYSPEED_NORMAL);
-        }
+        FlushBuffers(start, false, true, [this, trickplay = msg.GetTrickPlay()] {
+          m_subtitleSeekNewRun = true;
+          if (m_playSpeed != DVD_PLAYSPEED_PAUSE)
+            SetPlaySpeed(DVD_PLAYSPEED_NORMAL);
+          FinishSeek(trickplay);
+        });
       }
-
-      // set flag to indicate we have finished a seeking request
-      if(!msg.GetTrickPlay())
-      {
-        m_processInfo->SeekFinished(0);
-      }
-
-      // dvd's will issue a HOP_CHANNEL that we need to skip
-      if(m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
-        m_dvd.state = DVDSTATE_SEEK;
-
-      m_processInfo->SetStateSeeking(false);
+      else
+        FinishSeek(msg.GetTrickPlay());
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK_CHAPTER) &&
              m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK) == 0 &&
@@ -3893,23 +3932,28 @@ void CVideoPlayer::HandleMessages()
       // This should always be the case.
       if(m_pDemuxer && m_pDemuxer->SeekChapter(msg.GetChapter(), &start))
       {
-        FlushBuffers(start, true, true);
-        int64_t beforeSeek = GetTime();
-        offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
-        m_callback.OnPlayBackSeekChapter(msg.GetChapter());
+        FlushBuffers(start, true, true, [this, start, chapter = msg.GetChapter()] {
+          const int64_t beforeSeek = GetTime();
+          const int offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
+          m_callback.OnPlayBackSeekChapter(chapter);
+          m_processInfo->SeekFinished(offset);
+        });
       }
       else if (m_pInputStream)
       {
         CDVDInputStream::IChapter* pChapter = m_pInputStream->GetIChapter();
         if (pChapter && pChapter->SeekChapter(msg.GetChapter()))
         {
-          FlushBuffers(start, true, true);
-          int64_t beforeSeek = GetTime();
-          offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
-          m_callback.OnPlayBackSeekChapter(msg.GetChapter());
+          FlushBuffers(start, true, true, [this, start, chapter = msg.GetChapter()] {
+            const int64_t beforeSeek = GetTime();
+            const int offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
+            m_callback.OnPlayBackSeekChapter(chapter);
+            m_processInfo->SeekFinished(offset);
+          });
         }
       }
-      m_processInfo->SeekFinished(offset);
+      if (!ParentLifecyclePending())
+        m_processInfo->SeekFinished(offset);
     }
     else if (pMsg->IsType(CDVDMsg::DEMUXER_RESET))
     {
@@ -4190,6 +4234,9 @@ void CVideoPlayer::HandleMessages()
     else if (pMsg->IsType(CDVDMsg::PLAYER_STARTED))
     {
       SStartMsg& msg = std::static_pointer_cast<CDVDMsgType<SStartMsg>>(pMsg)->m_value;
+      if ((msg.player == VideoPlayer_AUDIO && msg.epoch != m_VideoPlayerAudio->GetSyncEpoch()) ||
+          (msg.player == VideoPlayer_VIDEO && msg.epoch != m_VideoPlayerVideo->GetSyncEpoch()))
+        continue; // A report from before the current flush/stream retirement.
       if (msg.player == VideoPlayer_AUDIO)
       {
         m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_WAITSYNC;
@@ -4209,6 +4256,9 @@ void CVideoPlayer::HandleMessages()
     else if (pMsg->IsType(CDVDMsg::PLAYER_REPORT_STATE))
     {
       SStateMsg& msg = std::static_pointer_cast<CDVDMsgType<SStateMsg>>(pMsg)->m_value;
+      if ((msg.player == VideoPlayer_AUDIO && msg.epoch != m_VideoPlayerAudio->GetSyncEpoch()) ||
+          (msg.player == VideoPlayer_VIDEO && msg.epoch != m_VideoPlayerVideo->GetSyncEpoch()))
+        continue; // A report from before the current flush/stream retirement.
       if (msg.player == VideoPlayer_AUDIO)
       {
         m_CurrentAudio.syncState = msg.syncState;
@@ -5335,8 +5385,21 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
   return true;
 }
 
-void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
+void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::function<void()> complete)
 {
+  if (m_pendingFlush)
+  {
+    if (m_deferredFlush)
+    {
+      CLog::Log(LOGERROR, "CVideoPlayer: nested flush capacity exceeded");
+      m_bAbortRequest = true;
+      return;
+    }
+    m_deferredFlush = DeferredFlush{pts, accurate, sync, std::move(complete)};
+    return;
+  }
+  m_pendingFlush.emplace();
+  m_pendingFlush->complete = std::move(complete);
   CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
 
   double startpts;
@@ -5400,61 +5463,100 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   m_CurrentAudioID3.startpts = startpts;
   m_CurrentAudioID3.packets = 0;
 
+  const bool synchronize =
+      m_playSpeed == DVD_PLAYSPEED_NORMAL || m_playSpeed == DVD_PLAYSPEED_PAUSE ||
+      (m_playSpeed >= DVD_PLAYSPEED_NORMAL * m_processInfo->MinTempoPlatform() &&
+       m_playSpeed <= DVD_PLAYSPEED_NORMAL * m_processInfo->MaxTempoPlatform());
+  if (synchronize && sync)
+  {
+    m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_STARTING;
+    m_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_STARTING;
+  }
+
   m_VideoPlayerAudio->Flush(sync);
   m_VideoPlayerVideo->Flush(sync);
+  m_pendingFlush->video = m_VideoPlayerVideo->GetFlushRequest();
   m_VideoPlayerSubtitle->Flush();
   m_VideoPlayerTeletext->Flush();
   m_VideoPlayerRadioRDS->Flush();
   m_VideoPlayerAudioID3->Flush();
 
-  if (m_playSpeed == DVD_PLAYSPEED_NORMAL || m_playSpeed == DVD_PLAYSPEED_PAUSE ||
-      (m_playSpeed >= DVD_PLAYSPEED_NORMAL * m_processInfo->MinTempoPlatform() &&
-       m_playSpeed <= DVD_PLAYSPEED_NORMAL * m_processInfo->MaxTempoPlatform()))
+  if (synchronize)
   {
-    // make sure players are properly flushed, should put them in stalled state
+    // Preserve the media synchronization event's one-second timeout policy.
+    // It is polled separately and never substitutes for the device receipt.
     auto msg = std::make_shared<CDVDMsgGeneralSynchronize>(1s, SYNCSOURCE_AUDIO | SYNCSOURCE_VIDEO);
+    m_pendingFlush->streams = msg;
     m_VideoPlayerAudio->SendMessage(msg, 1);
     m_VideoPlayerVideo->SendMessage(msg, 1);
-    msg->Wait(m_bStop, 0);
-
   }
+}
 
-  // The general A/V event treats timeout as success. Device reset does not.
-  // Keep the original decode request pending and service startup/abort while
-  // its counted operation finishes; never acknowledge or replace its owner on
-  // timeout. This wait owns no renderer, graphics, pool or lifecycle lock.
-  m_waitingForVideoFlush = true;
-  while (m_VideoPlayerVideo->IsFlushPending() && !m_bAbortRequest && !m_bStop)
+void CVideoPlayer::CancelParentLifecycle()
+{
+  m_pendingFlush.reset();
+  m_deferredFlush.reset();
+  m_rendererRetirement.reset();
+}
+
+bool CVideoPlayer::ContinueParentLifecycle()
+{
+  if (m_bAbortRequest || m_bStop)
   {
-    HandleMessages();
-    CThread::Sleep(10ms);
+    CancelParentLifecycle();
+    return false;
   }
-  m_waitingForVideoFlush = false;
-  if (m_bAbortRequest || m_bStop || m_VideoPlayerVideo->FlushFailed())
-    return;
-
-  if (m_playSpeed == DVD_PLAYSPEED_NORMAL || m_playSpeed == DVD_PLAYSPEED_PAUSE ||
-      (m_playSpeed >= DVD_PLAYSPEED_NORMAL * m_processInfo->MinTempoPlatform() &&
-       m_playSpeed <= DVD_PLAYSPEED_NORMAL * m_processInfo->MaxTempoPlatform()))
+  if (m_pendingFlush)
   {
-    // purge any pending PLAYER_STARTED messages
-    m_messenger.Flush(CDVDMsg::PLAYER_STARTED);
-
-    // we should now wait for init cache
-    SetCaching(CACHESTATE_FLUSH);
-    if (sync)
+    const auto& request = m_pendingFlush->video;
+    if (request && (request != m_VideoPlayerVideo->GetFlushRequest() ||
+                    request->state == CVideoFlushRequest::State::CANCELLED))
     {
-      m_CurrentAudio.syncState = IDVDStreamPlayer::SYNC_STARTING;
-      m_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_STARTING;
+      m_bAbortRequest = true;
+      CancelParentLifecycle();
+      return false;
+    }
+    if (request && request->state == CVideoFlushRequest::State::PENDING)
+      return false;
+    if (m_pendingFlush->streams && !m_pendingFlush->streams->Wait(0ms, 0))
+      return false;
+
+    // Starts are tagged with the flush epoch. Keep matching reports that arrived
+    // while pending; purging the whole queue would lose a valid startup handshake.
+    if (m_pendingFlush->streams)
+      SetCaching(CACHESTATE_FLUSH);
+    m_CurrentVideo.lastdts = DVD_NOPTS_VALUE;
+    UpdatePlayState(0);
+    m_demuxerSpeed = DVD_PLAYSPEED_NORMAL;
+    if (m_pDemuxer)
+      m_pDemuxer->SetSpeed(DVD_PLAYSPEED_NORMAL);
+
+    auto complete = std::move(m_pendingFlush->complete);
+    m_pendingFlush.reset();
+    if (complete)
+      complete();
+    if (m_deferredFlush)
+    {
+      auto deferred = std::move(*m_deferredFlush);
+      m_deferredFlush.reset();
+      FlushBuffers(deferred.pts, deferred.accurate, deferred.sync, std::move(deferred.complete));
+      return false;
     }
   }
-
-  m_CurrentVideo.lastdts = DVD_NOPTS_VALUE;
-  UpdatePlayState(0);
-
-  m_demuxerSpeed = DVD_PLAYSPEED_NORMAL;
-  if (m_pDemuxer)
-    m_pDemuxer->SetSpeed(DVD_PLAYSPEED_NORMAL);
+  if (m_rendererRetirement)
+  {
+    const auto status = m_rendererRetirement->status.load();
+    if (status == CRenderLifecycle::Status::PENDING || status == CRenderLifecycle::Status::EXECUTING)
+      return false;
+    m_rendererRetirement.reset();
+    if (status != CRenderLifecycle::Status::COMPLETED)
+    {
+      m_bAbortRequest = true;
+      return false;
+    }
+    CompleteFileReplacement();
+  }
+  return !ParentLifecyclePending() && !m_bAbortRequest && !m_bStop;
 }
 
 bool CVideoPlayer::HoldBoundaryForVideoStart()
@@ -5916,11 +6018,12 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
         else
         {
           bool sync = !IsInMenuInternal();
-          FlushBuffers(DVD_NOPTS_VALUE, false, sync);
-          m_dvd.syncClock = true;
-          m_dvd.state = DVDSTATE_NORMAL;
-          if (m_pDemuxer)
-            m_pDemuxer->Flush();
+          FlushBuffers(DVD_NOPTS_VALUE, false, sync, [this] {
+            m_dvd.syncClock = true;
+            m_dvd.state = DVDSTATE_NORMAL;
+            if (m_pDemuxer)
+              m_pDemuxer->Flush();
+          });
         }
 
         return NAVRESULT_ERROR;

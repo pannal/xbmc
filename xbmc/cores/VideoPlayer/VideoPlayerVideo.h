@@ -61,6 +61,10 @@ public:
   void Flush(bool sync) override;
   bool IsFlushPending() const override;
   bool FlushFailed() const override;
+  std::shared_ptr<CVideoFlushRequest> GetFlushRequest() const override
+  {
+    return std::atomic_load(&m_flushRequest);
+  }
   bool AcceptsData() const override;
   bool HasData() const override;
   void SetMaxTimeSize(double seconds, bool timeBound = false) override

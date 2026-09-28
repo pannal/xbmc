@@ -4,11 +4,11 @@
 Extracts whole DVDMessageQueue Put/Get/Flush methods, the production decode-loop
 lifecycle selection, GENERAL_RESET/FLUSH and VC_FLUSHED/REOPEN handlers,
 Flush and receipt queries, CloseStream's cancellation fragment, and the parent's
-flush-receipt wait including the surrounding speed/cache policy. Queue metadata, threading/event
+pending flush, startup handlers and clock/resync policy. Queue metadata, threading/event
 primitives, codec, renderer and unrelated message handlers are recording stubs.
 The single-step executor models decode scheduling, not actual player threads,
-clock policy, full Process, or hardware. Parent startup delivery is exercised;
-clock selection and subsequent GENERAL_RESYNC generation are outside this fixture.
+full Process or hardware. Parent startup delivery, clock selection and actual
+GENERAL_RESYNC generation are exercised with recording clock/player stubs.
 """
 import argparse
 from pathlib import Path
@@ -45,20 +45,24 @@ PREFIX = r'''
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 using namespace std::chrono_literals;
 using CCriticalSection = std::mutex;
-constexpr int LOGFATAL=0, LOGWARNING=1, LOGDEBUG=2;
+constexpr int LOGFATAL=0, LOGWARNING=1, LOGDEBUG=2, LOGERROR=3, LOGAUDIO=4, LOGVIDEO=5;
 constexpr double DVD_NOPTS_VALUE=-1;
 constexpr int DVD_PLAYSPEED_NORMAL=1000, DVD_PLAYSPEED_PAUSE=0;
-constexpr int SYNCSOURCE_AUDIO=1,SYNCSOURCE_VIDEO=2,CACHESTATE_FLUSH=3;
+constexpr int SYNCSOURCE_AUDIO=1,SYNCSOURCE_VIDEO=2,CACHESTATE_FLUSH=3,CACHESTATE_DONE=4;
+constexpr int VideoPlayer_AUDIO=1, VideoPlayer_VIDEO=2, TMSG_SWITCHTOFULLSCREEN=3;
+constexpr double DVD_TIME_BASE=1000000;
+constexpr double DVD_SEC_TO_TIME(double value) { return value*DVD_TIME_BASE; }
 struct CLog { template<class... T> static void Log(T&&...) {} };
 struct Event { void Set() {} void Reset() {} bool Wait(std::chrono::milliseconds) { return false; } };
 struct CDVDMsg {
   enum Message { DEMUXER_PACKET, GENERAL_RESYNC, GENERAL_PAUSE, GENERAL_RESET,
     GENERAL_FLUSH, GENERAL_SYNCHRONIZE, GENERAL_STREAMCHANGE, VIDEO_DRAIN,
-    PLAYER_STARTED, PLAYER_ABORT, PLAYER_SEEK, NONE };
+    PLAYER_STARTED, PLAYER_REPORT_STATE, PLAYER_ABORT, PLAYER_SEEK, NONE };
   explicit CDVDMsg(Message type): type(type) {}
   virtual ~CDVDMsg()=default;
   bool IsType(Message candidate) const { return type==candidate; }
@@ -69,12 +73,15 @@ template<class T> struct CDVDMsgType : CDVDMsg {
   T m_value;
 };
 using CDVDMsgBool=CDVDMsgType<bool>;
+using CDVDMsgDouble=CDVDMsgType<double>;
 struct CDVDMsgGeneralSynchronize : CDVDMsg {
   CDVDMsgGeneralSynchronize(std::chrono::milliseconds,int):CDVDMsg(GENERAL_SYNCHRONIZE) {}
-  void Wait(bool&,int) { ++waits; } // Historical general-sync timeout reports success.
+  bool Wait(std::chrono::milliseconds duration,int) { assert(duration==0ms); ++waits; return ready; }
+  bool ready=true; // Models either both arrivals or the existing media timeout.
   static inline int waits=0;
 };
 @FLUSH_RECEIPT@
+@STREAM_FLUSH_MESSAGE@
 @FLUSH_MESSAGE@
 struct DemuxPacket { int iSize=7; };
 struct CDVDMsgDemuxerPacket : CDVDMsg {
@@ -118,8 +125,13 @@ struct FakeCodec {
 struct VideoBuffer { int releases=0; void Release() { ++releases; } };
 struct Stats { int resets=0; void Reset() { ++resets; } void Flush() { ++resets; } };
 struct Renderer { int discards=0, hides=0; void DiscardBuffer() { ++discards; } void ShowVideo(bool show) { if(!show) ++hides; } };
-struct IDVDStreamPlayer { enum { SYNC_STARTING, SYNC_INSYNC }; };
+struct IDVDStreamPlayer { enum ESyncState { SYNC_STARTING, SYNC_WAITSYNC, SYNC_INSYNC }; };
 struct CVideoPlayerVideo {
+  std::atomic<uint64_t> m_syncRequest{0}; uint64_t m_syncEpoch=0;
+  uint64_t GetSyncEpoch() const { return m_syncRequest.load(); }
+  std::shared_ptr<CVideoFlushRequest> GetFlushRequest() const { return std::atomic_load(&m_flushRequest); }
+  bool AcceptsData() const { return accepts; } bool IsStalled() const { return m_stalled; }
+  int GetLevel() const { return level; } bool accepts=true; int level=20;
   void Flush(bool sync);
   bool Recover(CDVDVideoCodec::VCReturn decoderState) {
     if (decoderState == CDVDVideoCodec::VC_FLUSHED) { @VC_FLUSHED@ }
@@ -161,32 +173,87 @@ struct CVideoPlayerVideo {
   std::vector<int> delivered;
 };
 @FLUSH@
-struct CThread { static inline std::function<void()> tick; static void Sleep(std::chrono::milliseconds) { tick(); } };
+@START_MSG@
+@STATE_MSG@
+struct Settings {
+  bool GetBool(int) const {return false;} int GetInt(int) const {return algorithm;}
+  Settings* GetSettings() {return this;} int algorithm=0;
+};
+struct CSettings { enum {SETTING_COREELEC_RESET_PTS_ON_SEEK,SETTING_COREELEC_AMLOGIC_DV_AUDIO_SEAMLESSBRANCH}; };
+struct CServiceBroker {
+  static Settings* GetSettingsComponent() {static Settings settings; return &settings;}
+  static CServiceBroker* GetAppMessenger() {static CServiceBroker messenger; return &messenger;}
+  void PostMsg(int) {}
+};
+struct CRenderLifecycle {
+  enum class Status {PENDING,EXECUTING,COMPLETED,CANCELLED};
+  struct Request {std::atomic<Status> status{Status::PENDING};};
+};
+struct CCurrentStream {
+  enum {AV_SYNC_NONE,AV_SYNC_CONT,AV_SYNC_FORCE};
+  int id=0,syncState=IDVDStreamPlayer::SYNC_STARTING,avsync=AV_SYNC_FORCE;
+  bool inited=false; unsigned packets=0;
+  double dts=0,startpts=0,lastdts=0,starttime=DVD_NOPTS_VALUE,cachetime=0,cachetotal=0;
+};
+struct IPlayerCallback { int starts=0; void OnAVStarted(int) {++starts;} };
+using CFileItem=int;
 struct Parent {
   explicit Parent(CVideoPlayerVideo& video):m_VideoPlayerVideo(&video) {}
-  struct Audio { void SendMessage(const std::shared_ptr<CDVDMsg>&,int) {} } audio;
+  struct Audio {
+    uint64_t epoch=0; bool accepts=true; int level=20;
+    std::vector<std::shared_ptr<CDVDMsg>> sent;
+    void SendMessage(const std::shared_ptr<CDVDMsg>& msg,int) {sent.push_back(msg);}
+    void Flush(bool) {++epoch;} uint64_t GetSyncEpoch() const {return epoch;}
+    bool AcceptsData() const {return accepts;} int GetLevel() const {return level;}
+  } audio;
+  struct Other {int flushes=0; void Flush() {++flushes;} } otherPlayer;
+  Other *m_VideoPlayerSubtitle=&otherPlayer,*m_VideoPlayerTeletext=&otherPlayer,
+        *m_VideoPlayerRadioRDS=&otherPlayer,*m_VideoPlayerAudioID3=&otherPlayer;
   struct ProcessInfo { double MinTempoPlatform() const { return 0.5; } double MaxTempoPlatform() const { return 1.5; } } info;
-  struct Current { int syncState=7; } m_CurrentAudio,m_CurrentVideo;
+  CCurrentStream m_CurrentAudio,m_CurrentVideo,m_CurrentSubtitle,m_CurrentTeletext,m_CurrentRadioRDS,m_CurrentAudioID3;
   Audio* m_VideoPlayerAudio=&audio;
   ProcessInfo* m_processInfo=&info;
-  int m_playSpeed=DVD_PLAYSPEED_NORMAL, cacheChanges=0;
-  void SetCaching(int value) { assert(value==CACHESTATE_FLUSH); ++cacheChanges; }
+  struct Input {bool realtime=false; bool IsRealtime() const {return realtime;} } input;
+  Input* m_pInputStream=&input;
+  struct Demux {int speed=0; void SetSpeed(int v) {speed=v;} } demux;
+  Demux* m_pDemuxer=&demux; bool m_pSubtitleDemuxer=false;
+  struct Speed {int resets=0; void Reset(double) {++resets;} } m_SpeedState;
+  struct Clock {
+    double value=0; int anchors=0;
+    double GetClock() const {return value;}
+    void Discontinuity(double v) {value=v;++anchors;}
+  } m_clock;
+  struct Timer {void Set(std::chrono::milliseconds) {} } m_syncTimer;
+  struct {bool streamsReady=false;} m_State;
+  struct {bool fullscreen=false;} m_playerOptions;
+  IPlayerCallback m_callback; int m_item=0;
+  struct Events {void Submit(std::function<void()> call) {call();} } events;
+  Events* m_outboundEvents=&events;
+  double m_offset_pts=0;
+  std::chrono::steady_clock::time_point m_syncStartPtsWait{};
+  int m_playSpeed=DVD_PLAYSPEED_NORMAL, cacheChanges=0,m_demuxerSpeed=0,updates=0,replacements=0;
+  void SetCaching(int value) {assert(value==CACHESTATE_FLUSH || value==CACHESTATE_DONE); ++cacheChanges;}
+  void UpdatePlayState(int) {++updates;}
+  void CompleteFileReplacement() {++replacements;}
+  @PENDING_FIELDS@
+  void FlushBuffers(double pts, bool accurate, bool sync, std::function<void()> complete={});
+  void CancelParentLifecycle(); bool ContinueParentLifecycle(); void SynchronizeStreams(bool);
   void HandleMessages() {
-    std::shared_ptr<CDVDMsg> msg; int priority=0;
-    while(queue.Get(msg,0ms,priority,m_waitingForVideoFlush ? 2 : 0)==MSGQ_OK) {
+    std::shared_ptr<CDVDMsg> pMsg; int priority=0;
+    while(queue.Get(pMsg,0ms,priority,ParentLifecyclePending() ? 2 : 0)==MSGQ_OK) {
       priority=0;
-      if(msg->IsType(CDVDMsg::PLAYER_STARTED)) ++starts;
-      else if(msg->IsType(CDVDMsg::PLAYER_ABORT)) m_bAbortRequest=true;
+      if(pMsg->IsType(CDVDMsg::PLAYER_STARTED)) { @START_HANDLER@ }
+      else if(pMsg->IsType(CDVDMsg::PLAYER_REPORT_STATE)) { @STATE_HANDLER@ }
+      else if(pMsg->IsType(CDVDMsg::PLAYER_ABORT)) m_bAbortRequest=true;
       else ++other;
     }
   }
-  void Wait(bool sync=true) { @PARENT_WAIT@ advanced=true; }
   CVideoPlayerVideo* m_VideoPlayerVideo;
   CDVDMessageQueue queue;
-  CDVDMessageQueue& m_messenger=queue;
-  bool m_waitingForVideoFlush=false,m_bAbortRequest=false,m_bStop=false,advanced=false;
-  int starts=0,other=0;
+  bool m_bAbortRequest=false,m_bStop=false;
+  int other=0;
 };
+@PARENT_METHODS@
 '''
 
 TESTS = r'''
@@ -349,38 +416,140 @@ static void cancelled_session() {
   assert(!video.IsFlushPending() && !video.FlushFailed());
   assert(oldReceipt->state==CVideoFlushRequest::State::CANCELLED);
 }
+static void start(Parent& parent,int player,uint64_t epoch,double timestamp) {
+  SStartMsg msg{}; msg.player=player;msg.epoch=epoch;msg.timestamp=timestamp;
+  msg.cachetime=100000;msg.cachetotal=200000;
+  parent.queue.Put(std::make_shared<CDVDMsgType<SStartMsg>>(CDVDMsg::PLAYER_STARTED,msg));
+}
+static void complete(CVideoPlayerVideo& video) {
+  for(int step=0;video.IsFlushPending() && step<8;++step) {
+    video.Step();video.m_pVideoCodec->ready=true;
+  }
+  assert(!video.IsFlushPending() && !video.FlushFailed());
+}
 static void parent_wait() {
   for(int speed:{1000,0,1250,2000,-1000}) {
-    CVideoPlayerVideo video; video.Flush(true); video.Step();
-    Parent parent(video); parent.m_playSpeed=speed;
-    parent.queue.Put(message(CDVDMsg::PLAYER_SEEK),1);
-    parent.queue.Put(message(CDVDMsg::PLAYER_STARTED));
-    int ticks=0;
-    const int priorWaits=CDVDMsgGeneralSynchronize::waits;
-    CThread::tick=[&] {
-      assert(parent.m_waitingForVideoFlush && !parent.advanced);
-      assert(parent.starts==1 && parent.other==0);
-      if(++ticks==3) video.m_pVideoCodec->ready=true;
-      assert(ticks<5);
-      video.Step();
-    };
-    parent.Wait();
-    assert(ticks==3 && parent.advanced && !parent.m_waitingForVideoFlush);
-    assert(receive(parent.queue,0)==100+CDVDMsg::PLAYER_SEEK);
+    CVideoPlayerVideo video; Parent parent(video); parent.m_playSpeed=speed;
+    int callbacks=0;
+    parent.FlushBuffers(123,true,true,[&]{++callbacks;});
     const bool standard=speed==1000 || speed==0 || speed==1250;
+    assert(bool(parent.m_pendingFlush->streams)==standard);
+    auto original=parent.m_pendingFlush->video;
+    parent.queue.Put(message(CDVDMsg::PLAYER_SEEK),1);
+    start(parent,VideoPlayer_VIDEO,video.GetSyncEpoch()-1,3000000);
+    start(parent,VideoPlayer_VIDEO,video.GetSyncEpoch(),5000000);
+    start(parent,VideoPlayer_AUDIO,parent.audio.GetSyncEpoch(),5200000);
+    for(int tick=0;tick<3;++tick) {
+      parent.HandleMessages();
+      assert(!parent.ContinueParentLifecycle());
+      parent.SynchronizeStreams(false);
+      assert(callbacks==0 && parent.other==0 && parent.m_clock.anchors==0);
+      assert(parent.m_pendingFlush->video==original);
+      assert(parent.m_CurrentVideo.starttime==5000000);
+      video.Step();
+    }
+    video.m_pVideoCodec->ready=true;video.Step();
+    if(standard) {
+      parent.m_pendingFlush->streams->ready=false;
+      assert(!parent.ContinueParentLifecycle() && callbacks==0);
+      parent.m_pendingFlush->streams->ready=true;
+    }
+    assert(parent.ContinueParentLifecycle());
+    assert(parent.ContinueParentLifecycle() && callbacks==1);
     assert(parent.cacheChanges==(standard ? 1 : 0));
-    assert(CDVDMsgGeneralSynchronize::waits-priorWaits==(standard ? 1 : 0));
-    assert(parent.m_CurrentVideo.syncState==(standard ? IDVDStreamPlayer::SYNC_STARTING : 7));
+    assert(parent.otherPlayer.flushes==4 && parent.m_SpeedState.resets==1);
+    assert(receive(parent.queue,0)==100+CDVDMsg::PLAYER_SEEK);
+    parent.m_CurrentVideo.packets=parent.m_CurrentAudio.packets=1;
+    parent.SynchronizeStreams(false);
+    const double expected=speed==0 ? 5000000 : 4800000;
+    assert(parent.m_clock.anchors==1 && parent.m_clock.value==expected);
+    assert(parent.m_CurrentVideo.syncState==IDVDStreamPlayer::SYNC_INSYNC);
+    assert(parent.m_CurrentAudio.syncState==IDVDStreamPlayer::SYNC_INSYNC);
+    assert(parent.m_callback.starts==1);
+    auto resync=std::static_pointer_cast<CDVDMsgDouble>(parent.audio.sent.back());
+    assert(resync->IsType(CDVDMsg::GENERAL_RESYNC) && resync->m_value==expected);
+    video.Step();
+    if (standard) video.Step(); // The preceding general-sync event retains queue order.
+    assert(video.resyncs==1);
+    parent.SynchronizeStreams(false);assert(parent.m_clock.anchors==1);
   }
-  CVideoPlayerVideo video;
-  video.Flush(false); video.Step();
-  Parent abort(video); abort.queue.Put(message(CDVDMsg::PLAYER_ABORT));
-  CThread::tick=[] {};
-  abort.Wait();
-  assert(abort.m_bAbortRequest && !abort.advanced && video.IsFlushPending());
-  assert(!abort.m_waitingForVideoFlush);
+  for(int cause:{0,1,2,3}) {
+    CVideoPlayerVideo video;Parent parent(video);int callbacks=0;
+    parent.FlushBuffers(0,false,true,[&]{++callbacks;});
+    auto old=parent.m_pendingFlush->video;
+    if(cause==0) parent.queue.Put(message(CDVDMsg::PLAYER_ABORT));
+    if(cause==1) old->state=CVideoFlushRequest::State::CANCELLED;
+    if(cause==2) video.Flush(true);
+    if(cause==3) parent.m_bStop=true;
+    parent.HandleMessages();assert(!parent.ContinueParentLifecycle());
+    assert(!parent.ParentLifecyclePending() && callbacks==0);
+  }
 }
-int main() { queues(); continuation(); multiple_flushes(); failed_lifecycle(); cancelled_session(); parent_wait(); }
+static void nested_and_renderer() {
+  CVideoPlayerVideo video;Parent parent(video);std::vector<int> order;
+  parent.FlushBuffers(1,false,false,[&]{order.push_back(1);});
+  auto first=parent.m_pendingFlush->video;
+  parent.FlushBuffers(2,true,true,[&]{order.push_back(2);});
+  assert(parent.m_pendingFlush->video==first && parent.m_SpeedState.resets==1);
+  complete(video);assert(!parent.ContinueParentLifecycle());
+  assert(order==std::vector<int>{1} && parent.m_SpeedState.resets==2);
+  assert(parent.m_pendingFlush->video!=first);
+  complete(video);assert(parent.ContinueParentLifecycle());
+  assert((order==std::vector<int>{1,2}));
+  parent.FlushBuffers(3,true,true,[&]{parent.m_rendererRetirement=std::make_shared<CRenderLifecycle::Request>();});
+  complete(video);assert(!parent.ContinueParentLifecycle());
+  auto retirement=parent.m_rendererRetirement;
+  for(auto status:{CRenderLifecycle::Status::PENDING,CRenderLifecycle::Status::EXECUTING}) {
+    retirement->status=status;assert(!parent.ContinueParentLifecycle());
+    assert(parent.m_rendererRetirement==retirement && parent.replacements==0);
+  }
+  retirement->status=CRenderLifecycle::Status::COMPLETED;
+  assert(parent.ContinueParentLifecycle() && parent.replacements==1);
+  assert(parent.ContinueParentLifecycle() && parent.replacements==1);
+  parent.m_rendererRetirement=std::make_shared<CRenderLifecycle::Request>();
+  parent.m_rendererRetirement->status=CRenderLifecycle::Status::CANCELLED;
+  assert(!parent.ContinueParentLifecycle() && parent.replacements==1 && parent.m_bAbortRequest);
+}
+static void stale_and_clock_policy() {
+  for(int scenario=0;scenario<6;++scenario) {
+    CVideoPlayerVideo video;Parent parent(video);
+    parent.FlushBuffers(0,true,true);complete(video);assert(parent.ContinueParentLifecycle());
+    start(parent,VideoPlayer_AUDIO,parent.audio.GetSyncEpoch(),10000000);
+    start(parent,VideoPlayer_VIDEO,video.GetSyncEpoch(),scenario==0 ? 15000000 : 5000000);
+    parent.HandleMessages();
+    start(parent,VideoPlayer_VIDEO,video.GetSyncEpoch()-1,99000000);
+    SStateMsg stale{};stale.player=VideoPlayer_VIDEO;stale.epoch=video.GetSyncEpoch()-1;
+    stale.syncState=IDVDStreamPlayer::SYNC_STARTING;
+    parent.queue.Put(std::make_shared<CDVDMsgType<SStateMsg>>(CDVDMsg::PLAYER_REPORT_STATE,stale));
+    parent.HandleMessages();assert(parent.m_CurrentVideo.syncState==IDVDStreamPlayer::SYNC_WAITSYNC);
+    parent.m_CurrentVideo.packets=parent.m_CurrentAudio.packets=1;
+    if(scenario==1)parent.input.realtime=true;
+    if(scenario==3) {parent.m_CurrentVideo.avsync=CCurrentStream::AV_SYNC_CONT; parent.m_clock.value=77;}
+    if(scenario==4) {
+      parent.m_CurrentVideo.starttime=parent.m_CurrentAudio.starttime=DVD_NOPTS_VALUE;
+      parent.SynchronizeStreams(false);assert(parent.m_clock.anchors==0);
+      parent.m_syncStartPtsWait=std::chrono::steady_clock::now()-3s;
+    }
+    if(scenario==5) {
+      CServiceBroker::GetSettingsComponent()->algorithm=5;
+      parent.m_CurrentVideo.starttime=DVD_NOPTS_VALUE;
+    }
+    parent.SynchronizeStreams(false);
+    if(scenario==0)assert(parent.m_clock.value==14800000);
+    if(scenario==1 || scenario==2)assert(parent.m_clock.value==9900000); // live policy / >2s pullback cap
+    if(scenario==3)assert(parent.m_clock.value==77 && parent.m_clock.anchors==0);
+    if(scenario==4)assert(parent.m_clock.value==0 && parent.m_clock.anchors==1);
+    if(scenario==5) {
+      assert(parent.m_CurrentAudio.syncState==IDVDStreamPlayer::SYNC_WAITSYNC);
+      assert(!parent.audio.sent.back()->IsType(CDVDMsg::GENERAL_RESYNC));
+      parent.SynchronizeStreams(false); // existing audio catch-up once video is in sync
+      assert(parent.audio.sent.back()->IsType(CDVDMsg::GENERAL_RESYNC));
+    }
+    CServiceBroker::GetSettingsComponent()->algorithm=0;
+  }
+}
+
+int main() { queues(); continuation(); multiple_flushes(); failed_lifecycle(); cancelled_session(); parent_wait(); nested_and_renderer(); stale_and_clock_policy(); }
 '''
 
 
@@ -391,9 +560,12 @@ def harness(root=ROOT):
     messages = (root / 'xbmc/cores/VideoPlayer/DVDMessage.h').read_text()
     selection = video[video.index('    const bool lifecyclePending ='):]
     selection = selection[:selection.index('    onlyPrioMsgs = false;') + len('    onlyPrioMsgs = false;')]
-    flush_buffers = block(parent, 'void CVideoPlayer::FlushBuffers(')
-    wait = flush_buffers[flush_buffers.index('  if (m_playSpeed == DVD_PLAYSPEED_NORMAL'): ]
-    wait = wait[:wait.index('  m_CurrentVideo.lastdts = DVD_NOPTS_VALUE;')]
+    header = (root / 'xbmc/cores/VideoPlayer/VideoPlayer.h').read_text()
+    interface = (root / 'xbmc/cores/VideoPlayer/IVideoPlayer.h').read_text()
+    fields = header[header.index('  struct PendingFlush'):header.index('  bool ContinueParentLifecycle();')]
+    methods = '\n'.join(block(parent, signature).replace('CVideoPlayer::', 'Parent::') for signature in (
+        'void CVideoPlayer::FlushBuffers(', 'void CVideoPlayer::CancelParentLifecycle(',
+        'bool CVideoPlayer::ContinueParentLifecycle(', 'void CVideoPlayer::SynchronizeStreams('))
     close = block(video, 'void CVideoPlayerVideo::CloseStream(')
     retirement = close[close.index('  if (auto request ='):close.index('  m_pVideoCodec.reset();')]
     replacements = {
@@ -411,7 +583,13 @@ def harness(root=ROOT):
         '@SELECTION@': selection,
         '@RESET@': body(video, 'else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))'),
         '@FLUSH_HANDLER@': body(video, 'else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH))'),
-        '@PARENT_WAIT@': wait,
+        '@STREAM_FLUSH_MESSAGE@': block(messages, 'class CDVDMsgStreamFlush') + ';',
+        '@START_MSG@': block(interface, 'struct SStartMsg') + ';',
+        '@STATE_MSG@': block(interface, 'struct SStateMsg') + ';',
+        '@START_HANDLER@': body(parent, 'else if (pMsg->IsType(CDVDMsg::PLAYER_STARTED))'),
+        '@STATE_HANDLER@': body(parent, 'else if (pMsg->IsType(CDVDMsg::PLAYER_REPORT_STATE))'),
+        '@PENDING_FIELDS@': fields,
+        '@PARENT_METHODS@': methods,
     }
     source = PREFIX + TESTS
     for key, value in replacements.items():
@@ -452,9 +630,15 @@ def main():
                 'repeat-reset-on-continuation': ('m_pVideoCodec && !continuingReset', 'm_pVideoCodec && (continuingReset || !continuingReset)'),
                 'receipt-false-completion': ('return request && request->state == CVideoFlushRequest::State::PENDING;', 'return request && false;'),
                 'abandoned-receipt-not-cancelled': ('request->state.compare_exchange_strong(pending, CVideoFlushRequest::State::CANCELLED)', 'request->state.compare_exchange_strong(pending, CVideoFlushRequest::State::PENDING)'),
-                'trickplay-skips-receipt': ('while (m_VideoPlayerVideo->IsFlushPending() &&', 'while (m_playSpeed != 2000 && m_VideoPlayerVideo->IsFlushPending() &&'),
-                'parent-skips-receipt': ('while (m_VideoPlayerVideo->IsFlushPending() &&', 'while (false && m_VideoPlayerVideo->IsFlushPending() &&'),
+                'trickplay-skips-receipt': ('if (request && request->state == CVideoFlushRequest::State::PENDING)', 'if (m_playSpeed != 2000 && request && request->state == CVideoFlushRequest::State::PENDING)'),
+                'parent-skips-receipt': ('if (request && request->state == CVideoFlushRequest::State::PENDING)', 'if (false && request && request->state == CVideoFlushRequest::State::PENDING)'),
             }
+            mutants.update({
+                'accept-stale-start': ('msg.epoch != m_VideoPlayerVideo->GetSyncEpoch()', 'false'),
+                'skip-renderer-retirement': ('status == CRenderLifecycle::Status::PENDING || status == CRenderLifecycle::Status::EXECUTING', 'false'),
+                'anchor-while-pending': ('!m_pInputStream || ParentLifecyclePending() ||', '!m_pInputStream ||'),
+                'lose-current-start': ('if (m_pendingFlush->streams)\n      SetCaching', 'm_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_STARTING;\n    if (m_pendingFlush->streams)\n      SetCaching'),
+            })
             for label, (old, new) in mutants.items():
                 if old not in source:
                     raise AssertionError('negative control marker missing: ' + label)

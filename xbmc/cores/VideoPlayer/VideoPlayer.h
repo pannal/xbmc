@@ -27,7 +27,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <map>
+#include <optional>
 #include <memory>
 #include <unordered_map>
 #include <utility>
@@ -467,7 +469,34 @@ protected:
   double GetQueueTime();
   CacheInfo GetCachingTimes();
 
-  void FlushBuffers(double pts, bool accurate, bool sync);
+  void FlushBuffers(double pts, bool accurate, bool sync, std::function<void()> complete = {});
+  struct PendingFlush
+  {
+    std::shared_ptr<CVideoFlushRequest> video;
+    std::shared_ptr<CDVDMsgGeneralSynchronize> streams;
+    std::function<void()> complete;
+  };
+  struct DeferredFlush
+  {
+    double pts;
+    bool accurate;
+    bool sync;
+    std::function<void()> complete;
+  };
+  std::optional<PendingFlush> m_pendingFlush;
+  // A DVD navigation callback can flush inside the seek that will itself flush.
+  // Retain that one enclosing operation, never an unbounded continuation queue.
+  std::optional<DeferredFlush> m_deferredFlush;
+  std::shared_ptr<CRenderLifecycle::Request> m_rendererRetirement;
+  bool ParentLifecyclePending() const
+  {
+    return m_pendingFlush || m_deferredFlush || m_rendererRetirement;
+  }
+  bool ContinueParentLifecycle();
+  void CancelParentLifecycle();
+  void CompleteFileReplacement();
+  void SynchronizeStreams(bool allowRecovery);
+  void FinishSeek(bool trickplay);
   bool m_waitingForVideoFlush{false};
 
   void HandleMessages();

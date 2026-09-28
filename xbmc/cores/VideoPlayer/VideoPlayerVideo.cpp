@@ -160,6 +160,7 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
       return false;
     }
 
+    m_syncEpoch = ++m_syncRequest;
     OpenStream(hint, std::move(codec));
     CLog::Log(LOGINFO, "Creating video thread");
     m_messageQueue.Init();
@@ -277,6 +278,7 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
     m_messageQueue.WaitUntilEmpty();
   }
 
+  ++m_syncRequest; // Reject reports still queued by the retiring stream.
   m_messageQueue.Abort();
 
   // wait for decode_video thread to end
@@ -534,6 +536,7 @@ void CVideoPlayerVideo::Process()
     {
       m_isEOS = false;
       m_messageQueue.Flush(CDVDMsg::VIDEO_DRAIN);
+      m_syncEpoch = std::static_pointer_cast<CDVDMsgStreamFlush>(pMsg)->epoch;
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       if (m_pVideoCodec && !continuingReset)
         m_pVideoCodec->Reset();
@@ -622,6 +625,7 @@ void CVideoPlayerVideo::Process()
     else if (pMsg->IsType(CDVDMsg::PLAYER_REQUEST_STATE))
     {
       SStateMsg msg;
+      msg.epoch = m_syncEpoch;
       msg.player = VideoPlayer_VIDEO;
       msg.syncState = m_syncState;
       m_messageParent.Put(
@@ -804,6 +808,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
     if (m_syncState == IDVDStreamPlayer::SYNC_STARTING)
     {
       SStartMsg msg;
+      msg.epoch = m_syncEpoch;
       msg.player = VideoPlayer_VIDEO;
       msg.cachetime = DVD_MSEC_TO_TIME(50);
       msg.cachetotal = DVD_MSEC_TO_TIME(100);
@@ -977,6 +982,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
     {
       m_syncState = IDVDStreamPlayer::SYNC_WAITSYNC;
       SStartMsg msg;
+      msg.epoch = m_syncEpoch;
       msg.player = VideoPlayer_VIDEO;
       msg.cachetime = DVD_MSEC_TO_TIME(50); //! @todo implement
       msg.cachetotal = DVD_MSEC_TO_TIME(100); //! @todo implement
@@ -1067,7 +1073,12 @@ void CVideoPlayerVideo::Flush(bool sync)
   {
     auto request = std::make_shared<CVideoFlushRequest>();
     std::atomic_store(&m_flushRequest, request);
-    SendMessage(std::make_shared<CDVDMsgVideoFlush>(sync, request), 1);
+    SendMessage(std::make_shared<CDVDMsgVideoFlush>(sync, request, ++m_syncRequest), 1);
+  }
+  else
+  {
+    ++m_syncRequest;
+    std::atomic_store(&m_flushRequest, std::shared_ptr<CVideoFlushRequest>{});
   }
   m_bAbortOutput = true;
 }
