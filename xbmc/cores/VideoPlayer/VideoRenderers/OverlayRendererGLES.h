@@ -34,6 +34,7 @@ public:
   {
     RenderTargetToken target;
     bool rawPqMenu{false};
+    bool plainPmaMenu{false};
     bool premultiplied{false};
     int stride{0};
     std::vector<uint32_t> pixels;
@@ -41,7 +42,8 @@ public:
   // CPU-only work over immutable producer content and explicit route input.
   static PreparedImage PrepareImage(const CDVDOverlayImage& o,
                                     bool rawPqMenu,
-                                    RenderTargetToken target);
+                                    RenderTargetToken target,
+                                    bool plainPmaMenu = false);
   COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSource, PreparedImage image);
   explicit COverlayTextureGLES(const CDVDOverlaySpu& o);
   ~COverlayTextureGLES() override;

@@ -157,11 +157,12 @@ uint32_t PremultiplyPlain(uint32_t c)
 } // namespace
 
 COverlayTextureGLES::PreparedImage COverlayTextureGLES::PrepareImage(
-    const CDVDOverlayImage& o, bool rawPqMenu, RenderTargetToken target)
+    const CDVDOverlayImage& o, bool rawPqMenu, RenderTargetToken target, bool plainPmaMenu)
 {
   PreparedImage image;
   image.target = std::move(target);
   image.rawPqMenu = rawPqMenu;
+  image.plainPmaMenu = plainPmaMenu;
   image.stride = o.width * 4;
   if (image.rawPqMenu)
   {
@@ -192,7 +193,19 @@ COverlayTextureGLES::PreparedImage COverlayTextureGLES::PrepareImage(
   else if (o.palette.empty())
   {
     image.premultiplied = !!USE_PREMULTIPLIED_ALPHA;
-    if (image.premultiplied)
+    if (image.premultiplied && image.plainPmaMenu)
+    {
+      const size_t count = static_cast<size_t>(o.width) * o.height;
+      std::vector<uint32_t> pma(count);
+      for (int row = 0; row < o.height; row++)
+      {
+        const uint32_t* src = reinterpret_cast<const uint32_t*>(o.pixels.data() + row * o.linesize);
+        for (int col = 0; col < o.width; col++)
+          pma[row * o.width + col] = PremultiplyPlain(src[col]);
+      }
+      image.pixels = std::move(pma);
+    }
+    else if (image.premultiplied)
     {
       // Premultiply alpha in linear light so bilinear/mipmap filtering
       // preserves correct edge colors and semi-transparent edges don't appear
@@ -226,7 +239,7 @@ COverlayTextureGLES::PreparedImage COverlayTextureGLES::PrepareImage(
   {
     std::vector<uint32_t> rgba(o.width * o.height);
     image.premultiplied = !!USE_PREMULTIPLIED_ALPHA;
-    convert_rgba(o, image.premultiplied, rgba);
+    convert_rgba(o, image.premultiplied, rgba, !image.plainPmaMenu);
     image.pixels = std::move(rgba);
   }
 
@@ -240,7 +253,8 @@ std::shared_ptr<COverlay> COverlay::Create(const CDVDOverlayImage& o, CRect& rSo
     return nullptr;
   const auto target = renderSystem->CaptureRenderTarget();
   auto image = COverlayTextureGLES::PrepareImage(
-      o, o.m_isPqMenuGraphics && CServiceBroker::GetWinSystem()->IsMenuCompositeActive(), target);
+      o, o.m_isPqMenuGraphics && CServiceBroker::GetWinSystem()->IsMenuCompositeActive(), target,
+      PlainPremultiplyDiscMenu(o));
   auto overlay = std::make_shared<COverlayTextureGLES>(o, rSource, std::move(image));
   return overlay->IsValid() ? overlay : nullptr;
 }
@@ -254,6 +268,7 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o,
     return;
   m_textureResources = renderSystem->GetTextureResources();
   m_rawPqMenu = image.rawPqMenu;
+  m_plainPmaMenu = image.plainPmaMenu;
   m_pma = image.premultiplied;
   glGenTextures(1, &m_texture);
   if (!m_texture)
@@ -589,7 +604,9 @@ void COverlayTextureGLES::Render(SRenderState& state)
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   GLenum filter = GL_LINEAR;
-  if (m_isBitmapOverlay)
+  // Disc menus aren't zoomed and are scaled with the video, so they keep
+  // bilinear filtering.
+  if (m_isBitmapOverlay && !m_discMenuOverlay)
   {
     int zoom = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
         CSettings::SETTING_SUBTITLES_BITMAPZOOM);

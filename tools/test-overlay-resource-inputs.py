@@ -111,12 +111,12 @@ bool convert_quads(ASS_Image*,std::vector<SQuads>& pages,int){
 struct COverlay {
  enum{POSITION_RELATIVE,POSITION_ABSOLUTE,ALIGN_VIDEO,ALIGN_SCREEN_AR,ALIGN_SCREEN};
  int m_pos=0,m_align=0;float m_x=0,m_y=0,m_width=0,m_height=0,m_source_width=0,m_source_height=0;
- bool m_rawPqMenu=false,m_isBitmapOverlay=false;
+ bool m_rawPqMenu=false,m_plainPmaMenu=false,m_isBitmapOverlay=false;
  bool IsSquareResolution(float r){return r>1.22f&&r<1.34f;}
 };
 struct COverlayTextureGLES:COverlay {
  @PREPARED@
- static PreparedImage PrepareImage(const CDVDOverlayImage&,bool,RenderTargetToken);
+ static PreparedImage PrepareImage(const CDVDOverlayImage&,bool,RenderTargetToken,bool=false);
  COverlayTextureGLES(const CDVDOverlayImage&,CRect&,PreparedImage);
  ~COverlayTextureGLES();bool IsValid()const;
  std::shared_ptr<CGLESTextureResources> m_textureResources;
@@ -144,6 +144,15 @@ int main(){
  assert(generated==0&&uploads==0&&raw.rawPqMenu&&raw.premultiplied&&regular.premultiplied);
  assert(raw.pixels==std::vector<uint32_t>({0x80808080,0xff123456}));
  assert(regular.pixels==std::vector<uint32_t>({0x80bababa,0xff123456}));
+ // Disc menu graphics on SDR output: plain premultiply, and the texture records it.
+ auto plain=COverlayTextureGLES::PrepareImage(o,false,target,true);
+ assert(plain.plainPmaMenu&&plain.premultiplied&&plain.pixels==std::vector<uint32_t>({0x80808080,0xff123456}));
+ // Padded ARGB rows: the plain path honours linesize.
+ {CDVDOverlayImage padded;padded.width=1;padded.height=2;padded.linesize=8;
+  const uint32_t rows[]={0x80ffffff,0xdeadbeef,0xff123456,0xdeadbeef};
+  padded.pixels.resize(sizeof(rows));std::memcpy(padded.pixels.data(),rows,sizeof(rows));
+  auto p=COverlayTextureGLES::PrepareImage(padded,false,target,true);
+  assert(p.stride==4&&p.pixels==std::vector<uint32_t>({0x80808080,0xff123456}));}
  // Prepared bytes are owned; later producer edits cannot affect upload.
  o.pixels.assign(o.pixels.size(),0);
  {COverlayTextureGLES texture(o,source,raw);assert(texture.IsValid()&&uploads==1);
@@ -198,8 +207,13 @@ int main(){
  regular=COverlayTextureGLES::PrepareImage(o,false,renderSystem.CaptureRenderTarget());
  assert(raw.pixels==std::vector<uint32_t>({0xff654321,0x80000080}));
  assert(regular.pixels==std::vector<uint32_t>({0xff123456,0x80bababa}));
+ assert(COverlayTextureGLES::PrepareImage(o,false,renderSystem.CaptureRenderTarget(),true).pixels==
+        std::vector<uint32_t>({0xff123456,0x80808080}));
  o.pqMenuPalette.clear();raw=COverlayTextureGLES::PrepareImage(o,true,renderSystem.CaptureRenderTarget());
  assert(raw.pixels==std::vector<uint32_t>({0xff123456,0x80808080}));
+ {auto plainTex=COverlayTextureGLES::PrepareImage(o,false,renderSystem.CaptureRenderTarget(),true);
+  COverlayTextureGLES texture(o,source,plainTex);assert(texture.IsValid()&&texture.m_plainPmaMenu&&uploaded==plainTex.pixels);}
+ renderSystem.resources->TakeRetired();
  // The setters copy exactly at their late evaluation points, including capture transforms.
  float projection[16],model[16];for(int i=0;i<16;++i){projection[i]=i+1;model[i]=100+i;}
  Yuv yuv;Filter filter;Composite composite;

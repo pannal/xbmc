@@ -46,7 +46,8 @@ def main():
                       'void CRenderer::SetActiveAreaOffsets(', 'void CRenderer::SetStereoMode(',
                       'void CRenderer::Notify(', 'void CRenderer::ReleaseUnused(',
                       'std::shared_ptr<COverlay> CRenderer::ConvertLibass(',
-                      'std::shared_ptr<COverlay> CRenderer::Convert(']:
+                      'std::shared_ptr<COverlay> CRenderer::Convert(',
+                      'bool COverlay::PlainPremultiplyDiscMenu(']:
         code += '\n' + function(renderer, signature)
     for name in ['CreateSubtitlesStyle(', 'ResetSubtitlePosition(', 'Render(']:
         code += '\n' + function(debug, 'void CDebugRenderer::CRenderer::' + name)
@@ -99,7 +100,7 @@ struct Gfx {RESOLUTION_INFO info;int reads=0,writes=0;std::function<void()> onRe
   RESOLUTION_INFO GetResInfo(){++reads;if(onRead)onRead();return info;}
   int GetVideoResolution(){return 3;}
   void SetResInfo(int resolution,const RESOLUTION_INFO& r){assert(resolution==3);++writes;info=r;}};
-struct Window{bool active=false;bool IsMenuCompositeActive(){return active;}Gfx gfx;Gfx& GetGfxContext(){return gfx;}};
+struct Window{bool active=false;bool IsMenuCompositeActive(){return active;}bool IsGuiOutputHdr(){return false;}Gfx gfx;Gfx& GetGfxContext(){return gfx;}};
 struct CApplicationPlayer {int calls=0;std::function<void(int)> callback;
   void SetSubtitleVerticalPosition(int pos,bool save){assert(!save);++calls;if(callback)callback(pos);}};
 struct Components {CApplicationPlayer player;template<class T>T* GetComponent(){return &player;}};

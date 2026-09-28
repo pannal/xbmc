@@ -43,7 +43,12 @@ struct SQuads
 float SrgbToLinear(int v);
 int LinearToSrgb8(float v);
 
-void convert_rgba(const CDVDOverlayImage& o, bool mergealpha, std::vector<uint32_t>& rgba);
+// linearLight false: plain premultiply, for an overlay blended as drawn (see
+// COverlayTextureGLES).
+void convert_rgba(const CDVDOverlayImage& o,
+                  bool mergealpha,
+                  std::vector<uint32_t>& rgba,
+                  bool linearLight = true);
 void convert_rgba(const CDVDOverlaySpu& o,
                   bool mergealpha,
                   int& min_x,

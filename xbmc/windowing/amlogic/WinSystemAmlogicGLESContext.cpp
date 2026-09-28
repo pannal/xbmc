@@ -486,6 +486,15 @@ void CWinSystemAmlogicGLESContext::RequestMenuComposite(bool menuShown)
   }
 }
 
+// The GUI plane reaches the sink converted when the last decoder open set the
+// PQ GUI transfer or engaged the DV core (whose graphics path converts it too),
+// or when DV mode On keeps the GUI in DV before any decoder opens. None of
+// these is a sysfs read.
+bool CWinSystemAmlogicGLESContext::IsGuiOutputHdr()
+{
+  return aml_transfer_pq_at_open() || aml_dv_core_at_open() || aml_dv_mode() == DV_MODE_ON;
+}
+
 // The one place that decides when disc menu graphics take the raw PQ route.
 // Today: only while PQ-authored menu graphics are on screen, and only when the
 // output path already carries HDR (the per-primitive GUI scale is active) or

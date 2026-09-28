@@ -45,8 +45,13 @@ int LinearToSrgb8(float v)
 // Premultiply alpha in linear light so semi-transparent edges don't appear dark
 // on HDR displays (where gamma-space PMA gets mapped to very low PQ luminance).
 // Also improves SDR correctness for anti-aliased overlay edges.
-static uint32_t build_rgba(int a, int r, int g, int b, bool mergealpha)
+static uint32_t build_rgba(int a, int r, int g, int b, bool mergealpha, bool linearLight = true)
 {
+  if (mergealpha && !linearLight)
+  {
+    return a << PIXEL_ASHIFT | ((r * a + 127) / 255) << PIXEL_RSHIFT |
+           ((g * a + 127) / 255) << PIXEL_GSHIFT | ((b * a + 127) / 255) << PIXEL_BSHIFT;
+  }
   if (mergealpha)
   {
     const float af = a / 255.0f;
@@ -73,13 +78,17 @@ static uint32_t build_rgba(const int yuv[3], int alpha, bool mergealpha)
 }
 #undef clamp
 
-void convert_rgba(const CDVDOverlayImage& o, bool mergealpha, std::vector<uint32_t>& rgba)
+void convert_rgba(const CDVDOverlayImage& o,
+                  bool mergealpha,
+                  std::vector<uint32_t>& rgba,
+                  bool linearLight)
 {
   uint32_t palette[256] = {};
   for (size_t i = 0; i < o.palette.size(); i++)
     palette[i] = build_rgba(
         (o.palette[i] >> PIXEL_ASHIFT) & 0xff, (o.palette[i] >> PIXEL_RSHIFT) & 0xff,
-        (o.palette[i] >> PIXEL_GSHIFT) & 0xff, (o.palette[i] >> PIXEL_BSHIFT) & 0xff, mergealpha);
+        (o.palette[i] >> PIXEL_GSHIFT) & 0xff, (o.palette[i] >> PIXEL_BSHIFT) & 0xff, mergealpha,
+        linearLight);
 
   for (int row = 0; row < o.height; row++)
     for (int col = 0; col < o.width; col++)

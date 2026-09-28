@@ -297,6 +297,11 @@ std::shared_ptr<CDPMSSupport> CWinSystemBase::GetDPMSManager()
   return m_dpms;
 }
 
+bool CWinSystemBase::IsGuiOutputHdr()
+{
+  return GetGfxContext().IsTransferPQ();
+}
+
 bool CWinSystemBase::IsHDRDisplaySettingEnabled()
 {
   if (!IsHDRDisplay())
