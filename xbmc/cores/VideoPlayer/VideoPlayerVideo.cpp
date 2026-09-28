@@ -1088,6 +1088,9 @@ OVERLAY::CRenderer::OverlayBatch CVideoPlayerVideo::ProcessOverlays(const VideoP
   {
     std::unique_lock<CCriticalSection> lock(*m_pOverlayContainer);
 
+    // A timed menu composition waits for its picture.
+    const std::shared_ptr<CDVDOverlay> discMenu = m_pOverlayContainer->GetDueDiscMenu(pts);
+
     VecOverlays* pVecOverlays = m_pOverlayContainer->GetOverlays();
     auto it = pVecOverlays->begin();
 
@@ -1096,6 +1099,8 @@ OVERLAY::CRenderer::OverlayBatch CVideoPlayerVideo::ProcessOverlays(const VideoP
     while (it != pVecOverlays->end())
     {
       std::shared_ptr<CDVDOverlay>& pOverlay = *it++;
+      if (pOverlay->IsDiscMenuOverlay() && pOverlay != discMenu)
+        continue;
       if (!pOverlay->IsDiscMenuOverlay() && !pOverlay->bForced && !m_bRenderSubs)
         continue;
 

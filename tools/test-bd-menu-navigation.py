@@ -62,9 +62,10 @@ preamble=r'''
 #include <libbluray/bluray.h>
 #include <libbluray/overlay.h>
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "utils/Geometry.h"
 #define HAVE_LIBBLURAY_BDJ 1
-constexpr int LOGDEBUG=0, LOGWARNING=1, BD_EVENT_MENU_OVERLAY=1000;
+constexpr int LOGDEBUG=0, LOGWARNING=1, BD_EVENT_MENU_OVERLAY=1000, BD_EVENT_MENU_OVERLAY_REPOST=1001;
 struct CLog {template<class...T>static void Log(T&&...) {}};
 constexpr int64_t END_OF_TITLE_SPIN_TIMEOUT_MS=5000;
 constexpr uint32_t MAX_PLAYLIST_ID=99999;
@@ -89,7 +90,8 @@ namespace real {
 }
 struct Player {
  std::shared_ptr<CDVDOverlay> last;
- void OnDiscNavResult(void* p,int) { last=*static_cast<std::shared_ptr<CDVDOverlay>*>(p); }
+ int lastEvent=0;
+ void OnDiscNavResult(void* p,int e) { last=*static_cast<std::shared_ptr<CDVDOverlay>*>(p);lastEvent=e; }
 };
 struct FakeStream {
  std::vector<int> reads;size_t pos=0;bool clamp=false;
@@ -110,7 +112,7 @@ public:
  int DiscMenuHdrMode() const;
  int m_discMenuHdrMode=0;
  void UpdateGraphicsRegime();
- std::shared_ptr<CDVDOverlay> m_pendingOverlayGroup;
+ std::shared_ptr<CDVDOverlay> m_pendingOverlayGroup;int64_t m_pendingOverlayPts=-1;static constexpr int64_t REPOST_PTS=-2;
  std::atomic<std::thread::id> m_readingThread{};
  int m_lastReadEvent=BD_EVENT_NONE;
  enum EHold {HOLD_NONE,HOLD_HELD,HOLD_DATA,HOLD_STILL,HOLD_ERROR,HOLD_EXIT};int m_hold=HOLD_NONE;
@@ -146,6 +148,7 @@ public:
  static void OverlayClear(SPlane&,int,int,int,int);
  void OverlayFlush(int64_t);
  void DeliverParkedOverlayIfDue();
+ void DeliverMenuComposition(std::shared_ptr<CDVDOverlay>,int64_t);
  void OverlayCallback(const BD_OVERLAY*);
  void OverlayCallbackARGB(const BD_ARGB_OVERLAY*);
  std::mutex m_seamOffsetMutex;int m_seamGeneration=0;double m_seamTimeOffset=0,m_seamTimeOffsetPrev=0;bool m_seamlessPlayItem=false;
@@ -166,7 +169,15 @@ menuMode=get(s,'CDVDInputStreamBluray::DiscMenuHdrMode')
 menuMode=re.sub(r'CServiceBroker::GetSettingsComponent\(\)->GetSettings\(\)->GetInt\(\s*CSettings::SETTING_SUBTITLES_DISCMENUHDR\)','g_discMenuHdr',menuMode)
 assert 'g_discMenuHdr' in menuMode
 tag+='\n'+menuMode
-functions=[tag,get(s,'EndOfTitleReadStalled')]+[get(s,'CDVDInputStreamBluray::'+name) for name in ['OverlayClose','OverlayInit','OverlayClear','OverlayFlush','DeliverParkedOverlayIfDue','OverlayCallback','OverlayCallbackARGB','ReadBlocks','UpdateSeamTimeOffset','ResetSeamTimeOffset','AreClipVideoStreamsCompatible','AreClipPgStreamsEqual','IsClipCodecCompatible']]
+# Kodi-side BD event IDs share OnDiscNavResult's switch: they must be distinct.
+import re as _re
+header=(root/'xbmc/cores/VideoPlayer/DVDInputStreams/DVDInputStreamBluray.h').read_text()
+ids=_re.findall(r'#define (BD_EVENT_\w+)\s+(-?\d+)',header)
+assert ids and len({v for _,v in ids})==len(ids),f'duplicate BD event ids: {ids}'
+read=get(s,'CDVDInputStreamBluray::Read')
+repost=read[read.index('reposting retained menu overlay'):]
+assert repost.index('OverlayFlush(REPOST_PTS);')<repost.index('}'),'the repost must keep the queued composition time'
+functions=[tag,get(s,'EndOfTitleReadStalled')]+[get(s,'CDVDInputStreamBluray::'+name) for name in ['OverlayClose','OverlayInit','OverlayClear','OverlayFlush','DeliverParkedOverlayIfDue','DeliverMenuComposition','OverlayCallback','OverlayCallbackARGB','ReadBlocks','UpdateSeamTimeOffset','ResetSeamTimeOffset','AreClipVideoStreamsCompatible','AreClipPgStreamsEqual','IsClipCodecCompatible']]
 a=s.index('if (m_atTitleEnd.exchange(false))');b=balance(s,s.index('{',a))
 functions.append('void CDVDInputStreamBluray::Reenter(uint64_t previousOut,uint64_t nextIn) {'+s[a:b]+'}')
 functions+=[get(s,'CDVDInputStreamBluray::'+name) for name in ['ReplaceTitleInfo','UpdateGraphicsRegime','FreePrevTitleInfo','StashBoundaryClip','RestoreTitleOnlyStash','RestoreTitleOnlyStashForEvent','NextStream']]
@@ -313,6 +324,46 @@ int main(){
  b.m_atTitleEnd=true;b.DeliverParkedOverlayIfDue();assert(b.m_pendingOverlayGroup);
  b.m_atTitleEnd=false;b.DeliverParkedOverlayIfDue();assert(!b.m_pendingOverlayGroup);
  b.m_readingThread=std::thread::id{};b.OverlayClose();assert(!b.m_hasOverlay&&!b.m_hasMenuOverlay);
+ assert(b.m_player->last->iPTSStartTime==DVD_NOPTS_VALUE); // a player-side close replaces every page at once
+ // A timed page is converted to player time with the seam offset current at
+ // delivery: the next playlist's offset when a preloaded menu is flushed as it starts.
+ {Player delivered;CDVDInputStreamBluray m;m.m_player=&delivered;
+  m.ReplaceTitleInfo(NewTitle(7,2));m.m_clip=&m.m_titleInfo->clips[0];
+  m.m_clip->in_time=90000ull*600;m.m_clip->out_time=90000ull*620;
+  m.m_readingThread=std::this_thread::get_id();m.m_seamTimeOffset=4.0;
+  m.OverlayFlush(90000*600);assert(m.m_pendingOverlayGroup&&!delivered.last);
+  m.m_seamTimeOffset=0.0;m.DeliverParkedOverlayIfDue();
+  assert(delivered.last&&delivered.last->iPTSStartTime==DVD_SEC_TO_TIME(600.0)&&delivered.last->IsDiscMenuOverlay());
+  m.m_seamTimeOffset=1.5;m.OverlayFlush(90000*601);m.DeliverParkedOverlayIfDue();
+  assert(delivered.last->iPTSStartTime==DVD_SEC_TO_TIME(602.5));
+  m.OverlayFlush(-1);m.DeliverParkedOverlayIfDue();assert(delivered.last->iPTSStartTime==DVD_NOPTS_VALUE);
+  // Playlist playback has no seams.
+  m.m_navmode=false;m.OverlayFlush(90000*601);m.DeliverParkedOverlayIfDue();
+  assert(delivered.last->iPTSStartTime==DVD_SEC_TO_TIME(601.0));
+  // Outside the reading thread it is delivered at once.
+  m.m_navmode=true;m.m_readingThread=std::thread::id{};m.OverlayFlush(90000*610);
+  assert(delivered.last->iPTSStartTime==DVD_SEC_TO_TIME(611.5)&&!m.m_pendingOverlayGroup);
+  // The repost after a stream reopen goes to the player as a repost, parked like any flush
+  // (Read() is checked in source).
+  m.m_readingThread=std::this_thread::get_id();m.OverlayFlush(m.REPOST_PTS);assert(m.m_pendingOverlayGroup);
+  m.DeliverParkedOverlayIfDue();assert(delivered.lastEvent==BD_EVENT_MENU_OVERLAY_REPOST);
+  m.OverlayFlush(90000ll*612);m.DeliverParkedOverlayIfDue();assert(delivered.lastEvent==BD_EVENT_MENU_OVERLAY);
+  // A repost while a timed page is still parked keeps that page's time.
+  m.m_atTitleEnd=true;m.OverlayFlush(90000ll*605);m.OverlayFlush(m.REPOST_PTS);
+  assert(m.m_pendingOverlayPts==90000ll*605);m.m_atTitleEnd=false;m.DeliverParkedOverlayIfDue();
+  assert(delivered.lastEvent==BD_EVENT_MENU_OVERLAY&&delivered.last->iPTSStartTime==DVD_SEC_TO_TIME(606.5));
+  m.m_readingThread=std::thread::id{};
+  // Only a pts on the clip being read is timed: another clock, or a page from a clip already left, shows at once.
+  for(int64_t outside:{int64_t(90000)*599,int64_t(90000)*620,int64_t(90000)*5}){
+   m.OverlayFlush(outside);assert(delivered.last->iPTSStartTime==DVD_NOPTS_VALUE);}
+  m.OverlayFlush(90000ll*619);assert(delivered.last->iPTSStartTime==DVD_SEC_TO_TIME(620.5));
+  // MVC (SSIF) packets do not get the seam offset, so neither do menu pages.
+  m.m_bMVCPlayback=true;m.OverlayFlush(90000ll*619);assert(delivered.last->iPTSStartTime==DVD_SEC_TO_TIME(619.0));
+  m.m_bMVCPlayback=false;
+  // HIDE carries no time.
+  BD_OVERLAY ig{};ig.plane=BD_OVERLAY_IG;ig.w=4;ig.h=4;ig.cmd=BD_OVERLAY_INIT;m.OverlayCallback(&ig);
+  ig.cmd=BD_OVERLAY_HIDE;ig.pts=0;m.OverlayCallback(&ig);assert(delivered.last->iPTSStartTime==DVD_NOPTS_VALUE);
+  m.ReplaceTitleInfo(nullptr);}
  // HDMV CLEAR waits for FLUSH; HIDE publishes an empty composition immediately.
  {Player delivered;CDVDInputStreamBluray m;m.m_player=&delivered;
   BD_OVERLAY ig{};ig.plane=BD_OVERLAY_IG;ig.w=1;ig.h=1;ig.cmd=BD_OVERLAY_INIT;m.OverlayCallback(&ig);

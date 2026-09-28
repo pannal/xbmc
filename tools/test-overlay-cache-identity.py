@@ -78,6 +78,7 @@ PRELUDE = r'''
 #include <type_traits>
 #include <vector>
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlaySpu.h"
 #include "cores/VideoPlayer/DVDSubtitles/SubtitlesStyle.h"
 using CCriticalSection=std::recursive_mutex;
@@ -185,8 +186,9 @@ int main(){
   // membership. Persistent plane children reuse the same owned allocation.
   for(bool bdj:{false,true}){
     CDVDOverlayContainer container;auto p=image(bdj,0xff112233);p->x=9;p->source_width=1920;
+    // Untimed menu compositions, as OverlayFlush(-1) and OverlayClose deliver them.
     auto group=std::make_shared<CDVDOverlayGroup>();group->SetDiscMenuOverlay(true);group->SetOverlayContainerFlushable(false);
-    group->m_overlays={p};container.ProcessAndAddOverlayIfValid(group);
+    group->iPTSStartTime=DVD_NOPTS_VALUE;group->m_overlays={p};container.ProcessAndAddOverlayIfValid(group);
     auto old=std::static_pointer_cast<const CDVDOverlayGroup>(group->GetPublishedRenderContent());
     auto held=std::static_pointer_cast<const CDVDOverlayImage>(old->m_overlays[0]);
     auto savedPixels=held->pixels;auto savedPalette=held->palette;auto savedPq=held->pqMenuPalette;
@@ -197,14 +199,14 @@ int main(){
     assert(held->x==9&&held->source_width==1920&&held->m_isHdrPq&&held->m_isPqMenuGraphics&&held->m_menuVisible&&held->IsDiscMenuOverlay());
     assert(old->m_overlays.size()==1&&group->GetPublishedRenderContent()==old);
     auto redraw=std::make_shared<CDVDOverlayGroup>();redraw->SetDiscMenuOverlay(true);redraw->SetOverlayContainerFlushable(false);
-    redraw->m_overlays={p};container.ProcessAndAddOverlayIfValid(redraw);
+    redraw->iPTSStartTime=DVD_NOPTS_VALUE;redraw->m_overlays={p};container.ProcessAndAddOverlayIfValid(redraw);
     auto persisted=std::static_pointer_cast<const CDVDOverlayGroup>(redraw->GetPublishedRenderContent());
     assert(persisted!=old&&persisted->m_overlays[0]==held); // edits need explicit publication
     p->PublishRenderContent();redraw->PublishRenderContent();
     auto replacement=std::static_pointer_cast<const CDVDOverlayGroup>(redraw->GetPublishedRenderContent());
     assert(replacement->m_overlays[0]!=held&&old->m_overlays[0]==held);
     container.Flush();assert(container.m_overlays.size()==1); // disc persistence policy unchanged
-    auto hide=std::make_shared<CDVDOverlayGroup>();hide->SetDiscMenuOverlay(true);
+    auto hide=std::make_shared<CDVDOverlayGroup>();hide->SetDiscMenuOverlay(true);hide->iPTSStartTime=DVD_NOPTS_VALUE;
     container.ProcessAndAddOverlayIfValid(hide);assert(container.m_overlays.size()==1);
     assert(std::static_pointer_cast<const CDVDOverlayGroup>(hide->GetPublishedRenderContent())->m_overlays.empty());
     container.Clear();assert(container.m_overlays.empty()&&held->pixels==savedPixels);

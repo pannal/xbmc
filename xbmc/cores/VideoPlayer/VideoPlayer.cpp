@@ -5650,9 +5650,23 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
     switch (iMessage)
     {
     case BD_EVENT_MENU_OVERLAY:
-      m_overlayContainer.ProcessAndAddOverlayIfValid(
-          *static_cast<std::shared_ptr<CDVDOverlay>*>(pData));
+    {
+      const auto& composition = *static_cast<std::shared_ptr<CDVDOverlay>*>(pData);
+      // A timed menu page gets the continuity correction demux packets get
+      // (UpdateCorrection subtracts it).
+      if (composition && composition->iPTSStartTime != DVD_NOPTS_VALUE)
+        composition->iPTSStartTime -= m_offset_pts;
+      m_overlayContainer.ProcessAndAddOverlayIfValid(composition);
       break;
+    }
+    case BD_EVENT_MENU_OVERLAY_REPOST:
+    {
+      const auto& composition = *static_cast<std::shared_ptr<CDVDOverlay>*>(pData);
+      if (composition)
+        composition->iPTSStartTime = m_overlayContainer.GetNewestDiscMenuStart();
+      m_overlayContainer.ProcessAndAddOverlayIfValid(composition);
+      break;
+    }
     case BD_EVENT_MENU:
       // Interactive menu visible?
       if (*static_cast<uint32_t*>(pData) == false)

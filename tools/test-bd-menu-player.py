@@ -44,6 +44,17 @@ def main():
     still = still[:still.index('    case BD_EVENT_MENU_ERROR:')]
     methods += '\nvoid CVideoPlayer::HandleStill(int iMessage, int* pData) { switch(iMessage) {\n' + still + '\n} }\n'
     methods += function(video, 'OVERLAY::CRenderer::OverlayBatch CVideoPlayerVideo::ProcessOverlays(')
+    overlay = player[player.index('    case BD_EVENT_MENU_OVERLAY:', player.index('int CVideoPlayer::OnDiscNavResult')):]
+    overlay = overlay[:overlay.index('    case BD_EVENT_MENU:')]
+    methods += ('\nstruct MenuDelivery {\n  double m_offset_pts=0; OverlayContainer m_overlayContainer;\n'
+                '  void OnDiscNavResult(void* pData, int iMessage) { switch (iMessage) {\n' + overlay + '\n  default: break; } }\n};\n')
+    container = (ROOT / 'xbmc/cores/VideoPlayer/DVDOverlayContainer.cpp').read_text()
+    for name in ('bool CDVDOverlayContainer::IsDiscMenuDue(',
+                 'std::shared_ptr<CDVDOverlay> CDVDOverlayContainer::GetDueDiscMenu(',
+                 'void CDVDOverlayContainer::ProcessAndAddOverlayIfValid(',
+                 'size_t CDVDOverlayContainer::GetSize(',
+                 'double CDVDOverlayContainer::GetNewestDiscMenuStart('):
+        methods += '\n' + function(container, name).replace('CDVDOverlayContainer::', 'OverlayContainer::')
     methods = methods.replace('std::chrono::steady_clock', 'TestClock')
     methods += ('\nstruct QueueFullness {\n  int dataLevel=0, timeLevel=0; bool m_timeBound=false;\n'
                 '  int GetLevel(bool data_level) const {return data_level ? dataLevel : timeLevel;}\n  '
@@ -213,10 +224,16 @@ struct CDVDOverlayLibass : CDVDOverlay {
   bool EventActive(double) const {return active;}
 };
 struct OverlayContainer : CCriticalSection {
-  VecOverlays items;
+  VecOverlays items; VecOverlays& m_overlays=items;
   void CleanUp(double) {}
   VecOverlays* GetOverlays() {return &items;}
+  void ProcessAndAddOverlayIfValid(const std::shared_ptr<CDVDOverlay>& pOverlay);
+  std::shared_ptr<CDVDOverlay> GetDueDiscMenu(double pts);
+  static bool IsDiscMenuDue(const CDVDOverlay& overlay, double pts);
+  size_t GetSize();
+  double GetNewestDiscMenuStart();
 };
+constexpr int BD_EVENT_MENU_OVERLAY=-1, BD_EVENT_MENU_OVERLAY_REPOST=-2;
 struct VideoPicture {int m_3dSubtitleDepth=7;};
 namespace OVERLAY {
 struct CRenderer {
@@ -484,7 +501,7 @@ int main() {
   // Menu compositions remain visible with subtitles disabled and negative clip timestamps.
   { CVideoPlayerVideo v;v.m_bRenderSubs=false;VideoPicture picture;
     auto group=std::make_shared<CDVDOverlayGroup>();group->SetDiscMenuOverlay(true);
-    group->iPTSStartTime=-1;auto image=std::make_shared<CDVDOverlay>(DVDOVERLAY_TYPE_IMAGE);image->SetDiscMenuOverlay(true);
+    group->iPTSStartTime=DVD_NOPTS_VALUE;auto image=std::make_shared<CDVDOverlay>(DVDOVERLAY_TYPE_IMAGE);image->SetDiscMenuOverlay(true);
     group->m_overlays={image};v.container.items={group};auto batch=v.ProcessOverlays(&picture,-500000);
     assert(batch.size()==1 && batch[0].overlay_dvd==image->GetPublishedRenderContent() && batch[0].subtitleDepth==0);
   }
@@ -496,6 +513,96 @@ int main() {
     assert(v.ProcessOverlays(&picture,200).empty());
     v.m_bRenderSubs=false;assert(v.ProcessOverlays(&picture,150).empty());
     sub->bForced=true;assert(v.ProcessOverlays(&picture,150).size()==1);
+  }
+  // HDMV pages flushed at the display set's pts wait for their picture; the
+  // composition on screen stays until then.
+  { CVideoPlayerVideo v;VideoPicture picture;
+    auto page=[](double start){auto g=std::make_shared<CDVDOverlayGroup>();g->bForced=true;g->SetDiscMenuOverlay(true);
+      g->iPTSStartTime=start;auto i=std::make_shared<CDVDOverlay>(DVDOVERLAY_TYPE_IMAGE);i->SetDiscMenuOverlay(true);
+      g->m_overlays={i};return std::make_pair(std::shared_ptr<CDVDOverlay>(g),i);};
+    auto shown=[&](double pts){auto b=v.ProcessOverlays(&picture,pts);assert(b.size()<=1);
+      return b.empty()?std::shared_ptr<const CDVDOverlay>():b[0].overlay_dvd;};
+    auto [first,firstImage]=page(DVD_SEC_TO_TIME(600.0));
+    v.container.ProcessAndAddOverlayIfValid(first);
+    assert(!shown(DVD_SEC_TO_TIME(598.0)));                               // read ahead: nothing yet
+    assert(!shown(DVD_SEC_TO_TIME(600.0)-1));
+    assert(shown(DVD_SEC_TO_TIME(600.0))==firstImage->GetPublishedRenderContent());
+    // Animation frames follow on the same timeline; the earlier frame stays until each is due.
+    auto [second,secondImage]=page(DVD_SEC_TO_TIME(600.5));
+    auto [third,thirdImage]=page(DVD_SEC_TO_TIME(601.0));
+    v.container.ProcessAndAddOverlayIfValid(second);v.container.ProcessAndAddOverlayIfValid(third);
+    assert(shown(DVD_SEC_TO_TIME(600.2))==firstImage->GetPublishedRenderContent());
+    assert(shown(DVD_SEC_TO_TIME(600.7))==secondImage->GetPublishedRenderContent());
+    assert(v.container.items.size()==2);                                   // the first is superseded
+    assert(shown(DVD_SEC_TO_TIME(601.0))==thirdImage->GetPublishedRenderContent());
+    assert(v.container.items.size()==1);
+    // A re-anchored display set due earlier supersedes pending pages once it is due.
+    auto [late,lateImage]=page(DVD_SEC_TO_TIME(605.0));
+    auto [early,earlyImage]=page(DVD_SEC_TO_TIME(603.0));
+    v.container.ProcessAndAddOverlayIfValid(late);v.container.ProcessAndAddOverlayIfValid(early);
+    assert(shown(DVD_SEC_TO_TIME(602.0))==thirdImage->GetPublishedRenderContent());
+    assert(shown(DVD_SEC_TO_TIME(603.0))==earlyImage->GetPublishedRenderContent());
+    assert(v.container.items.size()==1);
+    assert(shown(DVD_SEC_TO_TIME(606.0))==earlyImage->GetPublishedRenderContent());
+    // User input is untimed and replaces pending pages at once.
+    auto [pending,pendingImage]=page(DVD_SEC_TO_TIME(609.0));
+    auto [key,keyImage]=page(DVD_NOPTS_VALUE);
+    v.container.ProcessAndAddOverlayIfValid(pending);v.container.ProcessAndAddOverlayIfValid(key);
+    assert(v.container.items.size()==1);
+    assert(shown(DVD_SEC_TO_TIME(607.0))==keyImage->GetPublishedRenderContent());
+    // A timed page after an untimed one waits; the untimed one stays until then.
+    auto [next,nextImage]=page(DVD_SEC_TO_TIME(608.0));
+    v.container.ProcessAndAddOverlayIfValid(next);
+    assert(shown(DVD_SEC_TO_TIME(607.5))==keyImage->GetPublishedRenderContent());
+    assert(shown(DVD_SEC_TO_TIME(608.0))==nextImage->GetPublishedRenderContent());
+    // A start further ahead than read-ahead is not on this clock: shown at once.
+    auto [far,farImage]=page(DVD_SEC_TO_TIME(608.0+30.5));
+    v.container.ProcessAndAddOverlayIfValid(far);
+    assert(shown(DVD_SEC_TO_TIME(608.1))==farImage->GetPublishedRenderContent());
+    // A later page cannot remove the one on screen before it is due itself.
+    auto [near,nearImage]=page(DVD_SEC_TO_TIME(608.0+30.5));
+    v.container.ProcessAndAddOverlayIfValid(near);
+    assert(shown(DVD_SEC_TO_TIME(609.0))==farImage->GetPublishedRenderContent());
+    // A picture without a timestamp cannot hold a page.
+    assert(shown(DVD_NOPTS_VALUE)==nearImage->GetPublishedRenderContent());
+    // 16 s of read-ahead still holds.
+    auto [ahead,aheadImage]=page(DVD_SEC_TO_TIME(609.0+16.5));
+    v.container.ProcessAndAddOverlayIfValid(ahead);
+    assert(shown(DVD_SEC_TO_TIME(609.0))==nearImage->GetPublishedRenderContent());
+    assert(shown(DVD_SEC_TO_TIME(609.0+16.5))==aheadImage->GetPublishedRenderContent());
+    // Pending pages count once toward the subtitle reader's limit.
+    auto [p1,p1Image]=page(DVD_SEC_TO_TIME(630.0));auto [p2,p2Image]=page(DVD_SEC_TO_TIME(631.0));
+    v.container.ProcessAndAddOverlayIfValid(p1);v.container.ProcessAndAddOverlayIfValid(p2);
+    assert(v.container.items.size()==3&&v.container.GetSize()==1);
+    assert(shown(DVD_SEC_TO_TIME(631.0))==p2Image->GetPublishedRenderContent());
+    // Player delivery: a timed page gets the continuity correction demux packets get
+    // (UpdateCorrection subtracts it); a repost takes the start of the newest queued page.
+    { MenuDelivery d;d.m_offset_pts=DVD_SEC_TO_TIME(2.0);
+      auto [t,tImage]=page(DVD_SEC_TO_TIME(650.0));d.OnDiscNavResult(&t,BD_EVENT_MENU_OVERLAY);
+      assert(t->iPTSStartTime==DVD_SEC_TO_TIME(648.0));
+      auto [u,uImage]=page(DVD_NOPTS_VALUE);auto [pend,pendImage]=page(DVD_SEC_TO_TIME(660.0));
+      d.OnDiscNavResult(&u,BD_EVENT_MENU_OVERLAY);assert(u->iPTSStartTime==DVD_NOPTS_VALUE);
+      d.OnDiscNavResult(&pend,BD_EVENT_MENU_OVERLAY);
+      auto [rp,rpImage]=page(DVD_NOPTS_VALUE);d.OnDiscNavResult(&rp,BD_EVENT_MENU_OVERLAY_REPOST);
+      assert(rp->iPTSStartTime==DVD_SEC_TO_TIME(658.0));                 // pending: keeps its time
+      assert(d.m_overlayContainer.GetDueDiscMenu(DVD_SEC_TO_TIME(650.0))==u); // the page on screen stays
+      assert(d.m_overlayContainer.GetDueDiscMenu(DVD_SEC_TO_TIME(658.0))==rp);
+      auto [rp2,rp2Image]=page(DVD_SEC_TO_TIME(1.0));d.OnDiscNavResult(&rp2,BD_EVENT_MENU_OVERLAY_REPOST);
+      assert(rp2->iPTSStartTime==DVD_NOPTS_VALUE);                         // shown: stays shown
+      MenuDelivery empty;auto [rp3,rp3Image]=page(DVD_SEC_TO_TIME(1.0));
+      empty.OnDiscNavResult(&rp3,BD_EVENT_MENU_OVERLAY_REPOST);assert(rp3->iPTSStartTime==DVD_NOPTS_VALUE);
+    }
+    // Subtitles keep their own timing next to a held page.
+    auto sub=std::make_shared<CDVDOverlay>(DVDOVERLAY_TYPE_IMAGE);sub->bForced=true;
+    sub->iPTSStartTime=DVD_SEC_TO_TIME(620.0);sub->iPTSStopTime=DVD_SEC_TO_TIME(630.0);
+    v.container.ProcessAndAddOverlayIfValid(sub);
+    auto [held,heldImage]=page(DVD_SEC_TO_TIME(625.0));
+    v.container.ProcessAndAddOverlayIfValid(held);
+    auto b=v.ProcessOverlays(&picture,DVD_SEC_TO_TIME(621.0));
+    assert(b.size()==2);                                                   // subtitle + page on screen
+    assert(std::none_of(b.begin(),b.end(),[&](const auto& e){return e.overlay_dvd==heldImage->GetPublishedRenderContent();}));
+    b=v.ProcessOverlays(&picture,DVD_SEC_TO_TIME(625.0));
+    assert(b.size()==2 && std::any_of(b.begin(),b.end(),[&](const auto& e){return e.overlay_dvd==heldImage->GetPublishedRenderContent();}));
   }
 }
 '''

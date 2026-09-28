@@ -13,6 +13,7 @@
 #include "DVDDemuxers/DemuxMVC.h"
 #include "DVDInputStreamFile.h"
 #include "IVideoPlayer.h"
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "LangInfo.h"
 #include "ServiceBroker.h"
 #include "URL.h"
@@ -1183,7 +1184,8 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
     {
       CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Read - reposting retained menu overlay "
                           "composition after stream reopen");
-      OverlayFlush(-1);
+      // The same composition: it keeps the time of the one already queued.
+      OverlayFlush(REPOST_PTS);
     }
   }
   DeliverParkedOverlayIfDue();
@@ -1540,6 +1542,7 @@ void CDVDInputStreamBluray::OverlayClose(bool deferrable, int closingPlane)
     plane.o.clear();
   auto group = std::make_shared<CDVDOverlayGroup>();
   group->bForced = true;
+  group->iPTSStartTime = DVD_NOPTS_VALUE;
   group->SetDiscMenuOverlay(true);
   std::shared_ptr<CDVDOverlay> composition = group;
   m_player->OnDiscNavResult(static_cast<void*>(&composition), BD_EVENT_MENU_OVERLAY);
@@ -1609,7 +1612,49 @@ void CDVDInputStreamBluray::DeliverParkedOverlayIfDue()
   std::shared_ptr<CDVDOverlay> pending;
   pending.swap(m_pendingOverlayGroup);
   CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::Read - delivering parked menu overlay composition");
-  m_player->OnDiscNavResult(static_cast<void*>(&pending), BD_EVENT_MENU_OVERLAY);
+  DeliverMenuComposition(pending, m_pendingOverlayPts);
+}
+
+void CDVDInputStreamBluray::DeliverMenuComposition(std::shared_ptr<CDVDOverlay> composition,
+                                                   int64_t pts)
+{
+  // libbluray times HDMV menu pages on the 90 kHz clock of the clip they
+  // belong to. The demuxer keeps Blu-ray timestamps and adds the seam offset
+  // current when that clip's bytes are read. Timed flushes come from the
+  // reading thread and are delivered here once the events read with them are
+  // handled, so the offset is the one for the clip they belong to, also when
+  // a preloaded menu is flushed as the next playlist starts.
+  //
+  // A page is timed only on the clock of the clip being read. A pts outside
+  // that clip (a sub-path clock, a page parked across a seam) is shown at once.
+  composition->iPTSStartTime = DVD_NOPTS_VALUE;
+  if (pts == REPOST_PTS)
+  {
+    m_player->OnDiscNavResult(static_cast<void*>(&composition), BD_EVENT_MENU_OVERLAY_REPOST);
+    return;
+  }
+  bool onClip = false;
+  if (pts >= 0)
+  {
+    std::lock_guard lock(m_clipTableMutex);
+    onClip = m_titleInfo && m_clip && static_cast<uint64_t>(pts) >= m_clip->in_time &&
+             static_cast<uint64_t>(pts) < m_clip->out_time;
+  }
+  if (onClip)
+  {
+    double offset = 0.0;
+    {
+      std::lock_guard<std::mutex> seamLock(m_seamOffsetMutex);
+      // SSIF (MVC) packets do not get the seam offset.
+      if (m_navmode && !m_bMVCPlayback)
+        offset = m_seamTimeOffset;
+    }
+    composition->iPTSStartTime = (static_cast<double>(pts) / 90000.0 + offset) * DVD_TIME_BASE;
+    CLog::Log(LOGDEBUG,
+              "CDVDInputStreamBluray - menu composition due {:.3f} (clip {:.3f}, seam {:.3f})",
+              composition->iPTSStartTime / DVD_TIME_BASE, pts / 90000.0, offset);
+  }
+  m_player->OnDiscNavResult(static_cast<void*>(&composition), BD_EVENT_MENU_OVERLAY);
 }
 
 void CDVDInputStreamBluray::OverlayFlush(int64_t pts)
@@ -1618,7 +1663,6 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts)
   std::lock_guard lock(m_overlayLock);
   auto group = std::make_shared<CDVDOverlayGroup>();
   group->bForced       = true;
-  group->iPTSStartTime = static_cast<double>(pts);
   group->iPTSStopTime  = 0;
   group->SetDiscMenuOverlay(true);
   group->SetOverlayContainerFlushable(false);
@@ -1642,6 +1686,9 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts)
 
   if (m_readingThread.load(std::memory_order_relaxed) == std::this_thread::get_id())
   {
+    // A repost of a page still parked keeps that page's time.
+    if (pts != REPOST_PTS || !m_pendingOverlayGroup)
+      m_pendingOverlayPts = pts;
     m_pendingOverlayGroup = group;
     CLog::Log(LOGDEBUG, "OverlayFlush parked during demux read, boundaryInFlight={}",
               IsNaturalChainBoundaryInFlight());
@@ -1649,8 +1696,7 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts)
   else
   {
     m_pendingOverlayGroup.reset();
-    std::shared_ptr<CDVDOverlay> composition = group;
-    m_player->OnDiscNavResult(static_cast<void*>(&composition), BD_EVENT_MENU_OVERLAY);
+    DeliverMenuComposition(group, pts);
   }
   m_hasOverlay = subOverlayCount != 0;
 #endif
@@ -1698,7 +1744,8 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   {
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - overlay HIDE plane {}", ov->plane);
     plane.o.clear();
-    OverlayFlush(ov->pts);
+    // libbluray sends HIDE without a time (pts 0).
+    OverlayFlush(-1);
     return;
   }
 
