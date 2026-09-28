@@ -319,7 +319,7 @@ int main() {
     q.m_timeBound=true;assert(q.IsFull());q.timeLevel=99;assert(!q.IsFull());
   }
   // Draining must include decoder, renderer and sink output despite empty input queues.
-  { CVideoPlayer p;p.video.eos=false;p.audio.sink=DVD_MSEC_TO_TIME(200);p.m_renderManager.queued=1;
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=false;p.audio.sink=DVD_MSEC_TO_TIME(200);p.m_renderManager.queued=1;
     auto start=TestClock::now();onSleep=[&] {
       auto elapsed=TestClock::now()-start;
       if(elapsed>=50ms)p.video.eos=true;
@@ -329,16 +329,81 @@ int main() {
     p.DrainStreamsAtBoundary();onSleep={};
     assert(p.video.drainMessages==1 && TestClock::now()-start>=275ms);
   }
-  { CVideoPlayer p;p.video.eos=false;auto start=TestClock::now();
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=false;auto start=TestClock::now();
     p.DrainStreamsAtBoundary();assert(TestClock::now()-start<=1525ms); // stalled decoder is bounded
   }
+  // A decoder that never reports EOF (Amlogic: stale buffer level) is played
+  // out once the stream player switches to still-frame output: the drain ends
+  // on "quiet", not on the stall timer.
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=false;auto start=TestClock::now();
+    onSleep=[&] { if(TestClock::now()-start>=300ms)p.video.stalled=true; };
+    p.DrainStreamsAtBoundary();onSleep={};auto elapsed=TestClock::now()-start;
+    assert(elapsed>=350ms && elapsed<=450ms); // 100 ms quiet after the last busy check, not 1.5 s
+  }
+  // Still-frame output doesn't end it while packets or rendered pictures remain, or audio plays.
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=true;p.video.data=true;auto start=TestClock::now();
+    onSleep=[&] { if(TestClock::now()-start>=200ms)p.video.data=false; };
+    p.DrainStreamsAtBoundary();onSleep={};assert(TestClock::now()-start>=250ms); // not before the blocker cleared (200 ms)
+  }
+  // Still-frame output re-feeds the last picture, so one stays queued: that doesn't hold the drain.
+  { CVideoPlayer p;p.video.eos=true;p.video.stalled=true;p.m_renderManager.queued=1;auto start=TestClock::now();
+    p.DrainStreamsAtBoundary();assert(TestClock::now()-start<=150ms);
+  }
+  // More than the one re-fed picture is real content still to be shown.
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=true;p.m_renderManager.queued=2;auto start=TestClock::now();
+    onSleep=[&] { if(TestClock::now()-start>=200ms)p.m_renderManager.queued=1; };
+    p.DrainStreamsAtBoundary();onSleep={};assert(TestClock::now()-start>=250ms); // not before the blocker cleared (200 ms)
+  }
+  // Outside still-frame output a queued picture is real content and holds it.
+  { CVideoPlayer p;p.video.eos=true;p.video.stalled=false;p.m_renderManager.queued=1;auto start=TestClock::now();
+    onSleep=[&] { if(TestClock::now()-start>=200ms)p.m_renderManager.queued=0; };
+    p.DrainStreamsAtBoundary();onSleep={};assert(TestClock::now()-start>=250ms); // not before the blocker cleared (200 ms)
+  }
+  // Passthrough: the sink delay stays constant (432 ms on an AVR chain). Once audio ran
+  // out of packets, the delay held at that point plays out and the drain ends, not at 1.5 s.
+  { CVideoPlayer p;p.audio.stalled=true;p.audio.sink=DVD_MSEC_TO_TIME(432);auto start=TestClock::now();
+    p.DrainStreamsAtBoundary();auto elapsed=TestClock::now()-start;
+    assert(elapsed>=432ms && elapsed<=575ms);
+  }
+  // The play-out wait starts only when audio runs out, and restarts if data returns.
+  { CVideoPlayer p;p.audio.stalled=false;p.audio.sink=DVD_MSEC_TO_TIME(432);p.audio.data=true;auto start=TestClock::now();
+    onSleep=[&] { auto t=TestClock::now()-start;
+      if(t>=300ms){p.audio.data=false;p.audio.stalled=true;p.audio.pts+=1;} // last packets consumed by 300 ms
+      else p.audio.pts+=1; };
+    p.DrainStreamsAtBoundary();onSleep={};auto elapsed=TestClock::now()-start;
+    assert(elapsed>=732ms && elapsed<=875ms);
+  }
+  // A display reset pauses the sink with real audio in it: the play-out wait
+  // doesn't run through it, it is measured again once the display is back.
+  { CVideoPlayer p;p.audio.stalled=true;p.audio.sink=DVD_MSEC_TO_TIME(432);p.m_displayLost=true;
+    auto start=TestClock::now();onSleep=[&] { if(TestClock::now()-start>=1000ms)p.m_displayLost=false; };
+    p.DrainStreamsAtBoundary();onSleep={};auto elapsed=TestClock::now()-start;
+    assert(elapsed>=1432ms && elapsed<=1575ms);
+  }
+  // Data returning before the wait ran out disarms it; it starts again when audio runs out again.
+  { CVideoPlayer p;p.audio.stalled=true;p.audio.sink=DVD_MSEC_TO_TIME(432);auto start=TestClock::now();
+    onSleep=[&] { auto t=TestClock::now()-start;
+      p.audio.data=(t>=200ms && t<400ms);if(p.audio.data)p.audio.pts+=1; };
+    p.DrainStreamsAtBoundary();onSleep={};auto elapsed=TestClock::now()-start;
+    assert(elapsed>=832ms && elapsed<=975ms);
+  }
+  // Out of packets but not yet stalled (the stream player still expects data): the
+  // passthrough delay alone doesn't end it; the stall timer bounds it as before.
+  { CVideoPlayer p;p.audio.stalled=false;p.audio.sink=DVD_MSEC_TO_TIME(432);auto start=TestClock::now();
+    p.DrainStreamsAtBoundary();auto elapsed=TestClock::now()-start;
+    assert(elapsed>=1500ms && elapsed<=1525ms);
+  }
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=true;p.audio.sink=DVD_MSEC_TO_TIME(200);
+    auto start=TestClock::now();onSleep=[&] { if(TestClock::now()-start>=200ms)p.audio.sink=0; };
+    p.DrainStreamsAtBoundary();onSleep={};assert(TestClock::now()-start>=250ms); // not before the blocker cleared (200 ms)
+  }
   // A display reset pauses the clock on purpose: hold through it, then stall-time normally.
-  { CVideoPlayer p;p.video.eos=false;p.m_displayLost=true;auto start=TestClock::now();
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=false;p.m_displayLost=true;auto start=TestClock::now();
     onSleep=[&] { if(TestClock::now()-start>=3000ms)p.m_displayLost=false; };
     p.DrainStreamsAtBoundary();onSleep={};auto elapsed=TestClock::now()-start;
     assert(elapsed>3000ms && elapsed<=4550ms);
   }
-  { CVideoPlayer p;p.video.eos=false;p.m_displayLost=true;auto start=TestClock::now();
+  { CVideoPlayer p;p.video.eos=false;p.video.stalled=false;p.m_displayLost=true;auto start=TestClock::now();
     p.DrainStreamsAtBoundary();auto elapsed=TestClock::now()-start;
     assert(elapsed>=8000ms && elapsed<=8025ms); // a display that never returns is bounded by the ceiling
   }
@@ -346,14 +411,14 @@ int main() {
     p.DrainStreamsAtBoundary();assert(TestClock::now()==start); // user/control work remains responsive
   }
   // An A/V change note queued during the play-out does not end it.
-  { CVideoPlayer p;p.m_messenger.queued={CDVDMsg::PLAYER_AVCHANGE};p.video.eos=false;
+  { CVideoPlayer p;p.m_messenger.queued={CDVDMsg::PLAYER_AVCHANGE};p.video.eos=false;p.video.stalled=false;
     auto start=TestClock::now();onSleep=[&] { if(TestClock::now()-start>=400ms)p.video.eos=true; };
     p.DrainStreamsAtBoundary();onSleep={};assert(TestClock::now()-start>=400ms);
   }
   // A start note ends it at once: its sender waits in SYNC_WAITSYNC and makes no
   // progress until the player thread handles the note and resyncs it.
   { CVideoPlayer p;p.m_messenger.queued={CDVDMsg::PLAYER_AVCHANGE,CDVDMsg::PLAYER_STARTED};
-    p.video.eos=false;p.video.data=true;auto start=TestClock::now();int passes=0;
+    p.video.eos=false;p.video.stalled=false;p.video.data=true;auto start=TestClock::now();int passes=0;
     onSleep=[&] { ++passes; }; // no response arrives, so neither stream progresses
     p.DrainStreamsAtBoundary();onSleep={};
     assert(TestClock::now()==start && passes==0 && p.video.drainMessages==1);
