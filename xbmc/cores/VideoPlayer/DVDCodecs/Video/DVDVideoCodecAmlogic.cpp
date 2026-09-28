@@ -1033,6 +1033,11 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
 
   if (retVal == VC_PICTURE)
   {
+    // The player keeps its last picture (still-frame output) and passes it
+    // back here: release its reference, or every decoded frame leaks one
+    // buffer and the bounded pool runs dry after MAX_BUFFERS frames.
+    if (pVideoPicture->videoBuffer)
+      pVideoPicture->videoBuffer->Release();
     pVideoPicture->videoBuffer = nullptr;
     pVideoPicture->SetParams(m_videobuffer);
 

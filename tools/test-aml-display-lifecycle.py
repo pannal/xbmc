@@ -77,6 +77,8 @@ def main():
              '--s_outstandingBuffers;\n      return nullptr;', '(void)s_outstandingBuffers;\n      return nullptr;'),
             ('late enqueue retains empty pool', 'source',
              'if (pool->HasPendingReturns() &&', 'if (true &&'),
+            ('player picture reference leaks', 'source',
+             '    if (pVideoPicture->videoBuffer)\n      pVideoPicture->videoBuffer->Release();\n', ''),
             ('pool exceeds bounded capacity', 'source', 'if (m_videoBuffers.size() >= MAX_BUFFERS)',
              'if (false && m_videoBuffers.size() >= MAX_BUFFERS)'),
             ('failed-context cancellation reopens', 'header',
@@ -139,7 +141,8 @@ public:
 struct VideoPicture {
   CVideoBuffer* videoBuffer{nullptr};
   double pts{0};int iWidth{1920},iHeight{1080},iDisplayWidth{1920},iDisplayHeight{1080};
-  void SetParams(const VideoPicture& picture){pts=picture.pts;}
+  // As production: SetParams releases the buffer the picture still holds.
+  void SetParams(const VideoPicture& picture){if(videoBuffer)videoBuffer->Release();videoBuffer=nullptr;pts=picture.pts;}
 };
 struct CDVDVideoCodec {enum VCReturn {VC_NONE,VC_ERROR,VC_BUFFER,VC_PICTURE};};
 class CAMLCodec {
@@ -268,11 +271,27 @@ void DeferredPressure() {
   CAMLVideoBufferPool::ProcessReturns();assert(codec->returned.size()==CAMLVideoBufferPool::MAX_BUFFERS);
   codec->onReturn={};
   assert(wrapper.GetPicture(&output)==CDVDVideoCodec::VC_PICTURE&&codec->dequeues==1);
-  output.videoBuffer->Release();
+  output.videoBuffer->Release();output.videoBuffer=nullptr;
   assert(codec->returned.size()==CAMLVideoBufferPool::MAX_BUFFERS+1);
   const auto freeCount=pool->m_freeBuffers.size();codec->output=CDVDVideoCodec::VC_BUFFER;
   assert(wrapper.GetPicture(&output)==CDVDVideoCodec::VC_BUFFER&&codec->dequeues==2);
   assert(pool->m_freeBuffers.size()==freeCount);
+}
+// CVideoPlayerVideo keeps m_picture after output (still-frame repeats) and
+// passes it back to GetPicture. Each new picture must release the previous
+// one, or the bounded pool runs dry after MAX_BUFFERS frames and output stops.
+void PlayerKeepsLastPicture() {
+  auto codec=std::make_shared<CAMLCodec>();auto pool=std::make_shared<CAMLVideoBufferPool>();
+  CDVDVideoCodecAmlogic wrapper;wrapper.m_Codec=codec;wrapper.m_videoBufferPool=pool;
+  VideoPicture picture;
+  for(size_t i=0;i<3*CAMLVideoBufferPool::MAX_BUFFERS;++i){
+    assert(wrapper.GetPicture(&picture)==CDVDVideoCodec::VC_PICTURE);
+    assert(picture.videoBuffer&&CAMLVideoBufferPool::s_outstandingBuffers==1);
+  }
+  assert(pool->m_videoBuffers.size()<=2);
+  assert(codec->returned.size()==3*CAMLVideoBufferPool::MAX_BUFFERS-1);
+  picture.videoBuffer->Release();picture.videoBuffer=nullptr;
+  assert(CAMLVideoBufferPool::s_outstandingBuffers==0);
 }
 void ResetOvertakes(bool close) {
   auto codec=std::make_shared<CAMLCodec>();auto pool=std::make_shared<CAMLVideoBufferPool>();
@@ -392,7 +411,7 @@ void LifetimePin() {
   CAMLVideoBufferPool::ProcessReturns();assert(weak.expired()&&codec->returned==std::vector<uint32_t>{8});
 }
 int main(){
-  OwnPermitAndDecoder();RegistrationAndStale();DeferredPressure();
+  OwnPermitAndDecoder();RegistrationAndStale();DeferredPressure();PlayerKeepsLastPicture();
   ResetOvertakes(false);ResetOvertakes(true);FailedBindAndCancel();LifetimePin();
   ConcurrentAndReentrantPump();MultiplePoolBudgetAndLateEnqueue();ConcurrentGlobalReservations();
   assert(CAMLVideoBufferPool::s_outstandingBuffers==0);
