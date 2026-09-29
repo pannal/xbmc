@@ -508,7 +508,8 @@ bool CApplication::CreateGUI()
     {
       CLog::Log(LOGDEBUG, "CApplication::{} - unable to init {} windowing system", __FUNCTION__,
                 windowSystem);
-      m_pWinSystem->DestroyWindowSystem();
+      if (!m_pWinSystem->DestroyWindowSystem())
+        return false; // Pending teardown retains its original window owner.
       m_pWinSystem.reset();
       CServiceBroker::UnregisterWinSystem();
       continue;
@@ -2038,6 +2039,10 @@ int CApplication::Run()
 
 bool CApplication::Cleanup()
 {
+  // Also fence direct/failed-startup cleanup before any dependent service or
+  // render resource is released. Normal Stop has already acquired this gate.
+  if (auto* window = CServiceBroker::GetWinSystem(); window && !window->PrepareForShutdown())
+    return false;
   try
   {
     ResetCurrentItem();
@@ -2191,6 +2196,11 @@ bool CApplication::Stop(int exitCode)
   {
     if (!m_pendingStop)
       m_pendingStop = exitCode;
+    return false;
+  }
+  if (auto* window = CServiceBroker::GetWinSystem(); window && !window->PrepareForShutdown())
+  {
+    m_pendingStop = exitCode;
     return false;
   }
   m_pendingStop.reset();

@@ -63,6 +63,7 @@ def main():
                       'void CWinSystemAmlogicGLESContext::ReleaseCompositeResources()',
                       'bool CWinSystemAmlogicGLESContext::DestroyRenderSystem()',
                       'bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()',
+                      'bool CWinSystemAmlogicGLESContext::PrepareForShutdown()',
                       'bool CWinSystemAmlogicGLESContext::DestroyWindow()',
                       'void CWinSystemAmlogicGLESContext::CancelGuiComposite()',
                       'bool CWinSystemAmlogicGLESContext::SetFullScreen(',
@@ -228,6 +229,9 @@ public:
   void CancelGuiComposite();bool SetFullScreen(bool,RESOLUTION_INFO&,bool);
   bool ResizeWindow(int,int,int,int);
   bool ResetRenderSystem(int,int);
+  bool PrepareForShutdown();void RetireNativeTransactions(){}
+  bool m_shutdownRequested=false;
+  std::unique_ptr<CAMLDisplayLifecycle::Mutation> m_shutdownAdmission;
   CAMLDisplayLifecycle m_displayLifecycle;
   bool m_displayGeometryReady=false,m_delayDispReset=false;
   bool createWindowSucceeds=true;

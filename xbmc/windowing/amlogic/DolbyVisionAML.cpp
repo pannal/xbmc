@@ -968,6 +968,7 @@ bool CDolbyVisionAML::Setup()
   // register for announcements to capture OnWake and re-apply DV if needed.
   auto announcer = CServiceBroker::GetAnnouncementManager();
   announcer->AddAnnouncer(this);
+  m_registered = true;
 
   // Turn on dv - if dv mode is on, limit the menu luminance as menu now can be in DV/HDR.
   aml_dv_start();
@@ -979,7 +980,7 @@ bool CDolbyVisionAML::Setup()
 
 void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
 {
-  if (!setting) return;
+  if (!setting || m_retiring) return;
 
   // Audio DDR-priority toggle applies live (no DV state involved) — write the
   // DMC urgent for the DEVICE port immediately and return before the DV logic.
@@ -1209,32 +1210,76 @@ void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& se
   }
 }
 
+CDolbyVisionAML::~CDolbyVisionAML()
+{
+  Retire();
+  if (m_registered)
+    CServiceBroker::GetAnnouncementManager()->RemoveAnnouncer(this);
+  CServiceBroker::GetSettingsComponent()->GetSettings()->GetSettingsManager()->UnregisterCallback(this);
+}
+
+void CDolbyVisionAML::Retire()
+{
+  m_retiring = true;
+  CAMLSession::CancelNative(std::atomic_load(&m_nativeRequest));
+}
+
+bool CDolbyVisionAML::ContinueAnnounce()
+{
+  auto request = std::atomic_load(&m_nativeRequest);
+  if (m_retiring)
+  {
+    CAMLSession::CancelNative(request);
+    std::atomic_store(&m_nativeRequest, std::shared_ptr<CAMLSession::NativeRequest>{});
+    m_pending = Pending::NONE;
+    return true;
+  }
+  if (m_pending == Pending::NONE)
+    return true;
+  if (!request)
+  {
+    request = CAMLSession::FenceNative();
+    std::atomic_store(&m_nativeRequest, request);
+  }
+  if (!CAMLSession::TryBeginNative(request))
+    return false;
+  // Recheck after admission: teardown can cancel before acquisition, but an
+  // acquired transaction owns completion until EndNative releases its gate.
+  try
+  {
+    if (!m_retiring)
+    {
+      if (m_pending == Pending::START)
+        aml_dv_start();
+      else
+        aml_dv_restore_gui_ipt("Player.OnStop");
+    }
+  }
+  catch (...)
+  {
+    CAMLSession::EndNative(request);
+    throw;
+  }
+  CAMLSession::EndNative(request);
+  std::atomic_store(&m_nativeRequest, std::shared_ptr<CAMLSession::NativeRequest>{});
+  m_pending = Pending::NONE;
+  return true;
+}
+
 void CDolbyVisionAML::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
               const std::string& sender,
               const std::string& message,
               const CVariant& data)
 {
-  // When Wake from Suspend re-trigger DV if in DV_MODE_ON
-  if ((flag == ANNOUNCEMENT::System) && (message == "OnWake")) aml_dv_start();
-
-  // When video playback fully stops (not channel-switch), restore DV to IPT
-  // mode for the GUI.  aml_dv_close() defers this for DV_MODE_ON to avoid
-  // unnecessary HDMI mode switches during live-TV channel changes.
-  //
-  // The playback-active guard is load-bearing: OnStop is dispatched
-  // asynchronously on the announcement thread (CAnnouncementManager is a
-  // CThread with a queue), so during a back-to-back DV->DV switch the OnStop
-  // for the *previous* title can arrive AFTER the next title's aml_dv_open()
-  // has already reconfigured the DV core.  Without it, aml_dv_start() runs
-  // its off->Bypass->on(IPT) cycle mid-playback over a live stream,
-  // corrupting the HDMI-TX/DV color-space (gray/green "trippy" output that
-  // persists into the GUI since DV_MODE_ON keeps the core enabled).
-  //
-  // All guard checks (DV_MODE_ON, dv enabled, NOT playback-active, not
-  // already IPT) now live inside aml_dv_restore_gui_ipt() UNDER the DV-core
-  // lock, so the decision and the cycle are atomic vs a concurrent
-  // aml_dv_open() — the unlocked check-then-cycle here used to leave a
-  // narrower variant of the same race open.
-  if ((flag == ANNOUNCEMENT::Player) && (message == "OnStop"))
-    aml_dv_restore_gui_ipt("Player.OnStop");
+  if (m_retiring)
+    return;
+  if (flag == ANNOUNCEMENT::System && message == "OnWake")
+    m_pending = Pending::START;
+  else if (flag == ANNOUNCEMENT::Player && message == "OnStop")
+    m_pending = Pending::RESTORE;
+  else
+    return;
+  // The existing announcement loop retains this intent before dispatching its
+  // next event. DV guard checks still execute under the original core lock.
+  ContinueAnnounce();
 }

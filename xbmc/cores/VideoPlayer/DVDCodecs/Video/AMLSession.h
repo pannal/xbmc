@@ -32,6 +32,7 @@ class CAMLSession
     bool mutating{false};
     bool displayFenced{false};
     bool displayActive{false};
+    bool nativeFenced{false};
     std::thread::id owner;
   };
 
@@ -42,6 +43,7 @@ public:
     m_state->owner = owner;
     m_state->displayFenced = s_displayPhase != DisplayPhase::READY;
     m_state->displayActive = s_displayPhase == DisplayPhase::MUTATING;
+    m_state->nativeFenced = bool(s_nativeRequest);
     PruneSessions();
     s_sessions.emplace_back(m_state);
   }
@@ -97,7 +99,7 @@ public:
   {
     std::lock_guard<std::mutex> lock(m_state->mutex);
     if ((!retirement && std::this_thread::get_id() != m_state->owner) ||
-        !m_state->open || m_state->mutating || m_state->displayFenced || epoch != m_state->epoch ||
+        !m_state->open || m_state->mutating || m_state->displayFenced || m_state->nativeFenced || epoch != m_state->epoch ||
         (m_state->fenced && !retirement))
       return {};
     ++(retirement ? m_state->retiring : m_state->active);
@@ -134,7 +136,7 @@ public:
     std::lock_guard<std::mutex> registry(s_registryMutex);
     std::lock_guard<std::mutex> lock(m_state->mutex);
     if (request.identity != m_state || request.serial != m_state->request || request.epoch != m_state->epoch ||
-        m_state->active || m_state->retiring || m_state->mutating || m_state->displayActive)
+        m_state->active || m_state->retiring || m_state->mutating || m_state->displayActive || m_state->nativeFenced)
       return false;
     m_state->mutating = true;
     // Mutation now owns invalidation of outstanding old device indices. Late
@@ -172,10 +174,64 @@ public:
   Permit AcquireDecoder()
   {
     std::lock_guard<std::mutex> lock(m_state->mutex);
-    if (!m_state->open || m_state->mutating || m_state->fenced || m_state->displayFenced)
+    if (!m_state->open || m_state->mutating || m_state->fenced || m_state->displayFenced || m_state->nativeFenced)
       return {};
     ++m_state->active;
     return Permit(m_state, m_state->epoch, false);
+  }
+
+  // A distinct outer native transaction. It never replaces a window's display
+  // request or reopens a failed/unbound display. Admission precedes DV locks.
+  struct NativeRequest
+  {
+    enum class Phase { PENDING, ACTIVE, COMPLETED, CANCELLED };
+    const std::thread::id owner{std::this_thread::get_id()};
+    Phase phase{Phase::PENDING}; // registry lock
+  };
+  static std::shared_ptr<NativeRequest> FenceNative()
+  {
+    std::lock_guard<std::mutex> registry(s_registryMutex);
+    if (s_nativeRequest)
+      return {};
+    s_nativeRequest = std::make_shared<NativeRequest>();
+    ForSessions([](State& state) { state.nativeFenced = true; });
+    return s_nativeRequest;
+  }
+  static bool TryBeginNative(const std::shared_ptr<NativeRequest>& request)
+  {
+    std::lock_guard<std::mutex> registry(s_registryMutex);
+    if (!request || request != s_nativeRequest || request->owner != std::this_thread::get_id() ||
+        request->phase != NativeRequest::Phase::PENDING || s_displayPhase == DisplayPhase::MUTATING)
+      return false;
+    bool ready = true;
+    ForSessions([&](State& state) { ready = ready && !state.active && !state.retiring && !state.mutating; });
+    if (!ready)
+      return false;
+    request->phase = NativeRequest::Phase::ACTIVE;
+    return true;
+  }
+  static bool EndNative(const std::shared_ptr<NativeRequest>& request)
+  {
+    std::lock_guard<std::mutex> registry(s_registryMutex);
+    if (!request || request != s_nativeRequest || request->owner != std::this_thread::get_id() ||
+        request->phase != NativeRequest::Phase::ACTIVE)
+      return false;
+    request->phase = NativeRequest::Phase::COMPLETED;
+    s_nativeRequest.reset();
+    ForSessions([](State& state) { state.nativeFenced = false; state.idle.notify_all(); });
+    return true;
+  }
+  static bool CancelNative(const std::shared_ptr<NativeRequest>& request)
+  {
+    std::lock_guard<std::mutex> registry(s_registryMutex);
+    // Teardown may cancel queued work from main, but cannot revoke an active
+    // transaction. The display gate will wait for its original owner to finish.
+    if (!request || request != s_nativeRequest || request->phase != NativeRequest::Phase::PENDING)
+      return false;
+    request->phase = NativeRequest::Phase::CANCELLED;
+    s_nativeRequest.reset();
+    ForSessions([](State& state) { state.nativeFenced = false; state.idle.notify_all(); });
+    return true;
   }
 
   enum class DisplayPhase { READY, PENDING, MUTATING, WAITING_FOR_RESET, FAILED };
@@ -203,7 +259,8 @@ public:
   static bool TryBeginDisplay(const DisplayRequest& request)
   {
     std::lock_guard<std::mutex> registry(s_registryMutex);
-    if (!MatchesDisplay(request) || s_displayPhase != DisplayPhase::PENDING)
+    if (!MatchesDisplay(request) || s_displayPhase != DisplayPhase::PENDING ||
+        (s_nativeRequest && s_nativeRequest->phase == NativeRequest::Phase::ACTIVE))
       return false;
     bool ready = true;
     ForSessions([&](State& state) {
@@ -277,6 +334,7 @@ private:
   static inline std::vector<std::weak_ptr<State>> s_sessions;
   static inline uint64_t s_displaySerial{0};
   static inline std::thread::id s_displayOwner;
+  static inline std::shared_ptr<NativeRequest> s_nativeRequest;
   static inline bool s_cancelDisplayReady{true};
   static inline DisplayPhase s_displayPhase{DisplayPhase::READY};
   const std::shared_ptr<State> m_state{std::make_shared<State>()};

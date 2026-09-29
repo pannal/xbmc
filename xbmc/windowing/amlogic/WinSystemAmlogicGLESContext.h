@@ -41,6 +41,7 @@ public:
   CRenderSystemBase *GetRenderSystem() override { return this; }
   bool InitWindowSystem() override;
   bool DestroyWindowSystem() override;
+  bool PrepareForShutdown() override;
   bool DestroyRenderSystem() override;
   bool ResetRenderSystem(int width, int height) override;
   bool IsDisplayChangePending() const override { return m_displayLifecycle.Pending(); }
@@ -122,6 +123,8 @@ private:
   };
 
   CAMLDisplayLifecycle m_displayLifecycle;
+  bool m_shutdownRequested{false};
+  std::unique_ptr<CAMLDisplayLifecycle::Mutation> m_shutdownAdmission;
   bool m_displayGeometryReady{false};
   CEGLContextUtils m_pGLContext;
   StreamHdrType m_hdrType = StreamHdrType::HDR_TYPE_NONE;

@@ -227,7 +227,7 @@ public:
 };
 class CWinSystemAmlogicGLESContext:public CWinSystemAmlogic,public CRenderSystemGLES{
 public:
-  CAMLDisplayLifecycle m_displayLifecycle;bool m_displayGeometryReady{true};
+  CAMLDisplayLifecycle m_displayLifecycle;bool m_displayGeometryReady{true};bool m_shutdownRequested=false;
   EGL m_pGLContext;StreamHdrType m_hdrType{StreamHdrType::HDR_TYPE_NONE};
   uint64_t target{1};PresentResult m_presentResult{PresentResult::NOT_ATTEMPTED};
   struct PendingSwitch{const char* path{nullptr};int value{0};};PendingSwitch m_pendingSwitches[2];

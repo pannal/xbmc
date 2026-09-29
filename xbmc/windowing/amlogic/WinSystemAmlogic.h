@@ -58,6 +58,9 @@ protected:
   CHDRCapabilities m_hdr_caps;
   bool m_force_mode_switch;
 
+protected:
+  void RetireNativeTransactions();
+
 private:
   std::unique_ptr<CDolbyVisionAML> m_dolbyVisionAML;
 };

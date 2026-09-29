@@ -7,6 +7,7 @@
  */
 
 #include "VideoSyncAML.h"
+#include "DolbyVisionAML.h"
 #include "WinSystemAmlogicGLESContext.h"
 #include "ServiceBroker.h"
 #include "guilib/GUIComponent.h"
@@ -150,6 +151,9 @@ void CWinSystemAmlogicGLESContext::ReleaseCompositeResources()
 
 bool CWinSystemAmlogicGLESContext::DestroyRenderSystem()
 {
+  CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
+  if (!display)
+    return false;
   m_displayGeometryReady = false;
   // Application cleanup unbinds the surface before DestroyWindowSystem. Retire
   // these main-owned resources now, without changing route/kernel-switch timing.
@@ -159,6 +163,11 @@ bool CWinSystemAmlogicGLESContext::DestroyRenderSystem()
 
 bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 {
+  if (m_shutdownRequested)
+    return false;
+  CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
+  if (!display)
+    return false;
   CloseTextureResources();
   if (!CWinSystemAmlogic::InitWindowSystem())
   {
@@ -192,11 +201,26 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
     return false;
   }
 
+  display.Finish(CAMLDisplayLifecycle::Phase::WAITING_FOR_RESET);
   return true;
+}
+
+bool CWinSystemAmlogicGLESContext::PrepareForShutdown()
+{
+  m_shutdownRequested = true;
+  RetireNativeTransactions();
+  if (m_shutdownAdmission && *m_shutdownAdmission)
+    return true;
+  m_shutdownAdmission = std::make_unique<CAMLDisplayLifecycle::Mutation>(m_displayLifecycle);
+  // Keep this exact display transaction across service shutdown and all three
+  // destruction stages. An active native transaction finishes on its owner.
+  return bool(*m_shutdownAdmission);
 }
 
 bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
 {
+  if (!PrepareForShutdown())
+    return false;
   // Also cover direct/failed-startup teardown without Application::Cleanup.
   DestroyRenderSystem();
   ReleaseCompositeResources();
@@ -208,13 +232,17 @@ bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
 
   m_pGLContext.DestroyContext();
   m_pGLContext.Destroy();
-  return CWinSystemAmlogic::DestroyWindowSystem();
+  const bool result = CWinSystemAmlogic::DestroyWindowSystem();
+  m_shutdownAdmission.reset(); // End mutation, keep admission fenced after destruction.
+  return result;
 }
 
 bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
                                                bool fullScreen,
                                                RESOLUTION_INFO& res)
 {
+  if (m_shutdownRequested)
+    return false;
   CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
   if (!display)
     return false;
@@ -359,6 +387,9 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 
 bool CWinSystemAmlogicGLESContext::DestroyWindow()
 {
+  CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
+  if (!display)
+    return false;
   m_displayGeometryReady = false;
   InvalidateRenderTarget();
   CancelGuiComposite();
@@ -384,6 +415,8 @@ bool CWinSystemAmlogicGLESContext::SetFullScreen(bool fullScreen, RESOLUTION_INF
 
 bool CWinSystemAmlogicGLESContext::ResetRenderSystem(int width, int height)
 {
+  if (m_shutdownRequested)
+    return false;
   CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
   if (!display)
     return false;

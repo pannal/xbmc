@@ -72,6 +72,9 @@ namespace ANNOUNCEMENT
   public:
     IAnnouncer() = default;
     virtual ~IAnnouncer() = default;
+    // Retry an admitted announcement's pending work on this same dispatcher.
+    // False retains ordering before the next announcement; no listener replay.
+    virtual bool ContinueAnnounce() { return true; }
     virtual void Announce(AnnouncementFlag flag,
                           const std::string& sender,
                           const std::string& message,

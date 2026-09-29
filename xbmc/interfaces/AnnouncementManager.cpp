@@ -323,6 +323,17 @@ void CAnnouncementManager::Process()
 
   while (!m_bStop)
   {
+    bool pending = false;
+    {
+      std::unique_lock<CCriticalSection> listeners(m_announcersCritSection);
+      for (auto* listener : m_announcers)
+        pending = !listener->ContinueAnnounce() || pending;
+    }
+    if (pending)
+    {
+      CThread::Sleep(std::chrono::milliseconds(10));
+      continue;
+    }
     std::unique_lock<CCriticalSection> lock(m_queueCritSection);
     if (!m_announcementQueue.empty())
     {

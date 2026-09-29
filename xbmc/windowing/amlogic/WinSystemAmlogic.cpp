@@ -117,8 +117,15 @@ bool CWinSystemAmlogic::InitWindowSystem()
   return CWinSystemBase::InitWindowSystem();
 }
 
+void CWinSystemAmlogic::RetireNativeTransactions()
+{
+  if (m_dolbyVisionAML)
+    m_dolbyVisionAML->Retire();
+}
+
 bool CWinSystemAmlogic::DestroyWindowSystem()
 {
+  m_dolbyVisionAML.reset();
   return true;
 }
 

@@ -171,7 +171,9 @@ struct Gui {
     return count;
   }
 };
+struct Window {bool ready=true;bool PrepareForShutdown(){return ready;}};
 struct CServiceBroker {
+  static Window* GetWinSystem(){static Window window;return &window;}
   static Power& GetPowerManager(){static Power power;return power;}
   static Gui* GetGUI(){static Gui gui;return &gui;}
 };
@@ -214,8 +216,11 @@ static void shutdown_cases() {
     assert(!shutdown.Stop(EXITCODE_QUIT) && shutdown.m_pendingStop==code);
     original->canClose=true;shutdown.app.ContinueClose();shutdown.Frame();
     assert(shutdown.teardowns==0); // old callback still has to be consumed
+    CServiceBroker::GetWinSystem()->ready=false;
     shutdown.app.OnPlaybackStopped();shutdown.app.ContinueClose();shutdown.Frame();
-    shutdown.Frame();assert(shutdown.teardowns==1 && shutdown.lastExit==code);
+    assert(shutdown.teardowns==0 && shutdown.m_pendingStop==code);
+    CServiceBroker::GetWinSystem()->ready=true;
+    shutdown.Frame();shutdown.Frame();assert(shutdown.teardowns==1 && shutdown.lastExit==code);
     assert(!shutdown.m_pendingStop && !shutdown.app.HasPlayer());
     assert(power.downs==(code==EXITCODE_POWERDOWN) && power.reboots==(code==EXITCODE_REBOOT));
   }
