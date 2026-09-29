@@ -640,6 +640,7 @@ struct CRenderManager
   int configurations{0}, invalidations{0};
   VideoPicture observed;
   void InvalidateReservations() { ++invalidations; }
+  void CancelDeferredDV() {}
   bool Configure(const VideoPicture&,float,unsigned,StreamHdrType,int);
   bool Configure()
   {

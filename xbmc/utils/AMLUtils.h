@@ -15,6 +15,7 @@ extern "C" {
 #include <libavutil/pixfmt.h>
 }
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -163,7 +164,7 @@ struct xbmc_dv_cap
 unsigned int aml_dv_dolby_vision_mode();
 // swDecoded: true when the caller is the software/GLES render path (no AML hardware
 // video layer / VD1). Such streams cannot use VS10 conversion — see aml_dv_open().
-void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries colorPrimaries = AVCOL_PRI_UNSPECIFIED, bool swDecoded = false);
+void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries colorPrimaries = AVCOL_PRI_UNSPECIFIED, bool swDecoded = false, std::shared_ptr<const void> session = {});
 void aml_dv_close();
 bool aml_dv_playback_active();
 // Hold DV_MODE_ON_DEMAND's DV output across the decoder closes of a Blu-ray
@@ -172,9 +173,12 @@ void aml_dv_set_disc_hold(bool hold);
 // A disc session's first DV engage, deferred by aml_dv_open() until the mode
 // set: called right before it (atModeSet), and after the resolution update as
 // a fallback when no mode set happens. No-op when nothing is deferred.
-void aml_dv_engage_deferred_disc(bool atModeSet);
+void aml_dv_engage_deferred_disc(bool atModeSet, const std::shared_ptr<const void>& session = {});
+// CPU-only eligibility snapshot. Effects revalidate the exact identity after admission.
+void aml_dv_cancel_deferred_session(const std::shared_ptr<const void>& session);
+bool aml_dv_deferred_disc_pending(const std::shared_ptr<const void>& session, bool staleOnly);
 // Last resort, polled per GUI frame: engage a deferral no mode set took up.
-void aml_dv_engage_stale_deferred_disc();
+void aml_dv_engage_stale_deferred_disc(const std::shared_ptr<const void>& session);
 void aml_dv_set_osd_max(int max);
 void aml_dv_set_osd_brightness(int nits);
 void aml_dv_set_hdr10_osd_brightness(int nits);

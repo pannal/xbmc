@@ -37,6 +37,7 @@ def function(source, signature):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", metavar="REV", help="test the source at REV")
+    parser.add_argument("--negative-controls", action="store_true")
     args = parser.parse_args()
 
     def read(path):
@@ -54,14 +55,34 @@ def main():
                      dv_on):
         raise SystemExit("aml_dv_on(): IPT update request changed; update the stand-in")
 
-    engage = function(aml, "void aml_dv_engage_deferred_disc(bool atModeSet)")
-    stale = function(aml, "void aml_dv_engage_stale_deferred_disc()")
+    engage = function(aml, "void aml_dv_engage_deferred_disc(")
+    stale = function(aml, "void aml_dv_engage_stale_deferred_disc(")
+    pending = function(aml, "void aml_dv_cancel_deferred_session(") + function(aml, "bool aml_dv_deferred_disc_pending(")
+    continuation = function(render, "void CRenderManager::CancelDeferredDV()") + function(render, "bool CRenderManager::ContinueDeferredDV(")
+    # Picture propagation must use the original decoder identity, never a global lookup.
+    codec = read("xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp")
+    picture = read("xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.cpp")
+    assert 'm_dvSession = std::make_shared<const unsigned char>(0);' in codec
+    assert 'false, m_dvSession);' in codec
+    assert 'aml_dv_cancel_deferred_session(m_dvSession);' in function(codec, 'bool CAMLCodec::BeginLifecycle(')
+    getpicture = function(codec, "CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(")
+    assert getpicture.index('if (!operation)') < getpicture.index('videoPicture.amlDVSession = m_dvSession;')
+    assert 'amlDVSession.reset();' in function(picture, "void VideoPicture::Reset()")
+    assert 'amlDVSession != pic.amlDVSession' in function(picture, "bool VideoPicture::IsSameParams(")
+    assert '*this = pic;' in function(picture, "VideoPicture& VideoPicture::SetParams(")
+    assert 'std::atomic_store(&s_dvPlaybackSession, std::move(session));' in function(aml, 'void aml_dv_open(')
+    assert 'std::atomic_store(&s_dvPlaybackSession, std::shared_ptr<const void>{});' in function(aml, 'void aml_dv_close()')
+    for signature in ['bool CRenderManager::Configure(const VideoPicture&', 'std::shared_ptr<CRenderLifecycle::Request> CRenderManager::RequestUnInit()', 'std::shared_ptr<CRenderLifecycle::Request> CRenderManager::RequestFlush(']:
+        assert 'CancelDeferredDV();' in function(render, signature)
+    frame = function(render, "void CRenderManager::FrameMove()")
+    frame = frame[frame.index("  m_deferredDVResolutionAttempted = false;"):frame.index("\n  {", frame.index("  m_deferredDVResolutionAttempted = false;"))]
     update = function(render, "void CRenderManager::UpdateResolution(bool force)")
-    create = function(winsys, "bool CWinSystemAmlogic::CreateNewWindow(")
+    create = function(winsys, "bool CWinSystemAmlogic::CreateNativeWindow(")
     gate = create[create.index("  // A disc session's first DV engage"):
                   create.index("  aml_set_native_resolution(")]
 
     harness = r'''
+#include "windowing/amlogic/AMLNativeTransaction.h"
 #include <atomic>
 #include <cstdint>
 #include <iostream>
@@ -119,6 +140,9 @@ bool aml_display_mode_changing(const RESOLUTION_INFO&) { return g_modeChanging; 
 bool aml_has_frac_rate_policy() { return g_fracPolicy; }
 
 static bool s_dvDiscDeferred = false;
+static std::shared_ptr<const void> s_dvPlaybackSession;
+CAMLSession nativeSession;
+bool throwEngage=false;
 static unsigned int s_dvDiscDeferredMode = 0;
 static bool s_dvEngagingAtModeSet = false;
 static bool s_dvPlaybackActive = false;
@@ -141,12 +165,16 @@ void aml_dv_trigger_update_resolution(StreamHdrType);
 // Stand-in for the production IPT branch (asserted by the script): a DV engage
 // requests a follow-up resolution update unless the mode set is about to happen.
 unsigned int aml_dv_on(unsigned int mode, bool force_hdmi = false) {
+  if (!s_dvEngagingAtModeSet) check(!nativeSession.AcquireDecoder(), "engage bypassed native admission");
   g_engages.push_back({s_dvEngagingAtModeSet});
+  if (throwEngage) throw std::runtime_error("native failure");
   if (!force_hdmi && !s_dvEngagingAtModeSet)
     aml_dv_trigger_update_resolution(StreamHdrType::HDR_TYPE_DOLBYVISION);
   return mode;
 }
 
+void aml_dv_engage_deferred_disc(bool, const std::shared_ptr<const void>& session = {});
+@PENDING@
 @ENGAGE@
 
 @STALE@
@@ -160,8 +188,9 @@ void CreateNewWindow(const RESOLUTION_INFO& res) {
 }
 
 // ---- GfxContext / ServiceBroker ---------------------------------------------
+bool g_fullscreen=true;
 struct CGfxContext {
-  bool IsFullScreenVideo() { return true; }
+  bool IsFullScreenVideo() { return g_fullscreen; }
   bool IsFullScreenRoot() { return true; }
   void SetHDRType(StreamHdrType) {}
   bool SetVideoResolution(RESOLUTION, bool) { if (!g_windowReady) return false; CreateNewWindow(RESOLUTION_INFO{}); return true; }
@@ -182,12 +211,22 @@ struct Picture {
   std::string stereoMode;
   int iWidth = 3840, iHeight = 2160;
   StreamHdrType hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+  std::shared_ptr<const void> amlDVSession;
 };
 struct PlayerPort { void VideoParamsChange() {} };
 struct Renderer { void Update() {} };
 class CRenderManager {
 public:
   CCriticalSection m_resolutionlock;
+  bool m_closing=false;
+  enum {STATE_CONFIGURED};int m_renderState=STATE_CONFIGURED;
+  std::shared_ptr<const void> m_deferredDVSession;
+  std::unique_ptr<CAMLNativeTransaction> m_deferredDVNative;
+  bool m_deferredDVResolutionAttempted{false};
+  void CancelDeferredDV();bool ContinueDeferredDV(bool);
+  void FrameDeferredDV() {
+@FRAME@
+  }
   bool m_bTriggerUpdateResolution = false;
   StreamHdrType m_hdrType_override = StreamHdrType::HDR_TYPE_NONE;
   float m_fps = 23.976f;
@@ -205,10 +244,14 @@ void aml_dv_trigger_update_resolution(StreamHdrType hdrType) {
   g_render.m_hdrType_override = hdrType;
 }
 
+@CONTINUATION@
 @UPDATE@
 
 // A disc session's first segment: decoder open deferred the engage.
 void deferred_open() {
+  g_render.CancelDeferredDV();
+  s_dvPlaybackSession=std::make_shared<const int>(0);
+  g_render.m_picture.amlDVSession=s_dvPlaybackSession;
   g_engages.clear();
   g_modeSets = 0;
   s_dvPlaybackActive = true;
@@ -293,51 +336,144 @@ void test_no_decoder_waits_quietly() {
   // A short first segment closed under the hold: no decoder, deferral pending.
   deferred_open();
   s_dvPlaybackActive = false;
+  s_dvPlaybackSession.reset(); // actual close invalidates the original renderer identity
   g_infoLogs = 0;
   g_nowMs += 3500;
   for (int frame = 0; frame < 100; ++frame)
-    aml_dv_engage_stale_deferred_disc();
+    g_render.ContinueDeferredDV(true);
   check(g_engages.empty() && s_dvDiscDeferred, "no decoder: engaged or lost the deferral");
   check(g_infoLogs <= 1, "no decoder: last-resort check logs every frame");
   // The next segment's decoder open re-arms it; with no mode set it engages at 3 s.
   s_dvPlaybackActive = true;
+  s_dvPlaybackSession=std::make_shared<const int>(0);
+  g_render.m_picture.amlDVSession=s_dvPlaybackSession;
   s_dvDiscDeferredSinceMs = g_nowMs;
-  aml_dv_engage_stale_deferred_disc();
+  g_render.ContinueDeferredDV(true);
   check(g_engages.empty(), "re-armed: engaged before 3 s");
   g_nowMs += 3100;
-  aml_dv_engage_stale_deferred_disc();
+  g_render.ContinueDeferredDV(true);
   check(g_engages.size() == 1 && !s_dvDiscDeferred, "re-armed: last resort did not engage");
   g_render.UpdateResolution();
 }
 
+void test_background_fallback() {
+  g_fullscreen=false;g_refreshSwitching=0;deferred_open();
+  g_render.FrameDeferredDV();
+  check(g_engages.empty(),"background engaged before timer");
+  g_nowMs+=3100;
+  auto permit=std::make_unique<CAMLSession::Permit>(nativeSession.AcquireDecoder());
+  g_render.FrameDeferredDV();
+  check(bool(g_render.m_deferredDVNative),"background fallback suppressed by resolution trigger");
+  auto* retained=g_render.m_deferredDVNative.get();g_render.FrameDeferredDV();
+  check(retained==g_render.m_deferredDVNative.get(),"background pending identity replaced");
+  permit.reset();g_render.FrameDeferredDV();
+  check(g_engages.size()==1&&!s_dvDiscDeferred,"background retry did not engage");
+  g_fullscreen=true;deferred_open();
+  permit=std::make_unique<CAMLSession::Permit>(nativeSession.AcquireDecoder());
+  g_render.FrameDeferredDV();retained=g_render.m_deferredDVNative.get();
+  check(retained!=nullptr,"normal pending attempt cancelled by stale poll");
+  g_render.FrameDeferredDV();check(retained==g_render.m_deferredDVNative.get(),"normal pending attempt replaced");
+  // Leaving fullscreen must not strand an already pending normal attempt.
+  g_fullscreen=false;g_render.FrameDeferredDV();
+  check(!g_render.m_deferredDVNative,"background retained pre-timer normal fence");
+  g_nowMs+=3100;permit.reset();g_render.FrameDeferredDV();
+  check(g_engages.size()==1,"fullscreen transition stranded fallback");
+  g_fullscreen=true;g_refreshSwitching=1;
+}
+
+void test_pending_identity_and_cleanup() {
+  g_refreshSwitching=0;g_modeChanging=false;deferred_open();
+  auto original=g_render.m_picture.amlDVSession;
+  auto permit=std::make_unique<CAMLSession::Permit>(nativeSession.AcquireDecoder());
+  check(bool(*permit),"decoder permit");
+  g_render.UpdateResolution();
+  check(g_engages.empty()&&g_render.m_bTriggerUpdateResolution&&bool(g_render.m_deferredDVNative),"pending effect/trigger lost");
+  auto* retained=g_render.m_deferredDVNative.get();g_render.UpdateResolution();
+  check(g_render.m_deferredDVNative.get()==retained,"pending transaction replaced");
+  s_dvPlaybackSession=std::make_shared<const int>(0); // replacement opens before old renderer resumes
+  g_render.UpdateResolution();
+  check(!g_render.m_deferredDVNative&&bool(nativeSession.AcquireDecoder()),"obsolete pending fence not cancelled");
+  aml_dv_cancel_deferred_session(original);
+  check(bool(s_dvPlaybackSession),"old close cancelled replacement identity");
+  permit.reset();g_render.UpdateResolution();
+  check(g_engages.empty()&&s_dvDiscDeferred&&!g_render.m_deferredDVNative,"old renderer consumed replacement");
+  // Native utility also rejects old identity after admission (read/effect boundary).
+  {CAMLNativeTransaction gate;check(gate.TryBegin(),"gate");aml_dv_engage_deferred_disc(false,original);}
+  check(g_engages.empty()&&s_dvDiscDeferred,"effect recheck missing");
+  g_render.m_picture.amlDVSession=s_dvPlaybackSession;g_render.m_bTriggerUpdateResolution=true;
+  g_render.UpdateResolution();check(g_engages.size()==1,"new session did not engage");
+  deferred_open();permit=std::make_unique<CAMLSession::Permit>(nativeSession.AcquireDecoder());
+  g_render.UpdateResolution();g_render.m_closing=true;g_render.ContinueDeferredDV(false);
+  check(!g_render.m_deferredDVNative&&bool(nativeSession.AcquireDecoder()),"close failed to cancel fence");
+  permit.reset();g_render.m_closing=false;
+  deferred_open();original=g_render.m_picture.amlDVSession;
+  permit=std::make_unique<CAMLSession::Permit>(nativeSession.AcquireDecoder());g_render.UpdateResolution();
+  aml_dv_cancel_deferred_session(original);g_render.UpdateResolution();
+  check(!g_render.m_deferredDVNative&&g_engages.empty()&&bool(nativeSession.AcquireDecoder()),"requested close did not cancel pending work");
+  permit.reset();
+  deferred_open();throwEngage=true;
+  try{g_render.UpdateResolution();check(false,"expected native failure");}catch(const std::runtime_error&){}
+  throwEngage=false;
+  check(!g_render.m_deferredDVNative&&!s_dvEngagingAtModeSet&&bool(nativeSession.AcquireDecoder()),"exception leaked admission");
+  auto count=g_engages.size();g_render.UpdateResolution();check(g_engages.size()==count,"exception replayed engage");
+  deferred_open();permit=std::make_unique<CAMLSession::Permit>(nativeSession.AcquireDecoder());
+  g_render.UpdateResolution();g_windowReady=false;g_render.UpdateResolution();
+  check(!g_render.m_deferredDVNative&&g_render.m_bTriggerUpdateResolution,"display wait retained native fence/lost intent");
+  g_windowReady=true;permit.reset();g_render.UpdateResolution();
+  check(g_engages.size()==1,"display recovery did not retry");
+}
 int main() {
   try {
+    auto display=CAMLSession::FenceDisplay();check(CAMLSession::TryBeginDisplay(display),"display");
+    check(CAMLSession::EndDisplay(display,CAMLSession::DisplayPhase::READY),"ready");
+    auto stream=nativeSession.Fence();check(nativeSession.BeginMutation(stream)&&nativeSession.Complete(stream,true),"session");
     test_mode_set();
     test_pending_window();
     test_window_without_mode_switch();
     test_forced_switch();
     test_refresh_switching_off();
     test_no_decoder_waits_quietly();
-    std::cout << "PASS: 6 disc DV deferred-engage scenarios\n";
+    test_pending_identity_and_cleanup();
+    test_background_fallback();
+    std::cout << "PASS: 6 disc DV policy scenarios plus background fallback and original-session admission/cleanup\n";
   } catch (const std::exception& e) {
     std::cerr << "FAIL: " << e.what() << '\n';
     return 1;
   }
 }
 '''
-    for key, value in [("ENGAGE", engage), ("STALE", stale), ("GATE", gate),
-                       ("UPDATE", update)]:
+    for key, value in [("ENGAGE", engage), ("PENDING", pending), ("CONTINUATION", continuation), ("STALE", stale), ("GATE", gate),
+                       ("UPDATE", update), ("FRAME", frame)]:
         harness = harness.replace(f"@{key}@", value)
-    with tempfile.TemporaryDirectory(prefix="dv-disc-hold-") as temp:
-        cpp = pathlib.Path(temp) / "test.cpp"
-        exe = pathlib.Path(temp) / "test"
-        cpp.write_text(harness)
-        subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
-                        "-Wno-unused-parameter", "-Wno-unused-variable",
-                        "-fsanitize=address,undefined", "-g",
-                        str(cpp), "-o", str(exe)], check=True)
-        result = subprocess.run([str(exe)], timeout=15)
-        raise SystemExit(result.returncode)
+    def run(code, negative=False):
+        with tempfile.TemporaryDirectory(prefix="dv-disc-hold-") as temp:
+            cpp = pathlib.Path(temp) / "test.cpp"
+            exe = pathlib.Path(temp) / "test"
+            cpp.write_text(code)
+            subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
+                            "-Wno-unused-parameter", "-Wno-unused-variable", "-pthread",
+                            "-fsanitize=address,undefined", "-fno-pie", "-no-pie", "-g",
+                            "-I", str(ROOT/'xbmc'), str(cpp), "-o", str(exe)], check=True)
+            result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=15)
+            if negative:
+                assert result.returncode and ('FAIL:' in result.stderr or 'Assertion' in result.stderr), result.stdout+result.stderr
+            else:
+                assert result.returncode==0,result.stdout+result.stderr
+                print(result.stdout.strip())
+    run(harness)
+    if args.negative_controls:
+        for label,old,new in [
+            ('bypass admission','if (!m_deferredDVNative->TryBegin())','if (false && !m_deferredDVNative->TryBegin())'),
+            ('ignore snapshot identity','if (!session || session != std::atomic_load(&s_dvPlaybackSession))','if (false)'),
+            ('ignore effect identity','if (!atModeSet && (!session || session != std::atomic_load(&s_dvPlaybackSession)))','if (false)'),
+            ('retain fence on cancellation','m_deferredDVNative.reset();','/* leaked pending fence */'),
+            ('clear follow-up after engage','aml_dv_engage_deferred_disc(false, session);\n  }','aml_dv_engage_deferred_disc(false, session);\n    m_bTriggerUpdateResolution = false;\n  }'),
+            ('ignore stale timer','aml_steady_ms() - since >= 3000','true'),
+            ('suppress background fallback','else if (!m_deferredDVResolutionAttempted || !m_deferredDVNative)','else if (!m_bTriggerUpdateResolution)'),
+        ]:
+            assert old in harness,label
+            run(harness.replace(old,new),True);print('REJECTED:',label)
+
 
 
 if __name__ == "__main__":

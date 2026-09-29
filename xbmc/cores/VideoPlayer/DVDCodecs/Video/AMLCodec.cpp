@@ -1979,6 +1979,8 @@ bool CAMLCodec::BeginLifecycle(Lifecycle operation, std::function<void()> before
   }
   if (m_lifecycle != operation)
   {
+    if (operation == Lifecycle::CLOSE || operation == Lifecycle::REOPEN)
+      aml_dv_cancel_deferred_session(m_dvSession);
     // Select the prefix only with the new operation. Retries, including nested
     // calls from settings callbacks, cannot replace or replay the original work.
     m_beforeClose = operation == Lifecycle::CLOSE ? std::move(beforeClose) : nullptr;
@@ -2339,8 +2341,12 @@ bool CAMLCodec::OpenDecoderInternal()
   aml_dv_set_active_area_geometry(hints.width, hints.height,
                                   hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION);
 
+  m_dvSession.reset();
   if (m_dvOpened)
-    aml_dv_open(hints.hdrType, hints.bitdepth, hints.colorPrimaries);
+  {
+    m_dvSession = std::make_shared<const unsigned char>(0);
+    aml_dv_open(hints.hdrType, hints.bitdepth, hints.colorPrimaries, false, m_dvSession);
+  }
 
   // L5 active area detection: only for native DV content (not VS10 SDR/HDR10/HLG
   // conversions) and not for Profile 9 (AVC-based, probe causes h264 decode errors).
@@ -2644,6 +2650,7 @@ void CAMLCodec::CloseDecoderInternal()
   if (m_dvOpened)
     aml_dv_close();
   m_dvOpened = false;
+  m_dvSession.reset();
   m_decoderNeedsClose = false;
 }
 
@@ -3115,6 +3122,8 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     return CDVDVideoCodec::VC_NONE;
   if (!m_opened)
     return CDVDVideoCodec::VC_ERROR;
+
+  videoPicture.amlDVSession = m_dvSession;
 
   struct vdec_info vi;
   int ret = EAGAIN;

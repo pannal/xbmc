@@ -135,6 +135,7 @@ private:
   static std::mutex s_captureMutex;
   static std::weak_ptr<CAMLCodec> s_captureCodec;
   CAMLSession m_session;
+  std::shared_ptr<const void> m_dvSession; // native lifecycle owner; copied under decoder admission
   Lifecycle m_lifecycle{Lifecycle::NONE};
   CAMLSession::Request m_lifecycleRequest;
   std::shared_ptr<CAMLSession::NativeRequest> m_nativeLifecycleRequest;

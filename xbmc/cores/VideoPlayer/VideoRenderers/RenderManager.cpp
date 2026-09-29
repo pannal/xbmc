@@ -230,6 +230,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     request = m_lifecycle->Submit([this, payload, fps, orientation, buffers, generation,
                                    native = std::shared_ptr<CAMLNativeTransaction>{}]() mutable
                                     -> std::optional<bool> {
+      CancelDeferredDV();
       if (m_closing)
         return false;
       {
@@ -418,9 +419,12 @@ void CRenderManager::FrameMove()
   ClearFrameSelection();
   bool firstFrame = m_configuredFramePending;
   m_configuredFramePending = false;
+  m_deferredDVResolutionAttempted = false;
   UpdateResolution();
-  if (CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())
-    aml_dv_engage_stale_deferred_disc();
+  if (!CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())
+    CancelDeferredDV();
+  else if (!m_deferredDVResolutionAttempted || !m_deferredDVNative)
+    ContinueDeferredDV(true);
 
   {
     std::unique_lock<CCriticalSection> lock(m_statelock);
@@ -630,6 +634,7 @@ std::shared_ptr<CRenderLifecycle::Request> CRenderManager::RequestUnInit()
     request = m_lifecycle->Submit([this, generation,
                                    native = std::shared_ptr<CAMLNativeTransaction>{}]() mutable
                                     -> std::optional<bool> {
+      CancelDeferredDV();
       {
         std::unique_lock<CCriticalSection> state(m_statelock);
         if (generation != m_lifecycleGeneration)
@@ -669,6 +674,7 @@ std::shared_ptr<CRenderLifecycle::Request> CRenderManager::RequestFlush(bool sav
       if (generation != m_lifecycleGeneration)
         return false;
     }
+    CancelDeferredDV();
     const bool result = FlushOnMain(saveBuffers);
     if (result && newSession)
     {
@@ -1373,6 +1379,55 @@ void CRenderManager::UpdateLatencyTweak()
           refresh, res.iScreenHeight));
 }
 
+void CRenderManager::CancelDeferredDV()
+{
+  m_deferredDVNative.reset();
+  m_deferredDVSession.reset();
+}
+
+bool CRenderManager::ContinueDeferredDV(bool staleOnly)
+{
+  if (!staleOnly)
+    m_deferredDVResolutionAttempted = true;
+  if (m_closing || m_renderState != STATE_CONFIGURED)
+  {
+    CancelDeferredDV();
+    return true;
+  }
+  const auto session = m_picture.amlDVSession;
+  if (session != m_deferredDVSession)
+    CancelDeferredDV();
+  const bool pending = aml_dv_deferred_disc_pending(session, staleOnly);
+  if (pending)
+  {
+    m_deferredDVSession = session;
+    if (!m_deferredDVNative)
+      m_deferredDVNative = std::make_unique<CAMLNativeTransaction>();
+    if (!m_deferredDVNative->TryBegin())
+      return false;
+  }
+  else
+    CancelDeferredDV();
+
+  // Consume before effects: exceptions cannot replay an admitted request. The
+  // utility rechecks session identity under the DV lock before touching state.
+  auto native = std::move(m_deferredDVNative);
+  m_deferredDVSession.reset();
+  if (!staleOnly)
+  {
+    m_bTriggerUpdateResolution = false;
+    m_hdrType_override = StreamHdrType::HDR_TYPE_NONE;
+  }
+  if (pending)
+  {
+    if (staleOnly)
+      aml_dv_engage_stale_deferred_disc(session);
+    else
+      aml_dv_engage_deferred_disc(false, session);
+  }
+  return true;
+}
+
 void CRenderManager::UpdateResolution(bool force)
 {
   std::unique_lock<CCriticalSection> lock(m_resolutionlock);
@@ -1401,6 +1456,7 @@ void CRenderManager::UpdateResolution(bool force)
   
         RESOLUTION res = CResolutionUtils::ChooseBestResolution(m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
         CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(actual_hdrType);
+        CancelDeferredDV(); // Release a pending native fence before display work.
         if (!CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false))
           return; // Retain resolution/HDR intent until actual window completion.
         UpdateLatencyTweak();
@@ -1412,15 +1468,17 @@ void CRenderManager::UpdateResolution(bool force)
           m_pRenderer->Update();
       }
       if (!CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())
+      {
+        CancelDeferredDV();
         return; // Do not bypass a pending/failed display with the no-mode DV engage.
-      m_bTriggerUpdateResolution = false;
-      m_hdrType_override = StreamHdrType::HDR_TYPE_NONE;
+      }
       // No mode set (refresh switching off, already at the title's mode, or a
       // window change without a mode switch): a disc session's deferred first
       // DV engage is applied here instead.
       // After the reset, so the resolution update aml_dv_on() may request
       // (DV-Std colour depth, 60 Hz VS10 to DV) is kept for the next frame.
-      aml_dv_engage_deferred_disc(false);
+      if (!ContinueDeferredDV(false))
+        return;
       m_playerPort->VideoParamsChange();
     }
   }

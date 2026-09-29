@@ -95,8 +95,8 @@ def main():
              'if (!CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())',
              'if (false && !CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())'),
             ('stale engage bypasses display readiness',
-             'if (CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())',
-             'if (true || CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())'),
+             'if (!CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())\n    CancelDeferredDV();',
+             'if (false)\n    CancelDeferredDV();'),
             ('failed swap applies kernel switches', 'else\n    m_presentResult = PresentResult::SWAP_FAILED;',
              'else {ApplyPendingKernelSwitch();m_presentResult = PresentResult::SWAP_FAILED;}'),
         ]
@@ -264,6 +264,14 @@ public:
   enum {STATE_UNCONFIGURED,STATE_CONFIGURING,STATE_CONFIGURED};
   int m_renderState{STATE_CONFIGURED};
   void ClearFrameSelection(){event("clear-selection");}
+  bool m_deferredDVResolutionAttempted{false};
+  bool m_deferredDVNative{false};
+  void CancelDeferredDV(){}
+  bool ContinueDeferredDV(bool stale){
+    if(stale)aml_dv_engage_stale_deferred_disc();
+    else {m_deferredDVResolutionAttempted=true;m_bTriggerUpdateResolution=false;m_hdrType_override=StreamHdrType::HDR_TYPE_NONE;aml_dv_engage_deferred_disc(false);}
+    return true;
+  }
   void FrameWait(std::chrono::milliseconds){event("frame-wait");}
   void CheckEnableClockSync(){}
   void ProcessPresentationQueue(){}

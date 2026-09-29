@@ -43,6 +43,7 @@ def harness():
     close = function(codec, 'void CAMLCodec::CloseDecoderInternal()')
     config_free = close[close.index('  free(am_private->vcodec.config);'):close.index('  // return tsync')]
     prelude = prelude.replace('@CONFIG_FREE@', config_free)
+    prelude = prelude.replace('@DV_CANCEL@', function((ROOT / 'xbmc/utils/AMLUtils.cpp').read_text(), 'void aml_dv_cancel_deferred_session('))
     return prelude + methods + TESTS
 
 
@@ -178,10 +179,13 @@ struct Dll {
   std::vector<int> modes;
   template<class Codec> void codec_set_cntl_mode(Codec*,int mode) { modes.push_back(mode); }
 };
+std::shared_ptr<const void> s_dvPlaybackSession;
+@DV_CANCEL@
 class CAMLCodec {
 public:
   enum class Lifecycle {NONE,OPEN,RESET,REOPEN,CLOSE};
   CAMLSession m_session;
+  std::shared_ptr<const void> m_dvSession;
   Lifecycle m_lifecycle{Lifecycle::NONE};
   CAMLSession::Request m_lifecycleRequest;
   std::shared_ptr<CAMLSession::NativeRequest> m_nativeLifecycleRequest;

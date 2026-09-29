@@ -32,6 +32,7 @@ void VideoPicture::Reset()
   if (videoBuffer)
     videoBuffer->Release();
   videoBuffer = nullptr;
+  amlDVSession.reset();
   pts = DVD_NOPTS_VALUE;
   dts = DVD_NOPTS_VALUE;
   iFlags = 0;
@@ -104,6 +105,8 @@ bool VideoPicture::CompareDisplayMetadata(const VideoPicture& pic) const
 
 bool VideoPicture::IsSameParams(const VideoPicture& pic) const
 {
+  if (amlDVSession != pic.amlDVSession)
+    return false;
   return this->iWidth == pic.iWidth && this->iHeight == pic.iHeight &&
          this->iDisplayWidth == pic.iDisplayWidth && this->iDisplayHeight == pic.iDisplayHeight &&
          this->stereoMode == pic.stereoMode && this->color_primaries == pic.color_primaries &&

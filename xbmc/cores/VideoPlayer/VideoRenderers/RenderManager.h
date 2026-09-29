@@ -23,6 +23,7 @@
 #include "utils/Geometry.h"
 #include "utils/StreamDetails.h"
 #include "windowing/Resolution.h"
+#include "windowing/amlogic/AMLNativeTransaction.h"
 
 #include <array>
 #include <atomic>
@@ -172,6 +173,11 @@ protected:
   bool IsGuiLayer();
 
   bool Configure();
+  bool ContinueDeferredDV(bool staleOnly);
+  void CancelDeferredDV();
+  bool m_deferredDVResolutionAttempted{false}; // reset before each FrameMove resolution attempt
+  std::shared_ptr<const void> m_deferredDVSession;
+  std::unique_ptr<CAMLNativeTransaction> m_deferredDVNative; // original main owner only
   void PreInitOnMain();
   void UnInitOnMain();
   bool FlushOnMain(bool saveBuffers);

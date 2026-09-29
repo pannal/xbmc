@@ -106,7 +106,19 @@ static void CompetingNativeAndStaleSession(){
   assert(!codec.ContinueLifecycle());assert(codec.trace.empty() && !codec.m_nativeLifecycleRequest);
   codec.m_lifecycleRequest=exact;assert(codec.ContinueLifecycle());
 }
-int main(){AcrossSessions();ExactNestedSession();NestedEffectsAndFailure();ReplacementAndTransfer();CompetingNativeAndStaleSession();}
+static void DeferredSessionCancellation(){
+  for(auto operation:{CAMLCodec::Lifecycle::CLOSE,CAMLCodec::Lifecycle::REOPEN}){
+    CAMLCodec codec;assert(codec.OpenDecoder());
+    codec.m_dvSession=std::make_shared<const int>(0);s_dvPlaybackSession=codec.m_dvSession;
+    auto permit=std::make_unique<CAMLSession::Permit>(codec.m_session.AcquireDecoder());
+    assert(!codec.BeginLifecycle(operation));assert(!s_dvPlaybackSession);
+    permit.reset();assert(codec.ContinueLifecycle());assert(codec.CloseDecoder());
+  }
+  CAMLCodec codec;assert(codec.OpenDecoder());codec.m_dvSession=std::make_shared<const int>(0);
+  auto replacement=std::make_shared<const int>(1);s_dvPlaybackSession=replacement;
+  assert(codec.CloseDecoder());assert(s_dvPlaybackSession==replacement);s_dvPlaybackSession.reset();
+}
+int main(){DeferredSessionCancellation();AcrossSessions();ExactNestedSession();NestedEffectsAndFailure();ReplacementAndTransfer();CompetingNativeAndStaleSession();}
 '''
 
 

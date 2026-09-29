@@ -20,6 +20,7 @@ extern "C" {
 #include <libavutil/mastering_display_metadata.h>
 }
 
+#include <memory>
 #include <vector>
 #include <string>
 #include <map>
@@ -46,6 +47,8 @@ public:
   bool IsSameParams(const VideoPicture& pic) const;
 
   CVideoBuffer *videoBuffer = nullptr;
+  // Original AML DV-open identity, retained with the picture across renderer retries.
+  std::shared_ptr<const void> amlDVSession;
 
   double pts; // timestamp in seconds, used in the CVideoPlayer class to keep track of pts
   double dts;

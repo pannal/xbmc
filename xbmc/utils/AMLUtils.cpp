@@ -90,6 +90,7 @@ static bool s_dvDiscHold = false;
 // mode set that follows (aml_dv_engage_deferred_disc). Guarded by the DV-core
 // lock.
 static bool s_dvDiscDeferred = false;
+static std::shared_ptr<const void> s_dvPlaybackSession; // atomic publication; no native reads
 static unsigned int s_dvDiscDeferredMode = DOLBY_VISION_OUTPUT_MODE_BYPASS;
 // Set while that engage runs inside the mode set: the HDMI output is
 // re-evaluated by the mode set itself, at the new mode.
@@ -1550,7 +1551,8 @@ unsigned int aml_dv_dolby_vision_mode()
   return dolby_vision_mode.Get<unsigned int>().value();
 }
 
-void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries colorPrimaries, bool swDecoded)
+void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries colorPrimaries, bool swDecoded,
+                 std::shared_ptr<const void> session)
 {
   // Detect PM4K once at playback start for OSD visibility override.
   // MUST stay above the CDVCoreGuard: GetWindow()/GetProperty() take the gfx
@@ -1564,6 +1566,7 @@ void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries 
 
   CDVCoreGuard dvlock(__FUNCTION__);
   aml_dv_dump_state("dv_open/pre");
+  std::atomic_store(&s_dvPlaybackSession, std::move(session));
   s_dvPlaybackActive = true;
   s_pm4kHome = pm4kHome;
   s_pm4kActive = pm4kActive;
@@ -1653,6 +1656,7 @@ void aml_dv_close()
 
   CDVCoreGuard dvlock(__FUNCTION__);
   aml_dv_dump_state("dv_close/pre");
+  std::atomic_store(&s_dvPlaybackSession, std::shared_ptr<const void>{});
   s_dvPlaybackActive = false;
   s_pm4kActive = false;
   s_pm4kHome = nullptr;
@@ -1725,9 +1729,28 @@ void aml_dv_set_disc_hold(bool hold)
   }
 }
 
-void aml_dv_engage_deferred_disc(bool atModeSet)
+void aml_dv_cancel_deferred_session(const std::shared_ptr<const void>& session)
+{
+  auto expected = session;
+  std::atomic_compare_exchange_strong(&s_dvPlaybackSession, &expected,
+                                     std::shared_ptr<const void>{});
+}
+
+bool aml_dv_deferred_disc_pending(const std::shared_ptr<const void>& session, bool staleOnly)
+{
+  if (!session || session != std::atomic_load(&s_dvPlaybackSession))
+    return false;
+  const int64_t since = s_dvDiscDeferredSinceMs.load();
+  return since != 0 && (!staleOnly || aml_steady_ms() - since >= 3000);
+}
+
+void aml_dv_engage_deferred_disc(bool atModeSet, const std::shared_ptr<const void>& session)
 {
   CDVCoreGuard dvlock(__FUNCTION__);
+  // The admitted window mode-set owns current display state. A renderer must
+  // instead match the original decoder identity carried by its picture.
+  if (!atModeSet && (!session || session != std::atomic_load(&s_dvPlaybackSession)))
+    return;
   if (!s_dvDiscDeferred)
     return;
   // Between two segments (no decoder open) it stays pending for the next one;
@@ -1746,23 +1769,25 @@ void aml_dv_engage_deferred_disc(bool atModeSet)
             aml_dv_output_mode_to_string(s_dvDiscDeferredMode),
             atModeSet ? "before the mode set" : "without a mode set");
   s_dvEngagingAtModeSet = atModeSet;
-  aml_dv_on(s_dvDiscDeferredMode);
+  try
+  {
+    aml_dv_on(s_dvDiscDeferredMode);
+  }
+  catch (...)
+  {
+    s_dvEngagingAtModeSet = false;
+    throw;
+  }
   s_dvEngagingAtModeSet = false;
   aml_dv_dump_state("disc_deferred/engaged");
 }
 
-void aml_dv_engage_stale_deferred_disc()
+void aml_dv_engage_stale_deferred_disc(const std::shared_ptr<const void>& session)
 {
-  // The mode set normally follows the decoder open by ~1.5 s. Past this, none
-  // is coming (e.g. playback not fullscreen): engage without one rather than
-  // leave the title without DV output.
-  constexpr int64_t STALE_MS = 3000;
-  const int64_t since = s_dvDiscDeferredSinceMs.load();
-  if (since == 0 || aml_steady_ms() - since < STALE_MS)
+  if (!aml_dv_deferred_disc_pending(session, true))
     return;
-  CLog::Log(LOGINFO, "AMLUtils::{} - disc session: no mode set within {} ms", __FUNCTION__,
-            STALE_MS);
-  aml_dv_engage_deferred_disc(false);
+  CLog::Log(LOGINFO, "AMLUtils::{} - disc session: no mode set within 3000 ms", __FUNCTION__);
+  aml_dv_engage_deferred_disc(false, session);
 }
 
 bool aml_dv_playback_active()
