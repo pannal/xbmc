@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <string>
+#include <stdexcept>
 #include <regex>
 #include <chrono>
 #include <vector>
@@ -822,7 +823,8 @@ std::string aml_dv_type_to_string(enum DV_TYPE type)
   return type_string;
 }
 
-void set_vsvdb_payload_ver(enum DV_TYPE dv_type, int max_lum_nits_value, int source_max_pq)
+void set_vsvdb_payload_ver(enum DV_TYPE dv_type, int max_lum_nits_value, int source_max_pq,
+                           const AMLDVCapability& cap)
 {
   int cs(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_CS));
 
@@ -831,11 +833,11 @@ void set_vsvdb_payload_ver(enum DV_TYPE dv_type, int max_lum_nits_value, int sou
       (max_lum_nits_value < 400) ||
       ((max_lum_nits_value > 6450) && (source_max_pq == 4095)))
   {
-    CalculateVSVDBPayload_2();
+    CalculateVSVDBPayload_2(cap);
   }
   else
   {
-    CalculateVSVDBPayload();
+    CalculateVSVDBPayload(cap);
   }
 }
 
@@ -882,10 +884,9 @@ unsigned int aml_dv_on(unsigned int mode, bool force_hdmi)
   unsigned int xbmc_dv_vsvdb_source_lum_limit_num = 0;
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_vsvdb_source_lum_limit_num", xbmc_dv_vsvdb_source_lum_limit_num);
 
-  xbmc_dv_cap::dv_ver_i = 0;
-  aml_get_dv_cap();
+  const auto cap = aml_read_dv_cap();
   enum DV_COLORIMETRY colorimetry = DV_COLORIMETRY_AMLOGIC;
-  if (xbmc_dv_cap::dv_ver_i == 2) colorimetry = DV_COLORIMETRY_REMOVE;
+  if (cap.Valid() && cap.dv_ver_i == 2) colorimetry = DV_COLORIMETRY_REMOVE;
   CSysfsPath("/sys/module/hdmitx20/parameters/dovi_tv_led_bt2020", (colorimetry == DV_COLORIMETRY_BT2020NC) ? 'Y' : 'N');
   CSysfsPath("/sys/module/hdmitx20/parameters/dovi_tv_led_no_colorimetry", (colorimetry == DV_COLORIMETRY_REMOVE) ? 'Y' : 'N');
 
@@ -1013,7 +1014,7 @@ unsigned int aml_dv_on(unsigned int mode, bool force_hdmi)
   unsigned int xbmc_dv_vsvdb_inject_num = 0;
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_vsvdb_inject_num", xbmc_dv_vsvdb_inject_num);
 
-  set_vsvdb_payload_ver(dv_type, max_lum_nits_value, source_max_pq);
+  set_vsvdb_payload_ver(dv_type, max_lum_nits_value, source_max_pq, cap);
 
   std::string dv_dolby_vsvdb_payload(settings()->GetString(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_PAYLOAD));
   if ((dv_vp != 0) && (dv_vp_tm > 1))
@@ -1180,78 +1181,72 @@ unsigned int aml_dv_on(unsigned int mode, bool force_hdmi)
   return mode;
 }
 
-void aml_get_dv_cap()
+AMLDVCapability aml_read_dv_cap()
 {
-  xbmc_dv_cap::edid_pnpid = "";
+  AMLDVCapability result;
   CSysfsPath edid_dump{"/sys/class/amhdmitx/amhdmitx0/edid"};
-  if (edid_dump.Exists())
+  const auto edid = edid_dump.Exists() ? edid_dump.Get<std::string>() : std::nullopt;
+  if (edid)
   {
-    std::string parsed = edid_dump.Get<std::string>().value();
-    size_t mpos = parsed.find("Rx Manufacturer Name:");
-    if (mpos != std::string::npos)
+    const size_t marker = edid->find("Rx Manufacturer Name:");
+    if (marker != std::string::npos)
     {
-      size_t lstart = parsed.find_first_not_of(" \t", mpos + 21);
-      size_t lend = parsed.find('\n', lstart);
-      if (lstart != std::string::npos && lend != std::string::npos && lend > lstart)
-        xbmc_dv_cap::edid_pnpid = parsed.substr(lstart, lend - lstart);
+      const size_t start = edid->find_first_not_of(" \t", marker + 21);
+      const size_t end = edid->find('\n', start);
+      if (start != std::string::npos && end != std::string::npos && end > start)
+        result.edid_pnpid = edid->substr(start, end - start);
     }
   }
 
-  if (aml_display_support_dv())
+  CSysfsPath dv_cap{"/sys/devices/virtual/amhdmitx/amhdmitx0/dv_cap"};
+  const auto text = dv_cap.Exists() ? dv_cap.Get<std::string>() : std::nullopt;
+  if (!text)
+    return result;
+  if (text->find("The Rx don't support DolbyVision") != std::string::npos)
   {
-    CSysfsPath dv_cap{"/sys/devices/virtual/amhdmitx/amhdmitx0/dv_cap"};
-    if (dv_cap.Exists())
-    {
-      try
-      {
-        std::string valstr = dv_cap.Get<std::string>().value();
+    result.status = AMLDVCapability::Status::UNSUPPORTED;
+    return result;
+  }
 
-        int pos = valstr.find(": V");
-        xbmc_dv_cap::dv_ver_i = std::stoi(valstr.substr(pos+3, 1));
-
-        pos = valstr.find("h: ");
-        xbmc_dv_cap::dv_len_i = std::stoi(valstr.substr(pos+3, 2)) + 1;
-
-        pos = valstr.find("B: ");
-        xbmc_dv_cap::dv_vsvdb_s = valstr.substr(pos+3, xbmc_dv_cap::dv_len_i);
-
-        pos = valstr.find("M: ");
-        int pos2 = valstr.find("nti");
-        xbmc_dv_cap::dv_max_v1_i = std::stoi(valstr.substr(pos+3, pos2-pos-1));
-
-        pos = valstr.find("Q: ");
-        pos2 = valstr.find("pqi");
-        xbmc_dv_cap::dv_max_v2_i = std::stoi(valstr.substr(pos+3, pos2-pos-1));
-
-        pos = valstr.find("Rx: ");
-        pos2 = valstr.find("rxi");
-        xbmc_dv_cap::dv_rx_i = std::stoi(valstr.substr(pos+3, pos2-pos-1));
-
-        pos = valstr.find("Ry: ");
-        pos2 = valstr.find("ryi");
-        xbmc_dv_cap::dv_ry_i = std::stoi(valstr.substr(pos+3, pos2-pos-1));
-
-        pos = valstr.find("Gx: ");
-        pos2 = valstr.find("gxi");
-        xbmc_dv_cap::dv_gx_i = std::stoi(valstr.substr(pos+3, pos2-pos-1));
-
-        pos = valstr.find("Gy: ");
-        pos2 = valstr.find("gyi");
-        xbmc_dv_cap::dv_gy_i = std::stoi(valstr.substr(pos+3, pos2-pos-1));
-
-        pos = valstr.find("Bx: ");
-        pos2 = valstr.find("bxi");
-        xbmc_dv_cap::dv_bx_i = std::stoi(valstr.substr(pos+3, pos2-pos-1));
-
-        pos = valstr.find("By: ");
-        pos2 = valstr.find("byi");
-        xbmc_dv_cap::dv_by_i = std::stoi(valstr.substr(pos+3, pos2-pos-1));
-      }
-      catch (const std::exception& e)
-      {
-        CLog::Log(LOGERROR, "AMLUtils::{} - failed to parse dv_cap: {}", __FUNCTION__, e.what());
-      }
-    }
+  // Parse into a private candidate: a late parse failure cannot publish a mix of
+  // this sink's fields and a previous sink's capability. Bound all LUT indices.
+  auto candidate = result;
+  try
+  {
+    auto integer = [&](const char* marker, int maximum) {
+      const size_t pos = text->find(marker);
+      if (pos == std::string::npos)
+        throw std::invalid_argument("missing DV capability field");
+      const int value = std::stoi(text->substr(pos + strlen(marker)));
+      if (value < 0 || value > maximum)
+        throw std::out_of_range("DV capability field");
+      return value;
+    };
+    candidate.dv_ver_i = integer(": V", 2);
+    candidate.dv_len_i = integer("h: ", 254) + 1;
+    const size_t payload = text->find("B: ");
+    if (payload == std::string::npos)
+      throw std::invalid_argument("missing VSVDB");
+    candidate.dv_vsvdb_s = text->substr(payload + 3, 2 * candidate.dv_len_i);
+    if (candidate.dv_vsvdb_s.size() != static_cast<size_t>(2 * candidate.dv_len_i) ||
+        candidate.dv_vsvdb_s.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+      throw std::invalid_argument("short VSVDB");
+    candidate.dv_max_v1_i = integer("M: ", 127);
+    candidate.dv_max_v2_i = integer("Q: ", candidate.dv_ver_i == 2 ? 31 : 4095);
+    candidate.dv_rx_i = integer("Rx: ", candidate.dv_ver_i == 0 ? 4095 : 255);
+    candidate.dv_ry_i = integer("Ry: ", candidate.dv_ver_i == 0 ? 4095 : 255);
+    candidate.dv_gx_i = integer("Gx: ", candidate.dv_ver_i == 0 ? 4095 : 255);
+    candidate.dv_gy_i = integer("Gy: ", candidate.dv_ver_i == 0 ? 4095 : 255);
+    candidate.dv_bx_i = integer("Bx: ", candidate.dv_ver_i == 0 ? 4095 : 255);
+    candidate.dv_by_i = integer("By: ", candidate.dv_ver_i == 0 ? 4095 : 255);
+    candidate.status = AMLDVCapability::Status::READY;
+    return candidate;
+  }
+  catch (const std::exception& e)
+  {
+    result.status = AMLDVCapability::Status::INVALID;
+    CLog::Log(LOGERROR, "AMLUtils::{} - failed to parse dv_cap: {}", __FUNCTION__, e.what());
+    return result;
   }
 }
 

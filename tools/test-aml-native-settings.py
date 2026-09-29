@@ -44,7 +44,8 @@ struct CSetting {std::string id;const std::string& GetId()const{return id;}};
 enum DV_TYPE {DV_TYPE_DISPLAY_LED,DV_TYPE_PLAYER_LED_LLDV,DV_TYPE_PLAYER_LED_HDR2,DV_TYPE_VS10_ONLY};
 enum DV_MODE {DV_MODE_OFF,DV_MODE_ON,DV_MODE_ON_DEMAND};
 enum TV_PRESET{TV_PRESET_MANUAL,TV_PRESET_AUTO,TV_PRESET_LG,TV_PRESET_SONY,TV_PRESET_SAMSUNG,TV_PRESET_PANASONIC,TV_PRESET_PHILIPS,TV_PRESET_TCL};
-namespace xbmc_dv_cap {std::string edid_pnpid="test";}
+struct AMLDVCapability {std::string edid_pnpid="test";};
+AMLDVCapability aml_read_dv_cap();
 constexpr int DOLBY_VISION_OUTPUT_MODE_IPT=0,DOLBY_VISION_OUTPUT_MODE_HDR10=1,DOLBY_VISION_OUTPUT_MODE_SDR10=2,DOLBY_VISION_OUTPUT_MODE_SDR8=3;
 struct CSettings {@IDS@};
 thread_local bool inCallback=false;
@@ -98,6 +99,7 @@ void effect(const std::string& name,int value=0){
  {std::lock_guard<std::mutex> lock(effectMutex);effects.emplace_back(name,value);}
  if(effectHook)effectHook(name,value);
 }
+AMLDVCapability aml_read_dv_cap(){assert(!inCallback);assert(session&&!session->AcquireDecoder());return {};}
 void aml_set_audio_ddr_urgent(bool v){effect("ddr",v);}
 void aml_dv_set_osd_max(int v){effect("gui",v);}
 void aml_dv_set_osd_brightness(int v){effect("osd",v);}
@@ -108,7 +110,7 @@ void aml_dv_set_target_min_lum(int v){effect("min",v);}
 void aml_dv_apply_l5_override_sysfs(){effect("override");}
 void aml_dv_apply_l5_sysfs(){effect("l5");}
 void aml_dv_detect_active_area_stop(){effect("stop");}
-void set_vsvdb_payload_ver(DV_TYPE,int,int){effect("payload");}
+void set_vsvdb_payload_ver(DV_TYPE,int,int, const AMLDVCapability&){effect("payload");}
 @BOOST@
 #define private public
 @CLASS@;
