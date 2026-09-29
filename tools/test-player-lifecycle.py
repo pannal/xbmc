@@ -236,6 +236,7 @@ struct Parent {
   void UpdatePlayState(int) {++updates;}
   void CompleteFileReplacement() {++replacements;}
   @PENDING_FIELDS@
+  struct { void Suspend() {} } m_vs10Action;
   void FlushBuffers(double pts, bool accurate, bool sync, std::function<void()> complete={});
   void CancelParentLifecycle(); bool ContinueParentLifecycle(); void SynchronizeStreams(bool);
   void HandleMessages() {

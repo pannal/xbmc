@@ -22,6 +22,7 @@
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
 #include "guilib/DispResource.h"
+#include "PlayerNativeAction.h"
 #include "threads/SystemClock.h"
 #include "threads/Thread.h"
 
@@ -553,6 +554,9 @@ protected:
 
   CCurrentStream m_CurrentAudio;
   CCurrentStream m_CurrentVideo;
+  CPlayerNativeAction<StreamHdrType> m_vs10Action;
+  void QueueVS10Action(int action);
+  void ContinueVS10Action();
   CCurrentStream m_CurrentSubtitle;
   CCurrentStream m_CurrentTeletext;
   CCurrentStream m_CurrentRadioRDS;

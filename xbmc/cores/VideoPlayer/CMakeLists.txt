@@ -29,6 +29,7 @@ set(HEADERS AudioSinkAE.h
             Edl.h
             IVideoPlayer.h
             PTSTracker.h
+            PlayerNativeAction.h
             VideoPlayer.h
             VideoPlayerAudio.h
             VideoPlayerAudioID3.h

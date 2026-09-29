@@ -34,6 +34,7 @@ public:
     GENERAL_PAUSE,
     GENERAL_STREAMCHANGE,           //
     GENERAL_SYNCHRONIZE,            //
+    PLAYER_VS10_ACTION,             // immutable original-player/stream native intent
     GENERAL_GUI_ACTION,             // gui action of some sort
     GENERAL_EOF,                    // eof of stream
 

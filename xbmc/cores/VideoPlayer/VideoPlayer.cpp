@@ -824,6 +824,7 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   if (m_closeStage != CloseStage::NONE && m_closeStage != CloseStage::COMPLETE)
     return false;
   m_closeStage = CloseStage::NONE;
+  m_vs10Action.Invalidate();
 
   if (IsRunning())
   {
@@ -863,6 +864,7 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
 
 bool CVideoPlayer::CloseFile(bool reopen)
 {
+  m_vs10Action.Invalidate();
   if (m_closeStage == CloseStage::COMPLETE)
     return true;
 
@@ -1812,6 +1814,7 @@ void CVideoPlayer::Process()
 
   while (!m_bAbortRequest)
   {
+    ContinueVS10Action();
     if (ParentLifecyclePending())
     {
       m_waitingForVideoFlush = true;
@@ -3652,6 +3655,7 @@ void CVideoPlayer::SendPlayerMessage(std::shared_ptr<CDVDMsg> pMsg, unsigned int
 
 void CVideoPlayer::OnExit()
 {
+  m_vs10Action.EndStream();
   CancelParentLifecycle();
   CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
 
@@ -4240,6 +4244,11 @@ void CVideoPlayer::HandleMessages()
         m_processInfo->SetFrameAdvance(true);
         m_clock.Advance(time);
       }
+    }
+    else if (pMsg->IsType(CDVDMsg::PLAYER_VS10_ACTION))
+    {
+      using Intent = CPlayerNativeAction<StreamHdrType>::Intent;
+      m_vs10Action.Queue(std::static_pointer_cast<CDVDMsgType<Intent>>(pMsg)->m_value);
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_GUI_ACTION))
       OnAction(std::static_pointer_cast<CDVDMsgType<CAction>>(pMsg)->m_value);
@@ -5008,6 +5017,7 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       res = OpenAudioStream(hint, reset);
       break;
     case STREAM_VIDEO:
+      m_vs10Action.EndStream();
       res = OpenVideoStream(hint, reset);
       break;
     case STREAM_SUBTITLE:
@@ -5037,7 +5047,10 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
     current.stream = (void*)stream;
     current.lastdts = DVD_NOPTS_VALUE;
     if (current.type == STREAM_VIDEO)
+    {
+      m_vs10Action.BeginStream(hint.hdrType);
       UpdateMenuDomainQueueDepth(true);
+    }
     if (oldId >= 0 && current.avsync != CCurrentStream::AV_SYNC_FORCE)
       current.avsync = CCurrentStream::AV_SYNC_CHECK;
     if(stream)
@@ -5370,7 +5383,10 @@ bool CVideoPlayer::OpenAudioID3Stream(CDVDStreamInfo& hint)
 bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
 {
   if (current.type == STREAM_VIDEO)
+  {
+    m_vs10Action.EndStream();
     m_bdVideoReuse = false;
+  }
   else if (current.type == STREAM_AUDIO)
     m_bdAudioReuse = false;
   if (current.id < 0)
@@ -5399,6 +5415,7 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::function<void()> complete)
 {
+  m_vs10Action.Suspend();
   if (m_pendingFlush)
   {
     if (m_deferredFlush)
@@ -6070,6 +6087,50 @@ void CVideoPlayer::GetVideoResolution(unsigned int &width, unsigned int &height)
   height = res.iHeight;
 }
 
+void CVideoPlayer::QueueVS10Action(int action)
+{
+  auto intent = m_vs10Action.Capture(action);
+  if (intent.stream)
+    m_messenger.Put(std::make_shared<CDVDMsgType<CPlayerNativeAction<StreamHdrType>::Intent>>(
+        CDVDMsg::PLAYER_VS10_ACTION, std::move(intent)));
+}
+
+void CVideoPlayer::ContinueVS10Action()
+{
+  // Decoder startup and flush must progress without an action's global fence.
+  // This continuation only runs on this player's original parent thread.
+  if (ParentLifecyclePending() || m_displayLost ||
+      m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC)
+  {
+    m_vs10Action.Suspend();
+    return;
+  }
+  m_vs10Action.Continue([this](const auto& intent) {
+    const StreamHdrType hdrType = *intent.stream;
+    unsigned int mode;
+    switch (intent.action)
+    {
+      case ACTION_VS10_ORIGINAL:
+        mode = hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION
+                   ? DOLBY_VISION_OUTPUT_MODE_IPT
+                   : DOLBY_VISION_OUTPUT_MODE_BYPASS;
+        break;
+      case ACTION_VS10_SDR:
+        mode = DOLBY_VISION_OUTPUT_MODE_SDR10;
+        break;
+      case ACTION_VS10_HDR10:
+        mode = DOLBY_VISION_OUTPUT_MODE_HDR10;
+        break;
+      case ACTION_VS10_DV:
+        mode = DOLBY_VISION_OUTPUT_MODE_IPT;
+        break;
+      default:
+        return;
+    }
+    aml_dv_set_vs10_mode(mode, hdrType, m_processInfo->IsVideoHwDecoder());
+  });
+}
+
 bool CVideoPlayer::OnAction(const CAction &action)
 {
 #define THREAD_ACTION(action) \
@@ -6338,25 +6399,10 @@ bool CVideoPlayer::OnAction(const CAction &action)
       break;
 
     case ACTION_VS10_ORIGINAL:
-    {
-      StreamHdrType hdrType = CServiceBroker::GetDataCacheCore().GetVideoHdrType();
-      if (hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
-        aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_IPT, hdrType);
-      else
-        aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS, hdrType);
-      return true;
-    }
-
     case ACTION_VS10_SDR:
-      aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_SDR10, CServiceBroker::GetDataCacheCore().GetVideoHdrType());
-      return true;
-
     case ACTION_VS10_HDR10:
-      aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_HDR10, CServiceBroker::GetDataCacheCore().GetVideoHdrType());
-      return true;
-
     case ACTION_VS10_DV:
-      aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_IPT, CServiceBroker::GetDataCacheCore().GetVideoHdrType());
+      QueueVS10Action(action.GetID());
       return true;
 
     case ACTION_TOGGLE_VIDEO_FREERUN_MODE:

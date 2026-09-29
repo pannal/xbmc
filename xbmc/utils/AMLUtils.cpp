@@ -318,7 +318,7 @@ void aml_set_audio_ddr_urgent(bool enable)
   urgent.Set(std::string(enable ? "80 4" : "80 0"));
 }
 
-void aml_dv_set_vs10_mode(unsigned int mode, StreamHdrType hdrType)
+void aml_dv_set_vs10_mode(unsigned int mode, StreamHdrType hdrType, bool hardwareDecoder)
 {
   aml_dv_dump_state("vs10_change/pre");
   enum DV_TYPE dv_type(static_cast<DV_TYPE>(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE)));
@@ -332,7 +332,7 @@ void aml_dv_set_vs10_mode(unsigned int mode, StreamHdrType hdrType)
   // Dolby Vision -> magenta/yellow chroma corruption. Refuse the conversion modes
   // for SW decode; Bypass (turn DV off) stays allowed so the toggle can still undo.
   if (mode != DOLBY_VISION_OUTPUT_MODE_BYPASS &&
-      !CServiceBroker::GetDataCacheCore().IsVideoHwDecoder())
+      !hardwareDecoder)
   {
     CLog::Log(LOGINFO, "AMLUtils::{} - refusing VS10 mode [{}] for software-decoded video (no hardware video layer)",
               __FUNCTION__, aml_dv_output_mode_to_string(mode));
