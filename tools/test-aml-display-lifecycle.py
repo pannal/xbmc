@@ -27,7 +27,8 @@ def harness():
     methods = '\n'.join(function(source, signature) for signature in [
         'CAMLVideoBufferPool::~CAMLVideoBufferPool()', 'CVideoBuffer* CAMLVideoBufferPool::Get()',
         'void CAMLVideoBuffer::Set(', 'CAMLSession::Permit CAMLVideoBuffer::AcquirePresentation()',
-        'void CAMLVideoBuffer::Commit(', 'void CAMLVideoBuffer::Poll(', 'bool CAMLVideoBuffer::Drop()',
+        'void CAMLVideoBuffer::Commit(', 'bool CAMLVideoBuffer::Submit(',
+        'void CAMLVideoBuffer::ApplyGeometry(', 'void CAMLVideoBuffer::Poll(', 'bool CAMLVideoBuffer::Drop()',
         'void CAMLVideoBufferPool::Return(', 'void CAMLVideoBufferPool::QueueReturns(',
         'bool CAMLVideoBufferPool::HasPendingReturns()',
         'void CAMLVideoBufferPool::ProcessPendingReturns()',

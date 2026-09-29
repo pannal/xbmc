@@ -27,7 +27,8 @@ def harness():
     buffer = function(header, 'class CAMLVideoBuffer :') + ';'
     methods = '\n'.join(function(source, signature) for signature in [
         'void CAMLVideoBuffer::Set(', 'CAMLSession::Permit CAMLVideoBuffer::AcquirePresentation()',
-        'void CAMLVideoBuffer::Commit(', 'void CAMLVideoBuffer::Poll(',
+        'void CAMLVideoBuffer::Commit(', 'bool CAMLVideoBuffer::Submit(',
+        'void CAMLVideoBuffer::ApplyGeometry(', 'void CAMLVideoBuffer::Poll(',
         'bool CAMLVideoBuffer::Drop()', 'void CAMLVideoBufferPool::Return('])
     return PRELUDE + buffer + POOL + methods + TESTS
 
@@ -373,11 +374,12 @@ def negative_controls():
         ('foreign request accepted', 'header',
          'request.identity == m_state && ', ''),
         ('mutation skips live counts', 'header',
-         'm_state->active || m_state->retiring || ', ''),
+         'm_state->active || m_state->retiring || m_state->mutating || m_state->displayActive ||',
+         'm_state->mutating || m_state->displayActive ||'),
         ('foreign permit claims buffer', 'source',
          '!m_codec->IsPresentationPermit(permit, m_operationEpoch)', '!permit'),
         ('retirement permit presents', 'source',
-         'permit.IsRetirement() || previousPts', 'previousPts'),
+         'permit.IsRetirement() || permit.IsControl() || previousPts', 'previousPts'),
         ('required drop claim skipped', 'source',
          'if (m_consumption.compare_exchange_strong(expected, Consumption::CLAIMED))',
          'if (false && m_consumption.compare_exchange_strong(expected, Consumption::CLAIMED))'),

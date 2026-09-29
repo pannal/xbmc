@@ -83,7 +83,12 @@ bool CApplicationSkinHandling::LoadSkin(const std::string& skinID)
     bPreviousPlayingState = !appPlayer->IsPausedPlayback();
     if (bPreviousPlayingState)
       appPlayer->Pause();
-    appPlayer->FlushRenderer();
+    if (!appPlayer->FlushRenderer())
+    {
+      if (bPreviousPlayingState)
+        appPlayer->Pause();
+      return false; // A pending/failed retirement does not authorize skin teardown.
+    }
     if (CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_VIDEO)
     {
       CServiceBroker::GetGUI()->GetWindowManager().ActivateWindow(WINDOW_HOME);

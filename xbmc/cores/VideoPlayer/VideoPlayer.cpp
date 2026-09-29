@@ -787,6 +787,7 @@ CVideoPlayer::CVideoPlayer(IPlayerCallback& callback)
   m_SkipCommercials = true;
 
   m_processInfo.reset(CProcessInfo::CreateInstance());
+  m_renderManager.SetProcessInfoLifetime(m_processInfo);
   // if we have a gui, register the cache
   m_processInfo->SetDataCache(&CServiceBroker::GetDataCacheCore());
   m_processInfo->SetSpeed(1.0);
@@ -6900,9 +6901,9 @@ void CVideoPlayer::Render(bool clear, uint32_t alpha, bool gui)
   m_renderManager.Render(clear, 0, alpha, gui);
 }
 
-void CVideoPlayer::FlushRenderer()
+bool CVideoPlayer::FlushRenderer()
 {
-  m_renderManager.Flush(true, true);
+  return m_renderManager.Flush(true, true);
 }
 
 void CVideoPlayer::SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch)

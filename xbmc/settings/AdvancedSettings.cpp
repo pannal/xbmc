@@ -181,6 +181,7 @@ void CAdvancedSettings::Initialize()
   m_videoDecoderDrainTimeout = 5;
   m_videoMenuDomainQueueTimeSize = 1.0f;
   m_videoBdBoundaryDrain = true;
+  m_videoAMLIndependentPresenter = false;
   if (aml_get_cpufamily_id() == AML_G12B)
   {
     m_videoDecoderBypassBufferReady = true;
@@ -739,6 +740,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetFloat(pElement, "menudomainqueuetimesize", m_videoMenuDomainQueueTimeSize, 0.0f,
                        16.0f);
     XMLUtils::GetBoolean(pElement, "bdboundarydrain", m_videoBdBoundaryDrain);
+    XMLUtils::GetBoolean(pElement, "amlindependentpresenter", m_videoAMLIndependentPresenter);
     XMLUtils::GetBoolean(pElement, "usetimeseeking", m_videoUseTimeSeeking);
     XMLUtils::GetInt(pElement, "timeseekforward", m_videoTimeSeekForward, 0, 6000);
     XMLUtils::GetInt(pElement, "timeseekbackward", m_videoTimeSeekBackward, -6000, 0);

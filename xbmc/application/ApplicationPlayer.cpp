@@ -829,11 +829,10 @@ void CApplicationPlayer::Render(bool clear, uint32_t alpha, bool gui)
     player->Render(clear, alpha, gui);
 }
 
-void CApplicationPlayer::FlushRenderer()
+bool CApplicationPlayer::FlushRenderer()
 {
   std::shared_ptr<IPlayer> player = GetInternal();
-  if (player)
-    player->FlushRenderer();
+  return !player || player->FlushRenderer();
 }
 
 void CApplicationPlayer::SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch)

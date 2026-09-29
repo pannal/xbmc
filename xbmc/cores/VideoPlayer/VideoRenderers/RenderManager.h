@@ -42,6 +42,7 @@ class CLinuxRenderer;
 class CLinuxRendererGL;
 class CLinuxRendererGLES;
 class CRenderManager;
+class CAMLPresenterSession;
 
 class IRenderMsg
 {
@@ -65,6 +66,9 @@ public:
   CRenderManager(CDVDClock &clock, IRenderMsg *player);
   virtual ~CRenderManager();
 
+  void SetProcessInfoLifetime(std::shared_ptr<const void> lifetime)
+  { m_processInfoLifetime = std::move(lifetime); }
+
   // A producer-stack reservation must not outlive its render manager.
   // Destruction cancels unpublished capacity; it never calls the renderer.
   class BufferReservation
@@ -82,6 +86,9 @@ public:
     CRenderManager* m_owner{nullptr};
     int m_index{-1};
     uint64_t m_serial{0};
+#if defined(HAS_LIBAMCODEC)
+    std::shared_ptr<CAMLPresenterSession> m_asyncOwner;
+#endif
   };
 
   // Functions called from render thread
@@ -333,6 +340,12 @@ protected:
   bool m_hasCaptures = false;
 
 private:
+  std::shared_ptr<const void> m_processInfoLifetime;
+#if defined(HAS_LIBAMCODEC)
+  std::shared_ptr<CAMLPresenterSession> m_amlPresenter;
+  void UpdateAMLPresenter();
+  void StopAMLPresenter(bool migrate);
+#endif
   // Called synchronously by FrameMove on the application thread.
   void ProcessPresentationQueue();
   void SelectFrame();

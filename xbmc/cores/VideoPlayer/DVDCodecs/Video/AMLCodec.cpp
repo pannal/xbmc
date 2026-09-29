@@ -2928,7 +2928,7 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 
 int CAMLCodec::PollFrame(const CAMLSession::Permit& permit)
 {
-  if (!m_session.Matches(permit, permit.Epoch()))
+  if (permit.IsControl() || permit.IsRetirement() || !m_session.Matches(permit, permit.Epoch()))
     return 0;
   std::lock_guard<std::mutex> lock(pollSyncMutex);
   if (m_pollDevice < 0)
@@ -2960,7 +2960,8 @@ uint64_t CAMLCodec::GetPresentationGeneration()
 
 int CAMLCodec::ReleaseFrame(const uint32_t index, uint64_t generation, const CAMLSession::Permit& permit, bool drop)
 {
-  if (!m_session.Matches(permit, permit.Epoch()))
+  if (permit.IsControl() || (permit.IsRetirement() && !drop) ||
+      !m_session.Matches(permit, permit.Epoch()))
     return 0;
   std::lock_guard<std::mutex> lock(m_presentationMutex);
   if (!m_presentationActive || generation != m_presentationGeneration)
@@ -3735,6 +3736,23 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect, uint64
   // we only get called once gui has changed to something
   // that would show video playback, so show it.
   ShowMainVideo(true);
+}
+
+void CAMLCodec::RefreshDecoderRate(const CAMLSession::Permit& permit)
+{
+  if (permit.IsRetirement() || permit.IsControl() || !m_session.Matches(permit, permit.Epoch()))
+    return;
+  std::lock_guard<std::mutex> lock(m_presentationMutex);
+  if (!m_presentationActive)
+    return;
+  // video rate adjustment.
+  unsigned int video_rate = GetDecoderVideoRate();
+  if (video_rate > 0 && video_rate != am_private->video_rate)
+  {
+    CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect: decoder fps has changed, video_rate adjusted from {:d} to {:d}", am_private->video_rate, video_rate);
+    am_private->video_rate = video_rate;
+  }
+
 }
 
 void CAMLCodec::SetVideoRate(int videoRate)

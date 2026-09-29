@@ -78,7 +78,10 @@ public:
       // have replaced it since the snapshot; never substitute the new session.
       if (!codec || s_captureCodec.lock() != codec)
         return {};
-      return codec->AcquirePresentation(epoch);
+      auto permit = codec->AcquirePresentation(epoch);
+      if (permit)
+        return permit;
+      return codec->AcquireMainControl(epoch, true);
     }
   };
   static CaptureSource GetCaptureSource();
@@ -104,6 +107,16 @@ public:
   {
     return m_session.Acquire(epoch, retirement);
   }
+  CAMLSession::OwnerTransfer RequestPresentationOwner(std::thread::id owner)
+  { return m_session.RequestOwner(owner); }
+  bool AcceptPresentationOwner(const CAMLSession::OwnerTransfer& request, bool wait = false)
+  { return m_session.AcceptOwner(request, wait); }
+  bool CancelPresentationOwner(const CAMLSession::OwnerTransfer& request)
+  { return m_session.CancelOwner(request); }
+  CAMLSession::Permit AcquireMainControl(uint64_t epoch, bool wait = false)
+  { return m_session.AcquireControl(epoch, wait); }
+  void RetainProcessInfo(std::shared_ptr<const void> lifetime)
+  { m_processInfoLifetime = std::move(lifetime); }
   void          Abort();
 
   bool          AddData(uint8_t *pData, size_t size, double dts, double pts);
@@ -114,6 +127,7 @@ public:
   void          SetStreamEOF(bool eof){m_stream_eof = eof;};
   void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect, uint64_t generation, const CAMLSession::Permit& permit);
   void          SetVideoRate(int videoRate);
+  void RefreshDecoderRate(const CAMLSession::Permit& permit);
   int           GetOMXPts() const { return static_cast<int>(m_cur_pts); }
   double        GetPts() const { return static_cast<double>(m_cur_pts); }
   uint32_t      GetBufferIndex() const { return m_bufferIndex; };
@@ -134,6 +148,7 @@ private:
   void SetPollDevice(int device);
   static std::mutex s_captureMutex;
   static std::weak_ptr<CAMLCodec> s_captureCodec;
+  std::shared_ptr<const void> m_processInfoLifetime;
   CAMLSession m_session;
   std::shared_ptr<const void> m_dvSession; // native lifecycle owner; copied under decoder admission
   Lifecycle m_lifecycle{Lifecycle::NONE};

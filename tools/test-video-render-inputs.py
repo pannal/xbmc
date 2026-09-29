@@ -46,6 +46,8 @@ def harness(revision=None):
                           'void CAMLVideoBuffer::Commit(', 'void CAMLVideoBuffer::Poll(',
                           ('bool ' if 'bool CAMLVideoBuffer::Drop()' in buffer_source else 'void ') + 'CAMLVideoBuffer::Drop()']:
             buffer_methods += '\n' + function(buffer_source, signature)
+        if 'void CAMLVideoBuffer::ApplyGeometry(' in buffer_source:
+            buffer_methods += '\n' + function(buffer_source, 'void CAMLVideoBuffer::ApplyGeometry(')
         source = source.replace('@AMLBUFFER@', buffer_class)
     else:
         source = source.replace('@AMLBUFFER@', '')
@@ -245,6 +247,7 @@ struct CAMLCodec{
   CAMLCodec(){auto request=session.Fence();assert(session.BeginMutation(request));assert(session.Complete(request,true));}
   uint64_t GetOperationEpoch() const{return session.Epoch();}
   bool IsOperationInvalidated(uint64_t epoch) const{return session.IsInvalidated(epoch);}
+  CAMLSession::Permit AcquireMainControl(uint64_t epoch,bool wait){return session.AcquireControl(epoch,wait);}
   CAMLSession::Permit AcquirePresentation(uint64_t epoch,bool retirement=false){return session.Acquire(epoch,retirement);}
   bool IsPresentationPermit(const CAMLSession::Permit& permit,uint64_t epoch) const{return session.Matches(permit,epoch);}
   int ReleaseFrame(int index,uint64_t generation,const CAMLSession::Permit& permit,bool drop=false){
@@ -295,6 +298,8 @@ struct CScreenshotAML{
   static bool CaptureVideoFrame(unsigned char* pixel,unsigned width,unsigned height,bool=false){event("screenshot:"+std::to_string(width)+":"+std::to_string(height));*pixel=42;return succeeds;}
 };
 struct CRendererAML{
+  static constexpr int m_numRenderBuffers=NUM_BUFFERS;
+  bool m_resumeControl=false;
   @GEOMETRY@
   struct{CVideoBuffer* videoBuffer=nullptr;}m_buffers[NUM_BUFFERS];
   int m_prevVPts=-1,revision=0;

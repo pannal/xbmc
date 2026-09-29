@@ -226,7 +226,7 @@ public:
    \brief hook into render loop of render thread
    */
   virtual void Render(bool clear, uint32_t alpha = 255, bool gui = true) {}
-  virtual void FlushRenderer() {}
+  virtual bool FlushRenderer() { return true; }
   virtual void SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch) {}
   virtual float GetRenderAspectRatio() const { return 1.0; }
   virtual void TriggerUpdateResolution() {}

@@ -34,6 +34,11 @@ class CAMLSession
     bool displayActive{false};
     bool nativeFenced{false};
     std::thread::id owner;
+    uint64_t ownerSerial{0};
+    bool transferring{false};
+    bool controlPending{false};
+    bool controlActive{false};
+    std::thread::id controller;
   };
 
 public:
@@ -51,6 +56,7 @@ public:
   {
     std::lock_guard<std::mutex> registry(s_registryMutex);
     m_state->owner = owner;
+    m_state->controller = owner;
     m_state->displayFenced = s_displayPhase != DisplayPhase::READY;
     m_state->displayActive = s_displayPhase == DisplayPhase::MUTATING;
     m_state->nativeFenced = bool(s_nativeRequest);
@@ -65,7 +71,7 @@ public:
     Permit(const Permit&) = delete;
     Permit& operator=(const Permit&) = delete;
     Permit(Permit&& other) noexcept
-      : m_state(std::move(other.m_state)), m_epoch(other.m_epoch), m_retirement(other.m_retirement)
+      : m_state(std::move(other.m_state)), m_epoch(other.m_epoch), m_retirement(other.m_retirement), m_control(other.m_control)
     {
     }
     ~Permit()
@@ -74,12 +80,15 @@ public:
       {
         std::lock_guard<std::mutex> lock(m_state->mutex);
         --(m_retirement ? m_state->retiring : m_state->active);
+        if (m_control)
+          m_state->controlActive = false;
         m_state->idle.notify_all();
       }
     }
     explicit operator bool() const { return m_state != nullptr; }
     uint64_t Epoch() const { return m_epoch; }
     bool IsRetirement() const { return m_retirement; }
+    bool IsControl() const { return m_control; }
 
   private:
     friend class CAMLSession;
@@ -90,7 +99,64 @@ public:
     std::shared_ptr<State> m_state;
     uint64_t m_epoch{0};
     bool m_retirement{false};
+    bool m_control{false};
   };
+
+  struct OwnerTransfer
+  {
+    std::shared_ptr<const void> identity;
+    uint64_t serial{0};
+    std::thread::id from;
+    std::thread::id to;
+    explicit operator bool() const { return identity != nullptr; }
+  };
+
+  // Only the acknowledged owner can nominate its successor. Closing admission
+  // is immediate; acceptance can wait for quiescence but never revokes a call.
+  OwnerTransfer RequestOwner(std::thread::id successor)
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    if (m_state->owner != std::this_thread::get_id() || m_state->transferring ||
+        successor == std::thread::id{} || successor == m_state->owner)
+      return {};
+    m_state->transferring = true;
+    return {m_state, ++m_state->ownerSerial, m_state->owner, successor};
+  }
+
+  bool AcceptOwner(const OwnerTransfer& request, bool wait = false)
+  {
+    std::unique_lock<std::mutex> lock(m_state->mutex);
+    if (request.to != std::this_thread::get_id())
+      return false;
+    if (wait)
+      m_state->idle.wait(lock, [&] {
+        return !MatchesTransfer(request) ||
+               (!m_state->active && !m_state->retiring && !m_state->mutating);
+      });
+    if (!MatchesTransfer(request) || request.to != std::this_thread::get_id() ||
+        m_state->active || m_state->retiring || m_state->mutating)
+      return false;
+    m_state->owner = request.to;
+    m_state->transferring = false;
+    m_state->idle.notify_all();
+    return true;
+  }
+
+  // Ownership serials are separate from decoder epochs: reset may finish while
+  // ownership is fenced. Transfer never reopens decoder admission and every
+  // subsequent device call still needs the current decoder epoch. Only the
+  // original owner can cancel; stale cancellation cannot undo acceptance.
+  bool CancelOwner(const OwnerTransfer& request)
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    if (request.identity != m_state || request.serial != m_state->ownerSerial ||
+        !m_state->transferring || request.from != m_state->owner ||
+        request.from != std::this_thread::get_id())
+      return false;
+    m_state->transferring = false;
+    m_state->idle.notify_all();
+    return true;
+  }
 
   struct Request
   {
@@ -109,11 +175,41 @@ public:
   {
     std::lock_guard<std::mutex> lock(m_state->mutex);
     if ((!retirement && std::this_thread::get_id() != m_state->owner) ||
-        !m_state->open || m_state->mutating || m_state->displayFenced || m_state->nativeFenced || epoch != m_state->epoch ||
-        (m_state->fenced && !retirement))
+        !m_state->open || m_state->controlPending || m_state->controlActive || m_state->mutating || m_state->displayFenced || m_state->nativeFenced || epoch != m_state->epoch ||
+        ((m_state->fenced || m_state->transferring) && !retirement))
       return {};
     ++(retirement ? m_state->retiring : m_state->active);
     return Permit(m_state, epoch, retirement);
+  }
+
+  // Main's explicitly separate control/read lease. It closes admission before
+  // waiting for counted device operations, never changes the presentation owner,
+  // and cannot coexist with presentation, retirement or decoder permits. No
+  // native call or graphics operation executes while the state mutex is held.
+  Permit AcquireControl(uint64_t epoch, bool wait = false)
+  {
+    std::unique_lock<std::mutex> lock(m_state->mutex);
+    const auto available = [&] {
+      return m_state->open && !m_state->fenced && !m_state->mutating &&
+             !m_state->displayFenced && !m_state->nativeFenced &&
+             !m_state->transferring && epoch == m_state->epoch;
+    };
+    if (std::this_thread::get_id() != m_state->controller ||
+        m_state->controlPending || m_state->controlActive || !available())
+      return {};
+    m_state->controlPending = true;
+    if (wait)
+      m_state->idle.wait(lock, [&] {
+        return !available() || (!m_state->active && !m_state->retiring);
+      });
+    m_state->controlPending = false;
+    if (!available() || m_state->active || m_state->retiring)
+      return {};
+    m_state->controlActive = true;
+    ++m_state->active;
+    Permit permit(m_state, epoch, false);
+    permit.m_control = true;
+    return permit;
   }
 
   bool Matches(const Permit& permit, uint64_t epoch) const
@@ -125,6 +221,7 @@ public:
   {
     std::lock_guard<std::mutex> lock(m_state->mutex);
     m_state->fenced = true;
+    m_state->idle.notify_all();
     return {m_state, ++m_state->request, m_state->epoch};
   }
 
@@ -172,6 +269,7 @@ public:
     m_state->mutating = false;
     m_state->open = open;
     m_state->fenced = !open;
+    m_state->idle.notify_all();
     return true;
   }
 
@@ -192,7 +290,7 @@ public:
   Permit AcquireDecoder()
   {
     std::lock_guard<std::mutex> lock(m_state->mutex);
-    if (!m_state->open || m_state->mutating || m_state->fenced || m_state->displayFenced || m_state->nativeFenced)
+    if (!m_state->open || m_state->controlPending || m_state->controlActive || m_state->transferring || m_state->mutating || m_state->fenced || m_state->displayFenced || m_state->nativeFenced)
       return {};
     ++m_state->active;
     return Permit(m_state, m_state->epoch, false);
@@ -337,6 +435,13 @@ public:
   }
 
 private:
+  bool MatchesTransfer(const OwnerTransfer& request) const
+  {
+    return request.identity == m_state && request.serial == m_state->ownerSerial &&
+           m_state->transferring &&
+           request.from == m_state->owner;
+  }
+
   static bool MatchesDisplay(const DisplayRequest& request)
   {
     return request.serial != 0 && request.serial == s_displaySerial &&

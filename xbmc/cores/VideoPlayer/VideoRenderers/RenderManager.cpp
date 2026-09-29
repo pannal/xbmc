@@ -7,6 +7,10 @@
  */
 
 #include "RenderManager.h"
+#if defined(HAS_LIBAMCODEC)
+#include "HwDecRender/AMLPresenterSession.h"
+#include "HwDecRender/RendererAML.h"
+#endif
 #include "windowing/amlogic/AMLNativeTransaction.h"
 
 /* to use the same as player */
@@ -49,6 +53,9 @@ CRenderManager::BufferReservation::BufferReservation(BufferReservation&& other) 
   : m_owner(std::exchange(other.m_owner, nullptr)),
     m_index(other.m_index),
     m_serial(other.m_serial)
+#if defined(HAS_LIBAMCODEC)
+    , m_asyncOwner(std::move(other.m_asyncOwner))
+#endif
 {
 }
 
@@ -62,6 +69,9 @@ CRenderManager::BufferReservation& CRenderManager::BufferReservation::operator=(
     m_owner = std::exchange(other.m_owner, nullptr);
     m_index = other.m_index;
     m_serial = other.m_serial;
+#if defined(HAS_LIBAMCODEC)
+    m_asyncOwner = std::move(other.m_asyncOwner);
+#endif
   }
   return *this;
 }
@@ -87,6 +97,10 @@ CRenderManager::CRenderManager(CDVDClock &clock, IRenderMsg *player) :
 
 CRenderManager::~CRenderManager()
 {
+#if defined(HAS_LIBAMCODEC)
+  if (m_amlPresenter)
+    std::terminate(); // Main-owned UnInit must have joined and transferred first.
+#endif
   // Player teardown has acknowledged main-owned UnInit. Retire any remaining
   // CPU dispatch records before releasing this original target.
   if (!m_lifecycle->Close())
@@ -187,8 +201,15 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         // frametime and m_syncOffset describes the old cadence. Keeping them
         // biases renderPts for the ~31 frames it takes to refill the average,
         // and feeds one polluted value to SetVsyncAdjust().
-        m_clockSync.Reset();
-        m_dvdClock.SetVsyncAdjust(0);
+#if defined(HAS_LIBAMCODEC)
+        if (m_amlPresenter)
+          m_amlPresenter->queue->ResetClock();
+        else
+#endif
+        {
+          m_clockSync.Reset();
+          m_dvdClock.SetVsyncAdjust(0);
+        }
         return true;
       }
       CLog::Log(LOGDEBUG,
@@ -203,6 +224,15 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
             "{:4.2f} hdrType: {}.",
             picture.iWidth, picture.iHeight, picture.iDisplayWidth, picture.iDisplayHeight, fps, CStreamDetails::DynamicRangeToString(hdrType));
 
+#if defined(HAS_LIBAMCODEC)
+  std::shared_ptr<CAMLPresenterSession> presenter;
+  {
+    std::unique_lock<CCriticalSection> present(m_presentlock);
+    presenter = m_amlPresenter;
+  }
+  if (presenter && !presenter->queue->WaitIdle(5000ms))
+    return false;
+#endif
   // make sure any queued frame was fully presented
   {
     std::unique_lock<CCriticalSection> lock(m_presentlock);
@@ -288,6 +318,9 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
 
 bool CRenderManager::Configure()
 {
+#if defined(HAS_LIBAMCODEC)
+  StopAMLPresenter(false);
+#endif
   // lock all interfaces
   std::unique_lock<CCriticalSection> lock(m_statelock);
   std::unique_lock<CCriticalSection> lock2(m_presentlock);
@@ -360,6 +393,21 @@ bool CRenderManager::Configure()
     m_overlays.SetStereoMode(m_picture.stereoMode);
 
     m_renderState = STATE_CONFIGURED;
+#if defined(HAS_LIBAMCODEC)
+    if (auto* aml = dynamic_cast<CRendererAML*>(m_pRenderer);
+        aml && (m_picture.stereoMode.empty() || m_picture.stereoMode == "mono") &&
+        m_processInfoLifetime &&
+        CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() == RENDER_STEREO_MODE_OFF &&
+        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoAMLIndependentPresenter)
+    {
+      m_amlPresenter = std::make_shared<CAMLPresenterSession>(
+          aml->PresenterCodec(), m_dvdClock, m_QueueSize, m_processInfoLifetime,
+          [this](bool enabled) { m_playerPort->UpdateClockSync(enabled); },
+          [this](double pts) { m_dataCacheCore.SetRenderPts(pts); });
+      UpdateAMLPresenter();
+      m_amlPresenter->queue->Show(m_showVideo);
+    }
+#endif
 
     CLog::Log(LOGDEBUG, "CRenderManager::Configure - {}", m_QueueSize);
   }
@@ -388,6 +436,13 @@ bool CRenderManager::IsConfigured() const
 void CRenderManager::ShowVideo(bool enable)
 {
   m_showVideo = enable;
+#if defined(HAS_LIBAMCODEC)
+  {
+    std::unique_lock<CCriticalSection> lock(m_presentlock);
+    if (m_amlPresenter)
+      m_amlPresenter->queue->Show(enable);
+  }
+#endif
   if (!enable)
     DiscardBuffer();
 }
@@ -440,12 +495,44 @@ void CRenderManager::FrameMove()
       lock.lock();
     }
 
-    CheckEnableClockSync();
+#if defined(HAS_LIBAMCODEC)
+    if (!m_amlPresenter)
+#endif
+      CheckEnableClockSync();
   }
 
-  ProcessPresentationQueue();
+#if defined(HAS_LIBAMCODEC)
+  if (m_amlPresenter)
+  {
+    if (CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF)
+      StopAMLPresenter(true);
+    else
+    {
+      UpdateAMLPresenter();
+      const auto observed = m_amlPresenter->queue->Observe();
+      if (observed.payload)
+      {
+        static_cast<CRendererAML*>(m_pRenderer)->SetPresentationEpoch(observed.epoch);
+        auto content = std::static_pointer_cast<const CAMLPresenterSession::OverlayObservation>(observed.payload);
+        std::unique_lock<CCriticalSection> present(m_presentlock);
+        SPresent info{observed.pts, content->field, static_cast<EPRESENTMETHOD>(content->method)};
+        m_frameSelection = std::make_shared<const FrameSelection>(FrameSelection{
+            -1, -1, info, content->overlays});
+        m_presentstarted = true;
+        m_presentpts = observed.pts;
+        m_presentTimer.Set(1000ms);
+      }
+    }
+  }
+  if (!m_amlPresenter)
+#endif
+    ProcessPresentationQueue();
   UpdateGuiPresentationState(firstFrame);
 
+#if defined(HAS_LIBAMCODEC)
+  if (m_amlPresenter && m_amlPresenter->queue->PendingControl().frame)
+    return; // Capture retries after the submitted frame's main control effect.
+#endif
   ManageCaptures();
 }
 
@@ -569,6 +656,9 @@ void CRenderManager::PreInitOnMain()
 
 void CRenderManager::UnInitOnMain()
 {
+#if defined(HAS_LIBAMCODEC)
+  StopAMLPresenter(false);
+#endif
   aml_set_disc_menu_visible(false);
   // Playback is ending: no disc menu graphics any more. Render thread only,
   // which owns the disc menu composite's state.
@@ -699,6 +789,9 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
 
 bool CRenderManager::FlushOnMain(bool saveBuffers)
 {
+#if defined(HAS_LIBAMCODEC)
+  StopAMLPresenter(true);
+#endif
   CLog::Log(LOGDEBUG, "{} - flushing renderer", __FUNCTION__);
 
 // fix deadlock on Windows only when is enabled 'Sync playback to display'
@@ -1079,6 +1172,11 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   if (!gui && m_pRenderer->IsGuiLayer())
     return;
 
+#if defined(HAS_LIBAMCODEC)
+  if (m_amlPresenter)
+    UpdateAMLPresenter();
+  else
+#endif
   if (!gui || m_pRenderer->IsGuiLayer())
   {
     const auto step =
@@ -1263,6 +1361,10 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     }
   }
 
+#if defined(HAS_LIBAMCODEC)
+  if (m_amlPresenter)
+    return; // The executor alone advances presentation state.
+#endif
   const SPresent& m = frame->present;
 
   {
@@ -1548,7 +1650,34 @@ bool CRenderManager::AddVideoPicture(BufferReservation& reservation,
 {
   std::unique_lock<CCriticalSection> lock(m_presentlock);
 
-  if (reservation.m_owner != this ||
+#if defined(HAS_LIBAMCODEC)
+  if (reservation.m_owner == this && reservation.m_index == -1)
+  {
+    if (!m_amlPresenter || reservation.m_asyncOwner != m_amlPresenter ||
+        !dynamic_cast<CAMLVideoBuffer*>(picture.videoBuffer))
+      return false;
+    auto content = std::make_shared<CAMLPresenterSession::OverlayObservation>();
+    content->overlays = std::move(overlays);
+    if ((picture.iFlags & DVP_FLAG_INTERLACED) && deintMethod != VS_INTERLACEMETHOD_NONE)
+    {
+      content->field = (picture.iFlags & DVP_FLAG_TOP_FIELD_FIRST) ? FS_TOP : FS_BOT;
+      if (deintMethod == VS_INTERLACEMETHOD_RENDER_BLEND)
+        content->method = CAMLPresenter::Method::BLEND;
+      else if (deintMethod == VS_INTERLACEMETHOD_RENDER_BOB)
+        content->method = CAMLPresenter::Method::BOB;
+    }
+    auto frame = std::make_shared<CAMLPresenterSession::Frame>(picture, std::move(content));
+    frame->force = wait;
+    if (!m_amlPresenter->queue->Publish(reservation.m_serial, frame))
+      return false;
+    reservation.m_owner = nullptr;
+    reservation.m_asyncOwner.reset();
+    if (wait)
+      m_amlPresenter->queue->WaitSelected(frame, 200ms);
+    return true;
+  }
+#endif
+  if (reservation.m_owner != this || reservation.m_index < 0 ||
       m_reservations[reservation.m_index] != reservation.m_serial)
     return false;
 
@@ -1661,7 +1790,17 @@ void CRenderManager::ReserveBuffer(BufferReservation& reservation)
 void CRenderManager::CancelReservation(BufferReservation& reservation)
 {
   std::unique_lock<CCriticalSection> lock(m_presentlock);
-  if (reservation.m_owner == this &&
+#if defined(HAS_LIBAMCODEC)
+  if (reservation.m_owner == this && reservation.m_index == -1)
+  {
+    if (reservation.m_asyncOwner)
+      reservation.m_asyncOwner->queue->Cancel(reservation.m_serial);
+    reservation.m_asyncOwner.reset();
+    reservation.m_owner = nullptr;
+    return;
+  }
+#endif
+  if (reservation.m_owner == this && reservation.m_index >= 0 &&
       m_reservations[reservation.m_index] == reservation.m_serial)
   {
     // No picture or overlays were attached to an unpublished reservation.
@@ -1711,6 +1850,28 @@ int CRenderManager::WaitForBuffer(BufferReservation& reservation,
 {
   reservation = BufferReservation{};
   std::unique_lock<CCriticalSection> lock(m_presentlock);
+#if defined(HAS_LIBAMCODEC)
+  if (m_amlPresenter)
+  {
+    // Reserve does not need main processing, renderer slots or an active GUI.
+    auto presenter = m_amlPresenter;
+    lock.unlock();
+    const auto serial = presenter->queue->Reserve(timeout);
+    lock.lock();
+    if (!serial || bStop || presenter != m_amlPresenter)
+    {
+      if (serial)
+        presenter->queue->Cancel(serial);
+      return -1;
+    }
+    reservation.m_owner = this;
+    reservation.m_index = -1;
+    reservation.m_asyncOwner = presenter;
+    reservation.m_serial = serial;
+    const auto stats = presenter->queue->Stats();
+    return stats.queued + stats.discard;
+  }
+#endif
   const uint64_t epoch = m_reservationEpoch;
 
   // check if gui is active and discard buffer if not
@@ -1758,6 +1919,7 @@ int CRenderManager::WaitForBuffer(BufferReservation& reservation,
 
 void CRenderManager::UpdateAudioLatencyTweak(double audioLatency)
 {
+  std::unique_lock<CCriticalSection> lock(m_presentlock);
   m_audioLatencyTweak = audioLatency;
 }
 
@@ -1883,6 +2045,10 @@ void CRenderManager::DiscardBuffer()
 {
   std::unique_lock<CCriticalSection> lock2(m_presentlock);
   InvalidateReservations();
+#if defined(HAS_LIBAMCODEC)
+  if (m_amlPresenter)
+    m_amlPresenter->queue->Discard();
+#endif
 
   while(!m_queued.empty())
   {
@@ -1898,6 +2064,17 @@ void CRenderManager::DiscardBuffer()
 bool CRenderManager::GetStats(int &lateframes, double &pts, int &queued, int &discard)
 {
   std::unique_lock<CCriticalSection> lock(m_presentlock);
+#if defined(HAS_LIBAMCODEC)
+  if (m_amlPresenter)
+  {
+    const auto stats = m_amlPresenter->queue->Stats();
+    lateframes = stats.late;
+    pts = stats.pts;
+    queued = stats.queued;
+    discard = stats.discard;
+    return true;
+  }
+#endif
   lateframes = m_lateframes / 10;
   pts = m_presentpts - m_displayLatency;
   queued = m_queued.size();
@@ -1908,12 +2085,20 @@ bool CRenderManager::GetStats(int &lateframes, double &pts, int &queued, int &di
 double CRenderManager::GetRenderPts()
 {
   std::unique_lock<CCriticalSection> lock(m_presentlock);
+#if defined(HAS_LIBAMCODEC)
+  if (m_amlPresenter)
+    return m_amlPresenter->queue->RenderPts();
+#endif
   return (m_presentpts - m_displayLatency);
 }
 
 double CRenderManager::GetFramePts()
 {
   std::unique_lock<CCriticalSection> lock(m_presentlock);
+#if defined(HAS_LIBAMCODEC)
+  if (m_amlPresenter)
+    return m_amlPresenter->queue->Stats().framePts;
+#endif
   return m_presentpts;
 }
 
@@ -1959,3 +2144,75 @@ void CRenderManager::CheckEnableClockSync()
 
   m_playerPort->UpdateClockSync(m_clockSync.m_enabled);
 }
+
+#if defined(HAS_LIBAMCODEC)
+void CRenderManager::UpdateAMLPresenter()
+{
+  std::unique_lock<CCriticalSection> state(m_statelock);
+  std::unique_lock<CCriticalSection> present(m_presentlock);
+  if (!m_amlPresenter)
+    return;
+  auto* renderer = static_cast<CRendererAML*>(m_pRenderer);
+  CRect source, destination;
+  const auto generation = renderer->PrepareIndependentControl(source, destination);
+  m_amlPresenter->SetTiming(
+      static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()),
+      static_cast<double>(m_fps),
+      DVD_MSEC_TO_TIME(m_latencyTweak + m_audioLatencyTweak - m_videoDelay));
+  m_amlPresenter->queue->SetControl(generation);
+  m_amlPresenter->ApplyControl(source, destination);
+  m_QueueSkip = m_amlPresenter->queue->Skipped();
+}
+
+void CRenderManager::StopAMLPresenter(bool migrate)
+{
+  std::unique_lock<CCriticalSection> present(m_presentlock);
+  if (!m_amlPresenter)
+    return;
+  // The worker never takes any RenderManager lock, invokes main, or waits for
+  // its control receipt while stopping. Native return time remains unbounded.
+  if (!m_amlPresenter->Stop())
+    throw std::runtime_error("AML presentation owner did not return to main");
+  auto frames = m_amlPresenter->queue->TakeFrames();
+  static_cast<CRendererAML*>(m_pRenderer)->ResumeIndependentPresentation(m_amlPresenter->queue->PreviousPts());
+  m_amlPresenter.reset();
+  m_clockSync.Reset();
+  m_dvdClock.SetVsyncAdjust(0);
+  ClearFrameSelection();
+  InvalidateReservations();
+  m_queued.clear();
+  m_discard.clear();
+  m_free.clear();
+  m_presentstarted = false;
+  m_presentsource = 0;
+  m_presentsourcePast = -1;
+  m_presentstep = PRESENT_IDLE;
+  for (int i = 0; i < m_QueueSize; ++i)
+    m_free.push_back(i);
+  if (migrate)
+  {
+    for (const auto& record : frames)
+    {
+      auto frame = std::static_pointer_cast<CAMLPresenterSession::Frame>(record);
+      if (frame->buffer->Codec()->IsOperationInvalidated(frame->epoch))
+        continue;
+      const int index = m_free.front();
+      m_free.pop_front();
+      auto overlays = std::static_pointer_cast<const CAMLPresenterSession::OverlayObservation>(frame->observation);
+      m_pRenderer->AddVideoPicture(frame->picture, index);
+      m_overlays.SetOverlays(overlays->overlays, index);
+      m_Queue[index] = {frame->pts, overlays->field, static_cast<EPRESENTMETHOD>(frame->method)};
+      if (!m_presentstarted)
+      {
+        m_presentsource = index;
+        m_presentstarted = true;
+        m_presentpts = frame->pts;
+      }
+      else
+        m_queued.push_back(index);
+    }
+    m_presentstep = m_queued.empty() ? PRESENT_IDLE : PRESENT_READY;
+  }
+  m_presentevent.notifyAll();
+}
+#endif

@@ -53,7 +53,7 @@ public:
 
   void FrameMove();
   void Render(bool clear, uint32_t alpha = 255, bool gui = true);
-  void FlushRenderer();
+  bool FlushRenderer();
   void SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch);
   float GetRenderAspectRatio() const;
   void TriggerUpdateResolution();

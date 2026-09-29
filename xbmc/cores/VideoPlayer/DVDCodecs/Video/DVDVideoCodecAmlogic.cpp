@@ -74,6 +74,7 @@ void CAMLVideoBuffer::Set(std::shared_ptr<CAMLCodec> codec, int omxPts, int amlD
   m_bufferIndex = bufferIndex;
   m_presentationGeneration = generation;
   m_operationEpoch = m_codec->GetOperationEpoch();
+  m_submitted = false;
   m_consumption = Consumption::PENDING;
 }
 
@@ -88,15 +89,41 @@ void CAMLVideoBuffer::Commit(const CAMLSession::Permit& permit, const CRect& sou
   // Duplicate PTS deliberately leaves the return pending for a later discard.
   // The permit was acquired before claim and remains alive through caller Poll.
   if (!m_codec || !m_codec->IsPresentationPermit(permit, m_operationEpoch) ||
-      permit.IsRetirement() || previousPts == m_omxPts)
+      permit.IsRetirement() || permit.IsControl() || previousPts == m_omxPts)
     return;
   Consumption expected = Consumption::PENDING;
   if (!m_consumption.compare_exchange_strong(expected, Consumption::CLAIMED))
     return;
   m_codec->ReleaseFrame(m_bufferIndex, m_presentationGeneration, permit);
   m_codec->SetVideoRect(source, destination, m_presentationGeneration, permit);
+  m_submitted = true;
   m_consumption = Consumption::CONSUMED;
   previousPts = m_omxPts; // Consume even if QBUF failed, as before.
+}
+
+bool CAMLVideoBuffer::Submit(const CAMLSession::Permit& permit, int& previousPts)
+{
+  // A duplicate stays pending for discard. An attempted QBUF, even a failed
+  // one, consumes the return obligation before a main-control continuation.
+  if (!m_codec || !m_codec->IsPresentationPermit(permit, m_operationEpoch) ||
+      permit.IsRetirement() || permit.IsControl() || previousPts == m_omxPts)
+    return false;
+  Consumption expected = Consumption::PENDING;
+  if (!m_consumption.compare_exchange_strong(expected, Consumption::CLAIMED))
+    return false;
+  m_codec->ReleaseFrame(m_bufferIndex, m_presentationGeneration, permit);
+  m_submitted = true;
+  m_consumption = Consumption::CONSUMED;
+  previousPts = m_omxPts;
+  return true;
+}
+
+void CAMLVideoBuffer::ApplyGeometry(const CAMLSession::Permit& permit, const CRect& source,
+                                   const CRect& destination)
+{
+  if (m_codec && WasSubmitted() && !permit.IsRetirement() &&
+      m_codec->IsPresentationPermit(permit, m_operationEpoch))
+    m_codec->SetVideoRect(source, destination, m_presentationGeneration, permit);
 }
 
 void CAMLVideoBuffer::Poll(const CAMLSession::Permit& permit) const

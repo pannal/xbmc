@@ -8,7 +8,8 @@ set(SOURCES BaseRenderer.cpp
             RenderManager.cpp
             DebugRenderer.cpp)
 
-set(HEADERS BaseRenderer.h
+set(HEADERS AMLPresenter.h
+            BaseRenderer.h
             ColorManager.h
             DebugInfo.h
             OverlayRenderer.h

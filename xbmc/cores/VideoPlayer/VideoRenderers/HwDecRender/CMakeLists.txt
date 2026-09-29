@@ -43,7 +43,7 @@ endif()
 
 if(AML_FOUND)
   list(APPEND SOURCES RendererAML.cpp)
-  list(APPEND HEADERS RendererAML.h)
+  list(APPEND HEADERS RendererAML.h AMLPresenterSession.h)
 endif()
 
 if(CORE_SYSTEM_NAME STREQUAL android)

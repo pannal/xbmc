@@ -7,6 +7,8 @@
  */
 
 #include "RendererAML.h"
+#include "settings/DisplaySettings.h"
+#include "utils/StringUtils.h"
 
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h"
@@ -86,9 +88,19 @@ bool CRendererAML::RenderCapture(int index, CRenderCapture* capture)
 {
   if (!capture)
     return false;
-  auto* buffer = dynamic_cast<CAMLVideoBuffer*>(m_buffers[index].videoBuffer);
-  auto permit = buffer ? buffer->AcquirePresentation() :
-      (m_pollCodec ? m_pollCodec->AcquirePresentation(m_pollEpoch) : CAMLSession::Permit{});
+  auto* buffer = index >= 0 && index < m_numRenderBuffers
+                     ? dynamic_cast<CAMLVideoBuffer*>(m_buffers[index].videoBuffer)
+                     : nullptr;
+  auto codec = buffer ? buffer->Codec() : m_pollCodec;
+  const auto epoch = buffer ? buffer->OperationEpoch() : m_pollEpoch;
+  auto permit = [&]() -> CAMLSession::Permit {
+    if (!codec)
+      return {};
+    auto presentation = codec->AcquirePresentation(epoch);
+    if (presentation)
+      return presentation;
+    return codec->AcquireMainControl(epoch, true);
+  }();
   if (!permit)
   {
     capture->SetState(CAPTURESTATE_FAILED);
@@ -201,7 +213,13 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
   const PreparedVideoGeometry geometry = PrepareVideoLayer();
   if (buffer)
   {
-    buffer->Commit(permit, geometry.source, geometry.destination, m_prevVPts);
+    // A handoff may retain a QBUF-consumed frame whose main control was
+    // still pending. Resume its control before polling without another QBUF.
+    if (m_resumeControl && buffer->WasSubmitted())
+      buffer->ApplyGeometry(permit, geometry.source, geometry.destination);
+    else
+      buffer->Commit(permit, geometry.source, geometry.destination, m_prevVPts);
+    m_resumeControl = false;
     buffer->Poll(permit);
   }
   else
@@ -212,4 +230,27 @@ CRendererAML::PreparedVideoGeometry CRendererAML::PrepareVideoLayer()
 {
   ManageRenderArea();
   return {m_sourceRect, m_destRect};
+}
+
+uint64_t CRendererAML::PrepareIndependentControl(CRect& source, CRect& destination)
+{
+  const auto geometry = PrepareVideoLayer();
+  source = geometry.source;
+  destination = geometry.destination;
+  auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  const auto info = gfx.GetResInfo();
+  const std::string key = StringUtils::Format(
+      "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+      source.x1, source.y1, source.x2, source.y2,
+      destination.x1, destination.y1, destination.x2, destination.y2,
+      m_videoSettings.m_ViewMode, static_cast<int>(gfx.GetStereoMode()),
+      static_cast<int>(gfx.GetStereoView()), static_cast<int>(gfx.GetVideoResolution()),
+      info.iWidth, info.iHeight, info.iScreenWidth, info.iScreenHeight,
+      CDisplaySettings::GetInstance().IsNonLinearStretched());
+  if (key != m_controlKey)
+  {
+    m_controlKey = key;
+    ++m_controlGeneration;
+  }
+  return m_controlGeneration;
 }

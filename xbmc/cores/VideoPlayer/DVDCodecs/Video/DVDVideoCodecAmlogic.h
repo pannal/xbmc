@@ -40,6 +40,10 @@ public:
   CAMLSession::Permit AcquirePresentation() const;
   void Commit(const CAMLSession::Permit& permit, const CRect& source,
               const CRect& destination, int& previousPts);
+  bool Submit(const CAMLSession::Permit& permit, int& previousPts);
+  bool WasSubmitted() const { return m_submitted.load(); }
+  void ApplyGeometry(const CAMLSession::Permit& permit, const CRect& source,
+                     const CRect& destination);
   void Poll(const CAMLSession::Permit& permit) const;
   bool Drop();
   std::shared_ptr<CAMLCodec> Codec() const { return m_codec; }
@@ -55,6 +59,7 @@ private:
   uint64_t m_operationEpoch{0};
   enum class Consumption { PENDING, CLAIMED, CONSUMED };
   std::atomic<Consumption> m_consumption{Consumption::CONSUMED};
+  std::atomic<bool> m_submitted{false};
 
 };
 

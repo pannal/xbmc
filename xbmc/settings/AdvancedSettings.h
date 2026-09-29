@@ -401,6 +401,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     int m_videoDecoderDrainTimeout;
     float m_videoMenuDomainQueueTimeSize;
     bool m_videoBdBoundaryDrain;
+    bool m_videoAMLIndependentPresenter;
     bool m_videoDecoderBypassBufferReady;
     float m_videoDecoderBuffer;
     float m_videoDecoderStreamBuffer;

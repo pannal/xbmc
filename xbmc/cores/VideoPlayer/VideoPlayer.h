@@ -345,7 +345,7 @@ public:
 
   void FrameMove() override;
   void Render(bool clear, uint32_t alpha = 255, bool gui = true) override;
-  void FlushRenderer() override;
+  bool FlushRenderer() override;
   void SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch) override;
   float GetRenderAspectRatio() const override;
   void TriggerUpdateResolution() override;
@@ -550,7 +550,7 @@ protected:
   ECacheState  m_caching;
   XbmcThreads::EndTime<> m_cachingTimer;
 
-  std::unique_ptr<CProcessInfo> m_processInfo;
+  std::shared_ptr<CProcessInfo> m_processInfo;
 
   CCurrentStream m_CurrentAudio;
   CCurrentStream m_CurrentVideo;

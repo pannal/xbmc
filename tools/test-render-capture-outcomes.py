@@ -161,6 +161,7 @@ struct CAMLCodec {
   CAMLSession session;
   CAMLCodec(){auto request=session.Fence();assert(session.BeginMutation(request));assert(session.Complete(request,true));}
   CAMLSession::Permit AcquirePresentation(uint64_t epoch){return session.Acquire(epoch);}
+  CAMLSession::Permit AcquireMainControl(uint64_t epoch,bool wait){return session.AcquireControl(epoch,wait);}
   // This fixture isolates capture outcomes. The direct-admission fixture tests
   // the production registry, exact source epoch, and lifecycle rejection.
   struct CaptureSource {
@@ -173,8 +174,11 @@ struct CVideoBuffer {virtual ~CVideoBuffer()=default;};
 struct CAMLVideoBuffer:CVideoBuffer {
   std::shared_ptr<CAMLCodec> codec;uint64_t epoch=0;
   CAMLSession::Permit AcquirePresentation(){return codec->AcquirePresentation(epoch);}
+  std::shared_ptr<CAMLCodec> Codec() const {return codec;}
+  uint64_t OperationEpoch() const {return epoch;}
 };
 struct CRendererAML {
+  static constexpr int m_numRenderBuffers=1;
   struct {CVideoBuffer* videoBuffer=nullptr;}m_buffers[1];
   std::shared_ptr<CAMLCodec> m_pollCodec=std::make_shared<CAMLCodec>();
   uint64_t m_pollEpoch=m_pollCodec->session.Epoch();
@@ -260,6 +264,12 @@ void testRenderers(){
     assert(capture.state==(result ? CAPTURESTATE_DONE : CAPTURESTATE_FAILED));
     assert(capture.ends==(result ? 1 : 0));
     if(!result)assert(capture.bytes==previous);
+  }
+  // The independent path publishes a CPU observation with source=-1.
+  for(int index : {-1, 1}) {
+    reset();CRenderCapture capture;
+    assert(aml.RenderCapture(index,&capture));
+    assert(capture.state==CAPTURESTATE_DONE && capture.begins==1 && capture.ends==1);
   }
   // Rejected admission never starts readback or touches capture bytes.
   {auto fence=aml.m_pollCodec->session.Fence();CRenderCapture capture;capture.bytes.fill(88);

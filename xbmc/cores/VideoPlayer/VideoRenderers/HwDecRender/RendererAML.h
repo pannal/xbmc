@@ -45,7 +45,19 @@ public:
   virtual bool Supports(ESCALINGMETHOD method) const override { return false; };
   virtual bool Supports(ERENDERFEATURE feature) const override;
 
+  std::shared_ptr<CAMLCodec> PresenterCodec() const { return m_pollCodec; }
+  void SetPresentationEpoch(uint64_t epoch) { m_pollEpoch = epoch; }
+  void ResumeIndependentPresentation(int pts)
+  {
+    m_prevVPts = pts;
+    m_resumeControl = true;
+  }
+  uint64_t PrepareIndependentControl(CRect& source, CRect& destination);
+
 private:
+  bool m_resumeControl{false};
+  uint64_t m_controlGeneration{0};
+  std::string m_controlKey;
   // Submission rectangles only. Buffer/codec and final display conversion
   // remain live under the existing synchronous ownership and generation gates.
   struct PreparedVideoGeometry

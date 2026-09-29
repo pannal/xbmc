@@ -26,7 +26,7 @@ def harness():
     surface = (ROOT / 'xbmc/platform/linux/ScreenshotSurfaceAML.cpp').read_text()
     methods = '\n'.join(function(header, signature) for signature in [
         'struct CaptureSource', 'uint64_t      GetOperationEpoch()',
-        'CAMLSession::Permit AcquirePresentation('])
+        'CAMLSession::Permit AcquirePresentation(', 'CAMLSession::Permit AcquireMainControl('])
     methods = methods.replace('}\nuint64_t', '};\nuint64_t')
     source = PRELUDE.replace('@CODEC_METHODS@', methods)
     source += '\n'.join(function(codec, signature) for signature in [
