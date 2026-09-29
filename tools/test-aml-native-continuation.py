@@ -55,7 +55,9 @@ struct CServiceBroker {
 std::function<void()> startupHook;
 void aml_dv_start(){assert(startupHook);startupHook();}
 std::function<void(int,int,int)> payloadHook;
-void set_vsvdb_payload_ver(DV_TYPE t,int lum,int pq){assert(payloadHook);payloadHook(t,lum,pq);}
+struct AMLDVCapability {};
+AMLDVCapability aml_read_dv_cap(){return {};}
+void set_vsvdb_payload_ver(DV_TYPE t,int lum,int pq,const AMLDVCapability&){assert(payloadHook);payloadHook(t,lum,pq);}
 struct CDolbyVisionAML {
  CAMLDeferredWork m_deferredWork;
  std::atomic<bool> m_vsvdb_apply_scheduled{false},m_applying_vsvdb{false};

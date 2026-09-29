@@ -145,22 +145,28 @@ void aml_dv_dump_state(const char* tag);
 // LOGINFO otherwise) — quiet when stable, loud the moment the link drops.
 void aml_hdmi_link_probe(const char* ctx);
 
-void aml_get_dv_cap();
-struct xbmc_dv_cap
+// Fresh result for one admitted native operation. Never cached or published globally:
+// a new operation must read again, including after display replacement or wake.
+struct AMLDVCapability
 {
-  static inline int dv_ver_i = 0;
-  static inline int dv_len_i = 0;
-  static inline int dv_max_v1_i = 0;
-  static inline int dv_max_v2_i = 0;
-  static inline int dv_rx_i = 0;
-  static inline int dv_ry_i = 0;
-  static inline int dv_gx_i = 0;
-  static inline int dv_gy_i = 0;
-  static inline int dv_bx_i = 0;
-  static inline int dv_by_i = 0;
-  static inline std::string dv_vsvdb_s = "";
-  static inline std::string edid_pnpid = "";
+  enum class Status { UNAVAILABLE, UNSUPPORTED, INVALID, READY };
+  Status status{Status::UNAVAILABLE};
+  bool Valid() const { return status == Status::READY; }
+  int dv_ver_i{0};
+  int dv_len_i{0};
+  int dv_max_v1_i{0};
+  int dv_max_v2_i{0};
+  int dv_rx_i{0};
+  int dv_ry_i{0};
+  int dv_gx_i{0};
+  int dv_gy_i{0};
+  int dv_bx_i{0};
+  int dv_by_i{0};
+  std::string dv_vsvdb_s;
+  std::string edid_pnpid;
 };
+// Caller owns native admission. Pending work must not call this or reuse an old result.
+AMLDVCapability aml_read_dv_cap();
 unsigned int aml_dv_dolby_vision_mode();
 // swDecoded: true when the caller is the software/GLES render path (no AML hardware
 // video layer / VD1). Such streams cannot use VS10 conversion — see aml_dv_open().
@@ -270,9 +276,10 @@ void aml_dv_send_md_levels();
 void aml_dv_send_hdr10_data();
 void aml_dv_send_el_type();
 void aml_dv_send_profile(int dvprofile);
-void set_vsvdb_payload_ver(enum DV_TYPE dv_type, int max_lum_nits_value, int source_max_pq);
-void CalculateVSVDBPayload();
-void CalculateVSVDBPayload_2();
+void set_vsvdb_payload_ver(enum DV_TYPE dv_type, int max_lum_nits_value, int source_max_pq,
+                           const AMLDVCapability& cap);
+void CalculateVSVDBPayload(const AMLDVCapability& cap);
+void CalculateVSVDBPayload_2(const AMLDVCapability& cap);
 void aml_dv_enable_fel();
 void aml_hevc_nal_skip_policy(const int value);
 void aml_set_transfer_pq(StreamHdrType hdrType, unsigned int bitDepth);

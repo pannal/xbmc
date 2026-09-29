@@ -107,7 +107,7 @@ static const int max_direct_to_nits_lut_2[32] = {
 };
 
 // V1 VSVDB payload calculation (128-entry LUT based)
-void CalculateVSVDBPayload()
+void CalculateVSVDBPayload(const AMLDVCapability& cap)
 {
   int max_lum_nits_value(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM));
   int max_lum_idx = find_closest_lut_index(max_lum_nits_value, max_direct_to_nits_lut, 128);
@@ -128,10 +128,9 @@ void CalculateVSVDBPayload()
   }
   else if (dv_dolby_vsvdb_inject)
   {
-    if ((cs == 3) && aml_display_support_dv())
+    if ((cs == 3) && cap.Valid())
     {
-      aml_get_dv_cap();
-      switch (xbmc_dv_cap::dv_gx_i)
+      switch (cap.dv_gx_i)
       {
         case 43: cs = 1; break;
         case 67: cs = 0; break;
@@ -140,7 +139,7 @@ void CalculateVSVDBPayload()
       }
       settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_CS, cs);
     }
-    else if ((cs == 3) && !aml_display_support_dv())
+    else if ((cs == 3) && !cap.Valid())
     {
       cs = 1;
       settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_CS, cs);
@@ -148,10 +147,9 @@ void CalculateVSVDBPayload()
   }
   else if (!dv_dolby_vsvdb_inject)
   {
-    if (aml_display_support_dv())
+    if (cap.Valid())
     {
-      aml_get_dv_cap();
-      switch (xbmc_dv_cap::dv_gx_i)
+      switch (cap.dv_gx_i)
       {
         case 43: cs = 1; break;
         case 67: cs = 0; break;
@@ -159,20 +157,20 @@ void CalculateVSVDBPayload()
         default: cs = 3; break;
       }
       settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_CS, cs);
-      switch (xbmc_dv_cap::dv_ver_i)
+      switch (cap.dv_ver_i)
       {
         case 1:
         {
-          max_lum_idx = xbmc_dv_cap::dv_max_v1_i;
+          max_lum_idx = cap.dv_max_v1_i;
           max_lum_nits_value = max_direct_to_nits_lut[max_lum_idx];
           settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM, max_lum_nits_value);
           break;
         }
         case 2:
         {
-          max_lum_nits_value = max_direct_to_nits_lut_2[xbmc_dv_cap::dv_max_v2_i];
+          max_lum_nits_value = max_direct_to_nits_lut_2[cap.dv_max_v2_i];
           settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM, max_lum_nits_value);
-          max_lum_pq_value = max_direct_to_pq_lut_2[xbmc_dv_cap::dv_max_v2_i];
+          max_lum_pq_value = max_direct_to_pq_lut_2[cap.dv_max_v2_i];
           max_lum_idx = find_closest_lut_index(max_lum_pq_value, max_direct_to_pq_lut, 128);
           if ((max_lum_idx > 17) && (max_lum_idx < 127)) max_lum_idx = max_lum_idx + 1;
           break;
@@ -192,8 +190,8 @@ void CalculateVSVDBPayload()
   }
 
   // Only validate/correct DISPLAY mode when NOT manually overriding EDID
-  if (!override_edid && (cs == 3) && ((xbmc_dv_cap::dv_rx_i == 0) || (xbmc_dv_cap::dv_ry_i == 0) || (xbmc_dv_cap::dv_gx_i == 0) ||
-      (xbmc_dv_cap::dv_gy_i == 0) || (xbmc_dv_cap::dv_bx_i == 0) || (xbmc_dv_cap::dv_by_i == 0)))
+  if (!override_edid && (cs == 3) && ((cap.dv_rx_i == 0) || (cap.dv_ry_i == 0) || (cap.dv_gx_i == 0) ||
+      (cap.dv_gy_i == 0) || (cap.dv_bx_i == 0) || (cap.dv_by_i == 0)))
   {
     cs = 1;
     settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_CS, cs);
@@ -216,18 +214,18 @@ void CalculateVSVDBPayload()
 
   if (cs == 3)
   {
-      byte[3] = (xbmc_dv_cap::dv_bx_i << 5) |
-                ((xbmc_dv_cap::dv_by_i << 2) & 0x1C) |
+      byte[3] = (cap.dv_bx_i << 5) |
+                ((cap.dv_by_i << 2) & 0x1C) |
                 (1 << 0);
 
-      byte[4] = (xbmc_dv_cap::dv_gx_i << 1) |
-                (xbmc_dv_cap::dv_ry_i & 0x01);
+      byte[4] = (cap.dv_gx_i << 1) |
+                (cap.dv_ry_i & 0x01);
 
-      byte[5] = (xbmc_dv_cap::dv_gy_i << 1) |
-                ((xbmc_dv_cap::dv_ry_i >> 1) & 0x01);
+      byte[5] = (cap.dv_gy_i << 1) |
+                ((cap.dv_ry_i >> 1) & 0x01);
 
-      byte[6] = (xbmc_dv_cap::dv_rx_i << 3) |
-                ((xbmc_dv_cap::dv_ry_i >> 2) & 0x07);
+      byte[6] = (cap.dv_rx_i << 3) |
+                ((cap.dv_ry_i >> 2) & 0x07);
   }
   else
   {
@@ -258,7 +256,7 @@ void CalculateVSVDBPayload()
 }
 
 // V2 VSVDB payload calculation (32-entry LUT based)
-void CalculateVSVDBPayload_2()
+void CalculateVSVDBPayload_2(const AMLDVCapability& cap)
 {
   int max_lum_nits_value(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM));
   int max_lum_idx = find_closest_lut_index(max_lum_nits_value, max_direct_to_nits_lut_2_adj, 32);
@@ -277,10 +275,9 @@ void CalculateVSVDBPayload_2()
   }
   else if (dv_dolby_vsvdb_inject)
   {
-    if ((cs == 3) && aml_display_support_dv())
+    if ((cs == 3) && cap.Valid())
     {
-      aml_get_dv_cap();
-      switch (xbmc_dv_cap::dv_gx_i)
+      switch (cap.dv_gx_i)
       {
         case 43: cs = 1; break;
         case 67: cs = 0; break;
@@ -289,7 +286,7 @@ void CalculateVSVDBPayload_2()
       }
       settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_CS, cs);
     }
-    else if ((cs == 3) && !aml_display_support_dv())
+    else if ((cs == 3) && !cap.Valid())
     {
       cs = 1;
       settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_CS, cs);
@@ -297,10 +294,9 @@ void CalculateVSVDBPayload_2()
   }
   else if (!dv_dolby_vsvdb_inject)
   {
-    if (aml_display_support_dv())
+    if (cap.Valid())
     {
-      aml_get_dv_cap();
-      switch (xbmc_dv_cap::dv_gx_i)
+      switch (cap.dv_gx_i)
       {
         case 43: cs = 1; break;
         case 67: cs = 0; break;
@@ -308,18 +304,18 @@ void CalculateVSVDBPayload_2()
         default: cs = 3; break;
       }
       settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_CS, cs);
-      switch (xbmc_dv_cap::dv_ver_i)
+      switch (cap.dv_ver_i)
       {
         case 1:
         {
-          max_lum_nits_value = max_direct_to_nits_lut[xbmc_dv_cap::dv_max_v1_i];
+          max_lum_nits_value = max_direct_to_nits_lut[cap.dv_max_v1_i];
           settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM, max_lum_nits_value);
           max_lum_idx = find_closest_lut_index(max_lum_nits_value, max_direct_to_nits_lut_2_adj, 32);
           break;
         }
         case 2:
         {
-          max_lum_idx = xbmc_dv_cap::dv_max_v2_i;
+          max_lum_idx = cap.dv_max_v2_i;
           max_lum_nits_value = max_direct_to_nits_lut_2[max_lum_idx];
           settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM, max_lum_nits_value);
           break;
@@ -339,8 +335,8 @@ void CalculateVSVDBPayload_2()
   }
 
   // Only validate/correct DISPLAY mode when NOT manually overriding EDID
-  if (!override_edid && (cs == 3) && ((xbmc_dv_cap::dv_rx_i == 0) || (xbmc_dv_cap::dv_ry_i == 0) || (xbmc_dv_cap::dv_gx_i == 0) ||
-      (xbmc_dv_cap::dv_gy_i == 0) || (xbmc_dv_cap::dv_bx_i == 0) || (xbmc_dv_cap::dv_by_i == 0)))
+  if (!override_edid && (cs == 3) && ((cap.dv_rx_i == 0) || (cap.dv_ry_i == 0) || (cap.dv_gx_i == 0) ||
+      (cap.dv_gy_i == 0) || (cap.dv_bx_i == 0) || (cap.dv_by_i == 0)))
   {
     cs = 1;
     settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_CS, cs);
@@ -369,17 +365,17 @@ void CalculateVSVDBPayload_2()
 
   if (cs == 3)
   {
-      byte[3] = (xbmc_dv_cap::dv_gx_i << 1) |
+      byte[3] = (cap.dv_gx_i << 1) |
                 (dv_12b_444_bits << 0);
 
-      byte[4] = (xbmc_dv_cap::dv_gy_i << 1) |
+      byte[4] = (cap.dv_gy_i << 1) |
                 (0 << 0);
 
-      byte[5] = (xbmc_dv_cap::dv_rx_i << 3) |
-                (xbmc_dv_cap::dv_bx_i << 0);
+      byte[5] = (cap.dv_rx_i << 3) |
+                (cap.dv_bx_i << 0);
 
-      byte[6] = (xbmc_dv_cap::dv_ry_i << 3) |
-                (xbmc_dv_cap::dv_by_i << 0);
+      byte[6] = (cap.dv_ry_i << 3) |
+                (cap.dv_by_i << 0);
   }
   else // Manual mode (0, 1, 2 or 10)
   {
@@ -736,6 +732,8 @@ void CDolbyVisionAML::apply_tv_preset(int preset)
 {
   if (preset == TV_PRESET_MANUAL) return;
 
+  const auto cap = aml_read_dv_cap();
+
   bool preset_has_dv = false;
   bool preset_has_hdr10plus = false;
   bool preset_has_hdr10 = false;
@@ -769,7 +767,7 @@ void CDolbyVisionAML::apply_tv_preset(int preset)
 
   CLog::Log(LOGINFO,
     "CDolbyVisionAML::apply_tv_preset - preset={}, pnpid={}, classify: dv={}, hdr10plus={}, hdr10={}",
-    preset, xbmc_dv_cap::edid_pnpid, preset_has_dv, preset_has_hdr10plus, preset_has_hdr10);
+    preset, cap.edid_pnpid, preset_has_dv, preset_has_hdr10plus, preset_has_hdr10);
 
   if (!preset_has_dv && !preset_has_hdr10)
   {
@@ -910,7 +908,7 @@ void CDolbyVisionAML::schedule_vsvdb_payload_apply()
     m_applying_vsvdb = true;
     try
     {
-      set_vsvdb_payload_ver(dv_type, max_lum_nits_value, source_max_pq);
+      set_vsvdb_payload_ver(dv_type, max_lum_nits_value, source_max_pq, aml_read_dv_cap());
     }
     catch (...)
     {

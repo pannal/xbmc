@@ -146,7 +146,9 @@ enum DV_TYPE{DV_TYPE_DISPLAY_LED,DV_TYPE_PLAYER_LED_LLDV,DV_TYPE_PLAYER_LED_HDR2
 enum DV_MODE{DV_MODE_OFF,DV_MODE_ON_DEMAND};
 constexpr int LOGINFO=1, LOGERROR=2;
 struct CLog{template<class...T>static void Log(T&&...){}};
-namespace xbmc_dv_cap {std::string edid_pnpid="test";}
+struct AMLDVCapability {std::string edid_pnpid="test";};
+void capability();
+AMLDVCapability aml_read_dv_cap(){capability();return {};}
 std::function<void()> capabilityHook;
 std::atomic<int> capabilityReads{0};
 std::atomic<bool> capDV{true},capPlus{false},capPQ{true},capStd{true},capLL{true};
@@ -178,7 +180,7 @@ struct CServiceBroker {
   DOVIStreamMetadata GetVideoDoViStreamMetadata(){return {};}
 };
 std::function<void(int,int,int)> payloadHook;
-void set_vsvdb_payload_ver(DV_TYPE type,int max,int pq){assert(CServiceBroker::alive);payloadHook(type,max,pq);}
+void set_vsvdb_payload_ver(DV_TYPE type,int max,int pq, const AMLDVCapability&){assert(CServiceBroker::alive);payloadHook(type,max,pq);}
 struct CDolbyVisionAML: ISettingCallback {
   CAMLDeferredWork m_deferredWork;
   std::shared_ptr<CSettingCallbackRegistration> m_settingsRetirement;
