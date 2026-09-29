@@ -41,9 +41,10 @@ namespace ANNOUNCEMENT {
  };
 }
 struct CSetting {std::string id;const std::string& GetId()const{return id;}};
-enum DV_TYPE {DV_TYPE_DISPLAY_LED,DV_TYPE_PLAYER_LED_HDR2,DV_TYPE_VS10_ONLY};
+enum DV_TYPE {DV_TYPE_DISPLAY_LED,DV_TYPE_PLAYER_LED_LLDV,DV_TYPE_PLAYER_LED_HDR2,DV_TYPE_VS10_ONLY};
 enum DV_MODE {DV_MODE_OFF,DV_MODE_ON,DV_MODE_ON_DEMAND};
-constexpr int TV_PRESET_MANUAL=0;
+enum TV_PRESET{TV_PRESET_MANUAL,TV_PRESET_AUTO,TV_PRESET_LG,TV_PRESET_SONY,TV_PRESET_SAMSUNG,TV_PRESET_PANASONIC,TV_PRESET_PHILIPS,TV_PRESET_TCL};
+namespace xbmc_dv_cap {std::string edid_pnpid="test";}
 constexpr int DOLBY_VISION_OUTPUT_MODE_IPT=0,DOLBY_VISION_OUTPUT_MODE_HDR10=1,DOLBY_VISION_OUTPUT_MODE_SDR10=2,DOLBY_VISION_OUTPUT_MODE_SDR8=3;
 struct CSettings {@IDS@};
 thread_local bool inCallback=false;
@@ -80,6 +81,10 @@ bool aml_dv_playback_active(){return playing;}
 unsigned int aml_dv_dolby_vision_mode(){return mode;}
 bool aml_dv_l5_override_active(){return overrideActive;}
 bool aml_display_support_dv_std(){return true;}
+bool aml_display_support_dv(){return true;}
+bool aml_display_support_hdr10plus(){return false;}
+bool aml_display_support_hdr_pq(){return true;}
+bool aml_display_support_dv_ll(){return true;}
 bool aml_support_dolby_vision(){return true;}
 bool force_modes(){return false;}
 void set_vsvdb_children_visible(bool){}
@@ -111,7 +116,6 @@ void set_vsvdb_payload_ver(DV_TYPE,int,int){effect("payload");}
 CDolbyVisionAML::CDolbyVisionAML()=default;
 bool CDolbyVisionAML::ContinueAnnounce(){return true;}
 void CDolbyVisionAML::Announce(ANNOUNCEMENT::AnnouncementFlag,const std::string&,const std::string&,const CVariant&){}
-void CDolbyVisionAML::schedule_tv_preset_apply(int){}
 @METHODS@
 template<class P>void until(P p){auto end=std::chrono::steady_clock::now()+3s;while(!p()){assert(std::chrono::steady_clock::now()<end);std::this_thread::sleep_for(1ms);}}
 void drain(CDolbyVisionAML& dv){until([&]{return dv.Retire();});}
@@ -127,6 +131,20 @@ void changed(const char* key,int value){settings()->SetInt(key,value);}
 #define KEY(name) CSettings::SETTING_COREELEC_AMLOGIC_DV_##name
 '''
 TESTS = r'''
+void preset_callback_policy(){
+ CDolbyVisionAML dv;CAMLSession s;init(dv,s);
+ auto permit=std::make_unique<CAMLSession::Permit>(s.AcquireDecoder());
+ changed(KEY(TV_PRESET),TV_PRESET_AUTO);until([&]{return !s.AcquireDecoder();});
+ assert(settings()->GetInt(KEY(MODE))==DV_MODE_OFF);
+ // Reset-time child writes must not clear the queued preset.
+ changed(KEY(CMV40_STRIP),1);assert(settings()->GetInt(KEY(TV_PRESET))==TV_PRESET_AUTO);
+ permit.reset();until([&]{return !dv.m_tv_preset_apply_scheduled;});drain(dv);
+ assert(!dv.m_applying_tv_preset&&!dv.m_deferredWork.Failure());
+ assert(settings()->GetInt(KEY(TV_PRESET))==TV_PRESET_AUTO);
+ assert(settings()->GetInt(KEY(MODE))==DV_MODE_ON_DEMAND);
+ assert(settings()->GetInt(KEY(CMV40_APPEND))==3&&!settings()->GetBool(KEY(CMV40_STRIP)));
+ assert(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_PREFER_12BIT));
+}
 void ordered_fresh_apply(){
  CDolbyVisionAML dv;CAMLSession s;init(dv,s);
  auto permit=std::make_unique<CAMLSession::Permit>(s.AcquireDecoder());assert(*permit);
@@ -207,12 +225,13 @@ void policy_cases(){
   assert(snapshot()==expected);
  }
 }
-int main(){ordered_fresh_apply();later_batch_and_retirement();cancel_pending();exception_does_not_drop_batch();policy_cases();std::cout<<"PASS: ordered native settings continuations, policy and retirement (ASan/UBSan)\n";}
+int main(){preset_callback_policy();ordered_fresh_apply();later_batch_and_retirement();cancel_pending();exception_does_not_drop_batch();policy_cases();std::cout<<"PASS: ordered native settings continuations, policy and retirement (ASan/UBSan)\n";}
 '''
 
 def source():
     dv=(ROOT/'xbmc/windowing/amlogic/DolbyVisionAML.cpp').read_text()
     methods='\n'.join(function(dv,sig) for sig in (
+      'void CDolbyVisionAML::schedule_tv_preset_apply(', 'void CDolbyVisionAML::apply_tv_preset(',
       'void CDolbyVisionAML::schedule_native_setting_apply(', 'void CDolbyVisionAML::apply_native_setting(',
       'void CDolbyVisionAML::OnSettingChanged(', 'void CDolbyVisionAML::schedule_vsvdb_payload_apply(',
       'bool CDolbyVisionAML::Retire()', 'CDolbyVisionAML::~CDolbyVisionAML()'))

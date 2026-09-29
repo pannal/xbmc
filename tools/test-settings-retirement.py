@@ -147,11 +147,15 @@ enum DV_MODE{DV_MODE_OFF,DV_MODE_ON_DEMAND};
 constexpr int LOGINFO=1, LOGERROR=2;
 struct CLog{template<class...T>static void Log(T&&...){}};
 namespace xbmc_dv_cap {std::string edid_pnpid="test";}
-bool aml_display_support_dv(){return true;}
-bool aml_display_support_hdr10plus(){return false;}
-bool aml_display_support_hdr_pq(){return true;}
-bool aml_display_support_dv_std(){return true;}
-bool aml_display_support_dv_ll(){return true;}
+std::function<void()> capabilityHook;
+std::atomic<int> capabilityReads{0};
+std::atomic<bool> capDV{true},capPlus{false},capPQ{true},capStd{true},capLL{true};
+void capability(){++capabilityReads;if(capabilityHook)capabilityHook();}
+bool aml_display_support_dv(){capability();return capDV;}
+bool aml_display_support_hdr10plus(){capability();return capPlus;}
+bool aml_display_support_hdr_pq(){capability();return capPQ;}
+bool aml_display_support_dv_std(){capability();return capStd;}
+bool aml_display_support_dv_ll(){capability();return capLL;}
 struct CSettings {
 @IDS@
   CSettingsManager manager;
@@ -179,7 +183,8 @@ struct CDolbyVisionAML: ISettingCallback {
   CAMLDeferredWork m_deferredWork;
   std::shared_ptr<CSettingCallbackRegistration> m_settingsRetirement;
   std::atomic<bool> m_applying_tv_preset{false},m_tv_preset_apply_scheduled{false},m_vsvdb_apply_scheduled{false},m_applying_vsvdb{false};
-  std::atomic<int> m_tv_preset_pending{0};
+  std::mutex m_tvPresetMutex;
+  int m_tv_preset_pending{0};
   std::atomic<bool> m_retiring{false};
   std::shared_ptr<CAMLSession::NativeRequest> m_nativeRequest;
   void apply_tv_preset(int);
@@ -200,6 +205,87 @@ struct CWinSystemAmlogicGLESContext {
 void awaitRetirement(CDolbyVisionAML& dv){
   auto end=std::chrono::steady_clock::now()+2s;
   while(!dv.Retire()){assert(std::chrono::steady_clock::now()<end);std::this_thread::yield();}
+}
+template<class P>void until(P predicate){
+ auto end=std::chrono::steady_clock::now()+3s;
+ while(!predicate()){assert(std::chrono::steady_clock::now()<end);std::this_thread::sleep_for(1ms);}
+}
+void preset_cases(){
+ auto display=CAMLSession::FenceDisplay();assert(CAMLSession::TryBeginDisplay(display));
+ assert(CAMLSession::EndDisplay(display,CAMLSession::DisplayPhase::READY));
+ auto init=[](CAMLSession& session){
+  auto request=session.Fence();assert(session.BeginMutation(request));assert(session.Complete(request,true));
+  settings()->values.clear();settings()->onWrite={};capabilityReads=0;
+  capDV=capPQ=capStd=capLL=true;capPlus=false;
+  capabilityHook=[&session]{assert(!session.AcquireDecoder());};
+ };
+ // Pending reads/writes wait for admission; Manual replaces an unstarted preset.
+ {CAMLSession session;init(session);CDolbyVisionAML dv;
+  auto permit=std::make_unique<CAMLSession::Permit>(session.AcquireDecoder());
+  dv.schedule_tv_preset_apply(TV_PRESET_AUTO);
+  until([&]{return !session.AcquireDecoder();});assert(capabilityReads==0&&settings()->values.empty());
+  dv.schedule_tv_preset_apply(TV_PRESET_MANUAL);permit.reset();
+  until([&]{return !dv.m_tv_preset_apply_scheduled;});awaitRetirement(dv);
+  assert(capabilityReads==0&&settings()->values.empty()&&!dv.m_applying_tv_preset);
+ }
+ // Capability observations are fresh after admission, not captured by the producer.
+ {CAMLSession session;init(session);CDolbyVisionAML dv;
+  auto permit=std::make_unique<CAMLSession::Permit>(session.AcquireDecoder());
+  dv.schedule_tv_preset_apply(TV_PRESET_AUTO);until([&]{return !session.AcquireDecoder();});
+  capDV=false;capPlus=true;
+  permit.reset();until([&]{return !dv.m_tv_preset_apply_scheduled;});awaitRetirement(dv);
+  assert(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY)==1);
+  assert(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE)==DV_TYPE_PLAYER_LED_HDR2);
+ }
+ // A selection during active effects forms a later serialized job; no lost rearm.
+ {CAMLSession session;init(session);CDolbyVisionAML dv;
+  std::promise<void> entered,release;auto started=entered.get_future(),gate=release.get_future();
+  std::atomic<int> writes{0};
+  settings()->onWrite=[&](const std::string& key){
+   assert(dv.m_applying_tv_preset&&!session.AcquireDecoder());
+   if(key==CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT&&++writes==1){entered.set_value();gate.wait();}
+  };
+  dv.schedule_tv_preset_apply(TV_PRESET_LG);assert(started.wait_for(3s)==std::future_status::ready);
+  dv.schedule_tv_preset_apply(TV_PRESET_AUTO);dv.schedule_tv_preset_apply(TV_PRESET_SAMSUNG);
+  release.set_value();until([&]{return writes==2;});awaitRetirement(dv);
+  assert(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY)==1);
+  assert(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE)==DV_TYPE_PLAYER_LED_HDR2);
+ }
+ // Retirement cancels pending admission, but waits for already-admitted effects.
+ {CAMLSession session;init(session);CDolbyVisionAML dv;auto permit=session.AcquireDecoder();
+  dv.schedule_tv_preset_apply(TV_PRESET_AUTO);until([&]{return !session.AcquireDecoder();});
+  awaitRetirement(dv);assert(capabilityReads==0&&settings()->values.empty()&&session.AcquireDecoder());
+ }
+ {CAMLSession session;init(session);CDolbyVisionAML dv;
+  std::promise<void> entered,release;auto started=entered.get_future(),gate=release.get_future();bool first=true;
+  capabilityHook=[&]{assert(!session.AcquireDecoder());if(first){first=false;entered.set_value();gate.wait();}};
+  dv.schedule_tv_preset_apply(TV_PRESET_AUTO);assert(started.wait_for(3s)==std::future_status::ready);
+  assert(!dv.Retire());release.set_value();awaitRetirement(dv);
+  assert(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND)==3);
+  assert(!dv.m_applying_tv_preset&&session.AcquireDecoder());
+ }
+ // A failed capability read releases suppression and admission; subsequent intent runs.
+ {CAMLSession session;init(session);CDolbyVisionAML dv;
+  capabilityHook=[] {throw 7;};dv.schedule_tv_preset_apply(TV_PRESET_AUTO);
+  until([&]{return bool(dv.m_deferredWork.Failure());});
+  assert(!dv.m_applying_tv_preset&&session.AcquireDecoder());
+  capabilityHook=[&]{assert(!session.AcquireDecoder());};
+  dv.schedule_tv_preset_apply(TV_PRESET_SAMSUNG);
+  until([&]{return !dv.m_tv_preset_apply_scheduled;});awaitRetirement(dv);
+  assert(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY)==1);
+ }
+ // Execute original display fallback and no-capability policy bodies.
+ for(int type:{DV_TYPE_DISPLAY_LED,DV_TYPE_PLAYER_LED_LLDV,DV_TYPE_PLAYER_LED_HDR2,DV_TYPE_VS10_ONLY}){
+  CAMLSession session;init(session);CDolbyVisionAML dv;
+  capStd=type==DV_TYPE_DISPLAY_LED;capLL=type==DV_TYPE_PLAYER_LED_LLDV;capPQ=type!=DV_TYPE_VS10_ONLY;
+  dv.schedule_tv_preset_apply(TV_PRESET_AUTO);until([&]{return !dv.m_tv_preset_apply_scheduled;});awaitRetirement(dv);
+  assert(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE)==type);
+ }
+ {CAMLSession session;init(session);CDolbyVisionAML dv;capDV=capPQ=false;
+  dv.schedule_tv_preset_apply(TV_PRESET_AUTO);until([&]{return !dv.m_tv_preset_apply_scheduled;});awaitRetirement(dv);
+  assert(settings()->values.empty()&&!dv.m_applying_tv_preset);
+ }
+ capabilityHook={};settings()->onWrite={};capDV=capPQ=capStd=capLL=true;capPlus=false;
 }
 void deferred_cases(){
   // Queued work is cancelled and captures retired before the receipt is ready.
@@ -257,7 +343,7 @@ void deferred_cases(){
    assert(window.PrepareForShutdown());CServiceBroker::alive=false;
    dv.schedule_vsvdb_payload_apply();assert(dv.Retire());}
 }
-int main(){registration_cases();deferred_cases();std::cout<<"PASS: five dispatch paths, registration receipts and DV deferred retirement\n";}
+int main(){registration_cases();preset_cases();deferred_cases();std::cout<<"PASS: five dispatch paths, registration receipts and admitted TV presets and DV deferred retirement\n";}
 '''
 
 
@@ -320,9 +406,13 @@ def main():
             original=(ROOT/'xbmc'/path).read_text();assert original.count(old)==1
             run(code,(path,original.replace(old,new)),True);print('rejected:',label)
         for label,old,new in [
+          ('preset bypasses admission','if (m_deferredWork.ScheduleNative(std::chrono::milliseconds(50), [this]() {','if (m_deferredWork.Schedule(std::chrono::milliseconds(50), [this]() {'),
+          ('ignore Manual cancellation','m_tv_preset_pending = preset;','if (preset != TV_PRESET_MANUAL) m_tv_preset_pending = preset;'),
+          ('leak preset suppression','m_applying_tv_preset = false;\n        throw;','throw;'),
+          ('lose later preset','m_tv_preset_apply_scheduled = false;\n      }','/* lost rearm */\n      }'),
           ('skip receipt drain','return workDrained && (!m_settingsRetirement || m_settingsRetirement->Drained());','return workDrained;'),
           ('admit display before drain','if (!RetireNativeTransactions())\n    return false;','RetireNativeTransactions();'),
-          ('lose preset coalescing','m_tv_preset_pending.store(preset);','if (!m_tv_preset_apply_scheduled) m_tv_preset_pending.store(preset);'),
+          ('lose preset coalescing','m_tv_preset_pending = preset;','if (!m_tv_preset_apply_scheduled) m_tv_preset_pending = preset;'),
         ]:
             assert code.count(old)==1,label
             run(code.replace(old,new),negative=True);print('rejected:',label)

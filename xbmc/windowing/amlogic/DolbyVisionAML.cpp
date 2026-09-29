@@ -735,7 +735,6 @@ enum TV_PRESET : int
 void CDolbyVisionAML::apply_tv_preset(int preset)
 {
   if (preset == TV_PRESET_MANUAL) return;
-  m_applying_tv_preset = true;
 
   bool preset_has_dv = false;
   bool preset_has_hdr10plus = false;
@@ -775,7 +774,6 @@ void CDolbyVisionAML::apply_tv_preset(int preset)
   if (!preset_has_dv && !preset_has_hdr10)
   {
     CLog::Log(LOGINFO, "CDolbyVisionAML::apply_tv_preset - display has no DV and no HDR10, no changes applied");
-    m_applying_tv_preset = false;
     return;
   }
 
@@ -830,26 +828,50 @@ void CDolbyVisionAML::apply_tv_preset(int preset)
     settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE, DV_TYPE_PLAYER_LED_HDR2);
     settings()->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT, false);
   }
-
-  m_applying_tv_preset = false;
 }
 
 void CDolbyVisionAML::schedule_tv_preset_apply(int preset)
 {
-  if (preset == TV_PRESET_MANUAL) return;
+  // Retain even Manual: it cancels an older preset still waiting for admission.
+  // Publish/take the latest intent under one lock so a boundary edit is not lost.
+  std::lock_guard<std::mutex> lock(m_tvPresetMutex);
+  m_tv_preset_pending = preset;
+  if (m_tv_preset_apply_scheduled || preset == TV_PRESET_MANUAL)
+    return;
+  m_tv_preset_apply_scheduled = true;
 
-  m_tv_preset_pending.store(preset);
-
-  // If an apply is already scheduled, the updated pending value will be picked up
-  // when the existing thread wakes. Avoid spawning a second thread.
-  if (m_tv_preset_apply_scheduled.exchange(true)) return;
-
-  if (!m_deferredWork.Schedule(std::chrono::milliseconds(50), [this]() {
-    int preset_to_apply = m_tv_preset_pending.load();
-    m_tv_preset_apply_scheduled.store(false);
-    apply_tv_preset(preset_to_apply);
-  }))
+  try
+  {
+    if (m_deferredWork.ScheduleNative(std::chrono::milliseconds(50), [this]() {
+      int preset_to_apply;
+      {
+        std::lock_guard<std::mutex> lock(m_tvPresetMutex);
+        preset_to_apply = m_tv_preset_pending;
+        // No suppression gap while moving from scheduled to admitted work.
+        m_applying_tv_preset = true;
+        m_tv_preset_apply_scheduled = false;
+      }
+      // Capability reads and dependent settings writes belong to this admitted
+      // owner. A later selection forms another job; active work finishes intact.
+      try
+      {
+        apply_tv_preset(preset_to_apply);
+      }
+      catch (...)
+      {
+        m_applying_tv_preset = false;
+        throw;
+      }
+      m_applying_tv_preset = false;
+    }))
+      return;
+  }
+  catch (...)
+  {
     m_tv_preset_apply_scheduled = false;
+    throw;
+  }
+  m_tv_preset_apply_scheduled = false;
 }
 
 // Defer the VSVDB payload re-derivation out of OnSettingChanged.
@@ -1163,7 +1185,8 @@ void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& se
   // the deferred VSVDB recompute writes its derived settings — that recompute is triggered
   // by the preset apply's own mode/type writes and lands after the two preset flags clear,
   // so without m_applying_vsvdb it would flip the just-applied preset back to Manual.
-  if (!m_applying_tv_preset && !m_tv_preset_apply_scheduled.load() && !m_applying_vsvdb.load() &&
+  // Read scheduled first, matching the admitted owner's applying-before-clear order.
+  if (!m_tv_preset_apply_scheduled.load() && !m_applying_tv_preset && !m_applying_vsvdb.load() &&
       settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TV_PRESET) != TV_PRESET_MANUAL)
   {
     CLog::Log(LOGINFO,

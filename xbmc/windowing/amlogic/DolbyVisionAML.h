@@ -52,7 +52,8 @@ private:
   std::shared_ptr<CSettingCallbackRegistration> m_settingsRetirement;
   std::atomic<bool> m_applying_tv_preset{false};
   std::atomic<bool> m_tv_preset_apply_scheduled{false};
-  std::atomic<int> m_tv_preset_pending{0};
+  std::mutex m_tvPresetMutex;
+  int m_tv_preset_pending{0}; // guarded by m_tvPresetMutex
   std::atomic<bool> m_vsvdb_apply_scheduled{false};
   std::atomic<bool> m_applying_vsvdb{false};
   enum class Pending { NONE, START, RESTORE };
