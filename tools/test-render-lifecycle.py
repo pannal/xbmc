@@ -22,6 +22,7 @@ HEADER = Path('cores/VideoPlayer/VideoRenderers/RenderLifecycle.h')
 
 HARNESS = r'''
 #include "cores/VideoPlayer/VideoRenderers/RenderLifecycle.h"
+#include "windowing/amlogic/AMLNativeTransaction.h"
 #include <cassert>
 #include <future>
 #include <stdexcept>
@@ -29,6 +30,27 @@ HARNESS = r'''
 using Mailbox = CRenderLifecycle;
 using Status = Mailbox::Status;
 using namespace std::chrono_literals;
+
+static void pending_continuation()
+{
+  auto mailbox = Mailbox::Create();
+  bool ready = false; int calls = 0, dependent = 0;
+  auto request = mailbox->Submit([&]() -> std::optional<bool> {
+    ++calls;
+    if (!ready) return std::nullopt;
+    return true;
+  });
+  auto next = mailbox->Submit([&] { ++dependent; return true; });
+  mailbox->Process();
+  assert(calls == 1 && dependent == 0 && !request->Wait(0ms) && request->execute);
+  mailbox->Process(); assert(calls == 2 && dependent == 0);
+  ready = true; mailbox->Process();
+  assert(request->Wait(0ms) && next->Wait(0ms) && dependent == 1 && calls == 3);
+  auto pending = mailbox->Submit([]() -> std::optional<bool> { return std::nullopt; });
+  mailbox->Process(); mailbox->AdvanceSession();
+  assert(pending->status == Status::CANCELLED && !pending->execute);
+  assert(mailbox->Close());
+}
 
 static void delayed_and_exactly_once()
 {
@@ -347,6 +369,7 @@ int main()
   advancing_original_session();
   wrong_thread_rejection();
   bounded_dispatch_per_pump();
+  pending_continuation();
   delayed_and_exactly_once();
   bounded_backpressure();
   active_request_is_pinned();
@@ -370,7 +393,7 @@ def run_harness(header=None, expect_failure=False, source_text=None):
         binary = out / 'test'
         subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++17', '-Wall', '-Wextra',
                         '-Werror', '-Wno-unused-parameter', '-pthread', '-fsanitize=address,undefined',
-                        '-fno-omit-frame-pointer', '-I', str(out), '-I', str(ROOT / 'xbmc'),
+                        '-fno-omit-frame-pointer', '-fno-pie', '-no-pie', '-I', str(out), '-I', str(ROOT / 'xbmc'),
                         str(source), '-o', str(binary)], check=True)
         result = subprocess.run([str(binary)], capture_output=expect_failure,
                                 text=True, timeout=20)
@@ -384,8 +407,29 @@ def run_harness(header=None, expect_failure=False, source_text=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--negative-controls', action='store_true')
+    parser.add_argument('--native-only', action='store_true', help='Only retained native renderer requests')
     parser.add_argument('--close-only', action='store_true', help='Only changed close/retirement behavior')
     options = parser.parse_args()
+    if options.native_only:
+        source = caller_harness()
+        source = source[:source.rindex('int main()')] + 'int main() { production_native_admission(); }'
+        source = source.replace('static void ', '[[maybe_unused]] static void ')
+        run_harness(source_text=source)
+        print('Native renderer requests: PASS (ASan/UBSan)')
+        if options.negative_controls:
+            for label, before, after in [
+                ('bypass native admission', 'if (!native->TryBegin())', 'if (false && !native->TryBegin())'),
+                ('complete pending admission', 'return std::nullopt;', 'return false;'),
+                ('skip failed-init cleanup', 'if (!result)\n        UnInitOnMain();', 'if (false)\n        UnInitOnMain();'),
+                ('skip exception cleanup', 'catch (...)\n      {\n        UnInitOnMain();', 'catch (...)\n      {'),
+                ('hold native through display', 'native.reset(); // Display admission', '/* retain native */ // Display admission'),
+                ('lose partial-open cleanup', 'm_dvOpened = true;', 'm_dvOpened = false;'),
+                ('ignore superseding close', 'if (m_closing)', 'if (false)'),
+            ]:
+                assert before in source, label
+                run_harness(source_text=source.replace(before, after), expect_failure=True)
+                print('Negative control rejected at runtime:', label)
+        return
     if options.close_only:
         source = caller_harness()
         source = source[:source.rindex('int main()')] + 'int main() { production_close_join(); }'
@@ -410,11 +454,12 @@ def main():
     if options.negative_controls:
         source = (ROOT / 'xbmc' / HEADER).read_text()
         for label, before, after in [
-            ('capacity', 'm_requests.size() >= 4', 'm_requests.size() >= 5'),
+            ('finish pending request', 'if (!complete)', 'if (false)'),
+            ('capacity', 'm_requests.size() + (m_executing ? 1 : 0) >= 4', 'm_requests.size() + (m_executing ? 1 : 0) >= 5'),
             ('owner rejection', 'if (std::this_thread::get_id() != m_owner)', 'if (false)'),
             ('dispatch budget', 'dispatched < 4', 'dispatched < 5'),
-            ('false completion', 'complete ? Status::COMPLETED : Status::FAILED',
-             'complete ? Status::COMPLETED : Status::COMPLETED'),
+            ('false completion', '*complete ? Status::COMPLETED : Status::FAILED',
+             '*complete ? Status::COMPLETED : Status::COMPLETED'),
             ('cancel acknowledgement', 'request->Finish(Status::CANCELLED);',
              'request->Finish(Status::COMPLETED);'),
             ('timeout result', 'return status == Status::COMPLETED;', 'return true;'),
@@ -464,12 +509,19 @@ def caller_harness():
     configuration_failure = function(configure, '  else\n  {')
     prelude = CALLER_PRELUDE.replace('@CREATE_FAILED@', creation_failure)
     prelude = prelude.replace('@CONFIGURE_FAILED@', configuration_failure)
+    gles = (ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/LinuxRendererGLES.cpp').read_text()
+    gles_config = function(gles, 'bool CLinuxRendererGLES::Configure(')
+    gles_close = function(gles, 'void CLinuxRendererGLES::UnInit()')
+    prelude = prelude.replace('@GLES_OPEN@', function(gles_config, 'if (!m_dvOpened)'))
+    prelude = prelude.replace('@GLES_CLOSE@', function(gles_close, 'if (m_dvOpened)'))
+    assert 'UpdateResolution();' not in configure  # Display follows native release in the request.
     return prelude + methods + close + CALLER_TESTS
 
 
 CALLER_PRELUDE = r'''
 #include <algorithm>
 #include "cores/VideoPlayer/VideoRenderers/RenderLifecycle.h"
+#include "windowing/amlogic/AMLNativeTransaction.h"
 #include <cassert>
 #include <future>
 #include <string>
@@ -503,6 +555,8 @@ struct CStreamDetails { static int DynamicRangeToString(StreamHdrType) { return 
 struct VideoPicture
 {
   int iWidth{0}, iHeight{0}, iDisplayWidth{0}, iDisplayHeight{0};
+  StreamHdrType hdrType{StreamHdrType::NONE};
+  int colorBits{10}, color_primaries{1};
   std::string stereoMode;
   std::shared_ptr<int> pixels;
   bool IsSameParams(const VideoPicture& other) const
@@ -517,7 +571,15 @@ constexpr int ADJUST_REFRESHRATE_OFF = 0;
 struct CResolutionUtils { static int ChooseBestResolution(float,int,int,bool) { return 0; } };
 struct ClockSync { void Reset() {} };
 struct Clock { void SetVsyncAdjust(int) {} };
-struct RenderBackend { bool ConfigChanged(const VideoPicture&) { return false; } };
+int nativeOpens=0, nativeCloses=0;bool throwNativeOpen=false;
+void aml_dv_open(StreamHdrType,int,int,bool software){assert(software);++nativeOpens;if(throwNativeOpen)throw 8;}
+void aml_dv_close(){++nativeCloses;}
+struct RenderBackend {
+ bool m_dvOpened=false;
+ bool ConfigChanged(const VideoPicture&) { return false; }
+ void ConfigureNative(const VideoPicture& picture) { @GLES_OPEN@ }
+ void CloseNative() { @GLES_CLOSE@ }
+};
 struct PresentEvent
 {
   template<class T> void wait(T& lock, std::chrono::milliseconds duration)
@@ -570,7 +632,9 @@ struct CRenderManager
   Clock m_dvdClock;
   int m_presentstep{PRESENT_IDLE}, m_renderState{STATE_UNCONFIGURED};
   bool m_forceNext{false}, m_bRenderGUI{true}, m_bTriggerUpdateResolution{false};
-  bool m_configuredFramePending{false}, configureResult{true}, createResult{true};
+  CAMLSession* nativeSession{nullptr};
+  bool m_configuredFramePending{false}, configureResult{true}, createResult{true}, throwConfigure{false};
+  void UpdateResolution() { CAMLNativeTransaction check; assert(check.TryBegin()); }
   RenderBackend backend;
   RenderBackend* m_pRenderer{nullptr};
   int configurations{0}, invalidations{0};
@@ -580,10 +644,13 @@ struct CRenderManager
   bool Configure()
   {
     assert(std::this_thread::get_id() == mainThread);
+    if (nativeSession) assert(!nativeSession->AcquireDecoder());
     ++configurations;
     observed = *m_pConfigPicture;
     m_pRenderer = createResult ? &backend : nullptr;
     @CREATE_FAILED@
+    m_pRenderer->ConfigureNative(*m_pConfigPicture);
+    if (throwConfigure) throw 7;
     if (configureResult)
     {
       m_presentstep = PRESENT_IDLE;
@@ -610,7 +677,11 @@ struct CRenderManager
   void UnInitOnMain()
   {
     assert(std::this_thread::get_id() == mainThread);
+    if (nativeSession) assert(!nativeSession->AcquireDecoder());
     ++unInitCalls;
+    if (m_pRenderer) m_pRenderer->CloseNative();
+    m_pRenderer = nullptr;
+    m_pConfigPicture.reset();
     trace.push_back("uninit");
   }
   bool FlushOnMain(bool saveBuffers)
@@ -630,6 +701,7 @@ struct Edl { void Clear() { trace.push_back("edl-clear"); } };
 struct ProcessInfo { void SetDataCache(Cache*) { trace.push_back("set-cache"); } };
 struct CVideoPlayer
 {
+  struct { void Invalidate() {} } m_vs10Action;
   CRenderManager m_renderManager;
   bool m_bAbortRequest{false}, m_bCloseRequest{false};
   bool m_HasVideo{true}, m_HasAudio{true};
@@ -798,6 +870,72 @@ static VideoPicture picture(int width)
   return result;
 }
 
+static void production_native_admission()
+{
+  auto display = CAMLSession::FenceDisplay();
+  assert(CAMLSession::TryBeginDisplay(display));
+  assert(CAMLSession::EndDisplay(display, CAMLSession::DisplayPhase::READY));
+  CAMLSession session; auto stream = session.Fence();
+  assert(session.BeginMutation(stream) && session.Complete(stream, true));
+  auto input = picture(1920);
+  {
+    CRenderManager manager; manager.nativeSession = &session;
+    auto permit = std::make_unique<CAMLSession::Permit>(session.AcquireDecoder());
+    assert(!manager.Configure(input, 24.0f, 0, StreamHdrType::NONE, 3));
+    auto configure = manager.m_configRequest;
+    assert(configure && configure->status == CRenderLifecycle::Status::PENDING);
+    assert(configure->execute && manager.configurations == 0 && !manager.m_pRenderer);
+    auto dependent = manager.RequestFlush(true);
+    manager.ProcessLifecycleRequests();
+    assert(!configure->Wait(0ms) && manager.flags.empty());
+    permit.reset(); manager.ProcessLifecycleRequests();
+    assert(configure->Wait(0ms) && dependent->Wait(0ms) && manager.configurations == 1);
+    assert(manager.observed.iWidth == 1920 && session.AcquireDecoder());
+    permit = std::make_unique<CAMLSession::Permit>(session.AcquireDecoder());
+    auto close = manager.RequestUnInit(); manager.ProcessLifecycleRequests();
+    assert(close->status == CRenderLifecycle::Status::PENDING && manager.unInitCalls == 0);
+    assert(manager.m_pRenderer && !close->Wait(0ms));
+    permit.reset(); manager.ProcessLifecycleRequests();
+    assert(close->Wait(0ms) && manager.unInitCalls == 1 && !manager.m_pRenderer);
+    assert(manager.m_lifecycle->Close() && session.AcquireDecoder());
+  }
+  {
+    CRenderManager manager; manager.nativeSession = &session;
+    auto permit = std::make_unique<CAMLSession::Permit>(session.AcquireDecoder());
+    assert(!manager.Configure(input, 24.0f, 0, StreamHdrType::NONE, 3));
+    auto abandoned = manager.m_configRequest;
+    auto close = manager.RequestUnInit(); manager.ProcessLifecycleRequests();
+    assert(abandoned->status == CRenderLifecycle::Status::FAILED && !abandoned->execute);
+    assert(manager.configurations == 0 && close->status == CRenderLifecycle::Status::PENDING);
+    permit.reset(); manager.ProcessLifecycleRequests();
+    assert(close->Wait(0ms) && manager.configurations == 0 && manager.unInitCalls == 1);
+    assert(manager.m_lifecycle->Close());
+  }
+  {
+    CRenderManager manager; manager.nativeSession = &session;
+    auto permit = std::make_unique<CAMLSession::Permit>(session.AcquireDecoder());
+    assert(!manager.Configure(input,24.0f,0,StreamHdrType::NONE,3));
+    auto cancelled=manager.m_configRequest; manager.m_closing=true;
+    manager.ProcessLifecycleRequests();
+    assert(cancelled->status==CRenderLifecycle::Status::FAILED && manager.configurations==0);
+    assert(session.AcquireDecoder() && manager.m_lifecycle->Close());
+  }
+  for (int failure : {0, 1, 2})
+  {
+    const bool throws = failure != 0;
+    nativeOpens=nativeCloses=0;throwNativeOpen=failure==2;
+    CRenderManager manager; manager.nativeSession = &session;
+    manager.configureResult = false; manager.throwConfigure = failure==1;
+    try { assert(!manager.Configure(input,24.0f,0,StreamHdrType::NONE,3)); assert(!throws); }
+    catch (int) { assert(throws); }
+    assert(manager.m_configRequest->status == CRenderLifecycle::Status::FAILED);
+    assert(manager.unInitCalls == 1 && !manager.m_pRenderer && !manager.m_pConfigPicture);
+    assert(nativeOpens==1 && nativeCloses==1 && !manager.backend.m_dvOpened);
+    assert(session.AcquireDecoder() && manager.m_lifecycle->Close());
+  }
+  throwNativeOpen=false;
+}
+
 static void production_configure_request()
 {
   CRenderManager manager;
@@ -914,6 +1052,7 @@ static void graphics_release_while_waiting()
 int main()
 {
   graphics_release_while_waiting();
+  production_native_admission();
   production_configure_request();
   production_session_requests();
   production_wrappers();

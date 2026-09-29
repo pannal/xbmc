@@ -2,7 +2,7 @@
 """Host regression checks for DV L5 policy, without a CE image build.
 
 Compile the production geometry/sample functions, watcher, subtitle setters and
-FrameMove policy block with small settings/cache/overlay/sysfs stubs. This tests
+GUI presentation policy block with small settings/cache/overlay/sysfs stubs. This tests
 policy decisions, not real Kodi threads, decoded pictures or HDMI output.
 Requires Python 3 and g++; temporary build files are removed automatically.
 """
@@ -36,17 +36,17 @@ def main():
     render = read("xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp")
     render_h = read("xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h")
     video_h = read("xbmc/cores/VideoPlayer/VideoPlayerVideo.h")
-    frame = function(render, "void CRenderManager::FrameMove()")
+    frame = function(render, "void CRenderManager::UpdateGuiPresentationState(")
     policy = frame[frame.index("  const int subsSignalMode ="):
-                   frame.index("  m_playerPort->UpdateGuiRender")]
+                   frame.index("  m_playerPort->UpdateGuiRender", frame.index("  const int subsSignalMode ="))]
     # The GUI render pass must not overwrite the continuous policy with false.
     assert re.search(r"if \(subsSignalMode == 2\)\s+aml_dv_set_subtitles\(signalSubtitles\);",
                      function(render, "void CRenderManager::Render("))
-    uninit = function(render, "void CRenderManager::UnInit()")
+    uninit = function(render, "void CRenderManager::UnInitOnMain()")
     reset = uninit[uninit.index("  m_subtitleEnabled.store(false);"):
                    uninit.index("  m_debugRenderer.Dispose();")]
-    constants = aml[aml.index("static constexpr uint32_t AUTO_LB_AR_MAX"):
-                    aml.index("static std::atomic<bool> s_autoLbWatchCancel")]
+    constants = "\n".join(re.findall(r"static constexpr (?:uint32_t|int) AUTO_LB_.*?;", aml))
+    constants += re.search(r"static const uint32_t s_commonAR\[\] = \{.*?\};", aml, re.S).group()
     verdicts = re.search(r"enum\s*\{\s*AUTO_LB_SAMPLE_OK.*?\};", aml, re.S).group()
     geometry = function(aml, "static bool _auto_letterbox_geometry(")
     sample = function(aml, "static int _auto_letterbox_duplicate_sample(")
@@ -55,6 +55,8 @@ def main():
     video_setter = function(video_h, "void EnableSubtitle(").replace(" override", "")
 
     source = r'''
+#include "utils/AMLNativeWorker.h"
+#include <future>
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -86,7 +88,7 @@ Settings* settings() { return &config; }
 bool manual = false;
 bool aml_dv_l5_override_active() { return manual; }
 std::atomic<int> s_autoLbWidth{1918}, s_autoLbHeight{802};
-std::atomic<bool> s_autoLbNativeDV{true}, s_autoLbAdditive{true}, s_autoLbWatchCancel{false};
+std::atomic<bool> s_autoLbNativeDV{true}, s_autoLbAdditive{true};
 int applied = 0;
 void aml_dv_apply_l5_override_sysfs() { ++applied; }
 constexpr int LOGINFO = 0;
@@ -107,7 +109,8 @@ struct Player { int count = 1; int GetSubtitleCount() const { return count; } };
 struct Renderer {
   std::atomic_bool m_subtitleEnabled{false};
   Overlays m_overlays;
-  int m_presentsource = 0;
+  struct Frame { int overlays=0; };
+  std::shared_ptr<Frame> frame = std::make_shared<Frame>();
   std::shared_ptr<Player> m_appPlayer = std::make_shared<Player>();
 ''' + renderer_setter + "\nvoid Tick() {\n" + policy + "\n}\nvoid Reset() {\n" + reset + r'''
 }
@@ -160,7 +163,12 @@ int main() {
   classify(1918, 802, {true, 0, 0, 0, 464});
   uint16_t t, b, l, r;
   expect(_auto_letterbox_geometry(t, b, l, r) && t == 138 && b == 138 && l == 0 && r == 0);
-  _auto_letterbox_watch_run(1918, 802); // real six-poll confirmation (~3 seconds)
+  CAMLNativeWorker worker;std::promise<void> finished;auto done=finished.get_future();
+  assert(worker.Start([&](const CAMLNativeWorker::Run& run) {
+    _auto_letterbox_watch_run(run, 1918, 802);finished.set_value();
+  })); // real six-poll confirmation (~3 seconds), exact admitted worker
+  assert(done.wait_for(std::chrono::seconds(5))==std::future_status::ready);
+  worker.Stop();
   expect(!s_autoLbAdditive && applied == 1);
 
   Renderer renderer; Video video{false, renderer};
@@ -190,7 +198,8 @@ int main() {
         binary = pathlib.Path(temp) / "test"
         cpp.write_text(source)
         subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pthread",
-                        "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+                        "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie",
+                        "-I", str(ROOT / "xbmc"),
                         str(cpp), "-o", str(binary)], check=True)
         subprocess.run([str(binary)], check=True)
 

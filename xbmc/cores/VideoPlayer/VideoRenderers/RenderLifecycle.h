@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -26,11 +27,11 @@ public:
     const uint64_t session;
     const uint64_t serial;
     std::atomic<Status> status{Status::PENDING};
-    std::function<bool()> execute;
+    std::function<std::optional<bool>()> execute;
     std::mutex mutex;
     std::condition_variable changed;
 
-    Request(uint64_t generation, uint64_t id, std::function<bool()> action)
+    Request(uint64_t generation, uint64_t id, std::function<std::optional<bool>()> action)
       : session(generation), serial(id), execute(std::move(action)) {}
     bool Wait(std::chrono::milliseconds timeout)
     {
@@ -59,10 +60,10 @@ public:
     return mailbox;
   }
 
-  std::shared_ptr<Request> Submit(std::function<bool()> action)
+  std::shared_ptr<Request> Submit(std::function<std::optional<bool>()> action)
   {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_closed || m_requests.size() >= 4)
+    if (m_closed || m_requests.size() + (m_executing ? 1 : 0) >= 4)
       return {};
     auto request = std::make_shared<Request>(m_session, ++m_serial, std::move(action));
     m_requests.push_back(request);
@@ -89,10 +90,19 @@ public:
       }
       try
       {
-        const bool complete = request->execute();
+        const auto complete = request->execute();
         std::lock_guard<std::mutex> lock(m_mutex);
         m_executing = false;
-        request->Finish(complete ? Status::COMPLETED : Status::FAILED);
+        if (!complete)
+        {
+          // Retain this exact continuation ahead of dependent mutations. Retry
+          // on a later main pump, never spin while admission needs other owners.
+          request->status = Status::PENDING;
+          m_requests.push_front(request);
+          m_idle.notify_all();
+          return;
+        }
+        request->Finish(*complete ? Status::COMPLETED : Status::FAILED);
         m_idle.notify_all();
       }
       catch (...)

@@ -149,8 +149,10 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
   // so any conversion mode would corrupt the picture.
   if (!m_dvOpened)
   {
-    aml_dv_open(picture.hdrType, picture.colorBits, picture.color_primaries, /*swDecoded=*/true);
+    // Retain cleanup responsibility even if opening fails after partial effects.
+    // RenderManager owns native admission through Configure and failed cleanup.
     m_dvOpened = true;
+    aml_dv_open(picture.hdrType, picture.colorBits, picture.color_primaries, /*swDecoded=*/true);
   }
 
   // Configure GUI/OSD for HDR PQ when display is in HDR PQ mode

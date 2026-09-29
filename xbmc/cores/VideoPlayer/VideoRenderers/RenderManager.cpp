@@ -7,6 +7,7 @@
  */
 
 #include "RenderManager.h"
+#include "windowing/amlogic/AMLNativeTransaction.h"
 
 /* to use the same as player */
 #include "../VideoPlayer/DVDClock.h"
@@ -226,13 +227,22 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   {
     std::unique_lock<CCriticalSection> lock(m_statelock);
     const auto generation = m_lifecycleGeneration;
-    request = m_lifecycle->Submit([this, payload, fps, orientation, buffers, generation] {
+    request = m_lifecycle->Submit([this, payload, fps, orientation, buffers, generation,
+                                   native = std::shared_ptr<CAMLNativeTransaction>{}]() mutable
+                                    -> std::optional<bool> {
       if (m_closing)
         return false;
       {
         std::unique_lock<CCriticalSection> state(m_statelock);
         if (generation != m_lifecycleGeneration)
           return false;
+      }
+      if (!native)
+        native = std::make_shared<CAMLNativeTransaction>();
+      if (!native->TryBegin())
+        return std::nullopt;
+      {
+        std::unique_lock<CCriticalSection> state(m_statelock);
         m_picture.SetParams(*payload);
         m_fps = fps;
         m_orientation = orientation;
@@ -242,8 +252,22 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         m_pConfigPicture = std::make_unique<VideoPicture>();
         m_pConfigPicture->CopyRef(*payload);
       }
-      const bool result = Configure();
+      bool result;
+      try
+      {
+        result = Configure();
+      }
+      catch (...)
+      {
+        UnInitOnMain();
+        throw;
+      }
+      if (!result)
+        UnInitOnMain(); // Failed initialization retires resources before acknowledgment.
+      native.reset(); // Display admission must not nest beneath native admission.
       m_configuredFramePending = result;
+      if (result)
+        UpdateResolution();
       return result;
     });
     if (!request)
@@ -335,12 +359,6 @@ bool CRenderManager::Configure()
     m_overlays.SetStereoMode(m_picture.stereoMode);
 
     m_renderState = STATE_CONFIGURED;
-
-    lock3.unlock();
-    lock2.unlock();
-    lock.unlock();
-    UpdateResolution();
-    lock.lock();
 
     CLog::Log(LOGDEBUG, "CRenderManager::Configure - {}", m_QueueSize);
   }
@@ -609,13 +627,21 @@ std::shared_ptr<CRenderLifecycle::Request> CRenderManager::RequestUnInit()
     std::unique_lock<CCriticalSection> lock(m_statelock);
     m_closing = true;
     const auto generation = ++m_lifecycleGeneration;
-    request = m_lifecycle->Submit([this, generation] {
-      std::unique_lock<CCriticalSection> state(m_statelock);
-      if (generation != m_lifecycleGeneration)
-        return false;
-      m_closing = true;
-      state.unlock();
+    request = m_lifecycle->Submit([this, generation,
+                                   native = std::shared_ptr<CAMLNativeTransaction>{}]() mutable
+                                    -> std::optional<bool> {
+      {
+        std::unique_lock<CCriticalSection> state(m_statelock);
+        if (generation != m_lifecycleGeneration)
+          return false;
+        m_closing = true;
+      }
+      if (!native)
+        native = std::make_shared<CAMLNativeTransaction>();
+      if (!native->TryBegin())
+        return std::nullopt;
       UnInitOnMain();
+      native.reset();
       return true;
     });
   }
