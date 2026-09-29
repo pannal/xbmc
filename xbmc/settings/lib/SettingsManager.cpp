@@ -369,6 +369,10 @@ void CSettingsManager::RegisterCallback(ISettingCallback *callback, const std::s
   if (callback == nullptr)
     return;
 
+  auto& registration = m_callbackRegistrations[callback];
+  if (!registration)
+    registration = std::make_shared<CSettingCallbackRegistration>(callback);
+
   for (const auto& setting : settingList)
   {
     auto itSetting = FindSetting(setting);
@@ -382,15 +386,28 @@ void CSettingsManager::RegisterCallback(ISettingCallback *callback, const std::s
       itSetting = tmpIt.first;
     }
 
-    itSetting->second.callbacks.insert(callback);
+    itSetting->second.callbacks.emplace(callback, registration);
   }
 }
 
-void CSettingsManager::UnregisterCallback(ISettingCallback *callback)
+void CSettingsManager::UnregisterCallback(ISettingCallback* callback)
+{
+  RevokeCallback(callback);
+}
+
+std::shared_ptr<CSettingCallbackRegistration> CSettingsManager::RevokeCallback(
+    ISettingCallback* callback)
 {
   std::unique_lock<CSharedSection> lock(m_settingsCritical);
+  auto it = m_callbackRegistrations.find(callback);
+  if (it == m_callbackRegistrations.end())
+    return {};
+  auto registration = it->second;
+  registration->Revoke();
   for (auto& setting : m_settings)
     setting.second.callbacks.erase(callback);
+  m_callbackRegistrations.erase(it);
+  return registration;
 }
 
 void CSettingsManager::RegisterSettingType(const std::string &settingType, ISettingCreator *settingCreator)
@@ -812,9 +829,10 @@ bool CSettingsManager::OnSettingChanging(const std::shared_ptr<const CSetting>& 
   // now that we have a copy of the setting's data, we can leave the lock
   lock.unlock();
 
-  for (auto& callback : settingData.callbacks)
+  for (auto& entry : settingData.callbacks)
   {
-    if (!callback->OnSettingChanging(setting))
+    auto callback = entry.second->Acquire();
+    if (callback && !callback->OnSettingChanging(setting))
       return false;
   }
 
@@ -867,8 +885,12 @@ void CSettingsManager::OnSettingChanged(const std::shared_ptr<const CSetting>& s
   // now that we have a copy of the setting's data, we can leave the lock
   lock.unlock();
 
-  for (auto& callback : settingData.callbacks)
-    callback->OnSettingChanged(setting);
+  for (auto& entry : settingData.callbacks)
+  {
+    auto callback = entry.second->Acquire();
+    if (callback)
+      callback->OnSettingChanged(setting);
+  }
 
   // now handle any settings which depend on the changed setting
   auto dependencies = GetDependencies(setting);
@@ -893,8 +915,12 @@ void CSettingsManager::OnSettingAction(const std::shared_ptr<const CSetting>& se
   // now that we have a copy of the setting's data, we can leave the lock
   lock.unlock();
 
-  for (auto& callback : settingData.callbacks)
-    callback->OnSettingAction(setting);
+  for (auto& entry : settingData.callbacks)
+  {
+    auto callback = entry.second->Acquire();
+    if (callback)
+      callback->OnSettingAction(setting);
+  }
 }
 
 bool CSettingsManager::OnSettingUpdate(const SettingPtr& setting,
@@ -914,8 +940,12 @@ bool CSettingsManager::OnSettingUpdate(const SettingPtr& setting,
   lock.unlock();
 
   bool ret = false;
-  for (auto& callback : settingData.callbacks)
-    ret |= callback->OnSettingUpdate(setting, oldSettingId, oldSettingNode);
+  for (auto& entry : settingData.callbacks)
+  {
+    auto callback = entry.second->Acquire();
+    if (callback)
+      ret |= callback->OnSettingUpdate(setting, oldSettingId, oldSettingNode);
+  }
 
   return ret;
 }
@@ -935,8 +965,12 @@ void CSettingsManager::OnSettingPropertyChanged(const std::shared_ptr<const CSet
   // now that we have a copy of the setting's data, we can leave the lock
   lock.unlock();
 
-  for (auto& callback : settingData.callbacks)
-    callback->OnSettingPropertyChanged(setting, propertyName);
+  for (auto& entry : settingData.callbacks)
+  {
+    auto callback = entry.second->Acquire();
+    if (callback)
+      callback->OnSettingPropertyChanged(setting, propertyName);
+  }
 
   // check the changed property and if it may have an influence on the
   // children of the setting
@@ -948,7 +982,7 @@ void CSettingsManager::OnSettingPropertyChanged(const std::shared_ptr<const CSet
 
   if (dependencyType != SettingDependencyType::Unknown)
   {
-    for (const auto& child : settingIt->second.children)
+    for (const auto& child : settingData.children)
       UpdateSettingByDependency(child, dependencyType);
   }
 }

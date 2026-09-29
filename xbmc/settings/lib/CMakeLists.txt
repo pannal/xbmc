@@ -17,6 +17,7 @@ set(HEADERS ISetting.h
             ISettingsHandler.h
             ISettingsValueSerializer.h
             Setting.h
+            SettingCallbackRegistration.h
             SettingCategoryAccess.h
             SettingConditions.h
             SettingDefinitions.h

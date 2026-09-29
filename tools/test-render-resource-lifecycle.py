@@ -229,7 +229,7 @@ public:
   void CancelGuiComposite();bool SetFullScreen(bool,RESOLUTION_INFO&,bool);
   bool ResizeWindow(int,int,int,int);
   bool ResetRenderSystem(int,int);
-  bool PrepareForShutdown();void RetireNativeTransactions(){}
+  bool PrepareForShutdown();bool RetireNativeTransactions(){return true;}
   bool m_shutdownRequested=false;
   std::unique_ptr<CAMLDisplayLifecycle::Mutation> m_shutdownAdmission;
   CAMLDisplayLifecycle m_displayLifecycle;

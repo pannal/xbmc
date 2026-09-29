@@ -2,7 +2,8 @@ set(SOURCES WinSystemAmlogic.cpp
             VideoSyncAML.cpp
             DolbyVisionAML.cpp)
 
-set(HEADERS WinSystemAmlogic.h
+set(HEADERS AMLDeferredWork.h
+            WinSystemAmlogic.h
             VideoSyncAML.h
             DolbyVisionAML.h)
 

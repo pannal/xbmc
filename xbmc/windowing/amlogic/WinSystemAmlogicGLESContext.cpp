@@ -208,7 +208,10 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 bool CWinSystemAmlogicGLESContext::PrepareForShutdown()
 {
   m_shutdownRequested = true;
-  RetireNativeTransactions();
+  // Drain settings/deferred users before taking display admission: a completing
+  // callback must not be fenced out by the shutdown that is waiting for it.
+  if (!RetireNativeTransactions())
+    return false;
   if (m_shutdownAdmission && *m_shutdownAdmission)
     return true;
   m_shutdownAdmission = std::make_unique<CAMLDisplayLifecycle::Mutation>(m_displayLifecycle);

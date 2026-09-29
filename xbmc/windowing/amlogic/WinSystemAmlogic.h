@@ -59,7 +59,7 @@ protected:
   bool m_force_mode_switch;
 
 protected:
-  void RetireNativeTransactions();
+  bool RetireNativeTransactions();
 
 private:
   std::unique_ptr<CDolbyVisionAML> m_dolbyVisionAML;

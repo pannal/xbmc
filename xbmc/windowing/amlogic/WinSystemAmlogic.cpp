@@ -117,14 +117,15 @@ bool CWinSystemAmlogic::InitWindowSystem()
   return CWinSystemBase::InitWindowSystem();
 }
 
-void CWinSystemAmlogic::RetireNativeTransactions()
+bool CWinSystemAmlogic::RetireNativeTransactions()
 {
-  if (m_dolbyVisionAML)
-    m_dolbyVisionAML->Retire();
+  return !m_dolbyVisionAML || m_dolbyVisionAML->Retire();
 }
 
 bool CWinSystemAmlogic::DestroyWindowSystem()
 {
+  if (!RetireNativeTransactions())
+    return false;
   m_dolbyVisionAML.reset();
   return true;
 }

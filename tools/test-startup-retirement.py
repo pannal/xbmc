@@ -46,7 +46,7 @@ struct CWinSystemAmlogicGLESContext {
   int retireCalls=0;
   CAMLDisplayLifecycle m_displayLifecycle;
   std::unique_ptr<CAMLDisplayLifecycle::Mutation> m_shutdownAdmission;
-  void RetireNativeTransactions(){++retireCalls;}
+  bool RetireNativeTransactions(){++retireCalls;return true;}
   bool PrepareForShutdown();
 };
 @PREPARE@

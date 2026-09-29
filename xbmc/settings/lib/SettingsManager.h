@@ -14,6 +14,7 @@
 #include "ISettingsHandler.h"
 #include "ISettingsValueSerializer.h"
 #include "Setting.h"
+#include "SettingCallbackRegistration.h"
 #include "SettingConditions.h"
 #include "SettingDefinitions.h"
 #include "SettingDependency.h"
@@ -200,6 +201,10 @@ public:
    \param callback ISettingCallback implementation
    */
   void UnregisterCallback(ISettingCallback *callback);
+  // Revoke copied dispatch records and return the exact registration to poll.
+  // A non-null receipt must be drained before destroying its callback owner.
+  // Never wait for it while holding a setting or another callback-needed lock.
+  std::shared_ptr<CSettingCallbackRegistration> RevokeCallback(ISettingCallback* callback);
 
   /*!
    \brief Registers a custom setting type and its ISettingCreator
@@ -494,7 +499,7 @@ private:
 
   void RegisterSettingOptionsFiller(const std::string &identifier, void *filler, SettingOptionsFillerType type);
 
-  using CallbackSet = std::set<ISettingCallback *>;
+  using CallbackSet = std::map<ISettingCallback*, std::shared_ptr<CSettingCallbackRegistration>>;
   struct Setting {
     std::shared_ptr<CSetting> setting;
     SettingDependencyMap dependencies;
@@ -522,6 +527,8 @@ private:
   SettingMap::iterator FindSetting(std::string settingId);
   std::pair<SettingMap::iterator, bool> InsertSetting(std::string settingId, const Setting& setting);
 
+  // Retain records across Clear/reload so old dispatch copies remain revocable.
+  CallbackSet m_callbackRegistrations;
   bool m_initialized = false;
   bool m_loaded = false;
 

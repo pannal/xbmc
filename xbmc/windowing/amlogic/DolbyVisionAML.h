@@ -9,6 +9,8 @@
 #pragma once
 
 #include "interfaces/IAnnouncer.h"
+#include "AMLDeferredWork.h"
+#include "settings/lib/SettingCallbackRegistration.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
 
 #include <atomic>
@@ -21,7 +23,7 @@ public:
   CDolbyVisionAML();
   ~CDolbyVisionAML() override;
   bool ContinueAnnounce() override;
-  void Retire();
+  bool Retire();
 
   // Setup
   bool Setup();
@@ -35,6 +37,16 @@ public:
   // implementation of ISettingCallback
   void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;
 private:
+  void apply_tv_preset(int preset);
+  void schedule_tv_preset_apply(int preset);
+  void schedule_vsvdb_payload_apply();
+  CAMLDeferredWork m_deferredWork;
+  std::shared_ptr<CSettingCallbackRegistration> m_settingsRetirement;
+  std::atomic<bool> m_applying_tv_preset{false};
+  std::atomic<bool> m_tv_preset_apply_scheduled{false};
+  std::atomic<int> m_tv_preset_pending{0};
+  std::atomic<bool> m_vsvdb_apply_scheduled{false};
+  std::atomic<bool> m_applying_vsvdb{false};
   enum class Pending { NONE, START, RESTORE };
   Pending m_pending{Pending::NONE}; // announcement owner only
   std::shared_ptr<CAMLSession::NativeRequest> m_nativeRequest; // atomic load/store

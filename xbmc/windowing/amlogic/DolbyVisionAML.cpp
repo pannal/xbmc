@@ -9,6 +9,7 @@
 #include "DolbyVisionAML.h"
 
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <iostream>
 #include <iomanip>
@@ -720,7 +721,6 @@ enum TV_PRESET : int
   TV_PRESET_TCL
 };
 
-static std::atomic<bool> s_applying_tv_preset{false};
 // Scheduling state for deferred preset application. When the preset setting changes,
 // the apply is deferred to a detached thread so it runs after the current event handling
 // completes — critical for "Reset the above settings", which writes the preset then
@@ -728,13 +728,11 @@ static std::atomic<bool> s_applying_tv_preset{false};
 // burst ensures preset-driven child values are the final state. The scheduled flag also
 // suppresses the flip-to-Manual guard during the window so child resets mid-burst don't
 // prematurely clear the pending preset.
-static std::atomic<bool> s_tv_preset_apply_scheduled{false};
-static std::atomic<int> s_tv_preset_pending{TV_PRESET_MANUAL};
 
-static void apply_tv_preset(int preset)
+void CDolbyVisionAML::apply_tv_preset(int preset)
 {
   if (preset == TV_PRESET_MANUAL) return;
-  s_applying_tv_preset = true;
+  m_applying_tv_preset = true;
 
   bool preset_has_dv = false;
   bool preset_has_hdr10plus = false;
@@ -774,7 +772,7 @@ static void apply_tv_preset(int preset)
   if (!preset_has_dv && !preset_has_hdr10)
   {
     CLog::Log(LOGINFO, "CDolbyVisionAML::apply_tv_preset - display has no DV and no HDR10, no changes applied");
-    s_applying_tv_preset = false;
+    m_applying_tv_preset = false;
     return;
   }
 
@@ -830,25 +828,25 @@ static void apply_tv_preset(int preset)
     settings()->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT, false);
   }
 
-  s_applying_tv_preset = false;
+  m_applying_tv_preset = false;
 }
 
-static void schedule_tv_preset_apply(int preset)
+void CDolbyVisionAML::schedule_tv_preset_apply(int preset)
 {
   if (preset == TV_PRESET_MANUAL) return;
 
-  s_tv_preset_pending.store(preset);
+  m_tv_preset_pending.store(preset);
 
   // If an apply is already scheduled, the updated pending value will be picked up
   // when the existing thread wakes. Avoid spawning a second thread.
-  if (s_tv_preset_apply_scheduled.exchange(true)) return;
+  if (m_tv_preset_apply_scheduled.exchange(true)) return;
 
-  std::thread([]() {
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    int preset_to_apply = s_tv_preset_pending.load();
-    s_tv_preset_apply_scheduled.store(false);
+  if (!m_deferredWork.Schedule(std::chrono::milliseconds(50), [this]() {
+    int preset_to_apply = m_tv_preset_pending.load();
+    m_tv_preset_apply_scheduled.store(false);
     apply_tv_preset(preset_to_apply);
-  }).detach();
+  }))
+    m_tv_preset_apply_scheduled = false;
 }
 
 // Defer the VSVDB payload re-derivation out of OnSettingChanged.
@@ -860,26 +858,23 @@ static void schedule_tv_preset_apply(int preset)
 // s_dvCoreMutex in AMLUtils.cpp). The apply thread re-reads current values at
 // run time, so bursts (e.g. a TV-preset apply writing several settings)
 // coalesce into one write and scheduling order is irrelevant.
-static std::atomic<bool> s_vsvdb_apply_scheduled{false};
 // True while the deferred VSVDB recompute is writing its derived settings
 // (DV_VSVDB_CS / DV_VSVDB_MAX_LUM, both registered callbacks). Like
-// s_applying_tv_preset, this suppresses the flip-to-Manual guard: the recompute
+// m_applying_tv_preset, this suppresses the flip-to-Manual guard: the recompute
 // is programmatic, not a user edit. Critically it also closes the reset-time
 // hole — a TV-preset apply writes DV mode/type, which schedules this recompute;
-// that recompute runs *after* both s_applying_tv_preset and
-// s_tv_preset_apply_scheduled have cleared, so without this flag its CS/MaxLum
+// that recompute runs *after* both m_applying_tv_preset and
+// m_tv_preset_apply_scheduled have cleared, so without this flag its CS/MaxLum
 // write would trip the guard and flip the just-applied preset back to Manual
 // (the "reset needs two clicks" bug).
-static std::atomic<bool> s_applying_vsvdb{false};
-static void schedule_vsvdb_payload_apply()
+void CDolbyVisionAML::schedule_vsvdb_payload_apply()
 {
-  if (s_vsvdb_apply_scheduled.exchange(true)) return;
+  if (m_vsvdb_apply_scheduled.exchange(true)) return;
 
-  std::thread([]() {
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  if (!m_deferredWork.Schedule(std::chrono::milliseconds(50), [this]() {
     // Clear before reading: a setting change landing after the reads below
     // schedules a fresh apply instead of being lost.
-    s_vsvdb_apply_scheduled.store(false);
+    m_vsvdb_apply_scheduled.store(false);
     DOVIStreamMetadata dovi_stream_metadata =
         CServiceBroker::GetDataCacheCore().GetVideoDoViStreamMetadata();
     int source_max_pq = static_cast<int>(dovi_stream_metadata.source_max_pq);
@@ -887,10 +882,11 @@ static void schedule_vsvdb_payload_apply()
         settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE)));
     int max_lum_nits_value(
         settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM));
-    s_applying_vsvdb = true;
+    m_applying_vsvdb = true;
     set_vsvdb_payload_ver(dv_type, max_lum_nits_value, source_max_pq);
-    s_applying_vsvdb = false;
-  }).detach();
+    m_applying_vsvdb = false;
+  }))
+    m_vsvdb_apply_scheduled = false;
 }
 
 bool CDolbyVisionAML::Setup()
@@ -1016,8 +1012,8 @@ void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& se
   // waiting for the current event — e.g. a reset — to finish before it writes) and while
   // the deferred VSVDB recompute writes its derived settings — that recompute is triggered
   // by the preset apply's own mode/type writes and lands after the two preset flags clear,
-  // so without s_applying_vsvdb it would flip the just-applied preset back to Manual.
-  if (!s_applying_tv_preset && !s_tv_preset_apply_scheduled.load() && !s_applying_vsvdb.load() &&
+  // so without m_applying_vsvdb it would flip the just-applied preset back to Manual.
+  if (!m_applying_tv_preset && !m_tv_preset_apply_scheduled.load() && !m_applying_vsvdb.load() &&
       settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TV_PRESET) != TV_PRESET_MANUAL)
   {
     CLog::Log(LOGINFO,
@@ -1212,16 +1208,22 @@ void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& se
 
 CDolbyVisionAML::~CDolbyVisionAML()
 {
-  Retire();
+  // Window teardown must first observe the nonblocking retirement receipt.
+  const bool retired = Retire();
+  assert(retired);
+  (void)retired;
   if (m_registered)
     CServiceBroker::GetAnnouncementManager()->RemoveAnnouncer(this);
-  CServiceBroker::GetSettingsComponent()->GetSettings()->GetSettingsManager()->UnregisterCallback(this);
 }
 
-void CDolbyVisionAML::Retire()
+bool CDolbyVisionAML::Retire()
 {
-  m_retiring = true;
+  // Called only by the window owner; dispatch/jobs never wait for that owner.
+  if (!m_retiring.exchange(true))
+    m_settingsRetirement = settings()->GetSettingsManager()->RevokeCallback(this);
   CAMLSession::CancelNative(std::atomic_load(&m_nativeRequest));
+  const bool workDrained = m_deferredWork.Cancel();
+  return workDrained && (!m_settingsRetirement || m_settingsRetirement->Drained());
 }
 
 bool CDolbyVisionAML::ContinueAnnounce()

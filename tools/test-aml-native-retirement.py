@@ -17,6 +17,8 @@ function = runpy.run_path(str(ROOT / 'tools/test-render-slot-publication.py'))['
 PREFIX = r'''
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
 #include "windowing/amlogic/AMLDisplayLifecycle.h"
+#include "windowing/amlogic/AMLDeferredWork.h"
+#include "settings/lib/SettingCallbackRegistration.h"
 #include <atomic>
 #include <cassert>
 #include <deque>
@@ -34,13 +36,20 @@ std::function<void()> nativeHook;
 std::thread::id nativeOwner;
 void aml_dv_start(){nativeOwner=std::this_thread::get_id();effects.push_back("dv-start");if(nativeHook)nativeHook();}
 bool aml_dv_restore_gui_ipt(const char*){nativeOwner=std::this_thread::get_id();effects.push_back("dv-restore");if(nativeHook)nativeHook();return true;}
+struct Settings {
+  Settings* GetSettingsManager(){return this;}
+  std::shared_ptr<CSettingCallbackRegistration> RevokeCallback(void*){return {};}
+};
+Settings* settings(){static Settings value;return &value;}
 struct CDolbyVisionAML: IAnnouncer {
+  CAMLDeferredWork m_deferredWork;
+  std::shared_ptr<CSettingCallbackRegistration> m_settingsRetirement;
   enum class Pending { NONE, START, RESTORE };
   Pending m_pending{Pending::NONE};
   std::shared_ptr<CAMLSession::NativeRequest> m_nativeRequest;
   std::atomic<bool> m_retiring{false};
   bool ContinueAnnounce() override;
-  void Retire();
+  bool Retire();
   void Announce(AnnouncementFlag,const std::string&,const std::string&,const CVariant&) override;
 };
 using CCriticalSection=std::recursive_mutex;
@@ -61,7 +70,7 @@ struct CAnnouncementManager {
 };
 struct CWinSystemAmlogic {
   CDolbyVisionAML dv;
-  void RetireNativeTransactions(){dv.Retire();}
+  bool RetireNativeTransactions(){return dv.Retire();}
   bool InitWindowSystem(){effects.push_back("base-init");return true;}
   bool DestroyWindowSystem(){effects.push_back("base-destroy");return true;}
   bool DestroyWindow(){effects.push_back("window-destroy");return true;}
@@ -189,7 +198,7 @@ def harness():
     announcement = (ROOT / 'xbmc/interfaces/AnnouncementManager.cpp').read_text()
     interface = (ROOT / 'xbmc/interfaces/IAnnouncer.h').read_text()
     methods = '\n'.join(function(dv, signature) for signature in (
-        'void CDolbyVisionAML::Retire()', 'bool CDolbyVisionAML::ContinueAnnounce()',
+        'bool CDolbyVisionAML::Retire()', 'bool CDolbyVisionAML::ContinueAnnounce()',
         'void CDolbyVisionAML::Announce('))
     methods += '\n' + function(announcement, 'void CAnnouncementManager::Process()')
     methods += '\n' + '\n'.join(function(window, 'bool CWinSystemAmlogicGLESContext::' + signature)
