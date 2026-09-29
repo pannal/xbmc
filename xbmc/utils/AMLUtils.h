@@ -252,6 +252,7 @@ bool aml_dv_auto_letterbox_get(uint16_t& top, uint16_t& bottom,
 // cleared per stream by aml_dv_set_active_area_geometry().
 void aml_dv_auto_letterbox_watch_start();
 void aml_dv_auto_letterbox_watch_stop();
+bool aml_dv_retire_background_work();
 
 // False once the watch above has ruled out additive composition for the current
 // stream, i.e. the auto-letterbox offsets replace source L5 instead of adding to

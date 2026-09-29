@@ -281,7 +281,9 @@ def source():
     base=(ROOT/'xbmc/windowing/amlogic/WinSystemAmlogic.cpp').read_text()
     destroy=function(base,'bool CWinSystemAmlogic::DestroyWindowSystem()')
     assert destroy.index('if (!RetireNativeTransactions())')<destroy.index('m_dolbyVisionAML.reset()')
-    assert 'return !m_dolbyVisionAML || m_dolbyVisionAML->Retire();' in base
+    assert 'const bool settings = !m_dolbyVisionAML || m_dolbyVisionAML->Retire();' in base
+    assert 'const bool background = aml_dv_retire_background_work();' in base
+    assert 'return settings && background;' in base
     assert 'static std::atomic<bool> s_applying' not in dv
     assert 'if (!setting || m_retiring) return;' in dv
     assert '.detach()' not in dv

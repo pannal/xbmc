@@ -23,6 +23,7 @@
 #include <thread>
 
 #include "AMLUtils.h"
+#include "AMLNativeWorker.h"
 
 #include "application/Application.h"
 #include "application/ApplicationComponents.h"
@@ -2145,6 +2146,8 @@ bool aml_dv_l5_override_active()
  * the coded aspect (matching R9 / the TV's internal player) and push them
  * through the override channel (xbmc_override_l5_* + force) so the DV core masks
  * the bars black. Pure geometry — no file scan, the detector is never engaged. */
+static CAMLNativeWorker s_autoLbWorker;
+static std::shared_ptr<std::atomic<bool>> s_autoLbGeneration = std::make_shared<std::atomic<bool>>(false);
 static std::atomic<int> s_autoLbWidth{0};
 static std::atomic<int> s_autoLbHeight{0};
 static std::atomic<bool> s_autoLbNativeDV{false};
@@ -2155,11 +2158,14 @@ static std::atomic<bool> s_autoLbAdditive{true};
 
 void aml_dv_set_active_area_geometry(int width, int height, bool nativeDV)
 {
+  // Invalidate the old run before publishing a replacement stream's geometry.
+  std::atomic_load(&s_autoLbGeneration)->store(true);
   s_autoLbWidth.store(width);
   s_autoLbHeight.store(height);
   s_autoLbNativeDV.store(nativeDV);
   /* New stream — the previous one's verdict must not carry over. */
   s_autoLbAdditive.store(true);
+  std::atomic_store(&s_autoLbGeneration, std::make_shared<std::atomic<bool>>(false));
 }
 
 /* Compute the synthesised L5 offsets for the current stream. Returns false (and
@@ -2250,10 +2256,6 @@ static constexpr int AUTO_LB_POLL_MS = 500;
 static constexpr int AUTO_LB_MAX_POLLS = 120; /* give up after ~60 s */
 static constexpr int AUTO_LB_TRIP_SAMPLES = 6; /* ~3 s of agreement before acting */
 static constexpr int AUTO_LB_IMPOSSIBLE_SAMPLES = 2; /* ~1 s when the value can't be real */
-
-static std::atomic<bool> s_autoLbWatchCancel{false};
-static std::thread s_autoLbWatchThread;
-static std::mutex s_autoLbWatchMutex;
 
 /* One sample of the current frame's source L5. Fills src[] (T,B,L,R) and reason,
  * and returns how strongly this sample says the offsets cannot be describing
@@ -2365,31 +2367,24 @@ static int _auto_letterbox_duplicate_sample(uint16_t gapTop, uint16_t gapBottom,
   return AUTO_LB_SAMPLE_OK;
 }
 
-static void _auto_letterbox_watch_run(int w, int h)
+static void _auto_letterbox_watch_run(const CAMLNativeWorker::Run& run, int w, int h)
 {
   uint16_t gapTop = 0, gapBottom = 0, gapLeft = 0, gapRight = 0;
-  if (!_auto_letterbox_geometry(gapTop, gapBottom, gapLeft, gapRight))
-    return;
+  {
+    CAMLNativeTransaction native;
+    if (!run.Admit(native) || !_auto_letterbox_geometry(gapTop, gapBottom, gapLeft, gapRight))
+      return;
+  }
 
   int agree = 0;
   for (int poll = 0; poll < AUTO_LB_MAX_POLLS; ++poll)
   {
-    for (int slice = 0; slice < AUTO_LB_POLL_MS / 100; ++slice)
-    {
-      if (s_autoLbWatchCancel.load())
-        return;
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    if (s_autoLbWatchCancel.load())
+    if (!run.WaitFor(std::chrono::milliseconds(AUTO_LB_POLL_MS)))
       return;
-    /* Nothing stops this thread on a full application quit while DV is still
-     * engaged (only aml_dv_close() on a normal playback stop does, via
-     * aml_dv_auto_letterbox_watch_stop()), so it can still be sleeping here
-     * after CServiceBroker has already torn down the services that
-     * aml_dv_auto_letterbox_active() and _auto_letterbox_duplicate_sample()
-     * below reach into (CSettingsComponent, CDataCacheCore). Bail out rather
-     * than dereference an already-destroyed singleton. */
-    if (!CServiceBroker::IsServiceManagerUp())
+    // Sample and apply under a separate transaction on this retained run.
+    // Startup/stop can own admission while cancelling us; Admit must then exit.
+    CAMLNativeTransaction native;
+    if (!run.Admit(native) || !CServiceBroker::IsServiceManagerUp())
       return;
     /* Settings / override can change mid-playback — stop once we're not the
      * ones driving the override any more. */
@@ -2424,31 +2419,21 @@ static void _auto_letterbox_watch_run(int w, int h)
   }
 }
 
-/* Caller must hold s_autoLbWatchMutex. */
-static void _auto_letterbox_watch_stop_locked()
-{
-  s_autoLbWatchCancel.store(true);
-  if (s_autoLbWatchThread.joinable())
-    s_autoLbWatchThread.join();
-  s_autoLbWatchCancel.store(false);
-}
-
 void aml_dv_auto_letterbox_watch_start()
 {
-  std::unique_lock<std::mutex> lock(s_autoLbWatchMutex);
-  _auto_letterbox_watch_stop_locked();
-  if (!aml_dv_auto_letterbox_active())
+  s_autoLbWorker.Stop();
+  if (s_autoLbWorker.Closed() || !aml_dv_auto_letterbox_active())
     return;
-
   const int w = s_autoLbWidth.load();
   const int h = s_autoLbHeight.load();
-  s_autoLbWatchThread = std::thread([w, h]() { _auto_letterbox_watch_run(w, h); });
+  s_autoLbWorker.Start([w, h](const CAMLNativeWorker::Run& run) {
+    _auto_letterbox_watch_run(run, w, h);
+  }, std::atomic_load(&s_autoLbGeneration));
 }
 
 void aml_dv_auto_letterbox_watch_stop()
 {
-  std::unique_lock<std::mutex> lock(s_autoLbWatchMutex);
-  _auto_letterbox_watch_stop_locked();
+  s_autoLbWorker.Stop();
 }
 
 bool aml_dv_auto_letterbox_additive()
@@ -2520,9 +2505,15 @@ void aml_dv_detect_active_area_get(uint16_t& top, uint16_t& bottom, uint16_t& le
   right = s_detectedRight.load();
 }
 
-/* Cancel flag — set by stop(), checked by ffmpeg interrupt callback and
- * between seek positions.  Allows clean abort of slow network I/O. */
-static std::atomic<bool> s_detectCancel{false};
+static CAMLNativeWorker s_detectWorker;
+struct DetectSource
+{
+  explicit DetectSource(std::string value) : path(std::move(value)) {}
+  const std::string path;
+  const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
+};
+static std::mutex s_detectSourceMutex;
+static std::shared_ptr<DetectSource> s_detectSource = std::make_shared<DetectSource>("");
 
 /* Mid-read cache guard.  The between-seek wait (detect_wait_for_cache) can't
  * interrupt a single in-flight read: on a slow device one far-offset keyframe
@@ -2544,7 +2535,8 @@ static int64_t detect_steady_ms()
 
 static int detect_interrupt_cb(void *opaque)
 {
-  if (s_detectCancel.load())
+  const auto* run = static_cast<const CAMLNativeWorker::Run*>(opaque);
+  if (!run || run->Cancelled())
     return 1;
   /* Abort the in-flight read if playback's buffer goes critical.  Rate-limited:
    * the interrupt callback is polled in tight I/O loops, and the cache query
@@ -2605,7 +2597,7 @@ static constexpr int kDetectCacheFloorPct  = 50; /* still below this after waiti
  * producing a multi-second playback stall.  Gating each seek on the actual
  * playback cache level lets the device refill the player's buffer between
  * samples instead. */
-static int detect_wait_for_cache(int targetPct, int maxWaitMs)
+static int detect_wait_for_cache(const CAMLNativeWorker::Run& run, int targetPct, int maxWaitMs)
 {
   auto& components = CServiceBroker::GetAppComponents();
   const auto appPlayer = components.GetComponent<CApplicationPlayer>();
@@ -2613,7 +2605,7 @@ static int detect_wait_for_cache(int targetPct, int maxWaitMs)
   int waited = 0;
   for (;;)
   {
-    if (s_detectCancel.load())
+    if (run.Cancelled())
       return -1;
     /* No active playback to protect (stopped / never started) — proceed. */
     if (!appPlayer || !appPlayer->IsPlaying())
@@ -2621,12 +2613,57 @@ static int detect_wait_for_cache(int targetPct, int maxWaitMs)
     const int level = appPlayer->GetCacheLevel();
     if (level >= targetPct || waited >= maxWaitMs)
       return level;
-    std::this_thread::sleep_for(std::chrono::milliseconds(step));
+    if (!run.WaitFor(std::chrono::milliseconds(step)))
+      return -1;
     waited += step;
   }
 }
 
-static void DetectActiveAreaFromFile(const std::string& filePath)
+static void detect_publish(const CAMLNativeWorker::Run& run,
+                           uint16_t detTop, uint16_t detBottom,
+                           uint16_t detLeft, uint16_t detRight)
+{
+  CAMLNativeTransaction native;
+  if (!run.Admit(native))
+    return;
+  /* Check if source already provides non-zero L5 — by now the RPU will have
+   * been parsed and DataCacheCore populated. Don't override valid source L5. */
+  {
+    auto srcMeta = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
+    if (srcMeta.has_level5_metadata &&
+        (srcMeta.level5_active_area_top_offset || srcMeta.level5_active_area_bottom_offset ||
+         srcMeta.level5_active_area_left_offset || srcMeta.level5_active_area_right_offset))
+    {
+      CLog::Log(LOGDEBUG, "DetectActiveArea: source has L5 (T={} B={}) — skipping injection",
+                srcMeta.level5_active_area_top_offset, srcMeta.level5_active_area_bottom_offset);
+      s_detectState.store(DV_DETECT_SKIPPED);
+      s_detectStable.store(true);
+      return;
+    }
+  }
+
+  /* Publish results */
+  s_detectedTop.store(detTop);
+  s_detectedBottom.store(detBottom);
+  s_detectedLeft.store(detLeft);
+  s_detectedRight.store(detRight);
+
+  /* Write to kernel for L5 injection */
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_top", detTop);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_bottom", detBottom);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_left", detLeft);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_right", detRight);
+
+  s_detectState.store(DV_DETECT_OK);
+  s_detectStable.store(true);
+
+  if (detTop || detBottom || detLeft || detRight)
+    CLog::Log(LOGINFO, "DetectActiveArea: kernel L5 updated");
+  else
+    CLog::Log(LOGDEBUG, "DetectActiveArea: no borders found");
+}
+
+static void DetectActiveAreaFromFile(const std::string& filePath, const CAMLNativeWorker::Run& run)
 {
   AVFormatContext* fmtCtx = nullptr;
   AVCodecContext* codecCtx = nullptr;
@@ -2660,7 +2697,7 @@ static void DetectActiveAreaFromFile(const std::string& filePath)
    * skip rather than cause a stall. */
   if (throttle)
   {
-    const int lvl = detect_wait_for_cache(kDetectCacheTargetPct, 12000);
+    const int lvl = detect_wait_for_cache(run, kDetectCacheTargetPct, 12000);
     if (lvl < 0)
       goto cleanup; /* cancelled */
     if (lvl < kDetectCacheFloorPct)
@@ -2708,9 +2745,9 @@ static void DetectActiveAreaFromFile(const std::string& filePath)
    * every exit path. */
   fmtCtx->flags |= AVFMT_FLAG_CUSTOM_IO;
   fmtCtx->interrupt_callback.callback = detect_interrupt_cb;
-  fmtCtx->interrupt_callback.opaque = nullptr;
+  fmtCtx->interrupt_callback.opaque = const_cast<CAMLNativeWorker::Run*>(&run);
 
-  if (s_detectCancel.load())
+  if (run.Cancelled())
     goto cleanup;
 
   if (avformat_open_input(&fmtCtx, filePath.c_str(), nullptr, nullptr) < 0)
@@ -2855,14 +2892,14 @@ static void DetectActiveAreaFromFile(const std::string& filePath)
 
     for (int s = 0; s < numSeeks && validSamples < numSeeks; s++)
     {
-      if (s_detectCancel.load() || s_detectCacheStarved.load())
+      if (run.Cancelled() || s_detectCacheStarved.load())
         break;
 
       /* Cache-aware throttle: before each seek, wait for the player buffer to
        * refill so our reads don't drain it below empty.  Replaces the old fixed
        * 500ms yield, which was far shorter than a single far-offset keyframe
        * read and so never prevented starvation on slow local devices. */
-      if (throttle && s > 0 && detect_wait_for_cache(kDetectCacheTargetPct, 8000) < 0)
+      if (throttle && s > 0 && detect_wait_for_cache(run, kDetectCacheTargetPct, 8000) < 0)
         break; /* cancelled */
 
       bool usable = false;
@@ -3286,41 +3323,7 @@ static void DetectActiveAreaFromFile(const std::string& filePath)
     }
   }
 
-  /* Check if source already provides non-zero L5 — by now the RPU will have
-   * been parsed and DataCacheCore populated. Don't override valid source L5. */
-  {
-    auto srcMeta = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
-    if (srcMeta.has_level5_metadata &&
-        (srcMeta.level5_active_area_top_offset || srcMeta.level5_active_area_bottom_offset ||
-         srcMeta.level5_active_area_left_offset || srcMeta.level5_active_area_right_offset))
-    {
-      CLog::Log(LOGDEBUG, "DetectActiveArea: source has L5 (T={} B={}) — skipping injection",
-                srcMeta.level5_active_area_top_offset, srcMeta.level5_active_area_bottom_offset);
-      s_detectState.store(DV_DETECT_SKIPPED);
-      s_detectStable.store(true);
-      goto cleanup;
-    }
-  }
-
-  /* Publish results */
-  s_detectedTop.store(detTop);
-  s_detectedBottom.store(detBottom);
-  s_detectedLeft.store(detLeft);
-  s_detectedRight.store(detRight);
-
-  /* Write to kernel for L5 injection */
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_top", detTop);
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_bottom", detBottom);
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_left", detLeft);
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_right", detRight);
-
-  s_detectState.store(DV_DETECT_OK);
-  s_detectStable.store(true);
-
-  if (detTop || detBottom || detLeft || detRight)
-    CLog::Log(LOGINFO, "DetectActiveArea: kernel L5 updated");
-  else
-    CLog::Log(LOGDEBUG, "DetectActiveArea: no borders found");
+  detect_publish(run, detTop, detBottom, detLeft, detRight);
 
 cleanup:
   s_detectThrottleActive.store(false); /* disarm the mid-read guard */
@@ -3352,18 +3355,26 @@ cleanup:
   }
 }
 
-static std::thread s_detectThread;
-static std::string s_detectFilePath;
-
 void aml_dv_detect_set_file(const std::string& path)
 {
-  s_detectFilePath = path;
+  // Selecting even the same path is a new stream intent. A pending old result
+  // keeps its original source token and can never publish into this selection.
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  s_detectSource->superseded->store(true);
+  s_detectSource = std::make_shared<DetectSource>(path);
 }
 
 void aml_dv_detect_active_area_start()
 {
+  s_detectWorker.Stop(); // cancel/join before touching state used by the old scan
+  if (s_detectWorker.Closed())
+    return;
+  std::shared_ptr<DetectSource> source;
+  {
+    std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+    source = s_detectSource;
+  }
   /* Reset state */
-  s_detectCancel.store(false);
   s_detectThrottleActive.store(false);
   s_detectCacheStarved.store(false);
   s_detectStable.store(false);
@@ -3378,50 +3389,43 @@ void aml_dv_detect_active_area_start()
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_left", 0);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_right", 0);
 
-  /* Use stored path from VideoPlayer::OpenFile — g_application.CurrentFile()
-   * is not yet set when aml_dv_on runs from the codec thread. */
-  std::string filePath = s_detectFilePath;
+  std::string filePath = source->path;
   if (filePath.empty())
-    filePath = g_application.CurrentFile(); /* fallback */
-  CLog::Log(LOGDEBUG, "DetectActiveArea: start — stored='{}' fallback='{}' → '{}'",
-            s_detectFilePath.empty() ? "(empty)" : "(set)",
-            g_application.CurrentFile().empty() ? "(empty)" : "(set)",
-            filePath.empty() ? "(empty)" : CURL::GetRedacted(filePath));
+    filePath = g_application.CurrentFile();
   if (filePath.empty())
   {
     CLog::Log(LOGWARNING, "DetectActiveArea: no file path available");
     return;
   }
-
-  /* Join previous detection thread if still running — cancel it first
-   * so we don't block on a slow network read. */
-  bool wasJoinable = s_detectThread.joinable();
-  if (wasJoinable)
-  {
-    s_detectCancel.store(true);
-    s_detectThread.join();
-    s_detectCancel.store(false);
-  }
-  CLog::Log(LOGDEBUG, "DetectActiveArea: thread join={}, spawning", wasJoinable);
   s_detectState.store(DV_DETECT_RUNNING);
-
-  s_detectThread = std::thread([filePath]() {
-    DetectActiveAreaFromFile(filePath);
-  });
+  s_detectWorker.Start([filePath](const CAMLNativeWorker::Run& run) {
+    DetectActiveAreaFromFile(filePath, run);
+  }, source->superseded);
 }
 
 void aml_dv_detect_active_area_stop()
 {
-  s_detectCancel.store(true);
+  s_detectWorker.Stop();
   s_detectStable.store(false);
   s_detectState.store(DV_DETECT_FAILED);
-  if (s_detectThread.joinable())
-    s_detectThread.join();
 
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_top", 0);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_bottom", 0);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_left", 0);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_right", 0);
+}
+
+bool aml_dv_retire_background_work()
+{
+  // Poll both participants even while settings/codec owners are still draining.
+  // No display fence or native acquisition may precede their cancellation.
+  const bool watcher = s_autoLbWorker.Retire();
+  const bool detector = s_detectWorker.Retire();
+  if (watcher && s_autoLbWorker.Failure())
+    CLog::Log(LOGERROR, "AML: auto-letterbox worker failed before retirement");
+  if (detector && s_detectWorker.Failure())
+    CLog::Log(LOGERROR, "AML: active-area detector failed before retirement");
+  return watcher && detector;
 }
 
 enum DV_MODE aml_dv_mode()

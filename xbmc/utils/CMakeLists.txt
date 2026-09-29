@@ -261,6 +261,7 @@ if(AML_FOUND)
   list(APPEND SOURCES AMLUtils.cpp
                       ScreenshotAML.cpp)
   list(APPEND HEADERS AMLUtils.h
+                      AMLNativeWorker.h
                       ScreenshotAML.h)
 endif()
 

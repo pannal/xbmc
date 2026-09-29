@@ -125,7 +125,9 @@ bool CWinSystemAmlogic::InitWindowSystem(CAMLSession::DisplayRequest display)
 
 bool CWinSystemAmlogic::RetireNativeTransactions()
 {
-  return !m_dolbyVisionAML || m_dolbyVisionAML->Retire();
+  const bool settings = !m_dolbyVisionAML || m_dolbyVisionAML->Retire();
+  const bool background = aml_dv_retire_background_work();
+  return settings && background;
 }
 
 bool CWinSystemAmlogic::DestroyWindowSystem()
