@@ -118,6 +118,8 @@ public:
   bool InitWindow(RESOLUTION res = RES_INVALID);
 
   bool Stop(int exitCode);
+  // After Create succeeds, retire failed GUI/Initialize startup on its main owner.
+  bool StopBeforeRun(bool renderGUI);
   const std::string& CurrentFile();
   CFileItem& CurrentFileItem();
   std::shared_ptr<CFileItem> CurrentFileItemPtr();

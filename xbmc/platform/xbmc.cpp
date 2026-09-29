@@ -36,13 +36,15 @@ extern "C" int XBMC_Run(bool renderGUI)
   if (renderGUI && !g_application.CreateGUI())
   {
     CMessagePrinter::DisplayError("ERROR: Unable to create GUI. Exiting");
-    if (g_application.Stop(EXITCODE_QUIT))
-      g_application.Cleanup();
+    if (!g_application.StopBeforeRun(renderGUI))
+      CMessagePrinter::DisplayError("ERROR: Failed to clean up GUI startup");
     return status;
   }
   if (!g_application.Initialize())
   {
     CMessagePrinter::DisplayError("ERROR: Unable to Initialize. Exiting");
+    if (!g_application.StopBeforeRun(renderGUI))
+      CMessagePrinter::DisplayError("ERROR: Failed to clean up application startup");
     return status;
   }
 

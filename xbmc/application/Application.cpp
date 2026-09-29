@@ -2155,6 +2155,45 @@ bool CApplication::Cleanup()
   }
 }
 
+bool CApplication::StopBeforeRun(bool renderGUI)
+{
+  // CreateGUI normally owns this acquisition, released by Stop on completion.
+  if (!renderGUI)
+    m_frameMoveGuard.lock();
+
+  // Run/FrameMove is not available yet, and a failed CreateGUI may have no
+  // window or GUI. Retry only the retained retirement phase of Stop; a failure
+  // after destructive teardown starts must not replay that teardown.
+  while (!Stop(EXITCODE_QUIT))
+  {
+    if (!m_pendingStop)
+      return false;
+
+    {
+      // Completing callbacks may need this guard. Restore it before Stop,
+      // which releases the startup acquisition once retirement has completed.
+      CSingleExit exit(m_frameMoveGuard);
+      CRenderLifecycle::ProcessAll();
+#ifdef HAS_LIBAMCODEC
+      CAMLVideoBufferPool::ProcessReturns();
+#endif
+      if (m_pGUI)
+      {
+        // Shutdown cancels replacement playback. Retire only actual terminal
+        // notifications, without dispatching startup/UI actions during failure.
+        int terminalMessages[] = {GUI_MSG_PLAYBACK_ENDED, GUI_MSG_PLAYBACK_STOPPED, 0};
+        if (m_pGUI->GetWindowManager().RemoveThreadMessageByMessageIds(terminalMessages) > 0)
+          GetComponent<CApplicationPlayer>()->OnPlaybackStopped();
+      }
+      KODI::TIME::Sleep(10ms);
+    }
+    // The next Stop advances the same player close and window admission.
+    // Waiting never grants completion or permission to delete either owner.
+    m_pendingStop.reset();
+  }
+  return Cleanup();
+}
+
 bool CApplication::Stop(int exitCode)
 {
 #if defined(TARGET_ANDROID)
@@ -2165,7 +2204,7 @@ bool CApplication::Stop(int exitCode)
 #endif
 
   if (m_pendingStop)
-    return false; // The original action resumes from FrameMove after retirement.
+    return false; // FrameMove or the pre-run pump resumes the original action.
 
   CLog::Log(LOGINFO, "Stopping the application...");
 
