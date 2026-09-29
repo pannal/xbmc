@@ -9,9 +9,11 @@
 #include "DolbyVisionAML.h"
 #include "AMLNativeTransaction.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <exception>
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -986,15 +988,151 @@ bool CDolbyVisionAML::Setup(CAMLSession::DisplayRequest display)
   return true;
 }
 
+// Setting callbacks retain only intent: they may hold a setting's exclusive
+// lock. The deferred owner obtains native admission before fresh reads/effects.
+// Keep the last occurrence of each key in order, since several controls share
+// a kernel parameter. One pending batch follows any currently admitted batch.
+void CDolbyVisionAML::schedule_native_setting_apply(const std::string& settingId)
+{
+  std::lock_guard<std::mutex> lock(m_nativeSettingsMutex);
+  auto& pending = m_nativeSettingsPending;
+  pending.erase(std::remove(pending.begin(), pending.end(), settingId), pending.end());
+  pending.push_back(settingId);
+  if (m_nativeSettingsScheduled)
+    return;
+  m_nativeSettingsScheduled = true;
+  try
+  {
+    if (m_deferredWork.ScheduleNative(std::chrono::milliseconds(0), [this]() {
+      std::vector<std::string> batch;
+      {
+        std::lock_guard<std::mutex> lock(m_nativeSettingsMutex);
+        batch.swap(m_nativeSettingsPending);
+        m_nativeSettingsScheduled = false;
+      }
+      // A failed setting must not discard unrelated intents already dequeued.
+      // The work owner records the failure after all of this batch has drained.
+      std::exception_ptr failure;
+      for (const auto& settingId : batch)
+      {
+        try
+        {
+          apply_native_setting(settingId);
+        }
+        catch (...)
+        {
+          if (!failure)
+            failure = std::current_exception();
+        }
+      }
+      if (failure)
+        std::rethrow_exception(failure);
+    }))
+      return;
+    pending.clear(); // Retirement has closed this owner to new jobs.
+  }
+  catch (...)
+  {
+    m_nativeSettingsScheduled = false;
+    throw;
+  }
+  m_nativeSettingsScheduled = false;
+}
+
+void CDolbyVisionAML::apply_native_setting(const std::string& settingId)
+{
+  if (settingId == CSettings::SETTING_COREELEC_AUDIO_DDR_PRIORITY)
+  {
+    aml_set_audio_ddr_urgent(settings()->GetBool(settingId));
+  }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE_ON_LUMINANCE)
+  {
+    int max(settings()->GetInt(settingId));
+    aml_dv_set_osd_max(max);
+    schedule_vsvdb_payload_apply();
+  }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_OSD_BRIGHTNESS)
+  {
+    // This setting is documented as applying "during DV playback" -- gate the
+    // live-apply on aml_dv_playback_active() rather than the current output
+    // mode. IPT/IPT_TUNNEL is what a Display-LED setup outputs *during DV
+    // playback* too, not just for the GUI, so checking the mode would also
+    // block live adjustment during the very playback this setting exists
+    // for. Playback-vs-GUI is the actual distinction to make here, since
+    // this shares the same underlying dolby_vision_graphic_max kernel
+    // parameter as coreelec.amlogic.dolbyvision.mode.on.luminance ("GUI max
+    // luminance in menus"), which governs it outside of playback instead.
+    if (aml_is_dv_enable() && aml_dv_playback_active() &&
+        aml_dv_dolby_vision_mode() != DOLBY_VISION_OUTPUT_MODE_HDR10)
+      aml_dv_set_osd_brightness(settings()->GetInt(settingId));
+  }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS)
+  {
+    if (aml_is_dv_enable() && aml_dv_dolby_vision_mode() == DOLBY_VISION_OUTPUT_MODE_HDR10)
+      aml_dv_set_hdr10_osd_brightness(settings()->GetInt(settingId));
+  }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_BOOST ||
+           settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_SRC_MAX_NITS)
+  {
+    unsigned int dv_out_mode(aml_dv_dolby_vision_mode());
+    if (aml_is_dv_enable() && (dv_out_mode == DOLBY_VISION_OUTPUT_MODE_SDR10 || dv_out_mode == DOLBY_VISION_OUTPUT_MODE_SDR8))
+      aml_dv_set_sdr_source_max_nits(aml_dv_sdr_boost_param());
+  }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_PER_FRAME_METADATA)
+  {
+    unsigned int dv_out_mode(aml_dv_dolby_vision_mode());
+    if (aml_is_dv_enable() && (dv_out_mode == DOLBY_VISION_OUTPUT_MODE_SDR10 || dv_out_mode == DOLBY_VISION_OUTPUT_MODE_SDR8))
+      aml_dv_set_sdr_keep_ext(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_PER_FRAME_METADATA));
+  }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_TARGET_MIN_LUM)
+  {
+    // Affects the tone curve of every VS10 output mode - apply live
+    // whenever the DV core is engaged.
+    if (aml_is_dv_enable())
+      aml_dv_set_target_min_lum(settings()->GetInt(settingId));
+  }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5 ||
+           settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_SOURCE_LEVEL_5 ||
+           settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_SOURCE_LEVEL_5_OSDST ||
+           settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5_SIGNAL_SUBS ||
+           settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA ||
+           settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_AUTO_LETTERBOX)
+  {
+    // Re-push the L5 sysfs flags so per-folder override.ini writes from
+    // service.p3i.sb take effect mid-playback. Without this, an L5 toggle
+    // from Python would only land on the next aml_dv_on(). The override push
+    // re-evaluates the auto-letterbox geometry so toggling that key applies
+    // (or clears) when this continuation is admitted.
+    aml_dv_apply_l5_override_sysfs();
+    aml_dv_apply_l5_sysfs();
+    schedule_vsvdb_payload_apply();
+  }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5_OVERRIDE)
+  {
+    // L5 active-area override engaged mid-playback (typically from
+    // service.p3i.override writing at onAVStarted, ~1.1s after codec Open).
+    // After kernel commit 61aaaed51c52 the override uses its own
+    // xbmc_override_l5_* sysfs namespace, so detect_stop() (which only
+    // zeroes xbmc_detected_l5_*) no longer clobbers our values — order
+    // here is therefore informational, not load-bearing.
+    aml_dv_apply_l5_override_sysfs();
+    aml_dv_apply_l5_sysfs();
+    if (aml_dv_l5_override_active())
+      aml_dv_detect_active_area_stop();
+    // Note: not auto-restarting detect when the override is cleared
+    // mid-playback. Hidden setting, normally only the addon writes it, and
+    // restart on clear is edge-case enough to defer.
+  }
+}
+
 void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
 {
   if (!setting || m_retiring) return;
 
-  // Audio DDR-priority toggle applies live (no DV state involved) — write the
-  // DMC urgent for the DEVICE port immediately and return before the DV logic.
+  // Queue the audio DDR-priority write without entering DV settings policy.
   if (setting->GetId() == CSettings::SETTING_COREELEC_AUDIO_DDR_PRIORITY)
   {
-    aml_set_audio_ddr_urgent(settings()->GetBool(CSettings::SETTING_COREELEC_AUDIO_DDR_PRIORITY));
+    schedule_native_setting_apply(setting->GetId());
     return;
   }
 
@@ -1084,49 +1222,28 @@ void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& se
   }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE_ON_LUMINANCE)
   {
-    int max(std::dynamic_pointer_cast<const CSettingInt>(setting)->GetValue());
-    aml_dv_set_osd_max(max);
-    schedule_vsvdb_payload_apply();
+    schedule_native_setting_apply(settingId);
   }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_OSD_BRIGHTNESS)
   {
-    // This setting is documented as applying "during DV playback" -- gate the
-    // live-apply on aml_dv_playback_active() rather than the current output
-    // mode. IPT/IPT_TUNNEL is what a Display-LED setup outputs *during DV
-    // playback* too, not just for the GUI, so checking the mode would also
-    // block live adjustment during the very playback this setting exists
-    // for. Playback-vs-GUI is the actual distinction to make here, since
-    // this shares the same underlying dolby_vision_graphic_max kernel
-    // parameter as coreelec.amlogic.dolbyvision.mode.on.luminance ("GUI max
-    // luminance in menus"), which governs it outside of playback instead.
-    if (aml_is_dv_enable() && aml_dv_playback_active() &&
-        aml_dv_dolby_vision_mode() != DOLBY_VISION_OUTPUT_MODE_HDR10)
-      aml_dv_set_osd_brightness(std::dynamic_pointer_cast<const CSettingInt>(setting)->GetValue());
+    schedule_native_setting_apply(settingId);
   }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS)
   {
-    if (aml_is_dv_enable() && aml_dv_dolby_vision_mode() == DOLBY_VISION_OUTPUT_MODE_HDR10)
-      aml_dv_set_hdr10_osd_brightness(std::dynamic_pointer_cast<const CSettingInt>(setting)->GetValue());
+    schedule_native_setting_apply(settingId);
   }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_BOOST ||
            settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_SRC_MAX_NITS)
   {
-    unsigned int dv_out_mode(aml_dv_dolby_vision_mode());
-    if (aml_is_dv_enable() && (dv_out_mode == DOLBY_VISION_OUTPUT_MODE_SDR10 || dv_out_mode == DOLBY_VISION_OUTPUT_MODE_SDR8))
-      aml_dv_set_sdr_source_max_nits(aml_dv_sdr_boost_param());
+    schedule_native_setting_apply(settingId);
   }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_PER_FRAME_METADATA)
   {
-    unsigned int dv_out_mode(aml_dv_dolby_vision_mode());
-    if (aml_is_dv_enable() && (dv_out_mode == DOLBY_VISION_OUTPUT_MODE_SDR10 || dv_out_mode == DOLBY_VISION_OUTPUT_MODE_SDR8))
-      aml_dv_set_sdr_keep_ext(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_PER_FRAME_METADATA));
+    schedule_native_setting_apply(settingId);
   }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_TARGET_MIN_LUM)
   {
-    // Affects the tone curve of every VS10 output mode - apply live
-    // whenever the DV core is engaged.
-    if (aml_is_dv_enable())
-      aml_dv_set_target_min_lum(std::dynamic_pointer_cast<const CSettingInt>(setting)->GetValue());
+    schedule_native_setting_apply(settingId);
   }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE_VP_AUTO)
   {
@@ -1176,30 +1293,11 @@ void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& se
            settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA ||
            settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_L5_AUTO_LETTERBOX)
   {
-    // Re-push the L5 sysfs flags so per-folder override.ini writes from
-    // service.p3i.sb take effect mid-playback. Without this, an L5 toggle
-    // from Python would only land on the next aml_dv_on(). The override push
-    // re-evaluates the auto-letterbox geometry so toggling that key applies
-    // (or clears) immediately on cropped content.
-    aml_dv_apply_l5_override_sysfs();
-    aml_dv_apply_l5_sysfs();
-    schedule_vsvdb_payload_apply();
+    schedule_native_setting_apply(settingId);
   }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5_OVERRIDE)
   {
-    // L5 active-area override engaged mid-playback (typically from
-    // service.p3i.override writing at onAVStarted, ~1.1s after codec Open).
-    // After kernel commit 61aaaed51c52 the override uses its own
-    // xbmc_override_l5_* sysfs namespace, so detect_stop() (which only
-    // zeroes xbmc_detected_l5_*) no longer clobbers our values — order
-    // here is therefore informational, not load-bearing.
-    aml_dv_apply_l5_override_sysfs();
-    aml_dv_apply_l5_sysfs();
-    if (aml_dv_l5_override_active())
-      aml_dv_detect_active_area_stop();
-    // Note: not auto-restarting detect when the override is cleared
-    // mid-playback. Hidden setting, normally only the addon writes it, and
-    // restart on clear is edge-case enough to defer.
+    schedule_native_setting_apply(settingId);
   }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_FORCE_MODES)
   {

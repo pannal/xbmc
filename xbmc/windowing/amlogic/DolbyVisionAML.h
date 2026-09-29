@@ -14,6 +14,9 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
 
 #include <atomic>
+#include <mutex>
+#include <string>
+#include <vector>
 #include "settings/lib/ISettingCallback.h"
 
 class CDolbyVisionAML : public ANNOUNCEMENT::IAnnouncer, // Application callback
@@ -40,6 +43,11 @@ private:
   void apply_tv_preset(int preset);
   void schedule_tv_preset_apply(int preset);
   void schedule_vsvdb_payload_apply();
+  void schedule_native_setting_apply(const std::string& settingId);
+  void apply_native_setting(const std::string& settingId);
+  std::mutex m_nativeSettingsMutex;
+  std::vector<std::string> m_nativeSettingsPending;
+  bool m_nativeSettingsScheduled{false}; // guarded by m_nativeSettingsMutex
   CAMLDeferredWork m_deferredWork;
   std::shared_ptr<CSettingCallbackRegistration> m_settingsRetirement;
   std::atomic<bool> m_applying_tv_preset{false};
