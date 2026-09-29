@@ -37,6 +37,16 @@ class CAMLSession
   };
 
 public:
+  struct NativeRequest
+  {
+    enum class Phase { PENDING, ACTIVE, COMPLETED, CANCELLED };
+    explicit NativeRequest(std::shared_ptr<const void> session = {})
+      : sessionIdentity(std::move(session)) {}
+    const std::thread::id owner{std::this_thread::get_id()};
+    const std::shared_ptr<const void> sessionIdentity;
+    Phase phase{Phase::PENDING}; // registry lock
+  };
+
   explicit CAMLSession(std::thread::id owner = std::this_thread::get_id())
   {
     std::lock_guard<std::mutex> registry(s_registryMutex);
@@ -129,14 +139,22 @@ public:
     });
   }
 
-  bool BeginMutation(const Request& request)
+  bool BeginMutation(const Request& request,
+                     const std::shared_ptr<NativeRequest>& native = {})
   {
     // Serialize the decision with pre-display admission, including registration
     // of a new codec while a display request is already fenced.
     std::lock_guard<std::mutex> registry(s_registryMutex);
     std::lock_guard<std::mutex> lock(m_state->mutex);
+    // A codec mutation may nest only beneath its exact admitted outer token.
+    // Other sessions/callers cannot use native fencing as permission to mutate.
+    const bool ownsNative = native && native == s_nativeRequest &&
+                            native->owner == std::this_thread::get_id() &&
+                            native->sessionIdentity == m_state &&
+                            native->phase == NativeRequest::Phase::ACTIVE;
     if (request.identity != m_state || request.serial != m_state->request || request.epoch != m_state->epoch ||
-        m_state->active || m_state->retiring || m_state->mutating || m_state->displayActive || m_state->nativeFenced)
+        m_state->active || m_state->retiring || m_state->mutating || m_state->displayActive ||
+        (native && !ownsNative) || (m_state->nativeFenced && !ownsNative))
       return false;
     m_state->mutating = true;
     // Mutation now owns invalidation of outstanding old device indices. Late
@@ -182,18 +200,12 @@ public:
 
   // A distinct outer native transaction. It never replaces a window's display
   // request or reopens a failed/unbound display. Admission precedes DV locks.
-  struct NativeRequest
-  {
-    enum class Phase { PENDING, ACTIVE, COMPLETED, CANCELLED };
-    const std::thread::id owner{std::this_thread::get_id()};
-    Phase phase{Phase::PENDING}; // registry lock
-  };
-  static std::shared_ptr<NativeRequest> FenceNative()
+  static std::shared_ptr<NativeRequest> FenceNative(std::shared_ptr<const void> session = {})
   {
     std::lock_guard<std::mutex> registry(s_registryMutex);
     if (s_nativeRequest)
       return {};
-    s_nativeRequest = std::make_shared<NativeRequest>();
+    s_nativeRequest = std::make_shared<NativeRequest>(std::move(session));
     ForSessions([](State& state) { state.nativeFenced = true; });
     return s_nativeRequest;
   }

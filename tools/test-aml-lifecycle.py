@@ -76,9 +76,9 @@ def main():
             ('decoder permit ends before write', 'auto operation = m_session.AcquireDecoder();',
              'auto operation = [](CAMLSession& session) { auto held=session.AcquireDecoder(); '
              'return static_cast<bool>(held); }(m_session);'),
-            ('mutation bypasses permits',
-             'if (!m_session.BeginMutation(m_lifecycleRequest))',
-             'if (false && !m_session.BeginMutation(m_lifecycleRequest))'),
+            ('mutation skips outer admission',
+             'if (!CAMLSession::TryBeginNative(m_nativeLifecycleRequest))',
+             'if (false && !CAMLSession::TryBeginNative(m_nativeLifecycleRequest))'),
             ('pending reset cleanup runs early',
              'm_Codec && !m_Codec->ContinueLifecycle()',
              'false && m_Codec && !m_Codec->ContinueLifecycle()'),
@@ -184,6 +184,7 @@ public:
   CAMLSession m_session;
   Lifecycle m_lifecycle{Lifecycle::NONE};
   CAMLSession::Request m_lifecycleRequest;
+  std::shared_ptr<CAMLSession::NativeRequest> m_nativeLifecycleRequest;
   bool m_lifecycleFailed{false};
   bool m_speedPending{false};
   int m_speed=DVD_PLAYSPEED_NORMAL,m_requestedSpeed=DVD_PLAYSPEED_NORMAL;

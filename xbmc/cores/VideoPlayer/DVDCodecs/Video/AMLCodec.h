@@ -134,6 +134,7 @@ private:
   CAMLSession m_session;
   Lifecycle m_lifecycle{Lifecycle::NONE};
   CAMLSession::Request m_lifecycleRequest;
+  std::shared_ptr<CAMLSession::NativeRequest> m_nativeLifecycleRequest;
   bool m_lifecycleFailed{false};
   bool m_speedPending{false};
   int m_requestedSpeed{0};

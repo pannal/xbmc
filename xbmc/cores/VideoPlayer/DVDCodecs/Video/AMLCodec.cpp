@@ -1967,6 +1967,16 @@ bool CAMLCodec::BeginLifecycle(Lifecycle operation)
 {
   // Only the serialized decoder lifecycle owner enters here. Close can supersede
   // an unstarted recovery after the decode thread has joined.
+  if (m_nativeLifecycleRequest &&
+      (m_lifecycle != operation ||
+       m_nativeLifecycleRequest->owner != std::this_thread::get_id()))
+  {
+    // Supersession or serialized post-join owner transfer revokes only pending
+    // work. An active native owner must finish; never redirect its completion.
+    if (!CAMLSession::CancelNative(m_nativeLifecycleRequest))
+      return false;
+    m_nativeLifecycleRequest.reset();
+  }
   if (m_lifecycle != operation)
   {
     m_lifecycleFailed = false;
@@ -1986,27 +1996,57 @@ bool CAMLCodec::ContinueLifecycle()
       SetSpeed(m_requestedSpeed);
     return !m_speedPending;
   }
-  if (!m_session.BeginMutation(m_lifecycleRequest))
+  // Preserve local retirement admission while this session still has an
+  // operation in flight. The outer fence rechecks all counts after closing new
+  // admission, so a return arriving between this observation and fencing is safe.
+  if (!m_nativeLifecycleRequest &&
+      !m_session.Wait(m_lifecycleRequest, std::chrono::milliseconds::zero()))
     return false;
+  if (!m_nativeLifecycleRequest)
+    m_nativeLifecycleRequest = CAMLSession::FenceNative(m_lifecycleRequest.identity);
+  if (!CAMLSession::TryBeginNative(m_nativeLifecycleRequest))
+    return false;
+  if (!m_session.BeginMutation(m_lifecycleRequest, m_nativeLifecycleRequest))
+  {
+    CAMLSession::EndNative(m_nativeLifecycleRequest);
+    m_nativeLifecycleRequest.reset();
+    return false;
+  }
 
   const Lifecycle operation = m_lifecycle;
   bool success = true;
-  if ((operation == Lifecycle::CLOSE || operation == Lifecycle::REOPEN) && m_decoderNeedsClose)
-    CloseDecoderInternal();
-  if (operation == Lifecycle::RESET)
-    ResetInternal();
-  if (operation == Lifecycle::OPEN || operation == Lifecycle::REOPEN)
+  try
   {
-    success = OpenDecoderInternal();
-    // Open can fail after hold/DV/VFM/config/device acquisition, before the
-    // successful-open flag. Unwind that partial session under the same fence.
-    if (!success && m_decoderNeedsClose)
+    if ((operation == Lifecycle::CLOSE || operation == Lifecycle::REOPEN) && m_decoderNeedsClose)
       CloseDecoderInternal();
+    if (operation == Lifecycle::RESET)
+      ResetInternal();
+    if (operation == Lifecycle::OPEN || operation == Lifecycle::REOPEN)
+    {
+      success = OpenDecoderInternal();
+      // Partial-open unwind retains both the session and outer native admission.
+      if (!success && m_decoderNeedsClose)
+        CloseDecoderInternal();
+    }
+  }
+  catch (...)
+  {
+    // Keep partial resources owned for the subsequent explicit Close. Neither
+    // an exception nor a failed open may strand global admission or reopen I/O.
+    m_opened = false;
+    m_session.Complete(m_lifecycleRequest, false);
+    m_lifecycleFailed = true;
+    m_lifecycle = Lifecycle::NONE;
+    CAMLSession::EndNative(m_nativeLifecycleRequest);
+    m_nativeLifecycleRequest.reset();
+    throw;
   }
 
   m_session.Complete(m_lifecycleRequest, m_opened);
   m_lifecycleFailed = !success;
   m_lifecycle = Lifecycle::NONE;
+  CAMLSession::EndNative(m_nativeLifecycleRequest);
+  m_nativeLifecycleRequest.reset();
   return success;
 }
 
@@ -2017,8 +2057,11 @@ void CAMLCodec::WaitForLifecycle()
   // relinquish a counted device operation. Call without renderer/GUI/pool locks.
   while (LifecyclePending())
   {
-    m_session.Wait(m_lifecycleRequest, std::chrono::milliseconds(50));
-    ContinueLifecycle();
+    const bool sessionIdle = m_session.Wait(m_lifecycleRequest, std::chrono::milliseconds(50));
+    if (!ContinueLifecycle() && sessionIdle)
+      // Another session or display/native owner can still be active. Do not
+      // spin on this session's already-idle counter while retaining the request.
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
 }
 
