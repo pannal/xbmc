@@ -3,8 +3,11 @@
  */
 #pragma once
 
+#include "windowing/amlogic/AMLNativeTransaction.h"
+
 #include <chrono>
 #include <condition_variable>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -21,9 +24,42 @@ class CAMLDeferredWork
     std::mutex mutex;
     std::condition_variable changed;
     bool closed{false};
+    std::exception_ptr failure;
     unsigned int outstanding{0};
   };
 public:
+  // The delayed owner acquires its own admission before fresh reads/effects.
+  // Cancellation interrupts admission retries as well as the initial delay.
+  bool ScheduleNative(std::chrono::milliseconds delay, std::function<void()> action)
+  {
+    auto state = m_state;
+    return Schedule(delay, [state, action = std::move(action)]() mutable {
+      CAMLNativeTransaction native;
+      std::unique_lock<std::mutex> lock(state->mutex);
+      while (!state->closed)
+      {
+        lock.unlock();
+        const bool admitted = native.TryBegin();
+        lock.lock();
+        if (state->closed)
+          return;
+        if (admitted)
+        {
+          lock.unlock();
+          action();
+          return;
+        }
+        state->changed.wait_for(lock, std::chrono::milliseconds(10), [&] { return state->closed; });
+      }
+    });
+  }
+
+  std::exception_ptr Failure() const
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    return m_state->failure;
+  }
+
   bool Schedule(std::chrono::milliseconds delay, std::function<void()> action)
   {
     auto state = m_state;
@@ -40,8 +76,18 @@ public:
         state->changed.wait_for(lock, delay, [&] { return state->closed; });
         const bool run = !state->closed;
         lock.unlock();
-        if (run)
-          action();
+        try
+        {
+          if (run)
+            action();
+        }
+        catch (...)
+        {
+          // A detached failure must still release admission/captures and drain.
+          // Keep the failure observable to the owner at retirement.
+          std::lock_guard<std::mutex> failureLock(state->mutex);
+          state->failure = std::current_exception();
+        }
         // Destroy captures before acknowledging retirement.
         action = {};
         lock.lock();

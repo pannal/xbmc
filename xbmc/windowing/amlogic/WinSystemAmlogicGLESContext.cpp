@@ -169,7 +169,7 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
   if (!display)
     return false;
   CloseTextureResources();
-  if (!CWinSystemAmlogic::InitWindowSystem())
+  if (!CWinSystemAmlogic::InitWindowSystem(display.Request()))
   {
     return false;
   }

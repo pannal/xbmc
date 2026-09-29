@@ -59,6 +59,7 @@ protected:
   bool m_force_mode_switch;
 
 protected:
+  bool InitWindowSystem(CAMLSession::DisplayRequest display);
   bool RetireNativeTransactions();
 
 private:

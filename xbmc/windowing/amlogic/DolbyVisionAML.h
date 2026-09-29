@@ -26,7 +26,7 @@ public:
   bool Retire();
 
   // Setup
-  bool Setup();
+  bool Setup(CAMLSession::DisplayRequest display = {});
 
   // implementation of IAnnouncer
   void Announce(ANNOUNCEMENT::AnnouncementFlag flag,

@@ -3,6 +3,7 @@ set(SOURCES WinSystemAmlogic.cpp
             DolbyVisionAML.cpp)
 
 set(HEADERS AMLDeferredWork.h
+            AMLNativeTransaction.h
             WinSystemAmlogic.h
             VideoSyncAML.h
             DolbyVisionAML.h)

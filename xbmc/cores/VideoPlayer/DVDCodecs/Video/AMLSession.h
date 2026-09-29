@@ -285,12 +285,33 @@ public:
     return true;
   }
 
+  // Explicit synchronous native work may nest only under this exact active
+  // display transaction, on its owner. A queued unrelated native request stays
+  // queued; this does not borrow or complete it.
+  static bool BeginDisplayNative(const DisplayRequest& request)
+  {
+    std::lock_guard<std::mutex> registry(s_registryMutex);
+    if (!MatchesDisplay(request) || s_displayPhase != DisplayPhase::MUTATING)
+      return false;
+    ++s_displayNativeDepth;
+    return true;
+  }
+  static bool EndDisplayNative(const DisplayRequest& request)
+  {
+    std::lock_guard<std::mutex> registry(s_registryMutex);
+    if (!MatchesDisplay(request) || s_displayPhase != DisplayPhase::MUTATING ||
+        !s_displayNativeDepth)
+      return false;
+    --s_displayNativeDepth;
+    return true;
+  }
+
   // A failed bind/reset retains admission fencing, while ending the actual
   // mutation lets decoder reset/close invalidate its own old return obligations.
   static bool EndDisplay(const DisplayRequest& request, DisplayPhase phase)
   {
     std::lock_guard<std::mutex> registry(s_registryMutex);
-    if (!MatchesDisplay(request) ||
+    if (!MatchesDisplay(request) || s_displayNativeDepth ||
         (s_displayPhase != DisplayPhase::MUTATING &&
          s_displayPhase != DisplayPhase::WAITING_FOR_RESET) ||
         (phase != DisplayPhase::READY && phase != DisplayPhase::WAITING_FOR_RESET &&
@@ -344,6 +365,7 @@ private:
 
   static inline std::mutex s_registryMutex;
   static inline std::vector<std::weak_ptr<State>> s_sessions;
+  static inline unsigned int s_displayNativeDepth{0};
   static inline uint64_t s_displaySerial{0};
   static inline std::thread::id s_displayOwner;
   static inline std::shared_ptr<NativeRequest> s_nativeRequest;

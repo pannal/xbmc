@@ -27,6 +27,8 @@ PREFIX = r'''
 #include <string>
 #include <vector>
 using namespace std::chrono_literals;
+struct CLog { template<class... T> static void Log(T...){} };
+constexpr int LOGERROR=1;
 struct CVariant {};
 namespace ANNOUNCEMENT { enum AnnouncementFlag {System,Player,Other}; }
 using namespace ANNOUNCEMENT;
@@ -71,7 +73,10 @@ struct CAnnouncementManager {
 struct CWinSystemAmlogic {
   CDolbyVisionAML dv;
   bool RetireNativeTransactions(){return dv.Retire();}
-  bool InitWindowSystem(){effects.push_back("base-init");return true;}
+  bool InitWindowSystem(CAMLSession::DisplayRequest display){
+    CAMLNativeTransaction nested(display);assert(display && nested.TryBegin());
+    effects.push_back("base-init");return true;
+  }
   bool DestroyWindowSystem(){effects.push_back("base-destroy");return true;}
   bool DestroyWindow(){effects.push_back("window-destroy");return true;}
   int m_nativeDisplay=0;

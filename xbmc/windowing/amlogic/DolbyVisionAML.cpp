@@ -7,6 +7,7 @@
  */
 
 #include "DolbyVisionAML.h"
+#include "AMLNativeTransaction.h"
 
 #include <atomic>
 #include <cassert>
@@ -871,7 +872,7 @@ void CDolbyVisionAML::schedule_vsvdb_payload_apply()
 {
   if (m_vsvdb_apply_scheduled.exchange(true)) return;
 
-  if (!m_deferredWork.Schedule(std::chrono::milliseconds(50), [this]() {
+  if (!m_deferredWork.ScheduleNative(std::chrono::milliseconds(50), [this]() {
     // Clear before reading: a setting change landing after the reads below
     // schedules a fresh apply instead of being lost.
     m_vsvdb_apply_scheduled.store(false);
@@ -883,14 +884,25 @@ void CDolbyVisionAML::schedule_vsvdb_payload_apply()
     int max_lum_nits_value(
         settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM));
     m_applying_vsvdb = true;
-    set_vsvdb_payload_ver(dv_type, max_lum_nits_value, source_max_pq);
+    try
+    {
+      set_vsvdb_payload_ver(dv_type, max_lum_nits_value, source_max_pq);
+    }
+    catch (...)
+    {
+      m_applying_vsvdb = false;
+      throw;
+    }
     m_applying_vsvdb = false;
   }))
     m_vsvdb_apply_scheduled = false;
 }
 
-bool CDolbyVisionAML::Setup()
+bool CDolbyVisionAML::Setup(CAMLSession::DisplayRequest display)
 {
+  CAMLNativeTransaction native(display);
+  if (!native.TryBegin())
+    return false;
   CLog::Log(LOGDEBUG, "CDolbyVisionAML::Setup - Begin");
 
   const auto settingsManager = settings()->GetSettingsManager();
@@ -1223,6 +1235,8 @@ bool CDolbyVisionAML::Retire()
     m_settingsRetirement = settings()->GetSettingsManager()->RevokeCallback(this);
   CAMLSession::CancelNative(std::atomic_load(&m_nativeRequest));
   const bool workDrained = m_deferredWork.Cancel();
+  if (workDrained && m_deferredWork.Failure())
+    CLog::Log(LOGERROR, "CDolbyVisionAML: deferred settings apply failed before retirement");
   return workDrained && (!m_settingsRetirement || m_settingsRetirement->Drained());
 }
 

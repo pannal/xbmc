@@ -66,9 +66,15 @@ CWinSystemAmlogic::CWinSystemAmlogic()
 
 bool CWinSystemAmlogic::InitWindowSystem()
 {
+  return InitWindowSystem({});
+}
+
+bool CWinSystemAmlogic::InitWindowSystem(CAMLSession::DisplayRequest display)
+{
   // Setup DV UI Elements etc.
   m_dolbyVisionAML = std::make_unique<CDolbyVisionAML>();
-  m_dolbyVisionAML->Setup();
+  if (!m_dolbyVisionAML->Setup(display))
+    return false;
 
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 

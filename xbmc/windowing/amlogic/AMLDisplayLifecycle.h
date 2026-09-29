@@ -29,6 +29,10 @@ public:
     }
     explicit operator bool() const { return m_admitted; }
     void Finish(Phase result) { m_result = result; }
+    CAMLSession::DisplayRequest Request() const
+    {
+      return m_admitted ? m_lifecycle.m_request : CAMLSession::DisplayRequest{};
+    }
   private:
     CAMLDisplayLifecycle& m_lifecycle;
     bool m_admitted{false};

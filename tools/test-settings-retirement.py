@@ -144,7 +144,7 @@ void registration_cases(){
 enum TV_PRESET{TV_PRESET_MANUAL,TV_PRESET_AUTO,TV_PRESET_LG,TV_PRESET_SONY,TV_PRESET_SAMSUNG,TV_PRESET_PANASONIC,TV_PRESET_PHILIPS,TV_PRESET_TCL};
 enum DV_TYPE{DV_TYPE_DISPLAY_LED,DV_TYPE_PLAYER_LED_LLDV,DV_TYPE_PLAYER_LED_HDR2,DV_TYPE_VS10_ONLY};
 enum DV_MODE{DV_MODE_OFF,DV_MODE_ON_DEMAND};
-constexpr int LOGINFO=1;
+constexpr int LOGINFO=1, LOGERROR=2;
 struct CLog{template<class...T>static void Log(T&&...){}};
 namespace xbmc_dv_cap {std::string edid_pnpid="test";}
 bool aml_display_support_dv(){return true;}
@@ -220,21 +220,24 @@ void deferred_cases(){
    assert(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE)==DV_TYPE_PLAYER_LED_HDR2);
    assert(!dv.m_applying_tv_preset);settings()->onWrite={};}
   // Actual VSVDB job reads latest state; clear-before-read permits a fresh apply
-  // while the previous one is still running. Retirement waits for both jobs.
-  {CDolbyVisionAML dv;std::atomic<int> calls=0;std::promise<void> first,second,release;
-   auto firstReady=first.get_future(),secondReady=second.get_future(),gate=release.get_future();
+  // while the previous one is still running. Native effects serialize, and
+  // retirement still waits for the admitted job.
+  {CDolbyVisionAML dv;std::atomic<int> calls=0;std::promise<void> first,second,release,releaseSecond;
+   auto firstReady=first.get_future(),secondReady=second.get_future(),gate=release.get_future(),gateSecond=releaseSecond.get_future();
    settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM,100);
    payloadHook=[&](int,int max,int pq){assert(dv.m_applying_vsvdb && pq==333);
      if(++calls==1){assert(max==200);first.set_value();gate.wait();}
-     else {assert(max==300);second.set_value();}};
+     else {assert(max==300);second.set_value();gateSecond.wait();}};
    dv.schedule_vsvdb_payload_apply();
    settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM,200);
    assert(firstReady.wait_for(2s)==std::future_status::ready);
    assert(!dv.m_vsvdb_apply_scheduled);
    settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM,300);
    dv.schedule_vsvdb_payload_apply();
+   assert(secondReady.wait_for(100ms)==std::future_status::timeout);
+   release.set_value();
    assert(secondReady.wait_for(2s)==std::future_status::ready);
-   assert(!dv.Retire());release.set_value();awaitRetirement(dv);assert(calls==2);}
+   assert(!dv.Retire());releaseSecond.set_value();awaitRetirement(dv);assert(calls==2);}
   // A settings callback already admitted but not yet returned retains the DV
   // owner, and blocks display admission before any service teardown.
   {CDolbyVisionAML dv;auto* manager=settings()->GetSettingsManager();
