@@ -27,10 +27,6 @@ public:
   bool InitWindowSystem() override;
   bool DestroyWindowSystem() override;
 
-  bool CreateNewWindow(const std::string& name,
-                       bool fullScreen,
-                       RESOLUTION_INFO& res) override;
-
   bool DestroyWindow() override;
   void UpdateResolutions() override;
   bool IsHDRDisplay() override;
@@ -59,6 +55,10 @@ protected:
   bool m_force_mode_switch;
 
 protected:
+  // Native mode work requires the exact active display parent. The concrete
+  // window owner retains pending creation and owns its public entry point.
+  bool CreateNativeWindow(const std::string& name, bool fullScreen,
+                          RESOLUTION_INFO& res, CAMLSession::DisplayRequest display);
   bool InitWindowSystem(CAMLSession::DisplayRequest display);
   bool RetireNativeTransactions();
 

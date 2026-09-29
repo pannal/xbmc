@@ -7,6 +7,7 @@
  */
 
 #include "VideoSyncAML.h"
+#include "AMLNativeTransaction.h"
 #include "DolbyVisionAML.h"
 #include "WinSystemAmlogicGLESContext.h"
 #include "ServiceBroker.h"
@@ -249,6 +250,11 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
   if (!display)
     return false;
+  // Native reads/restoration and the base mode change belong to this exact
+  // display request. Never borrow an ambient native owner across retries.
+  CAMLNativeTransaction native(display.Request());
+  if (!native.TryBegin())
+    return false;
   RESOLUTION_INFO current_resolution;
   current_resolution.iWidth = current_resolution.iHeight = 0;
   RENDER_STEREO_MODE stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
@@ -310,7 +316,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   if (aml_dv_restore_gui_ipt("SetFullScreen"))
   {
     // Re-write the display mode to trigger VPP reconfiguration for the
-    // new DV output mode, matching what CWinSystemAmlogic::CreateNewWindow
+    // new DV output mode, matching what CWinSystemAmlogic::CreateNativeWindow
     // does via aml_dv_display_trigger() in the full mode-switch path.
     aml_dv_display_trigger();
   }
@@ -354,7 +360,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   m_stereo_mode = stereo_mode;
   m_bFullScreen = fullScreen;
 
-  if (!CWinSystemAmlogic::CreateNewWindow(name, fullScreen, res))
+  if (!CWinSystemAmlogic::CreateNativeWindow(name, fullScreen, res, display.Request()))
   {
     return false;
   }

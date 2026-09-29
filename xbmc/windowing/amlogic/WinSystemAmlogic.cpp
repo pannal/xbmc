@@ -7,6 +7,7 @@
  */
 
 #include "WinSystemAmlogic.h"
+#include "AMLNativeTransaction.h"
 
 #include <string.h>
 #include <float.h>
@@ -138,10 +139,16 @@ bool CWinSystemAmlogic::DestroyWindowSystem()
   return true;
 }
 
-bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
-                                    bool fullScreen,
-                                    RESOLUTION_INFO& res)
+bool CWinSystemAmlogic::CreateNativeWindow(const std::string& name,
+                                        bool fullScreen,
+                                        RESOLUTION_INFO& res,
+                                        CAMLSession::DisplayRequest display)
 {
+  if (!display)
+    return false;
+  CAMLNativeTransaction native(display);
+  if (!native.TryBegin())
+    return false;
   m_nWidth        = res.iWidth;
   m_nHeight       = res.iHeight;
   m_fRefreshRate  = res.fRefreshRate;

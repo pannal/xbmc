@@ -36,7 +36,7 @@ def harness():
                    'void CWinSystemAmlogicGLESContext::PresentRenderImpl(',
                    'void CWinSystemAmlogicGLESContext::QueueKernelSwitch(',
                    'void CWinSystemAmlogicGLESContext::ApplyPendingKernelSwitch()'],
-        'base': ['bool CWinSystemAmlogic::CreateNewWindow('],
+        'base': ['bool CWinSystemAmlogic::CreateNativeWindow('],
         'gfx': ['bool CGraphicContext::SetVideoResolution(',
                 'void CGraphicContext::ProcessPendingVideoResolution()',
                 'bool CGraphicContext::SetVideoResolutionInternal('],
@@ -56,7 +56,7 @@ def run(source, negative=False):
         out = Path(temporary)
         (out / 'test.cpp').write_text(source)
         command = [os.environ.get('CXX', 'g++'), '-std=c++17', '-Wall', '-Wextra', '-Werror',
-                   '-Wno-unused-parameter', '-pthread', '-I', str(ROOT / 'xbmc'),
+                   '-Wno-unused-parameter', '-pthread', '-fno-pie', '-no-pie', '-I', str(ROOT / 'xbmc'),
                    str(out / 'test.cpp'), '-o', str(out / 'test')]
         if not negative:
             command += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
@@ -74,8 +74,16 @@ def main():
     source = harness()
     if args.negative_controls:
         controls = [
-            ('CreateNewWindow skips admission', 'if (!display)\n    return false;',
-             'if (false && !display)\n    return false;'),
+            ('window omits native child',
+             'CAMLNativeTransaction native(display.Request());\n  if (!native.TryBegin())\n    return false;',
+             '/* no native child */'),
+            ('base omits native child',
+             'CAMLNativeTransaction native(display);\n  if (!native.TryBegin())\n    return false;',
+             '/* no native child */'),
+            ('base accepts absent parent', 'if (!display)\n    return false;\n  CAMLNativeTransaction native(display);',
+             'CAMLNativeTransaction native(display);'),
+            ('window drops exact receipt', 'CreateNativeWindow(name, fullScreen, res, display.Request())',
+             'CreateNativeWindow(name, fullScreen, res, {})'),
             ('failed bind reports success', 'if (!m_pGLContext.BindContext())',
              'if (false && !m_pGLContext.BindContext())'),
             ('pending graphics intent lost', 'm_pendingVideoResolution = ResolutionRequest{res, forceUpdate};',
@@ -104,6 +112,7 @@ def main():
 
 PRELUDE = r'''
 #include "windowing/amlogic/AMLDisplayLifecycle.h"
+#include "windowing/amlogic/AMLNativeTransaction.h"
 #include "rendering/RenderResource.h"
 #include <cassert>
 #include <cmath>
@@ -130,12 +139,13 @@ struct CStreamDetails{static const char* DynamicRangeToString(StreamHdrType){ret
 std::vector<std::string> events;
 CAMLSession* probe=nullptr;
 void event(const std::string& name){events.push_back(name);}
-void native(const std::string& name){if(probe){assert(probe->DisplayBlocked());assert(!probe->AcquireDecoder());}event(name);}
+std::function<void()> nativeScopeCheck;
+void native(const std::string& name){if(nativeScopeCheck)nativeScopeCheck();if(probe){assert(probe->DisplayBlocked());assert(!probe->AcquireDecoder());}event(name);}
 RESOLUTION_INFO currentNative;
 bool nativeRead=true,fracPolicy=false,restoreGui=false,currentBound=true;
 int fracValue=0,dvMode=1;
 std::function<void(bool)> engageHook;
-bool aml_get_native_resolution(RESOLUTION_INFO* info){event("native-read");*info=currentNative;return nativeRead;}
+bool aml_get_native_resolution(RESOLUTION_INFO* info){native("native-read");*info=currentNative;return nativeRead;}
 bool aml_has_frac_rate_policy(){return fracPolicy;}
 int aml_dv_mode(){return dvMode;}
 void aml_dv_wait_for_pipeline(){native("dv-wait");}
@@ -212,7 +222,7 @@ struct EGL{
 class CWinSystemAmlogic{
 public:
   virtual ~CWinSystemAmlogic(){delete m_nativeWindow;}
-  bool CreateNewWindow(const std::string&,bool,RESOLUTION_INFO&);
+  bool CreateNativeWindow(const std::string&,bool,RESOLUTION_INFO&,CAMLSession::DisplayRequest);
   bool DestroyWindow(){event("base-destroy");m_bWindowCreated=false;return true;}
   int m_nWidth{1920},m_nHeight{1080};float m_fRefreshRate{60};
   fbdev_window* m_nativeWindow{nullptr};
@@ -276,6 +286,45 @@ struct Fixture{
 };
 size_t at(const std::string& name){auto it=std::find(events.begin(),events.end(),name);assert(it!=events.end());return it-events.begin();}
 bool has(const std::string& name){return std::find(events.begin(),events.end(),name)!=events.end();}
+void ExactNativeParents(){
+  Fixture f;auto info=CDisplaySettings::GetInstance().GetResolutionInfo(2);
+  assert(!f.win.CreateNativeWindow("",true,info,{}));assert(events.empty());
+  CAMLSession::DisplayRequest old;
+  {
+    CAMLDisplayLifecycle::Mutation parent(f.win.m_displayLifecycle);assert(parent);old=parent.Request();
+    auto stale=old;++stale.serial;
+    assert(!f.win.CreateNativeWindow("",true,info,stale));assert(events.empty());
+    std::thread foreign([&]{assert(!f.win.CreateNativeWindow("",true,info,old));});foreign.join();
+    assert(events.empty());
+    nativeScopeCheck=[&]{assert(!CAMLSession::EndDisplay(old,CAMLSession::DisplayPhase::READY));};
+    assert(f.win.CreateNativeWindow("",true,info,old));
+    nativeScopeCheck={};parent.Finish(CAMLDisplayLifecycle::Phase::READY);
+  }
+  assert(!f.session.DisplayBlocked());events.clear();
+  assert(!f.win.CreateNativeWindow("",true,info,old));assert(events.empty());
+  {
+    CAMLDisplayLifecycle::Mutation parent(f.win.m_displayLifecycle);assert(parent);
+    nativeScopeCheck=[&]{assert(!CAMLSession::EndDisplay(parent.Request(),CAMLSession::DisplayPhase::READY));};
+    assert(f.win.CreateNewWindow("",true,info));
+    nativeScopeCheck={};parent.Finish(CAMLDisplayLifecycle::Phase::READY);
+  }
+  assert(!f.session.DisplayBlocked());
+  {
+    CAMLDisplayLifecycle::Mutation parent(f.win.m_displayLifecycle);assert(parent);
+    nativeScopeCheck=[] {throw 7;};
+    try{f.win.CreateNewWindow("",true,info);assert(false);}catch(int){}
+    nativeScopeCheck={};parent.Finish(CAMLDisplayLifecycle::Phase::READY);
+  }
+  assert(!f.session.DisplayBlocked()&&f.session.AcquireDecoder());
+  events.clear();
+  {
+    CAMLNativeTransaction unrelated;assert(unrelated.TryBegin());
+    assert(!f.gfx.SetVideoResolution(1,false));
+    assert(f.gfx.m_pendingVideoResolution&&!has("native-read")&&!has("restore-ipt"));
+  }
+  f.gfx.ProcessPendingVideoResolution();
+  assert(!f.gfx.m_pendingVideoResolution&&!f.session.DisplayBlocked());
+}
 void PendingAndLatestPayload(){
   Fixture f;const auto epoch=f.session.Epoch();
   {
@@ -395,7 +444,7 @@ void OffMainDispatch(){
   Fixture f;messenger.main=false;assert(!f.gfx.SetVideoResolution(2,false));
   assert(events==std::vector<std::string>{"send-resolution"});assert(!f.session.DisplayBlocked());
 }
-int main(){PendingAndLatestPayload();OwnCaptureAndDirectWindow();FailedRebind();FailedGeometry();DelayedResetAndSwap();RenderIntentAndEngage();NoModeAndForcedFrac();NoModeNeedsReadiness();OffMainDispatch();}
+int main(){ExactNativeParents();PendingAndLatestPayload();OwnCaptureAndDirectWindow();FailedRebind();FailedGeometry();DelayedResetAndSwap();RenderIntentAndEngage();NoModeAndForcedFrac();NoModeNeedsReadiness();OffMainDispatch();}
 '''
 
 if __name__ == '__main__':
