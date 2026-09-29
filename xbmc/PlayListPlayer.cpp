@@ -1100,8 +1100,8 @@ void PLAYLIST::CPlayListPlayer::OnApplicationMessage(KODI::MESSAGING::ThreadMess
 
     wakeScreensaver();
 
-    // stop playing file
-    if (appPlayer->IsPlaying())
+    // A pending close can still own a queued replacement to cancel.
+    if (appPlayer->HasPlayer())
     {
       if (m_bIsDeferredPlayPending)
         appPlayer->ClosePlayer();

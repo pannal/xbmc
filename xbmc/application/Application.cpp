@@ -1958,9 +1958,25 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
   }
 
   appPlayer->FrameMove();
+  appPlayer->OpenNext(m_ServiceManager->GetPlayerCoreFactory());
 
   // this will go away when render systems gets its own thread
   CServiceBroker::GetWinSystem()->DriveRenderLoop();
+
+  if (m_pendingStop && !appPlayer->HasPlayer())
+  {
+    const int exitCode = *m_pendingStop;
+    m_pendingStop.reset();
+    if (Stop(exitCode))
+    {
+      if (exitCode == EXITCODE_POWERDOWN)
+        CServiceBroker::GetPowerManager().Powerdown();
+      else if (exitCode == EXITCODE_REBOOT)
+        CServiceBroker::GetPowerManager().Reboot();
+    }
+    else
+      m_pendingStop = exitCode;
+  }
 }
 
 
@@ -2143,6 +2159,9 @@ bool CApplication::Stop(int exitCode)
     return false;
 #endif
 
+  if (m_pendingStop)
+    return false; // The original action resumes from FrameMove after retirement.
+
   CLog::Log(LOGINFO, "Stopping the application...");
 
   // Watchdog: if the shutdown sequence takes longer than the configured
@@ -2151,20 +2170,30 @@ bool CApplication::Stop(int exitCode)
   // otherwise block forever since kodi never tells systemd to reboot.
   const int shutdownTimeout =
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_addonScriptStopTimeout;
-  std::thread shutdownWatchdog([shutdownTimeout]() {
-    std::this_thread::sleep_for(std::chrono::seconds(shutdownTimeout));
-    CLog::Log(LOGERROR,
-              "CApplication::Stop - shutdown watchdog triggered after {}s, forcing exit",
-              shutdownTimeout);
-    _exit(0);
-  });
-  shutdownWatchdog.detach();
+  if (!m_shutdownWatchdogStarted)
+  {
+    m_shutdownWatchdogStarted = true;
+    std::thread shutdownWatchdog([shutdownTimeout]() {
+      std::this_thread::sleep_for(std::chrono::seconds(shutdownTimeout));
+      CLog::Log(LOGERROR,
+                "CApplication::Stop - shutdown watchdog triggered after {}s, forcing exit",
+                shutdownTimeout);
+      _exit(0);
+    });
+    shutdownWatchdog.detach();
+  }
 
   bool success = true;
 
   CLog::Log(LOGINFO, "Stopping player");
   const auto appPlayer = GetComponent<CApplicationPlayer>();
-  appPlayer->ClosePlayer();
+  if (!appPlayer->ClosePlayer(true))
+  {
+    if (!m_pendingStop)
+      m_pendingStop = exitCode;
+    return false;
+  }
+  m_pendingStop.reset();
 
   // Safety net independent of the above: aml_dv_close() (and the
   // auto-letterbox watcher stop nested under it) only runs via the normal
@@ -2658,10 +2687,14 @@ bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRes
     // pushed some delay message into the threadmessage list, they are not
     // expected be processed after or during the new item playback starting.
     // so we clean up previous playing item's playback callback delay messages here.
+    // A discarded terminal notification also retires the old player's callback
+    // obligation. Other obsolete messages must not acknowledge a pending stop.
+    int terminalMessages[] = {GUI_MSG_PLAYBACK_ENDED, GUI_MSG_PLAYBACK_STOPPED, 0};
+    if (CServiceBroker::GetGUI()->GetWindowManager().RemoveThreadMessageByMessageIds(
+            terminalMessages) > 0)
+      appPlayer->OnPlaybackStopped();
     int previousMsgsIgnoredByNewPlaying[] = {
       GUI_MSG_PLAYBACK_STARTED,
-      GUI_MSG_PLAYBACK_ENDED,
-      GUI_MSG_PLAYBACK_STOPPED,
       GUI_MSG_PLAYLIST_CHANGED,
       GUI_MSG_PLAYLISTPLAYER_STOPPED,
       GUI_MSG_PLAYLISTPLAYER_STARTED,
@@ -2830,7 +2863,7 @@ void CApplication::StopPlaying()
   {
     int iWin = gui->GetWindowManager().GetActiveWindow();
     const auto appPlayer = GetComponent<CApplicationPlayer>();
-    if (appPlayer->IsPlaying())
+    if (appPlayer->HasPlayer())
     {
       appPlayer->ClosePlayer();
 
@@ -3062,6 +3095,7 @@ bool CApplication::OnMessage(CGUIMessage& message)
 
   case GUI_MSG_PLAYBACK_STOPPED:
   {
+    GetComponent<CApplicationPlayer>()->OnPlaybackStopped();
     CServiceBroker::GetPVRManager().OnPlaybackStopped(*m_itemCurrentFile);
 
     CVariant data(CVariant::VariantTypeObject);
@@ -3080,6 +3114,7 @@ bool CApplication::OnMessage(CGUIMessage& message)
 
   case GUI_MSG_PLAYBACK_ENDED:
   {
+    GetComponent<CApplicationPlayer>()->OnPlaybackStopped();
     CServiceBroker::GetPVRManager().OnPlaybackEnded(*m_itemCurrentFile);
 
     CVariant data(CVariant::VariantTypeObject);

@@ -34,36 +34,47 @@ std::shared_ptr<IPlayer> CApplicationPlayer::GetInternal()
   return m_pPlayer;
 }
 
-void CApplicationPlayer::ClosePlayer()
+bool CApplicationPlayer::ClosePlayer(bool shutdown)
 {
+  m_shutdown = m_shutdown || shutdown;
   m_nextItem.pItem.reset();
-  std::shared_ptr<IPlayer> player = GetInternal();
-  if (player)
-  {
-    if (CloseFile())
-      ResetPlayer();
-  }
+  ResetPlayer();
+  return !GetInternal();
 }
 
 void CApplicationPlayer::ResetPlayer()
 {
-  std::shared_ptr<IPlayer> retired;
+  if (!m_closingPlayer)
   {
-    std::unique_lock<CCriticalSection> lock(m_playerLock);
-    retired = std::move(m_pPlayer);
+    m_closingPlayer = GetInternal();
+    m_closeAcknowledged = false;
   }
-  // Destruction can wait for the original renderer's main-thread retirement.
-  // Do not hold the application player lock while that owner makes progress.
+  ContinueClose();
 }
 
-bool CApplicationPlayer::CloseFile(bool reopen)
+void CApplicationPlayer::ContinueClose()
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
-  if (player)
+  auto original = m_closingPlayer;
+  if (!original)
+    return;
+  if (!m_closeAcknowledged)
+    m_closeAcknowledged = original->CloseFile();
+  if (!m_closeAcknowledged || m_waitForPlaybackStop)
+    return;
+
   {
-    return player->CloseFile(reopen);
+    std::unique_lock<CCriticalSection> lock(m_playerLock);
+    if (m_pPlayer == original)
+      m_pPlayer.reset();
   }
-  return true;
+  m_closingPlayer.reset();
+  // The local original keeps final destruction outside the application lock.
+}
+
+void CApplicationPlayer::OnPlaybackStopped()
+{
+  // Main consumed STOPPED/ENDED or explicitly discarded it for a newer open.
+  m_waitForPlaybackStop = false;
 }
 
 void CApplicationPlayer::CreatePlayer(const CPlayerCoreFactory &factory, const std::string &player, IPlayerCallback& callback)
@@ -90,49 +101,23 @@ bool CApplicationPlayer::OpenFile(const CFileItem& item, const CPlayerOptions& o
                                   const CPlayerCoreFactory &factory,
                                   const std::string &playerName, IPlayerCallback& callback)
 {
-  // get player type
-  std::string newPlayer;
-  if (!playerName.empty())
-    newPlayer = playerName;
-  else
-    newPlayer = factory.GetDefaultPlayer(item);
-
-  // check if we need to close current player
-  // VideoPlayer can open a new file while playing
-  std::shared_ptr<IPlayer> player = GetInternal();
-  if (player && player->IsPlaying())
+  if (m_shutdown)
+    return false;
+  const std::string newPlayer = playerName.empty() ? factory.GetDefaultPlayer(item) : playerName;
+  auto player = GetInternal();
+  const bool replace = player &&
+      (m_closingPlayer || !player->IsPlaying() || item.IsDiscImage() || item.IsDVDFile() ||
+       player->m_name != newPlayer || (player->m_type != "video" && player->m_type != "remote"));
+  if (replace)
   {
-    bool needToClose = false;
-
-    if (item.IsDiscImage() || item.IsDVDFile())
-      needToClose = true;
-
-    if (player->m_name != newPlayer)
-      needToClose = true;
-
-    if (player->m_type != "video" && player->m_type != "remote")
-      needToClose = true;
-
-    if (needToClose)
-    {
-      m_nextItem.pItem = std::make_shared<CFileItem>(item);
-      m_nextItem.options = options;
-      m_nextItem.playerName = newPlayer;
-      m_nextItem.callback = &callback;
-
-      if (!CloseFile())
-        return false;
-      if (player->m_name != newPlayer)
-        ResetPlayer();
-      return true;
-    }
-  }
-  else if (player && player->m_name != newPlayer)
-  {
-    if (!CloseFile())
-      return false;
+    // One owned latest intent. Closing the original is never cancelled by a
+    // replacement; only the item to open after its retirement may change.
+    m_nextItem.pItem = std::make_shared<CFileItem>(item);
+    m_nextItem.options = options;
+    m_nextItem.playerName = newPlayer;
+    m_nextItem.callback = &callback;
     ResetPlayer();
-    player.reset();
+    return true; // Accepted for the normal main-frame continuation.
   }
 
   if (!player)
@@ -144,6 +129,7 @@ bool CApplicationPlayer::OpenFile(const CFileItem& item, const CPlayerOptions& o
   }
 
   bool ret = player->OpenFile(item, options);
+  m_waitForPlaybackStop = ret;
 
   m_nextItem.pItem.reset();
 
@@ -157,13 +143,12 @@ bool CApplicationPlayer::OpenFile(const CFileItem& item, const CPlayerOptions& o
 
 void CApplicationPlayer::OpenNext(const CPlayerCoreFactory &factory)
 {
-  if (m_nextItem.pItem)
-  {
-    OpenFile(*m_nextItem.pItem, m_nextItem.options,
-             factory,
-             m_nextItem.playerName, *m_nextItem.callback);
-    m_nextItem.pItem.reset();
-  }
+  if (m_closingPlayer || m_waitForPlaybackStop || m_shutdown || !m_nextItem.pItem)
+    return;
+  // Move the full payload before OpenFile can replace it or reset the queue.
+  auto next = std::move(m_nextItem);
+  m_nextItem = {};
+  OpenFile(*next.pItem, next.options, factory, next.playerName, *next.callback);
 }
 
 bool CApplicationPlayer::HasPlayer() const
@@ -827,6 +812,7 @@ bool CApplicationPlayer::SupportsTempo() const
 
 void CApplicationPlayer::FrameMove()
 {
+  ContinueClose();
   std::shared_ptr<IPlayer> player = GetInternal();
   if (player)
   {

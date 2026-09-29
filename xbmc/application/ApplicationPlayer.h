@@ -36,7 +36,8 @@ public:
   CApplicationPlayer() = default;
 
   // player management
-  void ClosePlayer();
+  bool ClosePlayer(bool shutdown = false);
+  void OnPlaybackStopped();
   void ResetPlayer();
   std::string GetCurrentPlayer() const;
   float GetPlaySpeed() const;
@@ -187,9 +188,13 @@ private:
   std::shared_ptr<const IPlayer> GetInternal() const;
   std::shared_ptr<IPlayer> GetInternal();
   void CreatePlayer(const CPlayerCoreFactory &factory, const std::string &player, IPlayerCallback& callback);
-  bool CloseFile(bool reopen = false);
+  void ContinueClose();
 
   std::shared_ptr<IPlayer> m_pPlayer;
+  std::shared_ptr<IPlayer> m_closingPlayer;
+  bool m_closeAcknowledged{false};
+  bool m_waitForPlaybackStop{false};
+  bool m_shutdown{false};
   mutable CCriticalSection m_playerLock;
   CSeekHandler m_seekHandler;
 

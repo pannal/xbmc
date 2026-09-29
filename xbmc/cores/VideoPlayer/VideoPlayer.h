@@ -542,6 +542,9 @@ protected:
   bool m_bAbortRequest;
   bool m_error;
   bool m_bCloseRequest;
+  enum class CloseStage { NONE, INITIAL_RENDERER, THREAD, FINAL_RENDERER, COMPLETE };
+  CloseStage m_closeStage{CloseStage::NONE};
+  std::shared_ptr<CRenderLifecycle::Request> m_closeReceipt;
 
   ECacheState  m_caching;
   XbmcThreads::EndTime<> m_cachingTimer;

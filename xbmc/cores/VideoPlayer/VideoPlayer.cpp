@@ -821,6 +821,10 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
 {
   CLog::Log(LOGINFO, "VideoPlayer::OpenFile: {}", CURL::GetRedacted(file.GetPath()));
 
+  if (m_closeStage != CloseStage::NONE && m_closeStage != CloseStage::COMPLETE)
+    return false;
+  m_closeStage = CloseStage::NONE;
+
   if (IsRunning())
   {
     CDVDMsgOpenFile::FileParams params;
@@ -859,53 +863,61 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
 
 bool CVideoPlayer::CloseFile(bool reopen)
 {
-  CLog::Log(LOGINFO, "CVideoPlayer::CloseFile()");
+  if (m_closeStage == CloseStage::COMPLETE)
+    return true;
 
-  // set the abort request so that other threads can finish up
-  m_bAbortRequest = true;
-  m_bCloseRequest = true;
-
-  // tell demuxer to abort
-  if(m_pDemuxer)
-    m_pDemuxer->Abort();
-
-  if(m_pSubtitleDemuxer)
-    m_pSubtitleDemuxer->Abort();
-
-  if(m_pInputStream)
-    m_pInputStream->Abort();
-
-  if (!m_renderManager.UnInit())
-    return false;
-
-  CLog::Log(LOGINFO, "VideoPlayer: waiting for threads to exit");
-
-  // wait for the main thread to finish up
-  // since this main thread cleans up all other resources and threads
-  // we are done after the StopThread call
+  CSingleExit graphics(CServiceBroker::GetWinSystem()->GetGfxContext());
+  if (m_closeStage == CloseStage::NONE)
   {
-    CSingleExit exitlock(CServiceBroker::GetWinSystem()->GetGfxContext());
-    StopThread(false);
-    while (IsRunning())
-    {
-      m_renderManager.ProcessLifecycleRequests();
-      Join(10ms);
-    }
-    m_renderManager.ProcessLifecycleRequests();
-    StopThread(true);
+    m_bAbortRequest = true;
+    m_bCloseRequest = true;
+    if (m_pDemuxer)
+      m_pDemuxer->Abort();
+    if (m_pSubtitleDemuxer)
+      m_pSubtitleDemuxer->Abort();
+    if (m_pInputStream)
+      m_pInputStream->Abort();
+    m_closeStage = CloseStage::INITIAL_RENDERER;
   }
-  if (!m_renderManager.UnInit())
-    return false;
 
-  m_Edl.Clear();
-  CServiceBroker::GetDataCacheCore().Reset();
-  m_processInfo->SetDataCache(&CServiceBroker::GetDataCacheCore());
+  m_renderManager.ProcessLifecycleRequests();
+  if (m_closeStage == CloseStage::INITIAL_RENDERER ||
+      m_closeStage == CloseStage::FINAL_RENDERER)
+  {
+    if (!m_closeReceipt)
+      m_closeReceipt = m_renderManager.RequestUnInit();
+    // Queue pressure can defer submission. Never replace an admitted request,
+    // nor treat failure/cancellation as permission to destroy its owner.
+    if (!m_closeReceipt || !m_closeReceipt->Wait(0ms))
+      return false;
+    m_closeReceipt.reset();
+    if (m_closeStage == CloseStage::INITIAL_RENDERER)
+    {
+      StopThread(false);
+      m_closeStage = CloseStage::THREAD;
+    }
+    else
+    {
+      m_Edl.Clear();
+      CServiceBroker::GetDataCacheCore().Reset();
+      m_processInfo->SetDataCache(&CServiceBroker::GetDataCacheCore());
+      m_HasVideo = false;
+      m_HasAudio = false;
+      m_closeStage = CloseStage::COMPLETE;
+      return true;
+    }
+  }
 
-  m_HasVideo = false;
-  m_HasAudio = false;
-
-  CLog::Log(LOGINFO, "VideoPlayer: finished waiting");
-  return true;
+  if (m_closeStage == CloseStage::THREAD)
+  {
+    // IsRunning observes the thread-exit future, including OnExit. Returning
+    // lets the main frame pump service the exact renderer/decoder obligations.
+    if (IsRunning() || m_outboundEvents->IsProcessing())
+      return false;
+    StopThread(true); // Already exited; reclaim the thread handle once.
+    m_closeStage = CloseStage::FINAL_RENDERER;
+  }
+  return false;
 }
 
 bool CVideoPlayer::IsPlaying() const

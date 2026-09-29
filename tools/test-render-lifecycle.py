@@ -384,7 +384,26 @@ def run_harness(header=None, expect_failure=False, source_text=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--negative-controls', action='store_true')
+    parser.add_argument('--close-only', action='store_true', help='Only changed close/retirement behavior')
     options = parser.parse_args()
+    if options.close_only:
+        source = caller_harness()
+        source = source[:source.rindex('int main()')] + 'int main() { production_close_join(); }'
+        # Other production wrapper tests remain compiled but are not rerun here.
+        source = source.replace('static void ', '[[maybe_unused]] static void ')
+        run_harness(source_text=source)
+        print('Player close: PASS (production CloseFile/RequestUnInit; ASan/UBSan)')
+        if options.negative_controls:
+            for label, before, after in [
+                ('skip thread exit', 'if (IsRunning() || m_outboundEvents->IsProcessing())', 'if (false)'),
+                ('skip outbound retirement', 'IsRunning() || m_outboundEvents->IsProcessing()', 'IsRunning()'),
+                ('replace retained receipt', 'if (!m_closeReceipt)', 'if (true)'),
+                ('skip exact acknowledgment', 'if (!m_closeReceipt || !m_closeReceipt->Wait(0ms))', 'if (!m_closeReceipt)'),
+            ]:
+                assert before in source
+                run_harness(source_text=source.replace(before, after), expect_failure=True)
+                print('Negative control rejected at runtime:', label)
+        return
     run_harness()
     run_harness(source_text=caller_harness())
     print('Render lifecycle: PASS (real mailbox, Configure/wrappers/CloseFile; ASan/UBSan; real recursive gfx lock, recording renderer/thread stubs)')
@@ -433,6 +452,7 @@ def caller_harness():
     methods = '\n'.join(function(source, signature) for signature in [
         'void CRenderManager::ProcessLifecycleRequests()',
         'bool CRenderManager::PreInit()', 'bool CRenderManager::UnInit()',
+        'std::shared_ptr<CRenderLifecycle::Request> CRenderManager::RequestUnInit()',
         'bool CRenderManager::Configure(const VideoPicture&',
         'bool CRenderManager::Flush(bool wait, bool saveBuffers)',
         'std::shared_ptr<CRenderLifecycle::Request> CRenderManager::RequestFlush('])
@@ -577,6 +597,7 @@ struct CRenderManager
   std::vector<bool> flags;
   bool PreInit();
   bool UnInit();
+  std::shared_ptr<CRenderLifecycle::Request> RequestUnInit();
   bool Flush(bool wait, bool saveBuffers);
   std::shared_ptr<CRenderLifecycle::Request> RequestFlush(bool saveBuffers, bool newSession = false);
   void ProcessLifecycleRequests();
@@ -619,6 +640,11 @@ struct CVideoPlayer
   Edl m_Edl;
   ProcessInfo process;
   ProcessInfo* m_processInfo{&process};
+  enum class CloseStage { NONE, INITIAL_RENDERER, THREAD, FINAL_RENDERER, COMPLETE };
+  CloseStage m_closeStage{CloseStage::NONE};
+  std::shared_ptr<CRenderLifecycle::Request> m_closeReceipt;
+  struct Events {bool busy=false;bool IsProcessing()const{return busy;}} events;
+  Events* m_outboundEvents{&events};
   bool running{false};
   int joins{0}, stopped{0};
   std::shared_ptr<CRenderLifecycle::Request> exitRequest;
@@ -632,24 +658,7 @@ struct CVideoPlayer
       assert(!running);
   }
   bool IsRunning() { return running; }
-  bool Join(std::chrono::milliseconds timeout)
-  {
-    assert(CServiceBroker::GetWinSystem()->graphics.released == 1 && timeout == 10ms);
-    assert(m_bAbortRequest && m_bCloseRequest);
-    trace.push_back("join");
-    if (++joins == 1)
-    {
-      // Simulated player OnExit submits only to the original renderer owner.
-      exitRequest = m_renderManager.m_lifecycle->Submit([this] {
-        return m_renderManager.FlushOnMain(false);
-      });
-      assert(exitRequest);
-      return false;
-    }
-    assert(exitRequest->Wait(0ms));
-    running = false;
-    return true;
-  }
+
 };
 '''
 
@@ -693,24 +702,57 @@ static void production_close_join()
   CRenderManager replacement;
   auto unrelated = replacement.m_lifecycle->Submit([&] { replacement.PreInitOnMain(); return true; });
   player.running = true;
-  assert(player.CloseFile(false));
-  assert(player.m_bAbortRequest && player.m_bCloseRequest);
-  assert(!player.m_HasVideo && !player.m_HasAudio);
-  assert(player.joins == 2 && player.stopped == 2);
+  assert(!player.CloseFile(false));
+  auto initial = player.m_closeReceipt;
+  assert(initial && player.stopped==0 && player.m_HasVideo);
+  for(int frame=0;frame<3;++frame) {
+    assert(!player.CloseFile(false));
+    assert(player.stopped==1 && player.m_HasVideo);
+  }
+  assert(initial->status==CRenderLifecycle::Status::COMPLETED);
+  assert(player.m_renderManager.unInitCalls==1);
+  // OnExit runs off-main and publishes to the retained original renderer.
+  player.exitRequest = player.m_renderManager.RequestFlush(false);
+  player.running = false;
+  player.events.busy=true;
+  assert(!player.CloseFile(false) && player.stopped==1);
   assert(player.exitRequest->Wait(0ms));
-  assert(player.m_renderManager.unInitCalls >= 1);
+  player.events.busy=false;
+  assert(!player.CloseFile(false) && player.stopped==2);
+  assert(!player.CloseFile(false));
+  auto final=player.m_closeReceipt;
+  assert(final && final!=initial);
+  assert(player.CloseFile(false));
+  assert(player.CloseFile(false)); // Complete is idempotent, no duplicate uninit/join.
+  assert(player.stopped==2 && player.m_renderManager.unInitCalls==2);
+  assert(!player.m_HasVideo && !player.m_HasAudio);
   assert((player.m_renderManager.flags == std::vector<bool>{false}));
   assert(replacement.preInitCalls == 0 && unrelated->status == CRenderLifecycle::Status::PENDING);
   assert((std::vector<std::string>(trace.begin(), trace.begin() + 3) ==
           std::vector<std::string>{"abort-demux", "abort-subtitle", "abort-input"}));
+  assert(std::count(trace.begin(),trace.end(),"abort-input")==1);
+  assert(std::count(trace.begin(),trace.end(),"edl-clear")==1);
   assert(CServiceBroker::GetWinSystem()->graphics.released == 0);
   assert(player.m_renderManager.m_lifecycle->Close() && replacement.m_lifecycle->Close());
 
-  // Destruction can call CloseFile when no player thread was ever created.
   CVideoPlayer neverStarted;
-  assert(neverStarted.CloseFile(false));
-  assert(neverStarted.joins == 0 && neverStarted.stopped == 2);
+  for(int frame=0;frame<5 && !neverStarted.CloseFile(false);++frame) {}
+  assert(neverStarted.CloseFile(false) && neverStarted.stopped==2);
   assert(neverStarted.m_renderManager.m_lifecycle->Close());
+
+  // Rejected/cancelled requests must keep the original owner alive indefinitely.
+  for(auto status:{CRenderLifecycle::Status::FAILED,CRenderLifecycle::Status::CANCELLED}) {
+    CVideoPlayer failed;
+    assert(!failed.CloseFile(false));
+    auto original=failed.m_closeReceipt;
+    failed.m_renderManager.ProcessLifecycleRequests();
+    original->status=status;
+    for(int frame=0;frame<3;++frame) {
+      assert(!failed.CloseFile(false));
+      assert(failed.m_closeReceipt==original && failed.m_HasVideo && failed.stopped==0);
+    }
+    assert(failed.m_renderManager.m_lifecycle->Close());
+  }
 }
 
 

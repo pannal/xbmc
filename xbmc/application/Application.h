@@ -27,6 +27,7 @@
 #include <chrono>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -244,6 +245,8 @@ public:
   bool m_AppFocused{true};
 
 private:
+  std::optional<int> m_pendingStop;
+  bool m_shutdownWatchdogStarted{false};
   RenderAttemptResult m_lastRenderAttempt;
   void PrintStartupLog();
   void ResetCurrentItem();

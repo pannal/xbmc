@@ -602,9 +602,8 @@ bool CRenderManager::PreInit()
   return request && request->Wait(2000ms);
 }
 
-bool CRenderManager::UnInit()
+std::shared_ptr<CRenderLifecycle::Request> CRenderManager::RequestUnInit()
 {
-  CSingleExit graphics(CServiceBroker::GetWinSystem()->GetGfxContext());
   std::shared_ptr<CRenderLifecycle::Request> request;
   {
     std::unique_lock<CCriticalSection> lock(m_statelock);
@@ -620,6 +619,13 @@ bool CRenderManager::UnInit()
       return true;
     });
   }
+  return request;
+}
+
+bool CRenderManager::UnInit()
+{
+  CSingleExit graphics(CServiceBroker::GetWinSystem()->GetGfxContext());
+  auto request = RequestUnInit();
   ProcessLifecycleRequests();
   return request && request->Wait(2000ms);
 }

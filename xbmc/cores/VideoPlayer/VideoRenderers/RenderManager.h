@@ -97,6 +97,7 @@ public:
   void SetViewMode(int iViewMode);
   bool PreInit();
   bool UnInit();
+  std::shared_ptr<CRenderLifecycle::Request> RequestUnInit();
   void ProcessLifecycleRequests();
   bool Flush(bool wait, bool saveBuffers);
   std::shared_ptr<CRenderLifecycle::Request> RequestFlush(bool saveBuffers, bool newSession = false);
