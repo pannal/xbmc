@@ -68,6 +68,7 @@ public:
   bool OnAction(const CAction& action) override;
   bool OnBack(int actionID) override;
   void DoProcess(unsigned int currentTime, CDirtyRegionList& dirtyregions) override;
+  void RetryPendingOptions(unsigned int currentTime);
 
   virtual bool IsConfirmed() const { return m_confirmed; }
 
@@ -184,6 +185,7 @@ protected:
       m_delayedSetting; ///< Current delayed setting \sa CBaseSettingControl::SetDelayed()
   CTimer m_delayedTimer; ///< Delayed setting timer
 
+  unsigned int m_optionsRetryTime{0};
   bool m_confirmed = false;
   int m_focusedControl = 0, m_fadedControl = 0;
 };

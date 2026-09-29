@@ -4829,6 +4829,10 @@
       "maximum": {
         "type": "integer"
       },
+      "optionspending": {
+        "type": "boolean",
+        "description": "Options are temporarily unavailable; query again for fresh choices. The setting value is unchanged."
+      },
       "options": {
         "type": "array",
         "items": {

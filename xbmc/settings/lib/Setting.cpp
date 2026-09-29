@@ -7,6 +7,7 @@
  */
 
 #include "Setting.h"
+#include "SettingOptionsPending.h"
 
 #include "ServiceBroker.h"
 #include "SettingDefinitions.h"
@@ -1076,8 +1077,10 @@ SettingOptionsType CSettingInt::GetOptionsType() const
   return SettingOptionsType::Unknown;
 }
 
-IntegerSettingOptions CSettingInt::UpdateDynamicOptions()
+IntegerSettingOptions CSettingInt::UpdateDynamicOptions(bool* pending)
 {
+  if (pending)
+    *pending = false;
   std::unique_lock<CSharedSection> lock(m_critical);
   IntegerSettingOptions options;
   if (m_optionsFiller == nullptr &&
@@ -1095,7 +1098,22 @@ IntegerSettingOptions CSettingInt::UpdateDynamicOptions()
   }
 
   int bestMatchingValue = m_value;
-  m_optionsFiller(shared_from_base<CSettingInt>(), options, bestMatchingValue, m_optionsFillerData);
+  try
+  {
+    m_optionsFiller(shared_from_base<CSettingInt>(), options, bestMatchingValue, m_optionsFillerData);
+  }
+  catch (const CSettingOptionsPending&)
+  {
+    const bool changed = !m_dynamicOptions.empty();
+    m_dynamicOptions.clear();
+    m_dynamicOptionsPending = true;
+    if (pending)
+      *pending = true;
+    if (changed)
+      OnSettingPropertyChanged(shared_from_base<CSettingInt>(), "options");
+    return {}; // Do not apply a partial bestMatchingValue or expose stale choices.
+  }
+  m_dynamicOptionsPending = false;
 
   if (bestMatchingValue != m_value)
     SetValue(bestMatchingValue);
@@ -1140,6 +1158,7 @@ void CSettingInt::copy(const CSettingInt &setting)
   m_optionsFiller = setting.m_optionsFiller;
   m_optionsFillerData = setting.m_optionsFillerData;
   m_dynamicOptions = setting.m_dynamicOptions;
+  m_dynamicOptionsPending = setting.m_dynamicOptionsPending.load();
 }
 
 bool CSettingInt::fromString(const std::string &strValue, int &value)

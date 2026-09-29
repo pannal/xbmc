@@ -524,7 +524,10 @@ bool CSettingsOperations::SerializeSettingInt(const std::shared_ptr<const CSetti
     case SettingOptionsType::Dynamic:
     {
       obj["options"] = CVariant(CVariant::VariantTypeArray);
-      IntegerSettingOptions options = std::const_pointer_cast<CSettingInt>(setting)->UpdateDynamicOptions();
+      bool pending = false;
+      IntegerSettingOptions options =
+          std::const_pointer_cast<CSettingInt>(setting)->UpdateDynamicOptions(&pending);
+      obj["optionspending"] = pending;
       for (const auto& itOption : options)
       {
         CVariant varOption(CVariant::VariantTypeObject);

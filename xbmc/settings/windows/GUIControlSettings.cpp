@@ -525,6 +525,10 @@ void CGUIControlSpinExSetting::Update(bool fromControl, bool updateDisplayOnly)
 
   FillControl(!updateDisplayOnly);
 
+  if (m_pSetting->GetType() == SettingType::Integer &&
+      std::static_pointer_cast<CSettingInt>(m_pSetting)->DynamicOptionsPending())
+    m_pSpin->SetEnabled(false);
+
   if (!updateDisplayOnly)
   {
     // disable the spinner if it has less than two items

@@ -311,8 +311,27 @@ bool CGUIDialogSettingsBase::OnBack(int actionID)
   return CGUIDialog::OnBack(actionID);
 }
 
+void CGUIDialogSettingsBase::RetryPendingOptions(unsigned int currentTime)
+{
+  if (currentTime - m_optionsRetryTime < 250)
+    return;
+  m_optionsRetryTime = currentTime;
+  // Only retry unresolved integer results. No background task holds a setting
+  // or control alive after this window closes or its category is replaced.
+  for (const auto& control : m_settingControls)
+  {
+    auto setting = control->GetSetting();
+    if (setting && setting->GetType() == SettingType::List)
+      setting = std::static_pointer_cast<CSettingList>(setting)->GetDefinition();
+    if (setting && setting->GetType() == SettingType::Integer &&
+        std::static_pointer_cast<CSettingInt>(setting)->DynamicOptionsPending())
+      control->UpdateFromSetting();
+  }
+}
+
 void CGUIDialogSettingsBase::DoProcess(unsigned int currentTime, CDirtyRegionList& dirtyregions)
 {
+  RetryPendingOptions(currentTime);
   // update alpha status of current button
   CGUIControl* control = GetFirstFocusableControl(CONTROL_SETTINGS_START_BUTTONS + m_iCategory);
   if (control)

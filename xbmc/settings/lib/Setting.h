@@ -19,6 +19,7 @@
 #include "threads/SharedSection.h"
 #include "utils/logtypes.h"
 
+#include <atomic>
 #include <memory>
 #include <set>
 #include <shared_mutex>
@@ -326,7 +327,8 @@ public:
     m_optionsFillerData = data;
   }
   IntegerSettingOptions GetDynamicOptions() const { return m_dynamicOptions; }
-  IntegerSettingOptions UpdateDynamicOptions();
+  IntegerSettingOptions UpdateDynamicOptions(bool* pending = nullptr);
+  bool DynamicOptionsPending() const { return m_dynamicOptionsPending.load(); }
   SettingOptionsSort GetOptionsSort() const { return m_optionsSort; }
   void SetOptionsSort(SettingOptionsSort optionsSort) { m_optionsSort = optionsSort; }
 
@@ -350,6 +352,7 @@ private:
   IntegerSettingOptionsFiller m_optionsFiller = nullptr;
   void *m_optionsFillerData = nullptr;
   IntegerSettingOptions m_dynamicOptions;
+  std::atomic<bool> m_dynamicOptionsPending{false};
   SettingOptionsSort m_optionsSort = SettingOptionsSort::NoSorting;
 
   static Logger s_logger;

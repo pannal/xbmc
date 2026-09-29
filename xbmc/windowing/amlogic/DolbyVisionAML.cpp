@@ -8,12 +8,16 @@
 
 #include "DolbyVisionAML.h"
 #include "AMLNativeTransaction.h"
+#include "platform/linux/SysfsPath.h"
+#include "settings/lib/SettingOptionsPending.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <exception>
+#include <fstream>
+#include <iterator>
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -481,28 +485,72 @@ static bool force_modes() {
   return settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_FORCE_MODES);
 }
 
-static bool support_dv() {
-  return (force_modes() || aml_display_support_dv_std() || aml_display_support_dv_ll() || aml_display_support_hdr_pq());
+struct AMLDVOptions
+{
+  bool standard{false};
+  bool lowLatency{false};
+  bool pq{false};
+  bool hlg{false};
+  bool SupportsDV() const { return standard || lowLatency || pq; }
+};
+
+static std::string read_dv_option_file(const char* path)
+{
+  CSysfsPath sysfs{path};
+  if (!sysfs.Exists())
+    return {}; // Existing absent-node policy: unsupported.
+  // CSysfsPath::Get<string> checks badbit only and can report a failed open as
+  // an empty success. Options must distinguish that failure from unsupported.
+  std::ifstream stream(path);
+  if (!stream.is_open())
+    throw CSettingOptionsPending{};
+  try
+  {
+    std::string value{std::istreambuf_iterator<char>(stream), {}};
+    if (stream.bad())
+      throw CSettingOptionsPending{};
+    return value;
+  }
+  catch (const std::ios_base::failure&)
+  {
+    throw CSettingOptionsPending{};
+  }
+}
+
+static AMLDVOptions read_dv_options()
+{
+  // Force modes is a settings-only policy, independent of native capability.
+  if (force_modes())
+    return {true, true, true, true};
+  CAMLNativeTransaction native;
+  if (!native.TryBegin())
+    throw CSettingOptionsPending{};
+  const auto dv = read_dv_option_file("/sys/devices/virtual/amhdmitx/amhdmitx0/dv_cap");
+  const auto hdr = read_dv_option_file("/sys/class/amhdmitx/amhdmitx0/hdr_cap");
+  return {dv.find("DV_RGB_444_8BIT") != std::string::npos,
+          dv.find("LL_YCbCr_422_12BIT") != std::string::npos,
+          hdr.find("SMPTE ST 2084: 1") != std::string::npos,
+          hdr.find("Hybrid Log-Gamma: 1") != std::string::npos};
 }
 
 void dv_type_filler(const SettingConstPtr& setting, std::vector<IntegerSettingOption>& list, int& current, void* data) {
-  bool force = force_modes();
+  const auto cap = read_dv_options();
   list.clear();
-  if (force || aml_display_support_dv_std()) list.emplace_back(g_localizeStrings.Get(60023), DV_TYPE_DISPLAY_LED);
-  if (force || aml_display_support_dv_ll()) list.emplace_back(g_localizeStrings.Get(60024), DV_TYPE_PLAYER_LED_LLDV);
-  if (force || aml_display_support_hdr_pq()) list.emplace_back(g_localizeStrings.Get(60025), DV_TYPE_PLAYER_LED_HDR);
-  if (force || aml_display_support_hdr_pq()) list.emplace_back(g_localizeStrings.Get(60579), DV_TYPE_PLAYER_LED_HDR2);
+  if (cap.standard) list.emplace_back(g_localizeStrings.Get(60023), DV_TYPE_DISPLAY_LED);
+  if (cap.lowLatency) list.emplace_back(g_localizeStrings.Get(60024), DV_TYPE_PLAYER_LED_LLDV);
+  if (cap.pq) list.emplace_back(g_localizeStrings.Get(60025), DV_TYPE_PLAYER_LED_HDR);
+  if (cap.pq) list.emplace_back(g_localizeStrings.Get(60579), DV_TYPE_PLAYER_LED_HDR2);
   list.emplace_back(g_localizeStrings.Get(60026), DV_TYPE_VS10_ONLY);
 }
 
 void dv_processor_filler(const SettingConstPtr& setting, std::vector<IntegerSettingOption>& list, int& current, void* data) {
-  bool force = force_modes();
+  const auto cap = read_dv_options();
   list.clear();
   list.emplace_back(g_localizeStrings.Get(60503), 0);
-  if (force || aml_display_support_hdr_pq()) list.emplace_back(g_localizeStrings.Get(60580), 2);
-  if (force || aml_display_support_hdr_pq()) list.emplace_back(g_localizeStrings.Get(60504), 1);
-  if (force || aml_display_support_dv_ll()) list.emplace_back(g_localizeStrings.Get(60506), 4);
-  if (force || aml_display_support_dv_ll()) list.emplace_back(g_localizeStrings.Get(60505), 3);
+  if (cap.pq) list.emplace_back(g_localizeStrings.Get(60580), 2);
+  if (cap.pq) list.emplace_back(g_localizeStrings.Get(60504), 1);
+  if (cap.lowLatency) list.emplace_back(g_localizeStrings.Get(60506), 4);
+  if (cap.lowLatency) list.emplace_back(g_localizeStrings.Get(60505), 3);
 }
 
 void vsvdb_min_filler(const SettingConstPtr& setting, std::vector<IntegerSettingOption>& list, int& current, void* data) {
@@ -585,39 +633,40 @@ void add_vs10_dv(std::vector<IntegerSettingOption>& list) {list.emplace_back(g_l
 
 void vs10_sdr_filler(const SettingConstPtr& setting, std::vector<IntegerSettingOption>& list, int& current, void* data)
 {
-  bool force = force_modes();
+  const auto cap = read_dv_options();
   list.clear();
   add_vs10_bypass(list);
   add_vs10_sdr(list);
-  if (force || aml_display_support_hdr_pq()) add_vs10_hdr10(list);
-  if (support_dv()) add_vs10_dv(list);
+  if (cap.pq) add_vs10_hdr10(list);
+  if (cap.SupportsDV()) add_vs10_dv(list);
 }
 
 void vs10_hdr10_filler(const SettingConstPtr& setting, std::vector<IntegerSettingOption>& list, int& current, void* data)
 {
-  bool force = force_modes();
+  const auto cap = read_dv_options();
   list.clear();
-  if (force || aml_display_support_hdr_pq()) add_vs10_bypass(list);
+  if (cap.pq) add_vs10_bypass(list);
   add_vs10_sdr(list);
-  if (force || aml_display_support_hdr_pq()) add_vs10_hdr10(list);
-  if (support_dv()) add_vs10_dv(list);
+  if (cap.pq) add_vs10_hdr10(list);
+  if (cap.SupportsDV()) add_vs10_dv(list);
 }
 
 void vs10_hdr_hlg_filler(const SettingConstPtr& setting, std::vector<IntegerSettingOption>& list, int& current, void* data)
 {
-  bool force = force_modes();
+  const auto cap = read_dv_options();
   list.clear();
-  if (force || aml_display_support_hdr_hlg()) add_vs10_bypass(list);
+  if (cap.hlg) add_vs10_bypass(list);
   add_vs10_sdr(list);
-  if (force || aml_display_support_hdr_pq()) add_vs10_hdr10(list);
-  if (support_dv()) add_vs10_dv(list);
+  if (cap.pq) add_vs10_hdr10(list);
+  if (cap.SupportsDV()) add_vs10_dv(list);
 }
 
 void vs10_dv_filler(const SettingConstPtr& setting, std::vector<IntegerSettingOption>& list, int& current, void* data)
 {
+  const auto cap = read_dv_options();
   list.clear();
   add_vs10_sdr(list);
-  if (support_dv()) add_vs10_dv_bypass(list);
+  if (cap.SupportsDV()) add_vs10_dv_bypass(list);
 }
 
 void vsvdb_colour_space_filler(const SettingConstPtr& setting, std::vector<IntegerSettingOption>& list, int& current, void* data)

@@ -23,6 +23,7 @@ set(HEADERS ISetting.h
             SettingDefinitions.h
             SettingDependency.h
             SettingLevel.h
+            SettingOptionsPending.h
             SettingRequirement.h
             SettingSection.h
             SettingsManager.h
