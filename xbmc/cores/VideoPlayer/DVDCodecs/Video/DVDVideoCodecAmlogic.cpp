@@ -7,8 +7,10 @@
  */
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <math.h>
+#include <thread>
 
 #include "DVDCodecs/DVDFactoryCodec.h"
 #include "utils/MemUtils.h"
@@ -23,6 +25,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "settings/lib/Setting.h"
+#include "settings/lib/SettingsManager.h"
 #include "threads/Thread.h"
 
 #define __MODULE_NAME__ "DVDVideoCodecAmlogic"
@@ -252,7 +255,14 @@ CDVDVideoCodecAmlogic::~CDVDVideoCodecAmlogic()
     if (const auto settingsComponent = CServiceBroker::GetSettingsComponent())
     {
       if (const auto settings = settingsComponent->GetSettings())
-        settings->UnregisterCallback(this);
+      {
+        auto receipt = settings->GetSettingsManager()->RevokeCallback(this);
+        // Before native admission and outside setting/decoder/pool locks: the
+        // cache callbacks read settings and publish atomics without needing the
+        // closing thread to make progress.
+        while (receipt && !receipt->Drained())
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
     }
   }
   Close();
@@ -771,16 +781,43 @@ void CDVDVideoCodecAmlogic::Close(void)
 {
   CLog::Log(LOGINFO, "{}::{}", __MODULE_NAME__, __FUNCTION__);
 
-  // Reset CD/CS settings that may have been changed during playback (avdvplus R6)
-  aml_kodi_reset_cd_cs();
-
-  m_videoBufferPool = nullptr;
-
+  auto restore = [this] {
+    // Keep the original order under admission, including synchronous settings
+    // callbacks: restore CD/CS and kernel/DV state, release pool, close decoder.
+    aml_kodi_reset_cd_cs();
+    m_videoBufferPool = nullptr;
+  };
   if (m_Codec)
   {
-    m_Codec->CloseDecoder();
+    m_Codec->CloseDecoder(std::move(restore));
+    // Close retains this wrapper and its exact codec through the continuation.
     m_Codec->WaitForLifecycle();
     m_Codec = nullptr;
+  }
+  else
+  {
+    // Failed startup can require restoration before a core codec exists.
+    // The original close caller owns both the request and every effect; no
+    // timeout permits bypass. There is no nested core acquisition on this path.
+    std::shared_ptr<CAMLSession::NativeRequest> request;
+    for (;;)
+    {
+      if (!request)
+        request = CAMLSession::FenceNative();
+      if (CAMLSession::TryBeginNative(request))
+        break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    try
+    {
+      restore();
+    }
+    catch (...)
+    {
+      CAMLSession::EndNative(request);
+      throw;
+    }
+    CAMLSession::EndNative(request);
   }
   // Teardown also owns cleanup deferred by a pending or failed reset.
   FinishReset();

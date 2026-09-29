@@ -19,6 +19,7 @@
 
 #include <array>
 #include <deque>
+#include <functional>
 #include <atomic>
 #include <mutex>
 
@@ -84,7 +85,9 @@ public:
   static void SetCaptureSource(const std::shared_ptr<CAMLCodec>& codec);
 
   bool          OpenDecoder();
-  bool          CloseDecoder();
+  // The caller retains captured owners until lifecycle completion. The prefix
+  // runs once on the admitted close owner, before decoder/native teardown.
+  bool          CloseDecoder(std::function<void()> beforeClose = {});
   bool          Reset();
   bool          ReopenDecoder();
   bool          ContinueLifecycle();
@@ -124,7 +127,7 @@ public:
 
 private:
   enum class Lifecycle { NONE, OPEN, RESET, REOPEN, CLOSE };
-  bool BeginLifecycle(Lifecycle operation);
+  bool BeginLifecycle(Lifecycle operation, std::function<void()> beforeClose = {});
   bool OpenDecoderInternal();
   void CloseDecoderInternal();
   void ResetInternal();
@@ -135,6 +138,7 @@ private:
   Lifecycle m_lifecycle{Lifecycle::NONE};
   CAMLSession::Request m_lifecycleRequest;
   std::shared_ptr<CAMLSession::NativeRequest> m_nativeLifecycleRequest;
+  std::function<void()> m_beforeClose;
   bool m_lifecycleFailed{false};
   bool m_speedPending{false};
   int m_requestedSpeed{0};

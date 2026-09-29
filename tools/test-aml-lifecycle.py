@@ -28,7 +28,7 @@ def harness():
     header = (ROOT / 'xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h').read_text()
     wrapper = (ROOT / 'xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp').read_text()
     methods = '\n'.join(function(codec, signature) for signature in [
-        'bool CAMLCodec::OpenDecoder()', 'bool CAMLCodec::CloseDecoder()',
+        'bool CAMLCodec::OpenDecoder()', 'bool CAMLCodec::CloseDecoder(',
         'bool CAMLCodec::Reset()', 'bool CAMLCodec::ReopenDecoder()',
         'bool CAMLCodec::BeginLifecycle(', 'bool CAMLCodec::ContinueLifecycle()',
         'void CAMLCodec::WaitForLifecycle()', 'bool CAMLCodec::AddData(',
@@ -185,6 +185,7 @@ public:
   Lifecycle m_lifecycle{Lifecycle::NONE};
   CAMLSession::Request m_lifecycleRequest;
   std::shared_ptr<CAMLSession::NativeRequest> m_nativeLifecycleRequest;
+  std::function<void()> m_beforeClose;
   bool m_lifecycleFailed{false};
   bool m_speedPending{false};
   int m_speed=DVD_PLAYSPEED_NORMAL,m_requestedSpeed=DVD_PLAYSPEED_NORMAL;
@@ -200,8 +201,8 @@ public:
   int m_pollDevice{-1},nextDescriptor{42};
   int PollFrame(const CAMLSession::Permit&);
   void SetPollDevice(int);
-  bool OpenDecoder(); bool CloseDecoder(); bool Reset(); bool ReopenDecoder();
-  bool BeginLifecycle(Lifecycle); bool ContinueLifecycle(); void WaitForLifecycle();
+  bool OpenDecoder(); bool CloseDecoder(std::function<void()> beforeClose = {}); bool Reset(); bool ReopenDecoder();
+  bool BeginLifecycle(Lifecycle, std::function<void()> beforeClose = {}); bool ContinueLifecycle(); void WaitForLifecycle();
   bool LifecyclePending() const {return m_lifecycle!=Lifecycle::NONE;}
   void MutationOnly() {
     assert(!m_session.Acquire(m_session.Epoch(),true));

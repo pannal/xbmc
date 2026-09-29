@@ -1948,9 +1948,9 @@ bool CAMLCodec::OpenDecoder()
   return BeginLifecycle(Lifecycle::OPEN);
 }
 
-bool CAMLCodec::CloseDecoder()
+bool CAMLCodec::CloseDecoder(std::function<void()> beforeClose)
 {
-  return BeginLifecycle(Lifecycle::CLOSE);
+  return BeginLifecycle(Lifecycle::CLOSE, std::move(beforeClose));
 }
 
 bool CAMLCodec::Reset()
@@ -1963,7 +1963,7 @@ bool CAMLCodec::ReopenDecoder()
   return BeginLifecycle(Lifecycle::REOPEN);
 }
 
-bool CAMLCodec::BeginLifecycle(Lifecycle operation)
+bool CAMLCodec::BeginLifecycle(Lifecycle operation, std::function<void()> beforeClose)
 {
   // Only the serialized decoder lifecycle owner enters here. Close can supersede
   // an unstarted recovery after the decode thread has joined.
@@ -1979,6 +1979,9 @@ bool CAMLCodec::BeginLifecycle(Lifecycle operation)
   }
   if (m_lifecycle != operation)
   {
+    // Select the prefix only with the new operation. Retries, including nested
+    // calls from settings callbacks, cannot replace or replay the original work.
+    m_beforeClose = operation == Lifecycle::CLOSE ? std::move(beforeClose) : nullptr;
     m_lifecycleFailed = false;
     m_lifecycleRequest = m_session.Fence();
     m_lifecycle = operation;
@@ -2017,6 +2020,14 @@ bool CAMLCodec::ContinueLifecycle()
   bool success = true;
   try
   {
+    if (operation == Lifecycle::CLOSE && m_beforeClose)
+    {
+      // Consume before invocation: nested retries or exceptions must not replay
+      // settings callbacks and already-applied wrapper restoration effects.
+      auto beforeClose = std::move(m_beforeClose);
+      m_beforeClose = {};
+      beforeClose();
+    }
     if ((operation == Lifecycle::CLOSE || operation == Lifecycle::REOPEN) && m_decoderNeedsClose)
       CloseDecoderInternal();
     if (operation == Lifecycle::RESET)
