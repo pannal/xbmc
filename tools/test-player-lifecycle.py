@@ -62,7 +62,7 @@ struct Event { void Set() {} void Reset() {} bool Wait(std::chrono::milliseconds
 struct CDVDMsg {
   enum Message { DEMUXER_PACKET, GENERAL_RESYNC, GENERAL_PAUSE, GENERAL_RESET,
     GENERAL_FLUSH, GENERAL_SYNCHRONIZE, GENERAL_STREAMCHANGE, VIDEO_DRAIN,
-    PLAYER_STARTED, PLAYER_REPORT_STATE, PLAYER_ABORT, PLAYER_SEEK, NONE };
+    PLAYER_STARTED, PLAYER_REPORT_STATE, PLAYER_ABORT, PLAYER_SEEK, GENERAL_EOF, NONE };
   explicit CDVDMsg(Message type): type(type) {}
   virtual ~CDVDMsg()=default;
   bool IsType(Message candidate) const { return type==candidate; }
@@ -112,6 +112,15 @@ struct CDVDMessageQueue {
 @PUT@
 @GET@
 @QUEUE_FLUSH@
+struct CVideoPlayerAudio {
+  CDVDMessageQueue m_messageQueue;
+  bool m_eofPending=true;
+  uint64_t m_syncRequest=40;
+  struct Sink { int aborts=0; void AbortAddPackets() { ++aborts; } } m_audioSink;
+  void Flush(bool sync);
+  @AUDIO_FLUSH_MESSAGES@
+};
+@AUDIO_FLUSH@
 struct CDVDVideoCodec { enum VCReturn { VC_FLUSHED, VC_REOPEN }; };
 struct FakeCodec {
   bool pending=false, ready=false, failed=false; int resets=0, aborts=0, reopens=0;
@@ -305,6 +314,30 @@ static void queues() {
   assert(receive(parent,2)==100+CDVDMsg::PLAYER_ABORT);
   assert(receive(parent,2)==MSGQ_TIMEOUT);
   assert(receive(parent,0)==100+CDVDMsg::PLAYER_SEEK);
+}
+static void audio_seek_eof() {
+  for (bool sync : {false, true}) {
+    CVideoPlayerAudio audio;
+    auto& q=audio.m_messageQueue;
+    q.Put(std::make_shared<CDVDMsgDemuxerPacket>(1));
+    q.Put(message(CDVDMsg::GENERAL_EOF));
+    audio.Flush(sync);
+    assert(!audio.m_eofPending && audio.m_audioSink.aborts==1);
+    std::shared_ptr<CDVDMsg> msg; int priority=0;
+    assert(q.Get(msg,0ms,priority)==MSGQ_OK);
+    auto flush=std::dynamic_pointer_cast<CDVDMsgStreamFlush>(msg);
+    assert(flush && flush->epoch==41 && flush->m_value==sync);
+    assert(receive(q,0)==MSGQ_TIMEOUT);
+    q.Put(std::make_shared<CDVDMsgDemuxerPacket>(2));
+    q.Put(message(CDVDMsg::GENERAL_EOF));
+    assert(receive(q,0)==100+CDVDMsg::DEMUXER_PACKET);
+    assert(receive(q,0)==100+CDVDMsg::GENERAL_EOF);
+    q.Put(message(CDVDMsg::GENERAL_EOF));
+    q.Put(std::make_shared<CDVDMsgDemuxerPacket>(3));
+    audio.m_eofPending=true;
+    audio.FlushMessages();
+    assert(!audio.m_eofPending && receive(q,0)==MSGQ_TIMEOUT);
+  }
 }
 static void continuation() {
   CVideoPlayerVideo video; VideoBuffer buffer;
@@ -550,7 +583,7 @@ static void stale_and_clock_policy() {
   }
 }
 
-int main() { queues(); continuation(); multiple_flushes(); failed_lifecycle(); cancelled_session(); parent_wait(); nested_and_renderer(); stale_and_clock_policy(); }
+int main() { audio_seek_eof(); queues(); continuation(); multiple_flushes(); failed_lifecycle(); cancelled_session(); parent_wait(); nested_and_renderer(); stale_and_clock_policy(); }
 '''
 
 
@@ -569,7 +602,11 @@ def harness(root=ROOT):
         'bool CVideoPlayer::ContinueParentLifecycle(', 'void CVideoPlayer::SynchronizeStreams('))
     close = block(video, 'void CVideoPlayerVideo::CloseStream(')
     retirement = close[close.index('  if (auto request ='):close.index('  m_pVideoCodec.reset();')]
+    audio = (root / 'xbmc/cores/VideoPlayer/VideoPlayerAudio.cpp').read_text()
+    audio_header = (root / 'xbmc/cores/VideoPlayer/VideoPlayerAudio.h').read_text()
     replacements = {
+        '@AUDIO_FLUSH@': block(audio, 'void CVideoPlayerAudio::Flush(bool sync)'),
+        '@AUDIO_FLUSH_MESSAGES@': block(audio_header, 'void FlushMessages()').replace(' override', ''),
         '@PUT@': block(queue, 'MsgQueueReturnCode CDVDMessageQueue::Put(const std::shared_ptr<CDVDMsg>& pMsg,\n'),
         '@QUEUE_FLUSH@': block(queue, 'void CDVDMessageQueue::Flush('),
         '@GET@': block(queue, 'MsgQueueReturnCode CDVDMessageQueue::Get('),
@@ -627,6 +664,8 @@ def main():
         run(source, directory, 'player-lifecycle')
         if args.negative_controls:
             mutants = {
+                'audio-stale-eof': ('  m_messageQueue.Flush(CDVDMsg::GENERAL_EOF);', ''),
+                'audio-loses-epoch': ('std::make_shared<CDVDMsgStreamFlush>(sync, ++m_syncRequest)', 'std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_FLUSH, sync)'),
                 'admit-replay-while-pending': ('if (lifecyclePending)', 'if (false && lifecyclePending)'),
                 'repeat-reset-on-continuation': ('m_pVideoCodec && !continuingReset', 'm_pVideoCodec && (continuingReset || !continuingReset)'),
                 'receipt-false-completion': ('return request && request->state == CVideoFlushRequest::State::PENDING;', 'return request && false;'),

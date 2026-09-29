@@ -1566,9 +1566,14 @@ void CVideoPlayerAudio::SetSpeed(int speed)
 void CVideoPlayerAudio::Flush(bool sync)
 {
   // A queued GENERAL_EOF goes with the rest, and what one already asked the
-  // codec for goes in the reset GENERAL_FLUSH makes - see HasData.
+  // codec for goes in the reset GENERAL_FLUSH makes - see HasData. Flush()
+  // on its own takes only demux packets, so the end of stream is named: left
+  // in, one the read-ahead reached before a seek back is taken after it.
+  // CVideoPlayer sends it from the thread that calls this, so one queued now
+  // is stale and one sent later is not.
   m_eofPending = false;
   m_messageQueue.Flush();
+  m_messageQueue.Flush(CDVDMsg::GENERAL_EOF);
   m_messageQueue.Put(std::make_shared<CDVDMsgStreamFlush>(sync, ++m_syncRequest), 1);
 
   m_audioSink.AbortAddPackets();

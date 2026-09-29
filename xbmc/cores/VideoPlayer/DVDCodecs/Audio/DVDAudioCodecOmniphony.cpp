@@ -2623,6 +2623,49 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
   if (m_failed || !m_helper)
     return true;
 
+  /*
+   * Input after an end of stream: the stream had not ended.
+   *
+   * CVideoPlayer sends GENERAL_EOF whenever a demuxer read comes back empty,
+   * then goes on reading for as long as the players still hold data.
+   * CDVDDemuxFFmpeg returns no packet at all for any read error but
+   * EAGAIN/EINTR, so a source read that times out or fails and then recovers
+   * is an end of stream followed by more of the stream. A seek does not get here: its GENERAL_FLUSH
+   * resets this codec, and CVideoPlayerAudio::Flush drops an end of stream
+   * still queued from before it.
+   *
+   * On the PCM path Drain() cannot be taken back where it stands. It hands
+   * ffmpeg its end-of-stream packet, and avcodec_send_packet refuses everything
+   * after that until the decoder is flushed - every packet is taken and
+   * dropped, and the sound stays off until the next seek. A field log showed
+   * forty seconds of that, nothing reaching the helper while the picture waited
+   * on audio that never started. So there the drain is treated as the
+   * discontinuity it turned out to be, and everything restarts the way a seek
+   * restarts it.
+   *
+   * The object path has nothing to restart. The engine "stays usable
+   * afterwards, so a host may drain and keep pushing" (orender_drain), and
+   * what is banked is still the audio that comes next. Only the flag goes, so
+   * that the stream's real end drains it again.
+   */
+  if (m_drained && packet.pData && packet.iSize > 0)
+  {
+    CLog::Log(LOGINFO, "CDVDAudioCodecOmniphony: input resumed after the end of the stream{}",
+              m_pcm ? " - restarting the decoder" : "");
+    if (!m_pcm)
+    {
+      m_drained = false;
+    }
+    else
+    {
+      Reset();
+      if (m_fallback)
+        return m_fallback->AddData(packet);
+      if (m_failed || !m_helper)
+        return true;
+    }
+  }
+
   // Take what the pump thread has rendered since the last call, so the decision
   // below is made against the bank as it stands and not as it was.
   if (!Collect(0))
