@@ -2130,6 +2130,7 @@ void CAMLCodec::WaitForLifecycle()
 
 bool CAMLCodec::OpenDecoderInternal()
 {
+  aml_video_fps_reset();
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
   m_stream_eof = false;
@@ -2645,6 +2646,7 @@ void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map)
 
 void CAMLCodec::CloseDecoderInternal()
 {
+  aml_video_fps_reset();
   CLog::Log(LOGINFO, "CAMLCodec::CloseDecoder");
 
   {

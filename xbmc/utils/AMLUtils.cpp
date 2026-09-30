@@ -4254,33 +4254,61 @@ struct FormattedFpsInfo {
   std::string drop_info;
 };
 
-FpsInfo gather_fps_data() {
+struct FpsSnapshot
+{
+  std::mutex mutex;
+  std::vector<FpsData> history;
+  FormattedFpsInfo formatted;
+  std::chrono::steady_clock::time_point lastUpdate{};
+  std::chrono::steady_clock::time_point lastDrop{};
+  unsigned int lowestOutput{0};
+  int rotation{0};
+  bool sampled{false};
+};
 
-  static std::vector<FpsData> fps_history;
+FpsSnapshot& video_fps_snapshot()
+{
+  static FpsSnapshot snapshot;
+  return snapshot;
+}
+
+void aml_video_fps_reset()
+{
+  auto& snapshot = video_fps_snapshot();
+  std::lock_guard<std::mutex> lock(snapshot.mutex);
+  snapshot.history.clear();
+  snapshot.formatted = {};
+  snapshot.lastUpdate = {};
+  snapshot.lastDrop = {};
+  snapshot.lowestOutput = 0;
+  snapshot.rotation = 0;
+  snapshot.sampled = false;
+}
+
+FpsInfo gather_fps_data(FpsSnapshot& snapshot, std::chrono::steady_clock::time_point now) {
   static const std::chrono::seconds HISTORY_DURATION(1);
 
   CSysfsPath fps_info{"/sys/class/video/fps_info"};
   if (fps_info.Exists()) {
 
-    std::string input = fps_info.Get<std::string>().value();
+    std::string input = fps_info.Get<std::string>().value_or("");
     unsigned int input_fps, output_fps;
     std::istringstream iss(input);
 
     if ((iss.ignore(std::numeric_limits<std::streamsize>::max(), ':') && iss >> std::hex >> input_fps) &&
         (iss.ignore(std::numeric_limits<std::streamsize>::max(), ':') && iss >> std::hex >> output_fps)) {
-        
+
       // Add new entry
-      auto now = std::chrono::steady_clock::now();
-      fps_history.push_back({input_fps, output_fps, now});
+      snapshot.history.push_back({input_fps, output_fps, now});
 
       // Remove old entries
-      fps_history.erase(
+      snapshot.history.erase(
         std::remove_if(
-            fps_history.begin(), fps_history.end(), 
+            snapshot.history.begin(), snapshot.history.end(),
             [&now](const FpsData& data) {
               return (now - data.timestamp) > HISTORY_DURATION;
             }
-          ), fps_history.end()
+          ), snapshot.history.end()
       );
 
       // Calculate averages
@@ -4290,7 +4318,7 @@ FpsInfo gather_fps_data() {
 
       unsigned int valid_count = 0;
 
-      for (const auto& data : fps_history) {
+      for (const auto& data : snapshot.history) {
         avg_input_fps += data.input_fps;
         avg_output_fps += data.output_fps;
         valid_count++;
@@ -4310,19 +4338,27 @@ FpsInfo gather_fps_data() {
     }
   }
 
+  // A missing/malformed read is not evidence for retaining an old drop.
+  snapshot.history.clear();
+  snapshot.lowestOutput = 0;
+  snapshot.formatted.drop_info.clear();
   return {0, 0, 0};
 }
 
 FormattedFpsInfo format_fps_info() {
 
-  FpsInfo info = gather_fps_data();
+  auto& snapshot = video_fps_snapshot();
+  std::lock_guard<std::mutex> lock(snapshot.mutex);
+  const auto now = std::chrono::steady_clock::now();
+  const std::chrono::milliseconds UPDATE_INTERVAL(100);
+  if (snapshot.sampled && now - snapshot.lastUpdate < UPDATE_INTERVAL)
+    return snapshot.formatted;
+
+  // Both labels share one on-demand sample; history is weighted at up to 10 Hz.
+  const FpsInfo info = gather_fps_data(snapshot, now);
 
   // Format basic info
-  static int rotation_index = 0;
   const char rotation_chars[] = {'|', '/', '-', '\\'};
-
-  static std::chrono::steady_clock::time_point last_update = std::chrono::steady_clock::now();
-  const std::chrono::milliseconds UPDATE_INTERVAL(100);
 
   std::ostringstream basic_info;
   basic_info << std::fixed << std::setprecision(0) << std::setfill('0')
@@ -4330,37 +4366,34 @@ FormattedFpsInfo format_fps_info() {
               << std::setw(3) << info.avg_output_fps << " - "
               << std::setw(3) << info.avg_drop_fps;
 
-  auto now = std::chrono::steady_clock::now();
-  if ((now - last_update) >= UPDATE_INTERVAL) {
-    rotation_index = (rotation_index + 1) % 4;
-    last_update = now;
-  }
+  if (snapshot.sampled)
+    snapshot.rotation = (snapshot.rotation + 1) % 4;
+  snapshot.lastUpdate = now;
+  snapshot.sampled = true;
 
-  basic_info << " " << rotation_chars[rotation_index];
+  basic_info << " " << rotation_chars[snapshot.rotation];
 
   // Format drop info
-  static unsigned int lowest_avg_output_fps = 0;
-  static std::chrono::steady_clock::time_point last_drop_time;
   const std::chrono::seconds HOLD_PERIOD(3);
-  static std::string drop_info = "";
 
   if (info.avg_output_fps < info.avg_input_fps) {
-      if (lowest_avg_output_fps == 0 || info.avg_output_fps < lowest_avg_output_fps) {
-          lowest_avg_output_fps = info.avg_output_fps;
-          last_drop_time = now;
-      } else if (now - last_drop_time >= HOLD_PERIOD) {
-          lowest_avg_output_fps = info.avg_output_fps;
-          last_drop_time = now;
+      if (snapshot.lowestOutput == 0 || info.avg_output_fps < snapshot.lowestOutput) {
+          snapshot.lowestOutput = info.avg_output_fps;
+          snapshot.lastDrop = now;
+      } else if (now - snapshot.lastDrop >= HOLD_PERIOD) {
+          snapshot.lowestOutput = info.avg_output_fps;
+          snapshot.lastDrop = now;
       }
-      drop_info = std::to_string(lowest_avg_output_fps);
+      snapshot.formatted.drop_info = std::to_string(snapshot.lowestOutput);
   } else {
-      if (lowest_avg_output_fps != 0 && now - last_drop_time >= HOLD_PERIOD) {
-          lowest_avg_output_fps = 0;
-          drop_info = "";
+      if (snapshot.lowestOutput != 0 && now - snapshot.lastDrop >= HOLD_PERIOD) {
+          snapshot.lowestOutput = 0;
+          snapshot.formatted.drop_info = "";
       }
   }
 
-  return {basic_info.str(), drop_info};
+  snapshot.formatted.basic_info = basic_info.str();
+  return snapshot.formatted;
 }
 
 std::string aml_video_fps_info() {
