@@ -141,6 +141,16 @@ bool CApplicationPlayer::OpenFile(const CFileItem& item, const CPlayerOptions& o
   return ret;
 }
 
+bool CApplicationPlayer::HasPendingOpen() const
+{
+  return m_nextItem.pItem != nullptr;
+}
+
+bool CApplicationPlayer::HasPendingVideoOpen() const
+{
+  return m_nextItem.pItem && m_nextItem.pItem->IsVideo();
+}
+
 void CApplicationPlayer::OpenNext(const CPlayerCoreFactory &factory)
 {
   if (m_closingPlayer || m_waitForPlaybackStop || m_shutdown || !m_nextItem.pItem)

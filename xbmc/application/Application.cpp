@@ -1959,7 +1959,13 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
   }
 
   appPlayer->FrameMove();
+  const bool openingVideo = appPlayer->HasPendingVideoOpen();
+  const bool opening = appPlayer->HasPendingOpen();
   appPlayer->OpenNext(m_ServiceManager->GetPlayerCoreFactory());
+  if (opening && !appPlayer->HasPendingOpen() && (!openingVideo || !appPlayer->IsPlaying()))
+    PlaybackCleanup(); // Failed or non-video replacement still needs terminal cleanup.
+  // A started video may not report HasVideo yet. Preserve the current window;
+  // its original fullscreen option, not cleanup of the old player, owns navigation.
 
   // this will go away when render systems gets its own thread
   CServiceBroker::GetWinSystem()->DriveRenderLoop();
@@ -2839,6 +2845,10 @@ bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRes
 void CApplication::PlaybackCleanup()
 {
   const auto appPlayer = GetComponent<CApplicationPlayer>();
+  // An accepted replacement is not terminal playback. Later playlist entries
+  // intentionally carry fullscreen=false to preserve the user's current window.
+  if (appPlayer->HasPendingOpen())
+    return;
   const auto stackHelper = GetComponent<CApplicationStackHelper>();
 
   if (!appPlayer->IsPlaying())
@@ -2921,7 +2931,7 @@ void CApplication::StopPlaying()
   {
     int iWin = gui->GetWindowManager().GetActiveWindow();
     const auto appPlayer = GetComponent<CApplicationPlayer>();
-    if (appPlayer->HasPlayer())
+    if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen())
     {
       appPlayer->ClosePlayer();
 
@@ -3210,7 +3220,8 @@ bool CApplication::OnMessage(CGUIMessage& message)
 
   case GUI_MSG_PLAYLISTPLAYER_STOPPED:
     ResetCurrentItem();
-    if (GetComponent<CApplicationPlayer>()->IsPlaying())
+    if (GetComponent<CApplicationPlayer>()->HasPlayer() ||
+        GetComponent<CApplicationPlayer>()->HasPendingOpen())
       StopPlaying();
     PlaybackCleanup();
     return true;

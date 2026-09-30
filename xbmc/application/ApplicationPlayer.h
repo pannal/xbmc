@@ -47,6 +47,9 @@ public:
                 const CPlayerCoreFactory &factory,
                 const std::string &playerName, IPlayerCallback& callback);
   void OpenNext(const CPlayerCoreFactory &factory);
+  // Main-thread observations of the accepted deferred replacement.
+  bool HasPendingOpen() const;
+  bool HasPendingVideoOpen() const;
   void SetPlaySpeed(float speed);
   void SetTempo(float tempo);
   void FrameAdvance(int frames);

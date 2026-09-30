@@ -142,10 +142,10 @@ def main():
     assert 'm_pendingStop = exitCode;' in stop and 'return false;' in stop
     assert 'm_pendingStop && !appPlayer->HasPlayer()' in frame
     assert 'Powerdown()' in frame and 'Reboot()' in frame
-    assert 'if (appPlayer->HasPlayer())' in function(application, 'void CApplication::StopPlaying()')
+    assert 'if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen())' in function(application, 'void CApplication::StopPlaying()')
     playlist = (ROOT / 'xbmc/PlayListPlayer.cpp').read_text()
     media_stop = playlist[playlist.index('  case TMSG_MEDIA_STOP:'):playlist.index('  case TMSG_MEDIA_PAUSE:')]
-    assert 'if (appPlayer->HasPlayer())' in media_stop
+    assert 'if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen())' in media_stop
     assert 'if (!m_shutdownWatchdogStarted)' in stop
     gate_start = stop.index('  const auto appPlayer = GetComponent<CApplicationPlayer>();')
     gate_end = stop.index('  // Safety net', gate_start)
