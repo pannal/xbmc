@@ -379,22 +379,19 @@ private:
     Cascade //!< objects panned onto 12 virtual speakers, then those convolved
   };
 
-  //! Above this many sources direct stops being affordable: it reaches 0.60 of
-  //! one core at 24 and 0.72 at 32, while cascading stays flat at 0.430.
-  static constexpr int OBJECT_LIMIT_FOR_DIRECT = 24;
-
   bool StartHelper(CDVDStreamInfo& hints);
 
   /*!
-   * \brief Restart the helper, optionally at a different rate.
+   * \brief Restart the helper, in the same render mode, at a different rate.
    *
-   * \param mode  the render mode the new helper opens in
-   * \param rate  the rate to render at; pass \ref m_rate to keep the current
-   *              one. A different value also moves the format, the limiter and
-   *              every duration derived from the rate, and is only safe before
-   *              the format has been published - see OmniphonyRateCheck.
+   * \param rate  the rate to render at. It also moves the format, the limiter
+   *              and every duration derived from the rate. Before the format
+   *              has been published that is silent; after it, the next block
+   *              carries the new rate, CVideoPlayerAudio reopens its sink for
+   *              it, and the reserve goes with the old helper - heard as a gap
+   *              once. See OmniphonyRateCheck.
    */
-  bool ReopenAs(RenderMode mode, unsigned int rate);
+  bool ReopenAs(unsigned int rate);
 
   /*!
    * \brief AddData for a stream being decoded here - see \ref m_pcm.
@@ -711,28 +708,8 @@ private:
    */
   std::unique_ptr<CDVDStreamInfo> m_hints;
 
-  /*!
-   * \brief Render mode, chosen once from what the stream turns out to carry.
-   *
-   * The object count is only truthful after a frame has been rendered - the C
-   * ABI says so, and the helper reports it in its first status frame - so the
-   * choice cannot be made at open. Rather than switch mid-film and let the
-   * imaging audibly change, this starts in Direct and re-opens once, within the
-   * first blocks, if the count turns out to be more than Direct can carry.
-   * \ref m_modeSettled makes that a one-shot: it can never oscillate.
-   */
+  //! \brief Render mode: Direct unless the listener chose Cascade - see Open.
   RenderMode m_mode{RenderMode::Direct};
-  bool m_modeSettled{false};
-  /*!
-   * \brief The listener pinned the mode, so the count does not get to choose.
-   *
-   * Separate from \ref m_modeSettled rather than folded into it: settling early
-   * would also skip reading the object count, and the count is what the screen
-   * reports. This only disables the switch.
-   */
-  bool m_modeForced{false};
-  //! \brief How long the mode decision stays open - see OMNI_MODE_WINDOW_MS.
-  XbmcThreads::EndTime<> m_modeWindow;
   /*!
    * \brief Objects the stream is currently carrying, or -1 when it is not.
    *

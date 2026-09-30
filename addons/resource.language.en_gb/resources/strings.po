@@ -24336,7 +24336,7 @@ msgstr ""
 #. Omniphony: help text for the setting
 #: system/settings/settings.xml
 msgctxt "#39311"
-msgid "Place the individual sounds a Dolby Atmos or DTS:X soundtrack carries, and unfold the height layer of an Auro-3D one, rather than placing only the channels it was mixed into. If a device struggles with it, try Cascade mode under Advanced first - that keeps the heights, where turning this off loses them entirely."
+msgid "Place the individual sounds a Dolby Atmos or DTS:X soundtrack carries, and unfold the height layer of an Auro-3D one, rather than placing only the channels it was mixed into. If a device struggles with it, try Cascade mode under the Advanced setting level first - that keeps the heights, where turning this off loses them entirely."
 msgstr ""
 
 #. Omniphony: label of the room simulation setting
@@ -24454,7 +24454,7 @@ msgstr ""
 #. help text for setting audiooutput.omniphonycascade
 #: system/settings/settings.xml
 msgctxt "#39331"
-msgid "Render the objects onto twelve virtual loudspeakers and place those around you, instead of placing every object individually. Normally chosen automatically for soundtracks with more objects than direct placement can afford. Turning it on costs less CPU, worth having if the sound breaks up, for slightly less precise placement."
+msgid "Render the objects onto twelve virtual loudspeakers and place those around you, instead of placing every object individually. Turning it on costs less CPU, worth having if the sound breaks up, for slightly less precise placement."
 msgstr ""
 
 #. heading for the personal HRTF file browser and its result dialog

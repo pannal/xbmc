@@ -345,21 +345,6 @@ constexpr int OMNI_OPEN_POLL_MS = 50;
 constexpr const char* OMNI_OPEN_MARK = "open ";
 
 /*!
- * \brief How long the render mode stays open to what the stream turns out to be.
- *
- * The object count is only truthful once a frame has been rendered, and after a
- * mid-film resume the first frames are often bed-only - so the count that
- * decides between per-object rendering and the virtual layout can arrive a
- * little after the stream starts. This is how long we keep listening for it.
- *
- * Generous against that delay and mean against the alternative: a restart costs
- * the reserve and a re-prime, and changes the imaging audibly, so it has to
- * land while the film is still starting rather than an hour in. Past this the
- * mode is settled for good and a late count is logged instead of acted on.
- */
-constexpr unsigned int OMNI_MODE_WINDOW_MS = 5000;
-
-/*!
  * \brief Level the render is asked for, in dB, before the downmix correction.
  *
  * Before the correction is the whole of the point: this is not the gain the
@@ -1149,10 +1134,10 @@ std::string CDVDAudioCodecOmniphony::ConfigPath()
   // thing telling a reader whose the file is, so it may as well say so.
   //
   // Neither location makes it a file to edit: it is emitted whole from the
-  // settings every time a stream opens, and twice if the render mode settles
-  // the other way, so an edit survives until the next play. That is also why
-  // it is not written to the top of userdata beside guisettings.xml, where it
-  // would read as something the user maintains.
+  // settings every time a stream opens, and again if the helper is re-opened
+  // at the stream's own rate, so an edit survives until the next play. That is
+  // also why it is not written to the top of userdata beside guisettings.xml,
+  // where it would read as something the user maintains.
   return CSpecialProtocol::TranslatePath("special://masterprofile/omniphony/render.yaml");
 }
 
@@ -2056,8 +2041,7 @@ std::string CDVDAudioCodecOmniphony::InputDescription() const
 void CDVDAudioCodecOmniphony::PublishRenderInfo()
 {
   // Building the strings is the part worth avoiding, and it only has to happen
-  // when something changed: the open, the object count arriving, a switch to
-  // the virtual layout.
+  // when something changed: the open, the object count arriving, a new helper.
   if (m_infoDirty)
   {
     m_infoDirty = false;
@@ -2090,7 +2074,7 @@ void CDVDAudioCodecOmniphony::PublishRenderInfo()
   m_processInfo.SetOmniphonySofa(m_sofa);
 }
 
-bool CDVDAudioCodecOmniphony::ReopenAs(RenderMode mode, unsigned int rate)
+bool CDVDAudioCodecOmniphony::ReopenAs(unsigned int rate)
 {
   if (!m_hints)
     return false;
@@ -2103,8 +2087,6 @@ bool CDVDAudioCodecOmniphony::ReopenAs(RenderMode mode, unsigned int rate)
   DropRendered();
   m_parser.Reset();
   m_backlog.clear();
-
-  m_mode = mode;
 
   /*
    * Everything the rate is true of has to move with it.
@@ -2148,8 +2130,7 @@ bool CDVDAudioCodecOmniphony::ReopenAs(RenderMode mode, unsigned int rate)
   if (!StartHelper(*m_hints))
     return false;
 
-  // The name does not change with the mode any more - Player.Process(omniphony.render)
-  // carries that now - but the screen still has to be told the mode moved.
+  // The screen shows what the helper reports, and this is a new helper.
   m_infoDirty = true;
   return true;
 }
@@ -2198,8 +2179,6 @@ bool CDVDAudioCodecOmniphony::Open(CDVDStreamInfo& hints, CDVDCodecOptions& opti
 
   m_hints = std::make_unique<CDVDStreamInfo>(hints);
   m_mode = RenderMode::Direct;
-  m_modeSettled = false;
-  m_modeForced = false;
   m_objectCount = -1;
   m_bed.clear();
   m_sourceLabel.clear();
@@ -2218,21 +2197,18 @@ bool CDVDAudioCodecOmniphony::Open(CDVDStreamInfo& hints, CDVDCodecOptions& opti
   if (const auto settings = CServiceBroker::GetSettingsComponent())
   {
     /*
-     * Cascading, because the listener asked for it rather than because the
-     * stream needs it.
+     * Cascading, only because the listener asked for it. It is worth having as
+     * a switch because cascading is the cheaper mode on this hardware for the
+     * object counts we actually see - measured 0.430 against 0.470 - and the
+     * render has almost no margin over realtime, so a listener whose sound
+     * breaks up has something to try.
      *
-     * Marked forced rather than simply settled, so the object count is still
-     * read and still reported on screen - it is only the automatic switch that
-     * is skipped. It is worth having as a switch because cascading is the
-     * cheaper mode on this hardware for the object counts we actually see -
-     * measured 0.430 against 0.470 - and the render has almost no margin over
-     * realtime, so a listener whose sound breaks up has something to try.
+     * Never for a stream decoded here. Its channel bed is at most 7.1.4, twelve
+     * sources, which is what Cascade would reduce anything to anyway, so Direct
+     * is the same work without the panning error.
      */
     if (!m_pcm && settings->GetSettings()->GetBool(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYCASCADE))
-    {
       m_mode = RenderMode::Cascade;
-      m_modeForced = true;
-    }
 
     /*
      * Before WriteConfig, which asks what came of it. Normally a no-op - it
@@ -2263,35 +2239,8 @@ bool CDVDAudioCodecOmniphony::Open(CDVDStreamInfo& hints, CDVDCodecOptions& opti
   m_sofa.clear();
   m_infoDirty = true;
 
-  /*
-   * A channel bed settles the mode at open, where an object stream cannot.
-   *
-   * The choice between the two modes is a choice about how many sources have to
-   * be convolved, and the object path has to wait for a rendered frame to learn
-   * that. Here it is known already and it is small: the widest layout this
-   * source accepts is 7.1.4, at twelve, which is what Cascade would reduce
-   * anything to anyway. So Direct is not merely affordable, it is the same
-   * work without the panning error - and settling it here means the mode
-   * window, the restart and the object-count reading are all skipped rather
-   * than left to decide nothing.
-   */
-  if (m_pcm)
-  {
-    m_mode = RenderMode::Direct;
-    m_modeSettled = true;
-  }
-
   if (!StartHelper(hints))
     return false;
-
-  // After the helper is open, for the reason priming is armed there: the window
-  // bounds how long the render mode stays open to the object count, and the
-  // count cannot arrive until the engine exists. Armed before, a stream that
-  // took seconds to open - which off 48 kHz it does - would spend most of its
-  // window waiting for a renderer rather than listening to one. ReopenAs starts
-  // a helper too and deliberately does not come through here: by then the mode
-  // is settled and the window has done its work.
-  m_modeWindow.Set(std::chrono::milliseconds(OMNI_MODE_WINDOW_MS));
 
   m_format.m_dataFormat = AE_FMT_FLOAT;
   m_format.m_sampleRate = m_rate;
@@ -2303,10 +2252,9 @@ bool CDVDAudioCodecOmniphony::Open(CDVDStreamInfo& hints, CDVDCodecOptions& opti
   // reaches the screen but never the log, so a log from the field could not be
   // read for which mode it ran in. The codec name comes from UpdateName rather
   // than from CodecId, which is null for everything the PCM path carries.
-  CLog::Log(LOGINFO, "CDVDAudioCodecOmniphony: rendering {} to headphones out of process, {}{}",
+  CLog::Log(LOGINFO, "CDVDAudioCodecOmniphony: rendering {} to headphones out of process, {}",
             m_pcm ? m_codecName + " (decoded here)" : m_codecName + " objects",
-            m_mode == RenderMode::Cascade ? "cascade-12" : "direct",
-            m_modeForced ? " (pinned by setting)" : "");
+            m_mode == RenderMode::Cascade ? "cascade-12" : "direct");
   return true;
 }
 
@@ -2601,8 +2549,7 @@ bool CDVDAudioCodecOmniphony::AddPcmData(const DemuxPacket& packet)
   }
 
   // Logged, and read for the head model and nothing else. There are no objects
-  // to count on this path, and no mode to choose from a count that will always
-  // be zero.
+  // to count on this path.
   for (const auto& msg : m_helper->TakeMessages())
   {
     CLog::Log(LOGDEBUG, "CDVDAudioCodecOmniphony: helper: {}", msg);
@@ -2861,10 +2808,10 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
           [[fallthrough]];
 
         case OmniphonyRateVerdict::Retune:
-          // Same shape as the mode switch below: restart, then leave the rest
-          // of these messages to the helper that has just been replaced. They
-          // describe an engine that no longer exists.
-          if (!ReopenAs(m_mode, reported))
+          // Restart, then leave the rest of these messages to the helper that
+          // has just been replaced. They describe an engine that no longer
+          // exists.
+          if (!ReopenAs(reported))
           {
             FallBack("could not restart the renderer at the stream's own rate");
             return m_fallback ? m_fallback->AddData(packet) : false;
@@ -2928,13 +2875,12 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
      * mid-film resume tend to be. Treating that first zero as the answer left
      * the label empty for the rest of the film.
      *
-     * So a zero report is not evidence of anything and is passed over, for the
-     * render mode as much as for the screen. A soundtrack that genuinely
-     * carries no objects reports zero forever, m_objectCount stays -1, and
-     * InputDescription says nothing about objects - which is the same outcome
-     * by a route that cannot be confused with "we asked too early". It may
-     * still name the bed, which was read above and is not what this gate is
-     * about.
+     * So a zero report is not evidence of anything and is passed over. A
+     * soundtrack that genuinely carries no objects reports zero forever,
+     * m_objectCount stays -1, and InputDescription says nothing about objects -
+     * which is the same outcome by a route that cannot be confused with "we
+     * asked too early". It may still name the bed, which was read above and is
+     * not what this gate is about.
      *
      * All of that holds only until objects have actually been seen. After that,
      * "we asked too early" has stopped being available as an explanation: the
@@ -2944,10 +2890,6 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
      * reporting the count from whenever objects were last carried, for as long
      * as they are not. So the count is dropped, and the screen returns to
      * saying nothing, which is what a bed-only stream should say.
-     *
-     * The one-shot below is not revisited: the mode decision is about what this
-     * soundtrack needs, and a stretch without objects does not make the film
-     * that carried fifteen of them a stereo one.
      */
     if (objects <= 0)
     {
@@ -2964,56 +2906,6 @@ bool CDVDAudioCodecOmniphony::AddData(const DemuxPacket& packet)
     m_objectCount = objects;
 
     m_infoDirty = true;
-
-    // Everything above updates for the life of the stream. Everything below
-    // happens once, because it is a different kind of decision.
-    if (m_modeSettled)
-      continue;
-
-    /*
-     * The mode is chosen from the first report that actually carries objects,
-     * and only while the film is still starting.
-     *
-     * Both halves matter. Choosing from the first report of any kind is what
-     * this used to do, and on a resume that report is a zero - so a stream
-     * needing the virtual layout would have stayed on direct rendering.
-     * Choosing without a deadline is the opposite mistake: now that reports
-     * arrive whenever the count changes, a soundtrack that reveals more objects
-     * an hour in could restart the helper mid-film, which drops the reserve and
-     * re-primes, and the imaging would audibly change. The window is generous
-     * enough for a resume to settle and short enough that a restart inside it
-     * is still part of starting up.
-     */
-    if (m_modeWindow.IsTimePast())
-    {
-      m_modeSettled = true;
-      if (!m_modeForced && m_mode == RenderMode::Direct && objects > OBJECT_LIMIT_FOR_DIRECT)
-        CLog::Log(LOGWARNING,
-                  "CDVDAudioCodecOmniphony: {} objects is more than direct rendering can carry, "
-                  "but the stream only said so {}ms in - staying on direct rather than restarting "
-                  "the render mid-film",
-                  objects, OMNI_MODE_WINDOW_MS);
-      continue;
-    }
-
-    m_modeSettled = true;
-
-    if (!m_modeForced && m_mode == RenderMode::Direct && objects > OBJECT_LIMIT_FOR_DIRECT)
-    {
-      // Still inside the opening blocks, so this is a restart at the start of
-      // the stream rather than a switch part-way through a film. Settled first,
-      // so a failure here cannot send us round again.
-      CLog::Log(LOGINFO,
-                "CDVDAudioCodecOmniphony: {} objects is more than direct rendering can carry; "
-                "restarting on the {}-speaker virtual layout",
-                m_objectCount, 12);
-      if (!ReopenAs(RenderMode::Cascade, m_rate))
-      {
-        FallBack("could not restart on the virtual layout");
-        return m_fallback ? m_fallback->AddData(packet) : false;
-      }
-      return true;
-    }
   }
 
   return true;
@@ -3615,7 +3507,7 @@ void CDVDAudioCodecOmniphony::SettleRate()
   switch (OmniphonyRateCheck(reported, m_rate, m_pcm != nullptr, m_formatPublished))
   {
     case OmniphonyRateVerdict::Retune:
-      if (!ReopenAs(m_mode, reported))
+      if (!ReopenAs(reported))
         FallBack("could not restart the renderer at the stream's own rate");
       break;
 

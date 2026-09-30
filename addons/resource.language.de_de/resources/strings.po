@@ -18055,8 +18055,8 @@ msgid "- Dolby Atmos, DTS:X, and Auro-3D"
 msgstr "- Dolby Atmos, DTS:X und Auro-3D"
 
 msgctxt "#39311"
-msgid "Place the individual sounds a Dolby Atmos or DTS:X soundtrack carries, and unfold the height layer of an Auro-3D one, rather than placing only the channels it was mixed into. If a device struggles with it, try Cascade mode under Advanced first - that keeps the heights, where turning this off loses them entirely."
-msgstr "Die einzelnen Klänge einer Dolby-Atmos- oder DTS:X-Tonspur platzieren und die Höhenebene einer Auro-3D-Tonspur entfalten, statt nur die Kanäle zu platzieren, in die sie gemischt wurde. Wenn ein Gerät damit überfordert ist, zuerst den Kaskadenmodus unter Fortgeschritten versuchen – er behält die Höhen bei, während sie beim Ausschalten ganz verloren gehen."
+msgid "Place the individual sounds a Dolby Atmos or DTS:X soundtrack carries, and unfold the height layer of an Auro-3D one, rather than placing only the channels it was mixed into. If a device struggles with it, try Cascade mode under the Advanced setting level first - that keeps the heights, where turning this off loses them entirely."
+msgstr "Die einzelnen Klänge einer Dolby-Atmos- oder DTS:X-Tonspur platzieren und die Höhenebene einer Auro-3D-Tonspur entfalten, statt nur die Kanäle zu platzieren, in die sie gemischt wurde. Wenn ein Gerät damit überfordert ist, zuerst den Kaskadenmodus unter der Einstellungsstufe Fortgeschritten versuchen – er behält die Höhen bei, während sie beim Ausschalten ganz verloren gehen."
 
 msgctxt "#39312"
 msgid "- Room simulation"
@@ -18135,8 +18135,8 @@ msgid "- Cascade mode (12 virtual speakers)"
 msgstr "- Kaskadenmodus (12 virtuelle Lautsprecher)"
 
 msgctxt "#39331"
-msgid "Render the objects onto twelve virtual loudspeakers and place those around you, instead of placing every object individually. Normally chosen automatically for soundtracks with more objects than direct placement can afford. Turning it on costs less CPU, worth having if the sound breaks up, for slightly less precise placement."
-msgstr "Die Objekte auf zwölf virtuelle Lautsprecher rendern und diese rund um den Hörer platzieren, statt jedes Objekt einzeln zu platzieren. Wird bei Tonspuren mit mehr Objekten, als die direkte Platzierung verkraftet, normalerweise automatisch gewählt. Einschalten spart CPU-Last – sinnvoll, wenn der Ton abreißt – auf Kosten einer etwas ungenaueren Platzierung."
+msgid "Render the objects onto twelve virtual loudspeakers and place those around you, instead of placing every object individually. Turning it on costs less CPU, worth having if the sound breaks up, for slightly less precise placement."
+msgstr "Die Objekte auf zwölf virtuelle Lautsprecher rendern und diese rund um den Hörer platzieren, statt jedes Objekt einzeln zu platzieren. Einschalten spart CPU-Last – sinnvoll, wenn der Ton abreißt – auf Kosten einer etwas ungenaueren Platzierung."
 
 msgctxt "#39332"
 msgid "Personal HRTF file"
