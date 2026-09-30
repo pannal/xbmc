@@ -194,7 +194,7 @@ def main():
     setting = group.find(f"setting[@id='{KEY}']")
     assert setting is not None and setting.attrib['type'] == 'boolean'
     assert setting.findtext('requirement') == 'HAVE_AMCODEC'
-    assert setting.findtext('level') == '3' and setting.findtext('default') == 'false'
+    assert setting.findtext('level') == '3' and setting.findtext('default') == 'true'
     assert setting.find('control').attrib['type'] == 'toggle'
     en, de = [catalog(ROOT / f'addons/resource.language.{lang}/resources/strings.po')
               for lang in ['en_gb', 'de_de']]
