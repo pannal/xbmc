@@ -352,6 +352,7 @@ public:
   void TriggerUpdateResolutionHdr(StreamHdrType hdrType) override;
   void UpdateAudioLatencyTweak(double audioLatency);
   bool IsRenderingVideo() const override;
+  bool IsVideoPresentationIndependent() const override;
   bool Supports(EINTERLACEMETHOD method) const override;
   EINTERLACEMETHOD GetDeinterlacingMethodDefault() const override;
   bool Supports(ESCALINGMETHOD method) const override;

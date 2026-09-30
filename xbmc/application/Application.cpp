@@ -2018,11 +2018,20 @@ int CApplication::Run()
       FrameMove(true, renderGUI);
     }
 
+    bool idleIndependentVideo = false;
     if (renderGUI && !m_bStop)
     {
       Render();
+      idleIndependentVideo =
+          m_lastRenderAttempt.status == RenderAttemptStatus::COMMANDS_COMPLETED &&
+          !m_lastRenderAttempt.guiRendered &&
+          m_lastRenderAttempt.present == PresentResult::SKIPPED &&
+          GetComponent<CApplicationPlayer>()->IsVideoPresentationIndependent();
     }
-    else if (!renderGUI)
+    // A clean GUI does not swap, and independent video no longer polls on main.
+    // Reuse the idle-loop budget so input/control processing continues at ~66 Hz;
+    // count all work already done and never wait for a presenter frame receipt.
+    if (!m_bStop && (!renderGUI || idleIndependentVideo))
     {
       auto now = std::chrono::steady_clock::now();
       frameTime = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFrameTime);

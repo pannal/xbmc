@@ -101,6 +101,7 @@ public:
   void FrameWait(std::chrono::milliseconds duration);
   void Render(bool clear, DWORD flags = 0, DWORD alpha = 255, bool gui = true);
   bool IsVideoLayer();
+  bool IsVideoPresentationIndependent() const;
   RESOLUTION GetResolution();
   void UpdateResolution(bool force = false);
   void TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode);

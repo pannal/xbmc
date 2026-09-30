@@ -232,6 +232,8 @@ public:
   virtual void TriggerUpdateResolution() {}
   virtual void TriggerUpdateResolutionHdr(StreamHdrType hdrType) {}
   virtual bool IsRenderingVideo() const { return false; }
+  // Main-thread observation: video scheduling no longer paces the application loop.
+  virtual bool IsVideoPresentationIndependent() const { return false; }
 
   virtual bool Supports(EINTERLACEMETHOD method) const { return false; }
   virtual EINTERLACEMETHOD GetDeinterlacingMethodDefault() const

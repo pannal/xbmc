@@ -6949,6 +6949,11 @@ bool CVideoPlayer::IsRenderingVideo() const
   return m_renderManager.IsConfigured();
 }
 
+bool CVideoPlayer::IsVideoPresentationIndependent() const
+{
+  return m_renderManager.IsVideoPresentationIndependent();
+}
+
 bool CVideoPlayer::Supports(EINTERLACEMETHOD method) const
 {
   if (!m_processInfo)

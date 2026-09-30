@@ -874,6 +874,12 @@ bool CApplicationPlayer::IsRenderingVideo() const
     return false;
 }
 
+bool CApplicationPlayer::IsVideoPresentationIndependent() const
+{
+  const std::shared_ptr<const IPlayer> player = GetInternal();
+  return player && player->IsVideoPresentationIndependent();
+}
+
 bool CApplicationPlayer::IsRenderingGuiLayer() const
 {
   const std::shared_ptr<const IPlayer> player = GetInternal();

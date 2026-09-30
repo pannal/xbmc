@@ -1424,6 +1424,17 @@ bool CRenderManager::IsGuiLayer()
   return false;
 }
 
+bool CRenderManager::IsVideoPresentationIndependent() const
+{
+#if defined(HAS_LIBAMCODEC)
+  // Main owns session creation/retirement and calls this after FrameMove/Render.
+  // Match their bypass of synchronous presentation, including startup/drain.
+  return m_amlPresenter != nullptr;
+#else
+  return false;
+#endif
+}
+
 bool CRenderManager::IsVideoLayer()
 {
   {

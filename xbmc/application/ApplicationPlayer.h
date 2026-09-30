@@ -59,6 +59,7 @@ public:
   void TriggerUpdateResolution();
   void TriggerUpdateResolutionHdr(StreamHdrType hdrType);
   bool IsRenderingVideo() const;
+  bool IsVideoPresentationIndependent() const;
   bool IsRenderingGuiLayer() const;
   bool IsRenderingVideoLayer() const;
   bool Supports(EINTERLACEMETHOD method) const;
