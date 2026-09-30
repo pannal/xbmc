@@ -145,6 +145,10 @@
 #include "utils/SystemInfo.h"
 #include "utils/TimeUtils.h"
 #include "utils/AMLUtils.h"
+#ifdef HAS_LIBAMCODEC
+#include "utils/PlaybackDiagnostics.h"
+#include "utils/PlaybackEndDiagnostics.h"
+#endif
 #include "utils/URIUtils.h"
 #include "utils/Variant.h"
 #include "utils/XTimeUtils.h"
@@ -877,6 +881,9 @@ bool CApplication::OnSettingsSaving() const
 void CApplication::Render()
 {
   m_lastRenderAttempt = {};
+#ifdef HAS_LIBAMCODEC
+  m_lastRenderDisplay = m_lastRenderTargetGeneration = 0;
+#endif
   // do not render if we are stopped or in background
   if (m_bStop)
     return;
@@ -903,6 +910,12 @@ void CApplication::Render()
     return;
   }
   const auto target = renderSystem->CaptureRenderTarget();
+#ifdef HAS_LIBAMCODEC
+  // AfterRender may close a window and replace the display before Run observes
+  // this result. Retain the generation that owned the actual draw commands.
+  m_lastRenderDisplay = PLAYBACK_DIAGNOSTICS::endDisplay.Display();
+  m_lastRenderTargetGeneration = target.generation;
+#endif
   m_lastRenderAttempt.status = RenderAttemptStatus::CANCELLED;
   auto cancel = [](CWinSystemBase* window) { window->CancelGuiComposite(); };
   std::unique_ptr<CWinSystemBase, decltype(cancel)> composite(
@@ -2024,6 +2037,9 @@ int CApplication::Run()
       FrameMove(true, renderGUI);
     }
 
+#ifdef HAS_LIBAMCODEC
+    const bool diagnosticRenderAttempted = renderGUI && !m_bStop;
+#endif
     bool idleIndependentVideo = false;
     if (renderGUI && !m_bStop)
     {
@@ -2034,6 +2050,26 @@ int CApplication::Run()
           m_lastRenderAttempt.present == PresentResult::SKIPPED &&
           GetComponent<CApplicationPlayer>()->IsVideoPresentationIndependent();
     }
+#ifdef HAS_LIBAMCODEC
+    auto& trace = PLAYBACK_DIAGNOSTICS::endDisplay;
+    const auto nowUs = PLAYBACK_DIAGNOSTICS::NowUs();
+    if (trace.Active(nowUs))
+    {
+      const auto attempt = diagnosticRenderAttempted ? m_lastRenderAttempt : RenderAttemptResult{};
+      const int window = CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow();
+      const bool fullscreen = CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo();
+      trace.Frame(nowUs, diagnosticRenderAttempted ? m_lastRenderDisplay : 0, static_cast<int>(attempt.status), attempt.guiRendered,
+          static_cast<int>(attempt.present), window, fullscreen,
+          attempt.present == PresentResult::SWAP_ACCEPTED,
+          attempt.present == PresentResult::SWAP_FAILED, [&] {
+        return fmt::format("window={} fullscreen={} render_enabled={} status={} gui_draw={} present={} draw_display={} draw_target_gen={}",
+            window, fullscreen, renderGUI, static_cast<int>(attempt.status), attempt.guiRendered,
+            static_cast<int>(attempt.present), diagnosticRenderAttempted ? m_lastRenderDisplay : 0,
+            diagnosticRenderAttempted ? m_lastRenderTargetGeneration : 0);
+      });
+    }
+    aml_end_display_diagnostics_pump();
+#endif
     // A clean GUI does not swap, and independent video no longer polls on main.
     // Reuse the idle-loop budget so input/control processing continues at ~66 Hz;
     // count all work already done and never wait for a presenter frame receipt.
@@ -2046,6 +2082,10 @@ int CApplication::Run()
     }
   }
 
+#ifdef HAS_LIBAMCODEC
+  PLAYBACK_DIAGNOSTICS::endDisplay.Finish(PLAYBACK_DIAGNOSTICS::NowUs(), "application-exit");
+  aml_end_display_diagnostics_pump();
+#endif
   Cleanup();
 
   CLog::Log(LOGINFO, "Exiting the application...");
@@ -2844,6 +2884,15 @@ bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRes
 
 void CApplication::PlaybackCleanup()
 {
+#ifdef HAS_LIBAMCODEC
+  PLAYBACK_DIAGNOSTICS::endDisplay.Record(PLAYBACK_DIAGNOSTICS::NowUs(), "cleanup", [&] {
+    return fmt::format("window={} fullscreen={} pending_open={} playing={}",
+        CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow(),
+        CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo(),
+        GetComponent<CApplicationPlayer>()->HasPendingOpen(),
+        GetComponent<CApplicationPlayer>()->IsPlaying());
+  });
+#endif
   const auto appPlayer = GetComponent<CApplicationPlayer>();
   // An accepted replacement is not terminal playback. Later playlist entries
   // intentionally carry fullscreen=false to preserve the user's current window.
@@ -3163,6 +3212,9 @@ bool CApplication::OnMessage(CGUIMessage& message)
 
   case GUI_MSG_PLAYBACK_STOPPED:
   {
+#ifdef HAS_LIBAMCODEC
+    PLAYBACK_DIAGNOSTICS::endDisplay.Begin(PLAYBACK_DIAGNOSTICS::NowUs(), "stopped");
+#endif
     GetComponent<CApplicationPlayer>()->OnPlaybackStopped();
     CServiceBroker::GetPVRManager().OnPlaybackStopped(*m_itemCurrentFile);
 
@@ -3182,6 +3234,9 @@ bool CApplication::OnMessage(CGUIMessage& message)
 
   case GUI_MSG_PLAYBACK_ENDED:
   {
+#ifdef HAS_LIBAMCODEC
+    PLAYBACK_DIAGNOSTICS::endDisplay.Begin(PLAYBACK_DIAGNOSTICS::NowUs(), "ended");
+#endif
     GetComponent<CApplicationPlayer>()->OnPlaybackStopped();
     CServiceBroker::GetPVRManager().OnPlaybackEnded(*m_itemCurrentFile);
 

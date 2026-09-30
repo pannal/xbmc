@@ -39,6 +39,7 @@ public:
     Phase m_result{Phase::FAILED};
   };
 
+  uint64_t Serial() const { return m_request.serial; }
   bool Pending() const { return m_pending; }
   bool Ready() const { return m_ready; }
   void Resume()

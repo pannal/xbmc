@@ -203,7 +203,12 @@ public:
   void DestroySurface();
   void DestroyContext();
   bool SetVSync(bool enable);
-  bool TrySwapBuffers();
+  struct SwapDiagnostics
+  {
+    bool attempted{false};
+    EGLint error{EGL_SUCCESS};
+  };
+  bool TrySwapBuffers(SwapDiagnostics* diagnostics = nullptr);
   void SetDamagedRegions(const CDirtyRegionList& dirtyRegions);
   int GetBufferAge();
   bool IsPlatformSupported() const;

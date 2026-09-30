@@ -31,6 +31,11 @@ HARNESS = r"""
 #include <vector>
 #include <iostream>
 #include "rendering/RenderResource.h"
+#include "utils/PlaybackEndDiagnostics.h"
+namespace fmt {template<class... T>std::string format(const char*,T...){return {};}}
+namespace PLAYBACK_DIAGNOSTICS {static uint64_t NowUs(){return 0;}}
+inline void aml_end_display_diagnostics_pump(){}
+struct CEGLContextUtils {struct SwapDiagnostics {bool attempted=false;int error=0;};};
 using namespace std::chrono_literals;
 struct Clock {
  static inline std::chrono::steady_clock::time_point now{};
@@ -50,7 +55,13 @@ struct CFileItemList{int Size(){return 0;}};
 struct Params{CFileItemList list;CFileItemList& GetPlaylist(){return list;}};
 struct Playlist{void Add(PLAYLIST::Id,CFileItemList&){} void SetCurrentPlaylist(PLAYLIST::Id){}};
 struct Messenger{void PostMsg(int,int){}};
+struct Gfx {bool IsFullScreenVideo(){return true;}};
+struct Window {Gfx gfx;Gfx& GetGfxContext(){return gfx;}};
+struct Manager {int GetActiveWindow(){return 10025;}};
+struct Gui {Manager manager;Manager& GetWindowManager(){return manager;}};
 struct CServiceBroker{
+ static Gui* GetGUI(){static Gui gui;return &gui;}
+ static Window* GetWinSystem(){static Window window;return &window;}
  static Params* GetAppParams(){static Params p;return &p;}
  static Playlist& GetPlaylistPlayer(){static Playlist p;return p;}
  static Messenger* GetAppMessenger(){static Messenger p;return &p;}
@@ -74,11 +85,12 @@ struct CWinSystemAmlogicGLESContext {
  struct Timer {bool IsTimePast(){return false;}}m_dispResetTimer;
  CCriticalSection m_resourceSection;
  std::vector<IDispResource*>m_resources;
- struct Life {void Resume(){}}m_displayLifecycle;
- struct GL {bool TrySwapBuffers(){++swaps;Clock::now+=10ms;return true;}}m_pGLContext;
+ struct Life {void Resume(){}bool Ready(){return true;}uint64_t Serial(){return 1;}}m_displayLifecycle;
+ struct GL {bool TrySwapBuffers(CEGLContextUtils::SwapDiagnostics* = nullptr){++swaps;Clock::now+=10ms;return true;}}m_pGLContext;
  PresentResult m_presentResult=PresentResult::NOT_ATTEMPTED;
  int CaptureRenderTarget(){return 1;} bool CanRender(){return true;}
  bool IsRenderTargetCurrent(int){return true;}void ApplyPendingKernelSwitch(){}
+ void ObserveEndDisplay(const char*,bool = false){}
  void PresentRenderImpl(bool rendered);
 };
 @AML@
@@ -89,6 +101,7 @@ struct CRenderSystemGLES:CWinSystemAmlogicGLESContext{
 struct CApplication {
  bool m_bStop=false;int m_ExitCode=0;
  RenderAttemptResult m_lastRenderAttempt;
+ uint64_t m_lastRenderDisplay=1,m_lastRenderTargetGeneration=1;
  CApplicationPlayer player;CApplicationPowerHandling power;CRenderSystemGLES renderer;
  CApplication(){auto v=std::make_shared<CVideoPlayer>();if(independent)v->m_renderManager.m_amlPresenter=std::make_shared<int>(1);player.player=v;}
  template<class T>T* GetComponent(){if constexpr(std::is_same_v<T,CApplicationPlayer>)return &player;else return &power;}
@@ -117,6 +130,7 @@ int main(){
  assert(!manager.IsVideoPresentationIndependent());
  std::cout<<"PASS non-AML default remains synchronous\n";return 0;
 #endif
+ PLAYBACK_DIAGNOSTICS::endDisplay.Begin(0,"ended");
  reset();CApplication idle;idle.Run();
  std::cout<<"clean independent: iterations="<<iterations<<" sleep_us="<<waited<<" swaps="<<swaps<<std::endl;
  assert(iterations>=66&&iterations<=73&&sleeps==iterations-1&&swaps==0&&waited>=980000);

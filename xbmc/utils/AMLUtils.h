@@ -135,6 +135,7 @@ void aml_dv_apply_l5_sysfs();
 // also trigger one when it detects a vsync ioctl stall — that captures
 // post-transition drift the existing transition snapshots can't see.
 void aml_dv_dump_state(const char* tag);
+void aml_end_display_diagnostics_pump();
 
 // Lightweight HDMI-TX link-state watchdog for the GUI/menu path. The richer
 // aml_dv_dump_state() only fires on DV transitions, and the vsync-stall

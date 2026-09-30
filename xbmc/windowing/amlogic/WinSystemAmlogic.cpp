@@ -28,6 +28,8 @@
 #include "settings/lib/Setting.h"
 #include "guilib/DispResource.h"
 #include "utils/AMLUtils.h"
+#include "utils/PlaybackDiagnostics.h"
+#include "utils/PlaybackEndDiagnostics.h"
 #include "utils/log.h"
 #include "threads/SingleLock.h"
 #include "DolbyVisionAML.h"
@@ -169,6 +171,15 @@ bool CWinSystemAmlogic::CreateNativeWindow(const std::string& name,
     m_delayDispReset = true;
     m_dispResetTimer.Set(std::chrono::milliseconds(static_cast<unsigned int>(delay * 100)));
   }
+
+  PLAYBACK_DIAGNOSTICS::endDisplay.Record(PLAYBACK_DIAGNOSTICS::NowUs(), "native-reset-delay", [&] {
+    const auto deadline = std::chrono::duration_cast<std::chrono::microseconds>(
+        m_dispResetTimer.GetStartTime() + m_dispResetTimer.GetInitialTimeoutValue() -
+        PLAYBACK_DIAGNOSTICS::origin).count();
+    return fmt::format("display={} configured_ms={} active={} deadline_us={} target=[{}] forced={}",
+        display.serial, delay * 100, m_delayDispReset, m_delayDispReset ? deadline : 0,
+        res.strId, m_force_mode_switch);
+  });
 
   // Hold HDR10+ VSIF during mode switch to prevent TVs from receiving it
   // before they have finished processing the resolution/HDR change.

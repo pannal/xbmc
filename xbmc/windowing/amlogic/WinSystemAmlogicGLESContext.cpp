@@ -18,6 +18,8 @@
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
+#include "utils/PlaybackDiagnostics.h"
+#include "utils/PlaybackEndDiagnostics.h"
 #include "utils/log.h"
 #include "threads/SingleLock.h"
 #include "windowing/GraphicContext.h"
@@ -248,6 +250,8 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   if (m_shutdownRequested)
     return false;
   CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
+  PLAYBACK_DIAGNOSTICS::endDisplay.Generation(m_displayLifecycle.Serial());
+  ObserveEndDisplay(display ? "display-admitted" : "display-deferred");
   if (!display)
     return false;
   // Native reads/restoration and the base mode change belong to this exact
@@ -275,6 +279,12 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
        ((hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION) || (m_hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)) &&
        (aml_dv_mode() != DV_MODE_OFF));
 
+  PLAYBACK_DIAGNOSTICS::endDisplay.Record(PLAYBACK_DIAGNOSTICS::NowUs(), "display-target", [&] {
+    return fmt::format("width={} height={} screen_width={} screen_height={} hz={} hdr={} cached_hdr={} force_dv={}",
+        res.iWidth, res.iHeight, res.iScreenWidth, res.iScreenHeight,
+        static_cast<double>(res.fRefreshRate), static_cast<int>(hdrType),
+        static_cast<int>(m_hdrType), force_mode_switch_by_dv);
+  });
   // get current used resolution
   if (!aml_get_native_resolution(&current_resolution))
   {
@@ -372,11 +382,13 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 
   if (!m_pGLContext.CreateSurface(static_cast<EGLNativeWindowType>(m_nativeWindow)))
   {
+    ObserveEndDisplay("surface-failed");
     return false;
   }
 
   if (!m_pGLContext.BindContext())
   {
+    ObserveEndDisplay("bind-failed");
     return false;
   }
 
@@ -430,6 +442,7 @@ bool CWinSystemAmlogicGLESContext::ResetRenderSystem(int width, int height)
   if (!display)
     return false;
   m_displayGeometryReady = CRenderSystemGLES::ResetRenderSystem(width, height) && CanRender();
+  ObserveEndDisplay("geometry-reset");
   if (!m_displayGeometryReady)
     return false;
   display.Finish(m_delayDispReset ? CAMLDisplayLifecycle::Phase::WAITING_FOR_RESET
@@ -445,8 +458,25 @@ void CWinSystemAmlogicGLESContext::SetVSyncImpl(bool enable)
   }
 }
 
+void CWinSystemAmlogicGLESContext::ObserveEndDisplay(const char* event, bool milestone)
+{
+  PLAYBACK_DIAGNOSTICS::endDisplay.Generation(m_displayLifecycle.Serial());
+  PLAYBACK_DIAGNOSTICS::endDisplay.Record(PLAYBACK_DIAGNOSTICS::NowUs(), event, [&] {
+    const auto deadline = std::chrono::duration_cast<std::chrono::microseconds>(
+        m_dispResetTimer.GetStartTime() + m_dispResetTimer.GetInitialTimeoutValue() -
+        PLAYBACK_DIAGNOSTICS::origin).count();
+    const auto target = CaptureRenderTarget();
+    return fmt::format("display={} target={} target_gen={} ready={} geometry={} can_render={} pending={} delay={} deadline_us={} hdr={} cached_hdr={}",
+        m_displayLifecycle.Serial(), static_cast<const void*>(target.identity.get()), target.generation, m_displayLifecycle.Ready(),
+        m_displayGeometryReady, CanRender(), m_displayLifecycle.Pending(), m_delayDispReset,
+        m_delayDispReset ? deadline : 0, static_cast<int>(GetGfxContext().GetHDRType()),
+        static_cast<int>(m_hdrType));
+  }, milestone);
+}
+
 void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
 {
+  PLAYBACK_DIAGNOSTICS::endDisplay.Generation(m_displayLifecycle.Serial());
   const auto target = CaptureRenderTarget();
   // GUI-path HDMI link watchdog: catches a sink dropping sync in the menus,
   // where neither the DV-transition dump nor the playback vsync-stall snapshot
@@ -456,6 +486,7 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   if (m_delayDispReset && m_dispResetTimer.IsTimePast())
   {
     m_delayDispReset = false;
+    ObserveEndDisplay("delay-expired", true);
     std::unique_lock<CCriticalSection> lock(m_resourceSection);
     // tell any shared resources
     for (std::vector<IDispResource *>::iterator i = m_resources.begin(); i != m_resources.end(); ++i)
@@ -466,12 +497,31 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   // geometry, plus this exact transaction's delayed reset, establish readiness.
   if (!m_delayDispReset && m_displayGeometryReady && CanRender())
     m_displayLifecycle.Resume();
+  CEGLContextUtils::SwapDiagnostics swap;
+  auto observe = [&] {
+    auto& trace = PLAYBACK_DIAGNOSTICS::endDisplay;
+    const auto now = PLAYBACK_DIAGNOSTICS::NowUs();
+    trace.SwapResult(now, swap.attempted, m_presentResult == PresentResult::SWAP_ACCEPTED, swap.error);
+    if (trace.PresentChanged(now, rendered, static_cast<int>(m_presentResult),
+                             m_displayLifecycle.Ready(), m_delayDispReset))
+    {
+      ObserveEndDisplay("present-state");
+      trace.Record(now, "present", [&] {
+        return fmt::format("rendered={} result={} swap_attempted={} egl_error={}", rendered,
+            static_cast<int>(m_presentResult), swap.attempted, swap.error);
+      });
+    }
+  };
   m_presentResult = PresentResult::SKIPPED;
   if (!rendered)
+  {
+    observe();
     return;
+  }
   if (!IsRenderTargetCurrent(target))
   {
     m_presentResult = PresentResult::TARGET_INVALID;
+    observe();
     return;
   }
 
@@ -479,13 +529,18 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   // to do about it. The frame just swapped is the first one in the new
   // encoding: switch the OSD's interpretation with it, not a frame early. A
   // failed swap presented nothing new, so the switches stay pending.
-  if (m_pGLContext.TrySwapBuffers())
+  // This AML caller has no existing eglGetError consumer. Other platforms and
+  // frames outside the trace use the unchanged default error ownership.
+  auto* diagnostics = PLAYBACK_DIAGNOSTICS::endDisplay.Active(PLAYBACK_DIAGNOSTICS::NowUs())
+                          ? &swap : nullptr;
+  if (m_pGLContext.TrySwapBuffers(diagnostics))
   {
     m_presentResult = PresentResult::SWAP_ACCEPTED;
     ApplyPendingKernelSwitch();
   }
   else
     m_presentResult = PresentResult::SWAP_FAILED;
+  observe();
 }
 
 void CWinSystemAmlogicGLESContext::QueueKernelSwitch(const char* path, int value)

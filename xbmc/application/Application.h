@@ -250,6 +250,10 @@ private:
   std::optional<int> m_pendingStop;
   bool m_shutdownWatchdogStarted{false};
   RenderAttemptResult m_lastRenderAttempt;
+#ifdef HAS_LIBAMCODEC
+  uint64_t m_lastRenderDisplay{0};
+  uint64_t m_lastRenderTargetGeneration{0};
+#endif
   void PrintStartupLog();
   void ResetCurrentItem();
 

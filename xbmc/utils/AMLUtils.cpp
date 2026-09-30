@@ -24,6 +24,8 @@
 #include <thread>
 
 #include "AMLUtils.h"
+#include "utils/PlaybackDiagnostics.h"
+#include "utils/PlaybackEndDiagnostics.h"
 #include "AMLNativeWorker.h"
 
 #include "application/Application.h"
@@ -1297,6 +1299,44 @@ void aml_dv_reset_l5_signals()
 
 // Snapshot DV/HDMI kernel state + our cached state to one debug line.
 // Called at every state-transition site so multi-playback traces can be diffed.
+void aml_end_display_diagnostics_pump()
+{
+  auto& trace = PLAYBACK_DIAGNOSTICS::endDisplay;
+  const auto now = PLAYBACK_DIAGNOSTICS::NowUs();
+  // Called only by Run, outside Render/Flip, graphics/resource/DV locks. These
+  // small read-only values are sequential observations, not an atomic hardware
+  // snapshot and not proof of HDMI packets or visible scanout. No admission wait.
+  if (const char* reason = trace.SnapshotReason(now))
+  {
+    auto read = [](const char* path) {
+      auto value = CSysfsPath{path}.Get<std::string>();
+      std::string text = value ? value->substr(0, 80) : "unavailable";
+      for (auto& ch : text)
+        if (ch == '\n' || ch == '\r')
+          ch = ' ';
+      return text;
+    };
+    CLog::Log(LOGINFO, "p3i-end-display t_us={} trace={} display={} output={} "
+        "dv_mode=[{}] dv_enable=[{}] xosd=[{}] fb_blank=[{}] fb_scale=[{}] "
+        "video_disable=[{}] blackout=[{}] mode=[{}] attr=[{}] hpd=[{}]",
+        now, trace.Id(), trace.Display(), reason,
+        read("/sys/module/amdolby_vision/parameters/dolby_vision_mode"),
+        read("/sys/module/amdolby_vision/parameters/dolby_vision_enable"),
+        read("/sys/module/amdolby_vision/parameters/dolby_vision_xbmc_osd"),
+        read("/sys/class/graphics/fb0/blank"), read("/sys/class/graphics/fb0/free_scale"),
+        read("/sys/class/video/disable_video"), read("/sys/class/video/blackout_policy"),
+        read("/sys/class/display/mode"), read("/sys/class/amhdmitx/amhdmitx0/attr"),
+        read("/sys/class/amhdmitx/amhdmitx0/hpd_state"));
+  }
+  trace.Expire(now);
+  trace.Drain([](const PLAYBACK_DIAGNOSTICS::EndDisplayTrace::Entry& entry) {
+    CLog::Log(LOGINFO, "p3i-end-display t_us={} trace={} display={} event={} {}",
+              entry.at, entry.trace, entry.display, entry.kind, entry.detail);
+  });
+  if (const auto lost = trace.TakeLost())
+    CLog::Log(LOGINFO, "p3i-end-display queue_lost={}", lost);
+}
+
 void aml_dv_dump_state(const char* tag)
 {
   auto rd = [](const char* path) -> std::string {

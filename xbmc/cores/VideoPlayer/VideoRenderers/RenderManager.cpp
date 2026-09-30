@@ -31,6 +31,8 @@
 #include "settings/SubtitlesSettings.h"
 #include "threads/SingleLock.h"
 #include "utils/AMLUtils.h"
+#include "utils/PlaybackDiagnostics.h"
+#include "utils/PlaybackEndDiagnostics.h"
 #include "utils/StringUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
@@ -636,6 +638,11 @@ void CRenderManager::UpdateGuiPresentationState(bool firstFrame)
 
 void CRenderManager::PreInitOnMain()
 {
+#if defined(HAS_LIBAMCODEC)
+  PLAYBACK_DIAGNOSTICS::endDisplay.Record(PLAYBACK_DIAGNOSTICS::NowUs(), "renderer-preinit", [&] {
+    return fmt::format("player={}", DiagnosticId());
+  });
+#endif
   {
     std::unique_lock<CCriticalSection> lock(m_statelock);
     if (m_renderState != STATE_UNCONFIGURED)
@@ -671,6 +678,11 @@ void CRenderManager::PreInitOnMain()
 
 void CRenderManager::UnInitOnMain()
 {
+#if defined(HAS_LIBAMCODEC)
+  PLAYBACK_DIAGNOSTICS::endDisplay.Record(PLAYBACK_DIAGNOSTICS::NowUs(), "renderer-retire", [&] {
+    return fmt::format("player={}", DiagnosticId());
+  });
+#endif
 #if defined(HAS_LIBAMCODEC)
   StopAMLPresenter(false);
 #endif

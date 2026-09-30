@@ -620,14 +620,23 @@ bool CEGLContextUtils::SetVSync(bool enable)
   return (eglSwapInterval(m_eglDisplay, enable) == EGL_TRUE);
 }
 
-bool CEGLContextUtils::TrySwapBuffers()
+bool CEGLContextUtils::TrySwapBuffers(SwapDiagnostics* diagnostics)
 {
+  if (diagnostics)
+    *diagnostics = {};
   if (m_eglDisplay == EGL_NO_DISPLAY || m_eglSurface == EGL_NO_SURFACE)
-  {
     return false;
-  }
 
-  return (eglSwapBuffers(m_eglDisplay, m_eglSurface) == EGL_TRUE);
+  const bool success = eglSwapBuffers(m_eglDisplay, m_eglSurface) == EGL_TRUE;
+  if (diagnostics)
+  {
+    diagnostics->attempted = true;
+    // Opt-in AML observer owns this failure. Default callers retain the EGL
+    // error for their existing recovery/logging code; success never consumes it.
+    if (!success)
+      diagnostics->error = eglGetError();
+  }
+  return success;
 }
 
 bool CEGLContextUtils::BindTextureUploadContext()

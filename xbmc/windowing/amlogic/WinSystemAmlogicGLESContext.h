@@ -122,6 +122,7 @@ private:
     bool osdSwitch = false;
   };
 
+  void ObserveEndDisplay(const char* event, bool milestone = false);
   CAMLDisplayLifecycle m_displayLifecycle;
   bool m_shutdownRequested{false};
   std::unique_ptr<CAMLDisplayLifecycle::Mutation> m_shutdownAdmission;
