@@ -91,6 +91,7 @@ protected:
   void PresentRenderImpl(bool rendered) override;
 
 private:
+  bool m_vsyncFailureReported{false}; // One failure per streak; retry remains on main.
   // Where PQ menu graphics can reach the sink raw: the VPP OSD stage in
   // passthrough (HDR10 out, DV core idle), or DV core2 told the OSD is PQ.
   enum class MenuRoute

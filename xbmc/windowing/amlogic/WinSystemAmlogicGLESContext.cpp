@@ -393,6 +393,8 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   }
 
   InvalidateRenderTarget(); // Replacement surface is now bound; callbacks do not establish readiness.
+  ResetVSync(); // A newly bound EGL surface needs its own interval initialization.
+  m_vsyncFailureReported = false;
 
   if (!m_delayDispReset)
   {
@@ -454,8 +456,13 @@ void CWinSystemAmlogicGLESContext::SetVSyncImpl(bool enable)
 {
   if (!m_pGLContext.SetVSync(enable))
   {
-    CLog::Log(LOGERROR, "{},Could not set egl vsync", __FUNCTION__);
+    ResetVSync(); // The void GLES backend hook must not cache a rejected setup.
+    if (!m_vsyncFailureReported)
+      CLog::Log(LOGERROR, "{},Could not set egl vsync; retrying on main", __FUNCTION__);
+    m_vsyncFailureReported = true;
   }
+  else
+    m_vsyncFailureReported = false;
 }
 
 void CWinSystemAmlogicGLESContext::ObserveEndDisplay(const char* event, bool milestone)

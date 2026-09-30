@@ -356,14 +356,18 @@ void CRenderSystemGLES::SetVSync(bool enable)
   if (!m_bRenderCreated)
     return;
 
-  if (enable)
-    CLog::Log(LOGINFO, "GLES: Enabling VSYNC");
-  else
-    CLog::Log(LOGINFO, "GLES: Disabling VSYNC");
-
   m_bVsyncInit = true;
-
   SetVSyncImpl(enable);
+
+  // A backend may reject the optimistic cache through ResetVSync(). Report
+  // initialization only after acceptance, avoiding INFO spam on AML retries.
+  if (m_bVsyncInit)
+  {
+    if (enable)
+      CLog::Log(LOGINFO, "GLES: Enabling VSYNC");
+    else
+      CLog::Log(LOGINFO, "GLES: Disabling VSYNC");
+  }
 }
 
 void CRenderSystemGLES::CaptureStateBlock()
