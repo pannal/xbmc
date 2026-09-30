@@ -83,7 +83,8 @@ public:
   void SetFullScreenVideo(bool bOnOff);
   bool IsFullScreenVideo() const;
   bool IsValidResolution(RESOLUTION res);
-  bool SetVideoResolution(RESOLUTION res, bool forceUpdate);
+  // Main-thread callers retaining their own request can disable the automatic pending retry.
+  bool SetVideoResolution(RESOLUTION res, bool forceUpdate, bool retryPending = true);
   void ProcessPendingVideoResolution();
   void ApplyModeChange(RESOLUTION res);
   void ApplyWindowResize(int newWidth, int newHeight);
@@ -234,7 +235,7 @@ public:
 protected:
 
   void UpdateCameraPosition(const CPoint &camera, const float &factor);
-  bool SetVideoResolutionInternal(RESOLUTION res, bool forceUpdate);
+  bool SetVideoResolutionInternal(RESOLUTION res, bool forceUpdate, bool retryPending = true);
   struct ResolutionRequest
   {
     RESOLUTION resolution;

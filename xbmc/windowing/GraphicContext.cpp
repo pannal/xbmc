@@ -390,11 +390,11 @@ bool CGraphicContext::IsValidResolution(RESOLUTION res)
 }
 
 // call SetVideoResolutionInternal and ensure its done from mainthread
-bool CGraphicContext::SetVideoResolution(RESOLUTION res, bool forceUpdate)
+bool CGraphicContext::SetVideoResolution(RESOLUTION res, bool forceUpdate, bool retryPending)
 {
   if (CServiceBroker::GetAppMessenger()->IsProcessThread())
   {
-    return SetVideoResolutionInternal(res, forceUpdate);
+    return SetVideoResolutionInternal(res, forceUpdate, retryPending);
   }
   else
   {
@@ -412,7 +412,7 @@ void CGraphicContext::ProcessPendingVideoResolution()
   SetVideoResolutionInternal(request.resolution, request.forceUpdate);
 }
 
-bool CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdate)
+bool CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdate, bool retryPending)
 {
   // A newer main-thread request supersedes the one pending quiescence. No
   // native mutation from that old request has started; storage stays bounded.
@@ -497,7 +497,7 @@ bool CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   }
   else
   {
-    if (CServiceBroker::GetWinSystem()->IsDisplayChangePending())
+    if (retryPending && CServiceBroker::GetWinSystem()->IsDisplayChangePending())
       m_pendingVideoResolution = ResolutionRequest{res, forceUpdate};
     // Reset provisional state while admission is pending or rebinding failed.
     m_bFullScreenRoot = lastFullScreen;

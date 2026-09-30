@@ -70,6 +70,8 @@ public:
   virtual bool ResizeWindow(int newWidth, int newHeight, int newLeft, int newTop) = 0;
   virtual bool IsDisplayChangePending() const { return false; }
   virtual bool IsDisplayReadyForVideo() const { return true; }
+  // Main-owned display transaction identity, including pending/failed changes.
+  virtual uint64_t GetDisplayGeneration() const { return 0; }
   virtual bool SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays) = 0;
   virtual bool DisplayHardwareScalingEnabled() { return false; }
   virtual void UpdateDisplayHardwareScaling(const RESOLUTION_INFO& resInfo) { }

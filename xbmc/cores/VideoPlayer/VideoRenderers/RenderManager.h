@@ -32,6 +32,7 @@
 #include <deque>
 #include <list>
 #include <map>
+#include <optional>
 
 #include "PlatformDefs.h"
 
@@ -211,6 +212,27 @@ protected:
   CCriticalSection m_resolutionlock;
   CCriticalSection m_presentlock;
   CCriticalSection m_datalock;
+  // Main-owned completion of window work; readiness may arrive on a later Present.
+  struct AppliedResolution
+  {
+    float fps;
+    unsigned int width;
+    unsigned int height;
+    std::string videoStereoMode;
+    StreamHdrType hdrType;
+    RESOLUTION resolution;
+    int stereoMode;
+    uint64_t displayGeneration;
+
+    bool Matches(const AppliedResolution& other) const
+    {
+      return fps == other.fps && width == other.width && height == other.height &&
+             videoStereoMode == other.videoStereoMode && hdrType == other.hdrType &&
+             resolution == other.resolution && stereoMode == other.stereoMode &&
+             displayGeneration == other.displayGeneration;
+    }
+  };
+  std::optional<AppliedResolution> m_appliedResolution;
   bool m_bTriggerUpdateResolution = false;
   bool m_bRenderGUI = true;
   bool m_renderedOverlay = false;

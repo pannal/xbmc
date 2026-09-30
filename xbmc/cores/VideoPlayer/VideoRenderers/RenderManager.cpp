@@ -320,6 +320,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
 
 bool CRenderManager::Configure()
 {
+  m_appliedResolution.reset();
 #if defined(HAS_LIBAMCODEC)
   StopAMLPresenter(false);
 #endif
@@ -638,6 +639,7 @@ void CRenderManager::UpdateGuiPresentationState(bool firstFrame)
 
 void CRenderManager::PreInitOnMain()
 {
+  m_appliedResolution.reset();
 #if defined(HAS_LIBAMCODEC)
   PLAYBACK_DIAGNOSTICS::endDisplay.Record(PLAYBACK_DIAGNOSTICS::NowUs(), "renderer-preinit", [&] {
     return fmt::format("player={}", DiagnosticId());
@@ -678,6 +680,7 @@ void CRenderManager::PreInitOnMain()
 
 void CRenderManager::UnInitOnMain()
 {
+  m_appliedResolution.reset();
 #if defined(HAS_LIBAMCODEC)
   PLAYBACK_DIAGNOSTICS::endDisplay.Record(PLAYBACK_DIAGNOSTICS::NowUs(), "renderer-retire", [&] {
     return fmt::format("player={}", DiagnosticId());
@@ -1555,6 +1558,7 @@ bool CRenderManager::ContinueDeferredDV(bool staleOnly)
   m_deferredDVSession.reset();
   if (!staleOnly)
   {
+    m_appliedResolution.reset();
     m_bTriggerUpdateResolution = false;
     m_hdrType_override = StreamHdrType::HDR_TYPE_NONE;
   }
@@ -1591,21 +1595,40 @@ void CRenderManager::UpdateResolution(bool force)
 
         StreamHdrType actual_hdrType = (m_hdrType_override != StreamHdrType::HDR_TYPE_NONE) ? m_hdrType_override : m_picture.hdrType;
 
-        CLog::Log(LOGINFO, "CRenderManager::{} Before - Set fps [{}] width [{}] height [{}] stereomode empty [{}] hdr type [{}]",
-          __FUNCTION__, m_fps, m_picture.iWidth, m_picture.iHeight, m_picture.stereoMode.empty(), CStreamDetails::DynamicRangeToString(actual_hdrType));
-  
-        RESOLUTION res = CResolutionUtils::ChooseBestResolution(m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
-        CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(actual_hdrType);
-        CancelDeferredDV(); // Release a pending native fence before display work.
-        if (!CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false))
-          return; // Retain resolution/HDR intent until actual window completion.
-        UpdateLatencyTweak();
-
-        CLog::Log(LOGINFO, "CRenderManager::{} After - Set fps [{}] width [{}] height [{}] stereomode empty [{}] hdr type [{}]",
-          __FUNCTION__, m_fps, m_picture.iWidth, m_picture.iHeight, m_picture.stereoMode.empty(), CStreamDetails::DynamicRangeToString(actual_hdrType));
-        
-        if (m_pRenderer) 
-          m_pRenderer->Update();
+        auto* window = CServiceBroker::GetWinSystem();
+        auto& gfx = window->GetGfxContext();
+        // Re-evaluate selection so whitelist/refresh policy changes supersede a
+        // waiting apply without copying policy state into RenderManager.
+        const RESOLUTION res = CResolutionUtils::ChooseBestResolution(
+            m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
+        AppliedResolution applied{m_fps, m_picture.iWidth, m_picture.iHeight,
+                                  m_picture.stereoMode, actual_hdrType, res,
+                                  static_cast<int>(gfx.GetStereoMode()),
+                                  window->GetDisplayGeneration()};
+        if (!m_appliedResolution || !m_appliedResolution->Matches(applied))
+        {
+          CLog::Log(LOGINFO,
+                    "CRenderManager::{} Before - Set fps [{}] width [{}] height [{}] stereomode empty [{}] hdr type [{}]",
+                    __FUNCTION__, m_fps, m_picture.iWidth, m_picture.iHeight,
+                    m_picture.stereoMode.empty(), CStreamDetails::DynamicRangeToString(actual_hdrType));
+          m_appliedResolution.reset();
+          gfx.SetHDRType(actual_hdrType);
+          CancelDeferredDV(); // Release a pending native fence before display work.
+          // This trigger owns retries; the graphics pump must not also apply it.
+          if (!gfx.SetVideoResolution(res, false, false))
+            return; // Failed/pending window work must still retry.
+          UpdateLatencyTweak();
+          if (m_pRenderer)
+            m_pRenderer->Update();
+          // A successful window apply can still be waiting for delayed reset.
+          // Record its resulting generation, not the one before the mutation.
+          applied.displayGeneration = window->GetDisplayGeneration();
+          m_appliedResolution = std::move(applied);
+          CLog::Log(LOGINFO,
+                    "CRenderManager::{} After - Set fps [{}] width [{}] height [{}] stereomode empty [{}] hdr type [{}]",
+                    __FUNCTION__, m_fps, m_picture.iWidth, m_picture.iHeight,
+                    m_picture.stereoMode.empty(), CStreamDetails::DynamicRangeToString(actual_hdrType));
+        }
       }
       if (!CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())
       {
