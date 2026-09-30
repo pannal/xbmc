@@ -4,6 +4,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
+#include <vector>
 #include <optional>
 #include <mutex>
 
@@ -18,6 +20,51 @@ inline uint64_t NowUs()
   return std::chrono::duration_cast<std::chrono::microseconds>(
              std::chrono::steady_clock::now() - origin).count();
 }
+
+// Access is serialized by the owning DVD clock's existing critical section.
+class ClockHistory
+{
+public:
+  struct Event
+  {
+    uint64_t serial, atUs;
+    double absolute, target, vsync;
+    bool correction{false};
+    double error{0}, adjustment{0};
+  };
+  struct Report
+  {
+    uint64_t serial{0}, lost{0};
+    std::vector<Event> events;
+  };
+  void Record(double absolute, double target, double vsync)
+  {
+    if (m_events.size() == 8)
+      m_events.pop_front();
+    m_events.push_back({++m_serial, NowUs(), absolute, target, vsync});
+  }
+  void MarkCorrection(double error, double adjustment)
+  {
+    // ErrorAdjust holds the clock lock across Discontinuity and this annotation.
+    auto& event = m_events.back();
+    event.correction = true;
+    event.error = error;
+    event.adjustment = adjustment;
+  }
+  Report Since(uint64_t after) const
+  {
+    Report result{m_serial, 0, {}};
+    if (!m_events.empty() && after < m_events.front().serial - 1)
+      result.lost = m_events.front().serial - 1 - after;
+    for (const auto& event : m_events)
+      if (event.serial > after)
+        result.events.push_back(event);
+    return result;
+  }
+private:
+  uint64_t m_serial{0};
+  std::deque<Event> m_events;
+};
 
 struct Duration
 {

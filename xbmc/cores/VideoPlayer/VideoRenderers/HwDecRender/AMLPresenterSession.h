@@ -161,6 +161,12 @@ public:
     return queue->CompleteControl(request);
   }
   CAMLSession::DiagnosticSnapshot AdmissionDiagnostics() const { return m_codec->GetDiagnostics(); }
+  PLAYBACK_DIAGNOSTICS::ClockHistory::Report ClockDiagnostics()
+  {
+    auto report = m_clock.GetDiagnosticEvents(m_reportedClockSerial);
+    m_reportedClockSerial = report.serial;
+    return report;
+  }
   PLAYBACK_DIAGNOSTICS::MainService mainService; // main-owned diagnostic interval
   std::unique_ptr<CAMLPresenter> queue;
 
@@ -169,6 +175,7 @@ private:
   std::thread::id m_main;
   CDVDClock& m_clock;
   CAMLSession::OwnerTransfer m_toWorker, m_toMain;
+  uint64_t m_reportedClockSerial{0}; // main-owned report cursor
   bool m_stopped{false};
   std::mutex m_mutex;
   double m_refresh{60}, m_fps{0}, m_latency{0};

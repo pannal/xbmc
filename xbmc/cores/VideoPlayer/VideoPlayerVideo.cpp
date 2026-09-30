@@ -521,6 +521,7 @@ void CVideoPlayerVideo::Process()
       m_droppingStats.Reset();
       m_rewindStalled = false;
       m_renderManager.ShowVideo(true);
+      LogSyncTransition("resync", pts);
 
       CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_RESYNC({:f})", pts);
       if (m_processInfo.IsVideoHwDecoder())
@@ -554,6 +555,7 @@ void CVideoPlayerVideo::Process()
       m_droppingStats.Reset();
       m_syncState = IDVDStreamPlayer::SYNC_STARTING;
       m_renderManager.ShowVideo(false);
+      LogSyncTransition("reset-complete", DVD_NOPTS_VALUE);
       m_rewindStalled = false;
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH)) // private message sent by (CVideoPlayerVideo::Flush())
@@ -593,6 +595,7 @@ void CVideoPlayerVideo::Process()
       }
 
       m_renderManager.DiscardBuffer();
+      LogSyncTransition("flush-complete", DVD_NOPTS_VALUE);
       FlushMessages();
       std::static_pointer_cast<CDVDMsgVideoFlush>(pMsg)->request->state =
           CVideoFlushRequest::State::COMPLETED;
@@ -769,6 +772,15 @@ void CVideoPlayerVideo::UpdatePlayerInfo()
   m_dataCacheCore.SetVideoLiveBitRate(GetVideoBitrate());
   m_dataCacheCore.SetVideoQueueLevel(std::min(99, m_messageQueue.GetLevel()));
   m_dataCacheCore.SetVideoQueueDataLevel(std::min(99, m_messageQueue.GetLevel(true)));
+}
+
+void CVideoPlayerVideo::LogSyncTransition(const char* event, double pts)
+{
+  CLog::Log(LOGINFO,
+            "p3i-video-sync t_us={} player={} sync_epoch={} event={} state={} pts={} "
+            "clock={} vsync_adjust_us={}",
+            PLAYBACK_DIAGNOSTICS::NowUs(), m_renderManager.DiagnosticId(), m_syncEpoch,
+            event, static_cast<int>(m_syncState), pts, m_pClock->GetClock(), m_pClock->GetVsyncAdjust());
 }
 
 void CVideoPlayerVideo::LogDiagnostics(bool final)
@@ -1098,6 +1110,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
       }
 
       msg.timestamp = hasTimestamp ? (pts + m_renderManager.GetDelay() * 1000 + diCompensation) : DVD_NOPTS_VALUE;
+      LogSyncTransition("waitsync", msg.timestamp);
       m_messageParent.Put(std::make_shared<CDVDMsgType<SStartMsg>>(CDVDMsg::PLAYER_STARTED, msg));
     }
 

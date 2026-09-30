@@ -133,6 +133,7 @@ struct CDVDClock {
   double GetClockSpeed() const {return 1;}
   bool GetClockInfo(int& missed,double& speed,double& refresh) {missed=0;speed=1;refresh=1000;return false;}
   void SetVsyncAdjust(double) {}
+  PLAYBACK_DIAGNOSTICS::ClockHistory::Report GetDiagnosticEvents(uint64_t) {return {};}
 };
 '''
 SYNC_RENDERER = r'''

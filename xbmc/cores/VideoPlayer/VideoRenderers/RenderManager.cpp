@@ -2207,6 +2207,18 @@ void CRenderManager::LogAMLPresenter(const char* event, bool transition)
             a.pollReady, a.pollTimeout, a.pollError, a.pollOther, a.pollUs,
             p.submitUs, p.pollUs, p.retireUs, p.controlUs,
             a.controlWaitUs, a.controlHoldUs, a.controlActiveUs, a.controlDenied);
+  const auto clock = m_amlPresenter->ClockDiagnostics();
+  if (clock.lost)
+    CLog::Log(LOGINFO, "p3i-clock render={} session={} events_lost={} through_serial={}",
+              m_diagnosticId, a.id, clock.lost, clock.serial);
+  for (const auto& change : clock.events)
+  {
+    CLog::Log(LOGINFO,
+              "p3i-clock render={} session={} serial={} t_us={} absolute={} target={} "
+              "correction={} error_us={} adjustment_us={} vsync_adjust_us={}",
+              m_diagnosticId, a.id, change.serial, change.atUs, change.absolute, change.target,
+              change.correction, change.error, change.adjustment, change.vsync);
+  }
   for (const auto& skip : m_amlPresenter->queue->TakeSkipEpisodes())
   {
     CLog::Log(LOGINFO,

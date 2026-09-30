@@ -9,6 +9,7 @@
 #pragma once
 
 #include "threads/CriticalSection.h"
+#include "utils/PlaybackDiagnostics.h"
 
 #include <memory>
 #include <stdint.h>
@@ -24,6 +25,8 @@ public:
 
   double GetClock(bool interpolated = true);
   double GetClock(double& absolute, bool interpolated = true);
+
+  PLAYBACK_DIAGNOSTICS::ClockHistory::Report GetDiagnosticEvents(uint64_t after);
 
   double ErrorAdjust(double error, const char* log);
   void Discontinuity(double clock, double absolute);
@@ -60,6 +63,7 @@ protected:
   int64_t AbsoluteToSystem(double absolute);
   double SystemToPlaying(int64_t system);
 
+  PLAYBACK_DIAGNOSTICS::ClockHistory m_diagnosticHistory;
   CCriticalSection m_critSection;
   int64_t m_systemUsed;
   int64_t m_startClock;

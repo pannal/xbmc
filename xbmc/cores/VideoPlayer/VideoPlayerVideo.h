@@ -137,6 +137,7 @@ protected:
   int m_iLateFrames;
   PLAYBACK_DIAGNOSTICS::VideoStages m_diagnostics; // decode/output thread only
   void LogDiagnostics(bool final = false);
+  void LogSyncTransition(const char* event, double pts);
   int m_iDroppedFrames;
   int m_iDroppedRequest;
 

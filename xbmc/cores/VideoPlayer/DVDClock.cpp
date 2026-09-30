@@ -202,6 +202,7 @@ double CDVDClock::ErrorAdjust(double error, const char* log)
     return 0;
 
   Discontinuity(clock+adjustment, absolute);
+  m_diagnosticHistory.MarkCorrection(error, adjustment);
 
   CLog::Log(LOGDEBUG, "CDVDClock::ErrorAdjust - {} - error:{:f}, adjusted:{:f}", log, error,
             adjustment);
@@ -211,6 +212,7 @@ double CDVDClock::ErrorAdjust(double error, const char* log)
 void CDVDClock::Discontinuity(double clock, double absolute)
 {
   std::unique_lock<CCriticalSection> lock(m_critSection);
+  m_diagnosticHistory.Record(absolute, clock, m_vSyncAdjust);
   m_startClock = AbsoluteToSystem(absolute);
   if(m_pauseClock)
     m_pauseClock = m_startClock;
@@ -218,6 +220,12 @@ void CDVDClock::Discontinuity(double clock, double absolute)
   m_bReset = false;
   m_systemAdjust = 0;
   m_speedAdjust = 0;
+}
+
+PLAYBACK_DIAGNOSTICS::ClockHistory::Report CDVDClock::GetDiagnosticEvents(uint64_t after)
+{
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  return m_diagnosticHistory.Since(after);
 }
 
 void CDVDClock::SetMaxSpeedAdjust(double speed)
