@@ -242,6 +242,22 @@ public:
             static_cast<int>(retiring), m_late / 10,
             m_renderPts, m_current ? m_current->pts : m_renderPts};
   }
+  struct SkipEpisode
+  {
+    uint64_t serial, atUs, epoch;
+    size_t queued;
+    int count;
+    Timing timing;
+    double pts, render, syncOffset;
+    uint64_t loopGapUs, wakeLateUs;
+  };
+  std::vector<SkipEpisode> TakeSkipEpisodes()
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::vector<SkipEpisode> result(m_skipEpisodes.begin(), m_skipEpisodes.end());
+    m_skipEpisodes.clear();
+    return result;
+  }
   struct DiagnosticSnapshot
   {
     PLAYBACK_DIAGNOSTICS::Sample sample;
@@ -249,7 +265,7 @@ public:
     uint64_t control, applied, epoch, pendingControlUs, operationUs;
     int operation; // 0 idle, 1 Submit/admission, 2 Poll/admission, 3 Retire/admission
     Phase phase;
-    uint64_t wakeLateMaxUs;
+    uint64_t wakeLateMaxUs, loopGapMaxUs, missedDeadlines, lostSkipEpisodes;
     int sampledCpu;
     uint64_t cpuSampleUs;
     bool show;
@@ -266,7 +282,7 @@ public:
                 (m_current ? 1 : 0) - (m_past ? 1 : 0),
             m_control, m_applied, m_current ? m_current->epoch : 0,
             m_pending.frame ? now - m_controlSinceUs : 0,
-            operation ? now - (operation >> 2) : 0, static_cast<int>(operation & 3), m_phase.load(), m_wakeLateMaxUs, m_sampledCpu, m_cpuSampleUs, m_show, m_diagnosticTiming.speed,
+            operation ? now - (operation >> 2) : 0, static_cast<int>(operation & 3), m_phase.load(), m_wakeLateMaxUs, m_loopGapMaxUs, m_missedDeadlines, m_lostSkipEpisodes, m_sampledCpu, m_cpuSampleUs, m_show, m_diagnosticTiming.speed,
             m_diagnosticTiming.clock, m_queue.empty() ? DVD_NOPTS_VALUE : m_queue.front()->pts,
             m_skipped, m_late};
   }
@@ -380,6 +396,9 @@ private:
       if (m_current)
         m_retired.push_back(std::move(m_current));
       double diff = render - next;
+      const auto queued = m_queue.size();
+      const auto epoch = m_queue.front()->epoch;
+      const int skipped = m_skipped;
       while (diff > 62000 && m_queue.size() > 2)
       {
         m_retired.push_back(std::move(m_queue.front()));
@@ -387,6 +406,17 @@ private:
         ++m_skipped;
         ++m_progress.discarded;
         diff = render - m_queue.front()->pts;
+      }
+      if (m_skipped != skipped)
+      {
+        if (m_skipEpisodes.size() == 8)
+        {
+          m_skipEpisodes.pop_front();
+          ++m_lostSkipEpisodes;
+        }
+        m_skipEpisodes.push_back({++m_skipSerial, PLAYBACK_DIAGNOSTICS::NowUs(), epoch,
+                                  queued, m_skipped - skipped, timing, next, render, m_syncOffset,
+                                  m_loopGapUs, m_wakeLateUs});
       }
       m_late = static_cast<int>(std::max(0.0, diff / duration));
       m_current = std::move(m_queue.front());
@@ -433,8 +463,12 @@ private:
       unsigned int passes = 0;
       bool submitted = false;
       bool advance = true;
+      std::chrono::steady_clock::time_point nextTick{}, previousIteration{};
+      double scheduledRefresh = 0;
+      bool firstIteration = true;
       while (started && !m_stop)
       {
+        const auto iterationStart = std::chrono::steady_clock::now();
         if (m_hooks.sampleCpu && PLAYBACK_DIAGNOSTICS::NowUs() - m_cpuSampleUs >= 5000000)
         {
           const int cpu = m_hooks.sampleCpu();
@@ -445,15 +479,36 @@ private:
         const Timing timing = m_hooks.timing();
         if (!(timing.refresh > 0) || !std::isfinite(timing.refresh))
           throw std::runtime_error("invalid presenter refresh rate");
-        const auto nextTick = std::chrono::steady_clock::now() +
-                              std::chrono::microseconds(static_cast<int64_t>(
-                                  static_cast<double>(DVD_TIME_BASE) / timing.refresh));
+        const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(1.0 / timing.refresh));
+        if (period <= std::chrono::steady_clock::duration::zero())
+          throw std::runtime_error("invalid presenter refresh period");
         bool selectionChanged = false;
         std::shared_ptr<Frame> frame;
         std::vector<std::shared_ptr<Frame>> retired;
         {
           std::lock_guard<std::mutex> lock(m_mutex);
           m_diagnosticTiming = timing;
+          m_loopGapUs = firstIteration ? 0 : static_cast<uint64_t>(
+              std::chrono::duration_cast<std::chrono::microseconds>(
+                  iterationStart - previousIteration).count());
+          m_loopGapMaxUs = std::max(m_loopGapMaxUs, m_loopGapUs);
+          previousIteration = iterationStart;
+          firstIteration = false;
+
+          // Keep a continuous refresh timeline: rebasing every tick to now
+          // accumulates even small wake delays until healthy frames are late.
+          if (scheduledRefresh != timing.refresh || m_resetClock)
+            nextTick = iterationStart;
+          scheduledRefresh = timing.refresh;
+          nextTick += period;
+          if (nextTick <= iterationStart)
+          {
+            // Skip expired timer slots after a stall; do not replay catch-up ticks.
+            const auto missed = (iterationStart - nextTick) / period + 1;
+            nextTick += period * missed;
+            m_missedDeadlines += missed;
+          }
           if (m_resetClock)
           {
             m_error = 0;
@@ -571,8 +626,8 @@ private:
         m_changed.wait_until(lock, nextTick, [&] { return m_stop.load(); });
         const auto late = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - nextTick).count();
-        if (late > 0)
-          m_wakeLateMaxUs = std::max(m_wakeLateMaxUs, static_cast<uint64_t>(late));
+        m_wakeLateUs = late > 0 ? static_cast<uint64_t>(late) : 0;
+        m_wakeLateMaxUs = std::max(m_wakeLateMaxUs, m_wakeLateUs);
       }
       if (started)
         m_hooks.finish();
@@ -603,6 +658,9 @@ private:
   std::atomic<uint64_t> m_operationToken{0};
   int m_sampledCpu{-1};
   uint64_t m_wakeLateMaxUs{0}, m_cpuSampleUs{0};
+  uint64_t m_wakeLateUs{0}, m_loopGapUs{0}, m_loopGapMaxUs{0}, m_missedDeadlines{0};
+  uint64_t m_skipSerial{0}, m_lostSkipEpisodes{0};
+  std::deque<SkipEpisode> m_skipEpisodes; // At most eight events per report, with loss counted.
   const size_t m_capacity;
   Hooks m_hooks;
   mutable std::mutex m_mutex;

@@ -2192,14 +2192,14 @@ void CRenderManager::LogAMLPresenter(const char* event, bool transition)
             "p3i-presenter t_us={} render={} event={} session={} epoch={} request={} owner_gen={} "
             "main_owner={} transferring={} phase={} native={} display={} fences={}/{}/{} "
             "native_phase={} native_age_us={} display_phase={} control_pending={} "
-            "cpu={} cpu_sample_us={} wake_late_max_us={} leases={}/{} control={}/{} pending_us={} operation={}:{}us "
+            "cpu={} cpu_sample_us={} wake_late_max_us={} loop_gap_max_us={} cadence_missed={} skip_events_lost={} leases={}/{} control={}/{} pending_us={} operation={}:{}us "
             "capacity={} outstanding={} queued={} reserved={} retiring={} show={} speed={} clock={} next_pts={} skipped={} late={} "
             "published={} selected={} submit_consumed={} pass_complete={} polls={} retired={} discarded={} "
             "qbuf_calls={} drop_calls={} qbuf_errors={} blocked={} qbuf_us={} poll(ready/timeout/error/other/us)={}/{}/{}/{}/{} "
             "native_us={}/{}/{} control_us={} main_control_wait_us={} hold_us={} active_us={} denied={}",
             q.sample.atUs, m_diagnosticId, event, a.id, a.epoch, a.request, a.owner,
             a.mainOwner, a.transferring, static_cast<int>(q.phase), a.native, a.display,
-            a.fenced, a.displayFenced, a.nativeFenced, a.nativePhase, a.nativeUs, a.displayPhase, a.controlPending, q.sampledCpu, q.cpuSampleUs, q.wakeLateMaxUs, a.active, a.retiring,
+            a.fenced, a.displayFenced, a.nativeFenced, a.nativePhase, a.nativeUs, a.displayPhase, a.controlPending, q.sampledCpu, q.cpuSampleUs, q.wakeLateMaxUs, q.loopGapMaxUs, q.missedDeadlines, q.lostSkipEpisodes, a.active, a.retiring,
             q.control, q.applied, q.pendingControlUs, q.operation, q.operationUs,
             q.capacity, q.outstanding, q.queued, q.reservations, q.retiring, q.show, q.speed, q.clock, q.nextPts, q.skipped, q.late,
             p.published, p.selected, p.qbufAttempts, p.completed, p.polls, p.retired, p.discarded,
@@ -2207,6 +2207,17 @@ void CRenderManager::LogAMLPresenter(const char* event, bool transition)
             a.pollReady, a.pollTimeout, a.pollError, a.pollOther, a.pollUs,
             p.submitUs, p.pollUs, p.retireUs, p.controlUs,
             a.controlWaitUs, a.controlHoldUs, a.controlActiveUs, a.controlDenied);
+  for (const auto& skip : m_amlPresenter->queue->TakeSkipEpisodes())
+  {
+    CLog::Log(LOGINFO,
+              "p3i-presenter-skip render={} session={} episode={} t_us={} epoch={} count={} "
+              "queued={} clock={} pts={} render_pts={} diff_us={} refresh={} latency_us={} "
+              "speed={} sync={} sync_offset_us={} loop_gap_us={} wake_late_us={}",
+              m_diagnosticId, a.id, skip.serial, skip.atUs, skip.epoch, skip.count, skip.queued,
+              skip.timing.clock, skip.pts, skip.render, skip.render - skip.pts,
+              skip.timing.refresh, skip.timing.latency, skip.timing.speed, skip.timing.sync,
+              skip.syncOffset, skip.loopGapUs, skip.wakeLateUs);
+  }
   if (report && report->gaps)
   {
     const auto& gap = report->worst;
