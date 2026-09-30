@@ -47,6 +47,7 @@ struct CApplicationPlayer {
   CCriticalSection m_playerLock;
   std::shared_ptr<IPlayer> m_pPlayer,m_closingPlayer;
   bool m_closeAcknowledged=false,m_waitForPlaybackStop=false,m_shutdown=false;
+  uint64_t m_openGeneration=0;std::optional<uint64_t> m_cleanupGeneration;bool m_cleanupPending=false;
   struct {
     std::shared_ptr<CFileItem> pItem;CPlayerOptions options;
     std::string playerName;IPlayerCallback* callback=nullptr;

@@ -8,6 +8,9 @@
 
 #pragma once
 
+#include <cstdint>
+#include <optional>
+
 #include "SeekHandler.h"
 #include "application/IApplicationComponent.h"
 #include "cores/IPlayer.h"
@@ -39,6 +42,10 @@ public:
   bool ClosePlayer(bool shutdown = false);
   void OnPlaybackStopped();
   void ResetPlayer();
+  // Main-owned terminal cleanup follows the retained player's final retirement.
+  bool PreparePlaybackCleanup();
+  bool PlaybackCleanupCompleted() const;
+  bool PlaybackCleanupPending() const { return m_cleanupPending; }
   std::string GetCurrentPlayer() const;
   float GetPlaySpeed() const;
   float GetPlayTempo() const;
@@ -199,6 +206,9 @@ private:
   bool m_closeAcknowledged{false};
   bool m_waitForPlaybackStop{false};
   bool m_shutdown{false};
+  uint64_t m_openGeneration{0};
+  std::optional<uint64_t> m_cleanupGeneration;
+  bool m_cleanupPending{false};
   mutable CCriticalSection m_playerLock;
   CSeekHandler m_seekHandler;
 

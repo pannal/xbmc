@@ -1977,6 +1977,8 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
   appPlayer->OpenNext(m_ServiceManager->GetPlayerCoreFactory());
   if (opening && !appPlayer->HasPendingOpen() && (!openingVideo || !appPlayer->IsPlaying()))
     PlaybackCleanup(); // Failed or non-video replacement still needs terminal cleanup.
+  if (appPlayer->PlaybackCleanupPending())
+    PlaybackCleanup();
   // A started video may not report HasVideo yet. Preserve the current window;
   // its original fullscreen option, not cleanup of the old player, owns navigation.
 
@@ -2898,9 +2900,14 @@ void CApplication::PlaybackCleanup()
   // intentionally carry fullscreen=false to preserve the user's current window.
   if (appPlayer->HasPendingOpen())
     return;
+  const bool cleanup = appPlayer->PreparePlaybackCleanup();
+  if (!cleanup && !appPlayer->PlaybackCleanupCompleted())
+    return;
+  // Later playlist notifications may still need to leave visualization. Do not
+  // repeat desktop restoration or terminal side effects for a completed player.
   const auto stackHelper = GetComponent<CApplicationStackHelper>();
 
-  if (!appPlayer->IsPlaying())
+  if (cleanup && !appPlayer->IsPlaying())
   {
     CGUIComponent *gui = CServiceBroker::GetGUI();
     if (gui)
@@ -2908,7 +2915,7 @@ void CApplication::PlaybackCleanup()
     appPlayer->OpenNext(m_ServiceManager->GetPlayerCoreFactory());
   }
 
-  if (!appPlayer->IsPlayingVideo())
+  if (cleanup && !appPlayer->IsPlayingVideo())
   {
     if(CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_VIDEO ||
        CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_GAME)
@@ -2948,13 +2955,12 @@ void CApplication::PlaybackCleanup()
     CServiceBroker::GetGUI()->GetWindowManager().PreviousWindow();
   }
 
-  if (!appPlayer->IsPlaying())
+  if (cleanup && !appPlayer->IsPlaying())
   {
     stackHelper->Clear();
-    appPlayer->ResetPlayer();
   }
 
-  if (CServiceBroker::GetAppParams()->IsTestMode())
+  if (cleanup && CServiceBroker::GetAppParams()->IsTestMode())
     CServiceBroker::GetAppMessenger()->PostMsg(TMSG_QUIT);
 }
 
@@ -2989,7 +2995,7 @@ void CApplication::StopPlaying()
            iWin == WINDOW_FULLSCREEN_VIDEO ||
            iWin == WINDOW_FULLSCREEN_GAME) &&
            !m_bStop)
-        gui->GetWindowManager().PreviousWindow();
+        PlaybackCleanup();
 
       g_partyModeManager.Disable();
     }

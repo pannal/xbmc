@@ -16,12 +16,17 @@ PRELUDE = retirement['PRELUDE'].replace(
     'bool IsDVDFile()const{return false;}',
     'bool IsDVDFile()const{return false;} bool video=true;bool IsVideo()const{return video;} bool IsCDDA()const{return false;} bool IsOnDVD()const{return false;}')
 PRELUDE = PRELUDE.replace('struct CPlayerOptions {};', 'struct CPlayerOptions {bool fullscreen=false;};')
+PRELUDE = PRELUDE.replace('#include <cassert>', '#include <cassert>\n#include <functional>')
+PRELUDE = PRELUDE.replace('CCriticalSection* applicationLock=nullptr;', 'std::function<void()> onClose;CCriticalSection* applicationLock=nullptr;')
+PRELUDE = PRELUDE.replace('++closes;return canClose;', 'auto work=std::move(onClose);onClose={};if(work)work();++closes;return canClose;')
 PRELUDE = PRELUDE.replace('bool playing=false,canClose=false;', 'bool playing=false,canClose=false,hasVideo=false,hasAudio=false,lastFullscreen=false,failOpen=false;')
 PRELUDE = PRELUDE.replace('const CPlayerOptions&){++opens;', 'const CPlayerOptions& options){lastFullscreen=options.fullscreen;++opens;')
 PRELUDE = PRELUDE.replace('playing=true;return true;', 'if(failOpen)return false;playing=true;return true;')
 PRELUDE = PRELUDE.replace('m_pPlayer->applicationLock=&m_playerLock;', 'm_pPlayer->applicationLock=&m_playerLock;m_pPlayer->failOpen=failOpen;')
 PRELUDE = PRELUDE.replace('int created=0;', """int created=0;bool failCreate=false,failOpen=false;
   bool HasPendingOpen()const;bool HasPendingVideoOpen()const;
+  bool HasPlayer()const{return bool(m_pPlayer);}
+  bool PreparePlaybackCleanup();bool PlaybackCleanupCompleted()const;bool PlaybackCleanupPending()const{return m_cleanupPending;}
   bool IsPlaying(){return m_pPlayer&&m_pPlayer->playing;}
   bool IsPlayingVideo(){return IsPlaying()&&m_pPlayer->hasVideo;}
   bool IsPlayingAudio(){return IsPlaying()&&m_pPlayer->hasAudio;}
@@ -40,10 +45,11 @@ struct Strings {int Get(int n){return n;}}g_localizeStrings;
 struct CApplicationStackHelper {int clears=0;void Clear(){++clears;}};
 struct CApplicationPowerHandling {void WakeUpScreenSaverAndDPMS(){}};
 struct Party {int disabled=0;void Disable(){++disabled;}}g_partyModeManager;
-struct Gfx {bool fullscreen=true;void SetFullScreenVideo(bool b){fullscreen=b;}};
+struct Gfx {bool fullscreen=true;int restores=0,hdr=1;std::vector<int> restoreHdr;
+ void SetFullScreenVideo(bool b){fullscreen=b;if(!b){++restores;restoreHdr.push_back(hdr);}}};
 static Gfx gfx;
 struct Manager {int active=WINDOW_FULLSCREEN_VIDEO,previous=0;int GetActiveWindow(){return active;}
- void PreviousWindow(){++previous;active=HOME;gfx.fullscreen=false;}
+ void PreviousWindow(){++previous;active=HOME;gfx.SetFullScreenVideo(false);}
  void SendThreadMessage(CGUIMessage&){}
 };
 struct Audio {int enables=0;void Enable(bool value){if(value)++enables;}};
@@ -99,7 +105,7 @@ bool CApplication::PlaylistStopped(){@PLAYLISTSTOP@}
 @CLEANUP@
 @STOP@
 static void begin(CApplication& app,bool fullscreen=true){
- CServiceBroker::gui={};gfx.fullscreen=fullscreen;
+ CServiceBroker::gui={};gfx={};gfx.fullscreen=fullscreen;
  CServiceBroker::gui.wm.active=fullscreen?WINDOW_FULLSCREEN_VIDEO:HOME;
  CServiceBroker::playlist={};CServiceBroker::playlist.app=&app;CServiceBroker::components.player=&app.player;
  app.player.m_pPlayer=std::make_shared<IPlayer>();app.player.m_pPlayer->m_name="old";
@@ -126,7 +132,7 @@ int main(){
  {CApplication app;begin(app);auto old=app.player.m_pPlayer;old->canClose=true;ended(app);
   assert(gfx.fullscreen);app.Frame();assert(gfx.fullscreen&&app.player.created==1);}
  {CApplication app;begin(app);auto old=app.player.m_pPlayer;ended(app);app.StopPlaying();
-  assert(!app.player.m_nextItem.pItem&&!gfx.fullscreen);old->canClose=true;app.Frame();assert(app.player.created==0);}
+  assert(!app.player.m_nextItem.pItem&&gfx.fullscreen);old->canClose=true;app.Frame();assert(app.player.created==0&&!gfx.fullscreen);}
  {CApplication app;begin(app);app.player.m_pPlayer->canClose=true;ended(app);
   assert(!app.player.HasPlayer()&&app.player.HasPendingOpen());app.StopPlaying();
   assert(!app.player.HasPendingOpen());app.Frame();assert(app.player.created==0&&!gfx.fullscreen);}
@@ -140,11 +146,56 @@ int main(){
  {CApplication app;begin(app);auto old=app.player.m_pPlayer;ended(app);app.player.failCreate=true;
   old->canClose=true;app.Frame();assert(!gfx.fullscreen&&app.stack.clears==1&&!app.player.HasPlayer());}
  {CApplication app;begin(app);auto old=app.player.m_pPlayer;ended(app);app.player.failOpen=true;
-  old->canClose=true;app.Frame();assert(!gfx.fullscreen&&app.stack.clears==1&&app.player.m_closingPlayer);}
+  old->canClose=true;app.Frame();assert(gfx.fullscreen&&app.stack.clears==0&&app.player.m_closingPlayer);
+  app.player.m_pPlayer->canClose=true;app.Frame();assert(!gfx.fullscreen&&app.stack.clears==1);}
  {CApplication app;begin(app);auto old=app.player.m_pPlayer;ended(app);old->canClose=true;app.Frame();
-  app.player.m_pPlayer->playing=false;app.player.OnPlaybackStopped();app.PlaybackCleanup();assert(!gfx.fullscreen);}
+  app.player.m_pPlayer->playing=false;app.player.OnPlaybackStopped();app.PlaybackCleanup();assert(gfx.fullscreen);
+  app.player.m_pPlayer->canClose=true;app.Frame();assert(!gfx.fullscreen);}
  {CApplication app;begin(app);CServiceBroker::playlist.atEnd=true;ended(app);
-  assert(!gfx.fullscreen&&!app.player.m_nextItem.pItem);}
+  assert(gfx.fullscreen&&!app.player.m_nextItem.pItem&&app.player.PlaybackCleanupPending());
+  auto old=app.player.m_pPlayer;
+  const int calls=old->closes;
+  for(int i=0;i<10;++i){app.Frame();assert(gfx.fullscreen&&gfx.restores==0);}
+  assert(old->closes==calls+10);
+  app.PlaylistStopped();assert(gfx.fullscreen&&gfx.restores==0);
+  // Recording retirement clears the software HDR tag before GUI restoration.
+  gfx.hdr=0;old->canClose=true;app.Frame();
+  assert(!gfx.fullscreen&&gfx.restores==1&&gfx.restoreHdr==std::vector<int>{0});
+  app.PlaylistStopped();app.PlaybackCleanup();app.Frame();assert(gfx.restores==1);
+ }
+ // A new accepted intent invalidates pending old cleanup, including before HasVideo.
+ {CApplication app;begin(app);CServiceBroker::playlist.atEnd=true;ended(app);
+  auto old=app.player.m_pPlayer;CFileItem latest;latest.id=42;
+  assert(app.player.OpenFile(latest,{},app.services.factory,"old",app.callback));
+  assert(!app.player.PlaybackCleanupPending());old->canClose=true;app.Frame();
+  assert(app.player.IsPlaying()&&gfx.fullscreen&&gfx.restores==0);
+ }
+ // Even an immediate reentrant open during close rejects the old cleanup.
+ {CApplication app;begin(app);auto old=app.player.m_pPlayer;old->canClose=true;
+  old->onClose=[&]{CFileItem latest;latest.id=43;
+   assert(app.player.OpenFile(latest,{},app.services.factory,"old",app.callback));};
+  app.player.OnPlaybackStopped();app.PlaybackCleanup();
+  assert(app.player.HasPendingOpen()&&gfx.fullscreen&&gfx.restores==0);
+  app.Frame();assert(app.player.IsPlaying()&&gfx.fullscreen&&gfx.restores==0);
+ }
+ // Application handles STOPPED before playlist state changes: desktop effects
+ // run once, but the late notification must still leave visualization.
+ for(bool immediate:{false,true}){CApplication app;begin(app);
+  CServiceBroker::gui.wm.active=WINDOW_VISUALISATION;
+  CServiceBroker::playlist.m_iCurrentPlayList=PLAYLIST::TYPE_MUSIC;
+  auto old=app.player.m_pPlayer;old->hasAudio=true;old->canClose=immediate;
+  app.player.OnPlaybackStopped();app.PlaybackCleanup();
+  assert(CServiceBroker::gui.wm.active==WINDOW_VISUALISATION);
+  CServiceBroker::playlist.m_iCurrentPlayList=PLAYLIST::TYPE_NONE;
+  app.PlaylistStopped();old->canClose=true;app.Frame();
+  assert(CServiceBroker::gui.wm.active==HOME&&app.stack.clears==1);
+  auto restores=gfx.restores;app.PlaylistStopped();app.Frame();assert(gfx.restores==restores);
+ }
+ // Background EOF remains in the browser, restoring only after original retirement.
+ {CApplication app;begin(app,false);CServiceBroker::playlist.atEnd=true;ended(app);
+  assert(!gfx.fullscreen&&gfx.restores==0);app.player.m_pPlayer->canClose=true;app.Frame();
+  assert(!gfx.fullscreen&&CServiceBroker::gui.wm.previous==0&&gfx.restores==1);
+ }
  {CApplication app;begin(app);auto old=app.player.m_pPlayer;ended(app);
   CFileItem audio;audio.video=false;audio.id=10;app.player.OpenFile(audio,{},app.services.factory,"old",app.callback);
   old->canClose=true;app.Frame();assert(app.player.m_pPlayer->lastItem==10&&!gfx.fullscreen);}
@@ -166,7 +217,9 @@ def main():
                 'void CApplicationPlayer::OnPlaybackStopped()', 'void CApplicationPlayer::OpenNext(',
                 'void CApplicationPlayer::ResetPlayer()', 'bool CApplicationPlayer::OpenFile(']
     signatures+=['bool CApplicationPlayer::HasPendingOpen() const',
-                     'bool CApplicationPlayer::HasPendingVideoOpen() const']
+                     'bool CApplicationPlayer::HasPendingVideoOpen() const',
+                     'bool CApplicationPlayer::PreparePlaybackCleanup()',
+                     'bool CApplicationPlayer::PlaybackCleanupCompleted() const']
     application=(ROOT/'xbmc/application/Application.cpp').read_text()
     frame=function(application,'void CApplication::FrameMove(')
     continuation=frame[frame.index('  const bool openingVideo ='):frame.index('  // this will go away')]
@@ -200,11 +253,33 @@ def main():
         if args.negative_control:
             needle='  if (appPlayer->HasPendingOpen())\n    return;'
             assert code.count(needle)==1
-            run(code.replace(needle,''),'gfx.fullscreen&&CServiceBroker::gui.wm.previous==0')
+            run(code.replace(needle,'').replace('  if (HasPendingOpen())\n    return false;','')
+                .replace('generation != m_openGeneration || HasPendingOpen() || HasPlayer()',
+                         'generation != m_openGeneration || HasPlayer()'),
+                "Assertion `gfx.fullscreen'")
             needle='  if (opening && !appPlayer->HasPendingOpen() && (!openingVideo || !appPlayer->IsPlaying()))'
             assert code.count(needle)==1
             run(code.replace(needle,needle.replace('if (opening', 'if (false && opening')),
-                '!gfx.fullscreen&&app.stack.clears==1')
+                '!gfx.fullscreen&&app.stack.clears==1&&!app.player.HasPlayer()')
+            needle='  if (generation != m_openGeneration || HasPendingOpen() || HasPlayer())\n    return false;'
+            assert code.count(needle)==1
+            run(code.replace(needle,''),'gfx.fullscreen')
+            needle='  if (m_cleanupGeneration == m_openGeneration && !m_cleanupPending)\n    return false;'
+            assert code.count(needle)==1
+            run(code.replace(needle,''),'gfx.restores==1')
+            needle='  m_cleanupPending = false;\n  const std::string newPlayer'
+            assert code.count(needle)==1
+            run(code.replace(needle,'  const std::string newPlayer'),'!app.player.PlaybackCleanupPending()')
+            needle='  if (!m_cleanupPending)\n  {'
+            assert code.count(needle)==1
+            run(code.replace(needle,'  if (true)\n  {'),'old->closes==calls+10')
+            needle='generation != m_openGeneration || HasPendingOpen() || HasPlayer()'
+            assert code.count(needle)==1
+            run(code.replace(needle,'HasPlayer()'),'app.player.HasPendingOpen()&&gfx.fullscreen&&gfx.restores==0')
+            needle='  if (!cleanup && !appPlayer->PlaybackCleanupCompleted())'
+            assert code.count(needle)==1
+            run(code.replace(needle,'  if (!cleanup)'),
+                'CServiceBroker::gui.wm.active==HOME&&app.stack.clears==1')
             needle='if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen())'
             assert code.count(needle)==2
             run(code.replace(needle,'if (appPlayer->HasPlayer())'),'!app.player.HasPendingOpen()')

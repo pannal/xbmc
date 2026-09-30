@@ -71,6 +71,36 @@ void CApplicationPlayer::ContinueClose()
   // The local original keeps final destruction outside the application lock.
 }
 
+bool CApplicationPlayer::PreparePlaybackCleanup()
+{
+  if (HasPendingOpen())
+    return false;
+  if (IsPlaying())
+    return true; // Existing nonterminal audio/video cleanup policy stays in Application.
+  if (m_cleanupGeneration == m_openGeneration && !m_cleanupPending)
+    return false;
+
+  const auto generation = m_openGeneration;
+  if (!m_cleanupPending)
+  {
+    m_cleanupGeneration = generation;
+    m_cleanupPending = true;
+    ResetPlayer();
+  }
+  // Pending retirement is driven by FrameMove, once per main continuation.
+
+  if (generation != m_openGeneration || HasPendingOpen() || HasPlayer())
+    return false;
+  // Consume before GUI effects, which may reenter playback or dispatch messages.
+  m_cleanupPending = false;
+  return true;
+}
+
+bool CApplicationPlayer::PlaybackCleanupCompleted() const
+{
+  return m_cleanupGeneration == m_openGeneration && !m_cleanupPending && !HasPlayer();
+}
+
 void CApplicationPlayer::OnPlaybackStopped()
 {
   // Main consumed STOPPED/ENDED or explicitly discarded it for a newer open.
@@ -103,6 +133,10 @@ bool CApplicationPlayer::OpenFile(const CFileItem& item, const CPlayerOptions& o
 {
   if (m_shutdown)
     return false;
+  // Every new intent, including a failed or deferred open, supersedes terminal
+  // cleanup of the previous player. Main still owns its close continuation.
+  ++m_openGeneration;
+  m_cleanupPending = false;
   const std::string newPlayer = playerName.empty() ? factory.GetDefaultPlayer(item) : playerName;
   auto player = GetInternal();
   const bool replace = player &&
