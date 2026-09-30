@@ -14,8 +14,10 @@
 #include "cores/VideoPlayer/DVDSubtitles/SubtitlesAdapter.h"
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <string>
+#include <vector>
 
 class CDebugRenderer
 {
@@ -50,6 +52,9 @@ protected:
   CRenderer m_overlayRenderer;
 
 private:
+  void SetInfo(std::vector<std::string> lines);
+  std::vector<std::string> m_cachedLines;
+  std::chrono::steady_clock::time_point m_nextInfoUpdate{};
   CSubtitlesAdapter* m_adapter{nullptr};
   std::atomic_bool m_isInitialized{false};
   std::shared_ptr<CDVDOverlay> m_overlay;

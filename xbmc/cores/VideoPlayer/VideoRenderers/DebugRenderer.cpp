@@ -52,6 +52,8 @@ void CDebugRenderer::Initialize()
 
 void CDebugRenderer::Dispose()
 {
+  m_cachedLines.clear();
+  m_nextInfoUpdate = {};
   m_isInitialized = false;
   m_overlayRenderer.Flush();
   m_overlay.reset();
@@ -64,39 +66,36 @@ void CDebugRenderer::Dispose()
 
 void CDebugRenderer::SetInfo(DEBUG_INFO_PLAYER& info)
 {
-  if (!m_isInitialized)
-    return;
-
-  // FIXME: We currently force ASS_Event's and the current PTS
-  // of rendering with fixed values to allow perpetual
-  // display of on-screen text. It would be appropriate for Libass
-  // provide a way to allow fixed on-screen text display
-  // without use all these fixed values.
-  m_adapter->FlushSubtitles();
-  m_adapter->AddSubtitle(info.audio, 0., 5000000.);
-  m_adapter->AddSubtitle(info.video, 0., 5000000.);
-  m_adapter->AddSubtitle(info.player, 0., 5000000.);
-  m_adapter->AddSubtitle(info.vsync, 0., 5000000.);
+  SetInfo({info.audio, info.video, info.player, info.vsync});
 }
 
 void CDebugRenderer::SetInfo(DEBUG_INFO_VIDEO& video, DEBUG_INFO_RENDER& render)
 {
+  SetInfo({video.videoSource, video.metaPrim, video.metaLight, video.shader, video.render,
+           render.renderFlags, render.videoOutput});
+}
+
+void CDebugRenderer::SetInfo(std::vector<std::string> lines)
+{
   if (!m_isInitialized)
     return;
+  const auto now = std::chrono::steady_clock::now();
+  if (now < m_nextInfoUpdate)
+    return;
+  m_nextInfoUpdate = now + std::chrono::milliseconds(100);
+  if (lines == m_cachedLines)
+    return;
 
-  // FIXME: We currently force ASS_Event's and the current PTS
-  // of rendering with fixed values to allow perpetual
-  // display of on-screen text. It would be appropriate for Libass
-  // provide a way to allow fixed on-screen text display
-  // without use all these fixed values.
+  // Keep the fixed ASS event/PTS scheme and drawing cadence. Only replacing
+  // events is limited; player diagnostic queries retain their sampling cadence.
+  m_cachedLines.clear();
   m_adapter->FlushSubtitles();
-  m_adapter->AddSubtitle(video.videoSource, 0., 5000000.);
-  m_adapter->AddSubtitle(video.metaPrim, 0., 5000000.);
-  m_adapter->AddSubtitle(video.metaLight, 0., 5000000.);
-  m_adapter->AddSubtitle(video.shader, 0., 5000000.);
-  m_adapter->AddSubtitle(video.render, 0., 5000000.);
-  m_adapter->AddSubtitle(render.renderFlags, 0., 5000000.);
-  m_adapter->AddSubtitle(render.videoOutput, 0., 5000000.);
+  bool added = true;
+  for (auto line : lines) // PostProcess mutates text; cache the original values.
+    if (!line.empty() && m_adapter->AddSubtitle(line, 0., 5000000.) == NO_SUBTITLE_ID)
+      added = false;
+  if (added)
+    m_cachedLines = std::move(lines);
 }
 
 void CDebugRenderer::Render(CRect& src, CRect& dst, CRect& view)
@@ -110,6 +109,8 @@ void CDebugRenderer::Render(CRect& src, CRect& dst, CRect& view)
 
 void CDebugRenderer::Flush()
 {
+  m_cachedLines.clear();
+  m_nextInfoUpdate = {};
   if (!m_isInitialized)
     return;
 
