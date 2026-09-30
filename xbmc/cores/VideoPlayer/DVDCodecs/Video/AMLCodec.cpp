@@ -34,8 +34,10 @@
 #include "platform/linux/SysfsPath.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <limits>
 #include <queue>
 #include <signal.h>
 #include <stdio.h>
@@ -251,6 +253,28 @@ public:
 #define UNIT_FREQ       96000
 #define AV_SYNC_THRESH  PTS_FREQ*30
 
+namespace
+{
+// Decoder overrides follow VideoPlayerVideo's 5..120 fps timing window. This
+// does not limit stream-hint timing: unusual rates keep their established value.
+constexpr unsigned int MIN_DECODER_VIDEO_RATE = UNIT_FREQ / 120;
+constexpr unsigned int MAX_DECODER_VIDEO_RATE = UNIT_FREQ / 5;
+
+unsigned int VideoRateFromHints(int fpsRate, int fpsScale, unsigned int fields = 1)
+{
+  constexpr unsigned int fallback = 3203; // Rounded 96000 * 1001 / 30000.
+  if (fpsRate <= 0 || fpsScale <= 0)
+    return fallback;
+  const uint64_t numerator = static_cast<uint64_t>(UNIT_FREQ) * fpsScale * fields;
+  const uint64_t duration = (numerator + fpsRate / 2) / fpsRate;
+  // Keep positive, representable stream timing, including rates outside the
+  // decoder override window. int consumers must not receive a wrapped duration.
+  return duration > 0 && duration <= static_cast<uint64_t>(std::numeric_limits<int>::max())
+             ? static_cast<unsigned int>(duration)
+             : fallback;
+}
+} // namespace
+
 #define TRICKMODE_NONE  0x00
 #define TRICKMODE_I     0x01
 #define TRICKMODE_FFFB  0x02
@@ -346,7 +370,9 @@ typedef struct am_private_t
   unsigned int      video_height;
   unsigned int      video_ratio;
   unsigned int      video_ratio64;
-  unsigned int      video_rate;
+  // Presentation can refresh the rate while the decoder reads frame/drain
+  // timing. Session permits exclude teardown, not concurrent normal operations.
+  std::atomic<unsigned int> video_rate{0};
   unsigned int      video_rotation_degree;
   int               extrasize;
   FFmpegExtraData   extradata;
@@ -1862,7 +1888,9 @@ int CAMLCodec::OMXDurationToNs(int duration)
 
 int CAMLCodec::GetAmlDuration() const
 {
-  return am_private ? (am_private->video_rate * PTS_FREQ) / UNIT_FREQ : 0;
+  return am_private ? static_cast<int>(
+      (static_cast<uint64_t>(am_private->video_rate.load(std::memory_order_relaxed)) * PTS_FREQ) /
+      UNIT_FREQ) : 0;
 };
 
 
@@ -2173,12 +2201,7 @@ bool CAMLCodec::OpenDecoderInternal()
   // per frame.  Common values:
   //   23.976fps → 4004,  24fps → 4000,  25fps → 3840,
   //   29.97fps  → 3203,  30fps → 3200,  50fps → 1920,  59.94fps → 1602
-  if (hints.fpsrate > 0 && hints.fpsscale != 0)
-  {
-    am_private->video_rate = 0.5f + (float)UNIT_FREQ * hints.fpsscale / hints.fpsrate;
-  }
-  else
-    am_private->video_rate = 0.5f + (float)UNIT_FREQ * 1001 / 30000; // ~29.97fps fallback
+  am_private->video_rate = VideoRateFromHints(hints.fpsrate, hints.fpsscale);
 
   // Interlaced content reported at field rate needs converting to frame rate
   // for the decoder firmware.  video_rate <= 1920 means >~48 fields/s:
@@ -2191,7 +2214,7 @@ bool CAMLCodec::OpenDecoderInternal()
   if (hints.interlaced && am_private->video_rate <= 1920)
   {
     CLog::Log(LOGDEBUG, "CAMLCodec::OpenDecoder video_rate exception");
-    am_private->video_rate = 0.5f + (float)UNIT_FREQ * hints.fpsscale * 2 / hints.fpsrate;
+    am_private->video_rate = VideoRateFromHints(hints.fpsrate, hints.fpsscale, 2);
   }
 
   // SD H.264 in mp4/avi containers can report wrong fps due to unreliable
@@ -2308,7 +2331,7 @@ bool CAMLCodec::OpenDecoderInternal()
                         : "timeline rebuilt at the nominal rate");
 
   CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder hints.fpsrate({:d}), hints.fpsscale({:d}), video_rate({:d})",
-    hints.fpsrate, hints.fpsscale, am_private->video_rate);
+    hints.fpsrate, hints.fpsscale, am_private->video_rate.load(std::memory_order_relaxed));
   CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder hints.aspect({:f}), video_ratio.num({:d}), video_ratio.den({:d})",
     hints.aspect, video_ratio.num, video_ratio.den);
   CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder hints.orientation({:d}), hints.forced_aspect({:d}), hints.extrasize({:d})",
@@ -3229,7 +3252,8 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     m_tp_last_frame = std::chrono::system_clock::now();
 
     // Calculate frame duration
-    const double rate_duration = static_cast<double>(am_private->video_rate * DVD_TIME_BASE) / UNIT_FREQ;
+    const double rate_duration =
+        static_cast<double>(am_private->video_rate.load(std::memory_order_relaxed)) * DVD_TIME_BASE / UNIT_FREQ;
     const bool is_vc1 = (m_hints.codec == AV_CODEC_ID_VC1 || m_hints.codec == AV_CODEC_ID_WMV3);
     const bool pts_reversal = (m_last_pts != DVD_NOPTS_VALUE && m_cur_pts < m_last_pts);
     const double picture_duration = static_cast<double>(m_cur_pts - m_last_pts);
@@ -3410,7 +3434,9 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
 
     auto drain_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now() - m_tp_drain_start);
-    int poll_ms = (am_private->video_rate * 10000 + UNIT_FREQ - 1) / UNIT_FREQ;
+    const int64_t poll_ms =
+        (static_cast<int64_t>(am_private->video_rate.load(std::memory_order_relaxed)) * 10000 +
+         UNIT_FREQ - 1) / UNIT_FREQ;
     bool frames_flowing = elapsed_since_last_frame < std::chrono::milliseconds(poll_ms);
     if (buffer_level > 0.0f &&
         (drain_elapsed < std::chrono::seconds(m_decoder_drain_timeout) || frames_flowing))
@@ -3591,7 +3617,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect, uint64
   unsigned int video_rate = GetDecoderVideoRate();
   if (video_rate > 0 && video_rate != am_private->video_rate)
   {
-    CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect: decoder fps has changed, video_rate adjusted from {:d} to {:d}", am_private->video_rate, video_rate);
+    CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect: decoder fps has changed, video_rate adjusted from {:d} to {:d}", am_private->video_rate.load(std::memory_order_relaxed), video_rate);
     am_private->video_rate = video_rate;
   }
 
@@ -3779,7 +3805,7 @@ void CAMLCodec::RefreshDecoderRate(const CAMLSession::Permit& permit)
   unsigned int video_rate = GetDecoderVideoRate();
   if (video_rate > 0 && video_rate != am_private->video_rate)
   {
-    CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect: decoder fps has changed, video_rate adjusted from {:d} to {:d}", am_private->video_rate, video_rate);
+    CLog::Log(LOGDEBUG, "CAMLCodec::SetVideoRect: decoder fps has changed, video_rate adjusted from {:d} to {:d}", am_private->video_rate.load(std::memory_order_relaxed), video_rate);
     am_private->video_rate = video_rate;
   }
 
@@ -3787,20 +3813,30 @@ void CAMLCodec::RefreshDecoderRate(const CAMLSession::Permit& permit)
 
 void CAMLCodec::SetVideoRate(int videoRate)
 {
-  if (am_private)
-    am_private->video_rate = videoRate;
+  if (am_private && videoRate > 0)
+    am_private->video_rate.store(static_cast<unsigned int>(videoRate), std::memory_order_relaxed);
 }
 
 unsigned int CAMLCodec::GetDecoderVideoRate()
 {
-  if (m_speed != DVD_PLAYSPEED_NORMAL || m_pollDevice < 0)
+  // Both private callers hold m_presentationMutex and a counted session
+  // permit (presentation or main control). Reset/close cannot mutate the codec
+  // or poll device until those permits drain. Do not take pollSyncMutex here:
+  // another session's PollFrame can hold it across a 50 ms device poll.
+  if (!m_opened || m_speed.load(std::memory_order_relaxed) != DVD_PLAYSPEED_NORMAL ||
+      m_pollDevice < 0)
     return 0;
 
   struct vdec_info vi = {};
-  if (m_dll->codec_get_vdec_info(&am_private->vcodec, &vi) == 0 && vi.frame_dur > 0)
-    return vi.frame_dur;
-  else
+  if (m_dll->codec_get_vdec_info(&am_private->vcodec, &vi) != 0)
     return 0;
+
+  // frame_dur is u32: a negative firmware result can arrive near UINT_MAX.
+  // Invalid/unknown values leave the established stream rate untouched. Units
+  // remain decoder frame ticks; interlaced hint conversion is done at open.
+  if (vi.frame_dur < MIN_DECODER_VIDEO_RATE || vi.frame_dur > MAX_DECODER_VIDEO_RATE)
+    return 0;
+  return vi.frame_dur;
 }
 
 std::string CAMLCodec::GetHDRStaticMetadata()

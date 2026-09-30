@@ -18,9 +18,9 @@
 #include "utils/Geometry.h"
 
 #include <array>
+#include <atomic>
 #include <deque>
 #include <functional>
-#include <atomic>
 #include <mutex>
 
 typedef struct am_private_t am_private_t;
@@ -222,7 +222,7 @@ private:
   std::chrono::time_point<std::chrono::system_clock> m_videoHoldStart;
   am_private_t    *am_private;
 
-  int              m_speed;
+  std::atomic<int> m_speed; // Decoder speed writes overlap presentation rate queries.
   uint64_t         m_cur_pts;
   uint64_t         m_last_pts;
   uint64_t         m_prev_last_pts; // pts before m_last_pts (excursion detection)
