@@ -45,6 +45,8 @@
 #include <queue>
 #include <thread>
 
+#include "utils/PlaybackDiagnostics.h"
+
 #include <libbluray/bluray.h>
 #include <libbluray/filesystem.h>
 #include <libbluray/log_control.h>
@@ -198,6 +200,9 @@ BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFile(const std::string& filena
 
 bool CDVDInputStreamBluray::Open()
 {
+  m_diagnosticOpen = PLAYBACK_DIAGNOSTICS::NextId();
+  CLog::Log(LOGINFO, "p3i-transition t_us={} disc={} open=begin",
+            PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticOpen);
   m_aborted = false;
   // One mode for the whole disc session: graphics already delivered keep the
   // tag they were given, so a change mid-disc applies from the next playback.
@@ -463,7 +468,13 @@ bool CDVDInputStreamBluray::Open()
     bd_register_argb_overlay_proc (m_bd, this, bluray_overlay_argb_cb, nullptr);
 #endif
 
-    if(bd_play(m_bd) <= 0)
+    CLog::Log(LOGINFO, "p3i-transition t_us={} disc={} navigation=begin bdj_detected={} bdj_handled={}",
+              PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticOpen,
+              disc_info->bdj_detected, disc_info->bdj_handled);
+    const int playResult = bd_play(m_bd);
+    CLog::Log(LOGINFO, "p3i-transition t_us={} disc={} navigation=returned result={}",
+              PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticOpen, playResult);
+    if(playResult <= 0)
     {
       CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed play disk {}",
                 CURL::GetRedacted(strPath));
@@ -500,7 +511,8 @@ bool CDVDInputStreamBluray::Open()
     ProcessEvent();
 
   OpenNextStream();
-
+  CLog::Log(LOGINFO, "p3i-transition t_us={} disc={} open=returned navigation={}",
+            PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticOpen, m_navmode);
   return true;
 }
 
@@ -514,11 +526,15 @@ void CDVDInputStreamBluray::Close()
   CloseMVCDemux();
   if (m_bd)
   {
+    CLog::Log(LOGINFO, "p3i-transition t_us={} disc={} close=begin",
+              PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticOpen);
     bd_register_overlay_proc(m_bd, nullptr, nullptr);
 #ifdef HAVE_LIBBLURAY_BDJ
     bd_register_argb_overlay_proc(m_bd, nullptr, nullptr, nullptr);
 #endif
     bd_close(m_bd);
+    CLog::Log(LOGINFO, "p3i-transition t_us={} disc={} close=returned",
+              PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticOpen);
     m_bd = nullptr;
     OverlayClose();
   }

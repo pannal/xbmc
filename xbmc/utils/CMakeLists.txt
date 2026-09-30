@@ -83,7 +83,8 @@ set(SOURCES ActorProtocol.cpp
             XBMCTinyXML2.cpp
             XMLUtils.cpp)
 
-set(HEADERS ActorProtocol.h
+set(HEADERS PlaybackDiagnostics.h
+            ActorProtocol.h
             AgedMap.h
             AlarmClock.h
             AliasShortcutUtils.h

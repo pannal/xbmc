@@ -19,6 +19,8 @@
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/MathUtils.h"
+#include "threads/PerformanceCores.h"
+#include "utils/PlaybackDiagnostics.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
@@ -347,6 +349,8 @@ inline MsgQueueReturnCode CVideoPlayerVideo::GetMessage(std::shared_ptr<CDVDMsg>
 void CVideoPlayerVideo::Process()
 {
   CLog::Log(LOGINFO, "running thread: video_thread");
+  PERFORMANCE_CORES::ApplyCurrentThread("video-decode-output", m_renderManager.DiagnosticId());
+  m_diagnostics = {};
 
   double pts = 0;
   double frametime = (double)DVD_TIME_BASE / m_fFrameRate;
@@ -367,6 +371,12 @@ void CVideoPlayerVideo::Process()
 
   while (!m_bStop)
   {
+    const auto iteration = PLAYBACK_DIAGNOSTICS::NowUs();
+    // Record the completed loop before a report resets its interval. Modes are
+    // context, not a starvation verdict; intervals may span transitions.
+    m_diagnostics.BeginIteration(iteration, m_paused || m_speed == DVD_PLAYSPEED_PAUSE ? 1 :
+        m_syncState != IDVDStreamPlayer::SYNC_INSYNC ? 2 : m_isEOS ? 3 : m_stalled ? 4 : 0);
+    LogDiagnostics();
     auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::duration<double, std::micro>(m_stalled ? frametime : frametime * 10));
     int iPriority = 0;
@@ -383,7 +393,11 @@ void CVideoPlayerVideo::Process()
       timeout = 1ms;
     }
 
+    const auto lifecycleStart = PLAYBACK_DIAGNOSTICS::NowUs();
     const bool lifecyclePending = m_pVideoCodec && !m_pVideoCodec->ContinueLifecycle();
+    m_diagnostics.lifecycle.Add(PLAYBACK_DIAGNOSTICS::NowUs() - lifecycleStart);
+    if (lifecyclePending)
+      m_diagnostics.modes |= uint64_t{1} << 5;
     if (m_pVideoCodec && m_pVideoCodec->LifecycleFailed())
     {
       m_messageParent.Put(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_ABORT));
@@ -404,8 +418,18 @@ void CVideoPlayerVideo::Process()
       ret = MSGQ_OK;
     }
     else
+    {
+      const auto inputStart = PLAYBACK_DIAGNOSTICS::NowUs();
       ret = m_messageQueue.Get(pMsg, lifecyclePending ? 10ms : timeout, iPriority,
                                lifecyclePending);
+      m_diagnostics.input.Add(PLAYBACK_DIAGNOSTICS::NowUs() - inputStart);
+      if (ret == MSGQ_TIMEOUT)
+      {
+        ++m_diagnostics.messagesTimedOut;
+        if (m_messageQueue.GetDataSize() == 0)
+          ++m_diagnostics.inputEmpty;
+      }
+    }
 
     onlyPrioMsgs = false;
 
@@ -681,7 +705,12 @@ void CVideoPlayerVideo::Process()
         codecControl |= DVD_CODEC_CTRL_ROTATE;
       m_pVideoCodec->SetCodecControl(codecControl);
 
-      if (m_pVideoCodec->AddData(*pPacket))
+      const auto addStart = PLAYBACK_DIAGNOSTICS::NowUs();
+      const bool accepted = m_pVideoCodec->AddData(*pPacket);
+      m_diagnostics.add.Add(PLAYBACK_DIAGNOSTICS::NowUs() - addStart);
+      if (!accepted)
+        ++m_diagnostics.addRejected;
+      if (accepted)
       {
         // buffer packets so we can recover should decoder flush for some reason
         if (m_pVideoCodec->GetConvergeCount() > 0)
@@ -727,6 +756,7 @@ void CVideoPlayerVideo::Process()
       }
     }
   }
+  LogDiagnostics(true);
 }
 
 void CVideoPlayerVideo::UpdatePlayerInfo()
@@ -741,9 +771,49 @@ void CVideoPlayerVideo::UpdatePlayerInfo()
   m_dataCacheCore.SetVideoQueueDataLevel(std::min(99, m_messageQueue.GetLevel(true)));
 }
 
+void CVideoPlayerVideo::LogDiagnostics(bool final)
+{
+  const auto now = PLAYBACK_DIAGNOSTICS::NowUs();
+  if (!final && now - m_diagnostics.sinceUs < 5000000)
+    return;
+  const auto& d = m_diagnostics;
+  CLog::Log(LOGINFO,
+            "p3i-video t_us={} player={} sync_epoch={} interval_us={} cpu={} speed={} paused={} "
+            "sync={} eof={} still={} reset_pending={} modes={} input_bytes={} "
+            "message_timeout={} empty_input={} add_rejected={} decoder_needs_input={} decoder_pending={} decoder_no_buffer={} pictures={} "
+            "decoder_error={} decoder_eof={} capacity_rejected={} dropped_total={} max_loop_us={} "
+            "input(calls/us/max)={}/{}/{} add={}/{}/{} decode={}/{}/{} capacity={}/{}/{} "
+            "lifecycle={}/{}/{} overlay_publish={}/{}/{}",
+            now, m_renderManager.DiagnosticId(), m_syncEpoch, now - d.sinceUs,
+            PERFORMANCE_CORES::CurrentCpu(), m_speed, m_paused, static_cast<int>(m_syncState),
+            m_isEOS.load(), m_stalled.load(), bool(m_pendingResetMessage), d.modes, m_messageQueue.GetDataSize(),
+            d.messagesTimedOut, d.inputEmpty, d.addRejected, d.decoderBuffer, d.decoderNone, d.decoderNoBuffer, d.pictures,
+            d.decoderErrors, d.decoderEof, d.capacityRejected, m_iDroppedFrames, d.maxLoopUs,
+            d.input.calls, d.input.totalUs, d.input.maxUs, d.add.calls, d.add.totalUs, d.add.maxUs,
+            d.decode.calls, d.decode.totalUs, d.decode.maxUs,
+            d.capacity.calls, d.capacity.totalUs, d.capacity.maxUs,
+            d.lifecycle.calls, d.lifecycle.totalUs, d.lifecycle.maxUs,
+            d.publish.calls, d.publish.totalUs, d.publish.maxUs);
+  m_diagnostics = {};
+}
+
 bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 {
+  const auto decodeStart = PLAYBACK_DIAGNOSTICS::NowUs();
   CDVDVideoCodec::VCReturn decoderState = m_pVideoCodec->GetPicture(&m_picture);
+  m_diagnostics.decode.Add(PLAYBACK_DIAGNOSTICS::NowUs() - decodeStart);
+  if (decoderState == CDVDVideoCodec::VC_BUFFER)
+    ++m_diagnostics.decoderBuffer;
+  if (decoderState == CDVDVideoCodec::VC_NONE)
+    ++m_diagnostics.decoderNone;
+  if (decoderState == CDVDVideoCodec::VC_NOBUFFER)
+    ++m_diagnostics.decoderNoBuffer;
+  if (decoderState == CDVDVideoCodec::VC_PICTURE)
+    ++m_diagnostics.pictures;
+  if (decoderState == CDVDVideoCodec::VC_ERROR)
+    ++m_diagnostics.decoderErrors;
+  if (decoderState == CDVDVideoCodec::VC_EOF)
+    ++m_diagnostics.decoderEof;
   m_picture.m_3dSubtitleDepth = m_iSubtitlePlane;
 
   if (decoderState == CDVDVideoCodec::VC_BUFFER)
@@ -1211,7 +1281,11 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     maxWaitTime = std::max(timeToDisplay, 0ms);
 
   CRenderManager::BufferReservation reservation;
+  const auto capacityStart = PLAYBACK_DIAGNOSTICS::NowUs();
   int buffer = m_renderManager.WaitForBuffer(reservation, m_bAbortOutput, maxWaitTime);
+  m_diagnostics.capacity.Add(PLAYBACK_DIAGNOSTICS::NowUs() - capacityStart);
+  if (buffer < 0)
+    ++m_diagnostics.capacityRejected;
   CLog::Log(LOGDEBUG,"CVideoPlayerVideo::{} - ttd:{:d}ms pts:{:.3f} Clock:{:.3f} Level:{:d}",
         __FUNCTION__, timeToDisplay.count(), pPicture->pts/DVD_TIME_BASE, static_cast<double>(iPlayingClock/DVD_TIME_BASE), buffer);
   if (buffer < 0)
@@ -1221,6 +1295,7 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     return OUTPUT_AGAIN;
   }
 
+  const auto publishStart = PLAYBACK_DIAGNOSTICS::NowUs();
   auto overlays = ProcessOverlays(pPicture, pPicture->pts);
 
   EINTERLACEMETHOD deintMethod = EINTERLACEMETHOD::VS_INTERLACEMETHOD_NONE;
@@ -1228,8 +1303,10 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   if (!m_processInfo.Supports(deintMethod))
     deintMethod = m_processInfo.GetDeinterlacingMethodDefault();
 
-  if (!m_renderManager.AddVideoPicture(reservation, *pPicture, std::move(overlays), m_bAbortOutput,
-                                       deintMethod, (m_syncState == ESyncState::SYNC_STARTING)))
+  const bool published = m_renderManager.AddVideoPicture(reservation, *pPicture, std::move(overlays), m_bAbortOutput,
+                                       deintMethod, (m_syncState == ESyncState::SYNC_STARTING));
+  m_diagnostics.publish.Add(PLAYBACK_DIAGNOSTICS::NowUs() - publishStart);
+  if (!published)
   {
     m_droppingStats.AddOutputDropGain(pPicture->pts, 1);
     return OUTPUT_DROPPED;

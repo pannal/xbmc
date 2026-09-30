@@ -5,6 +5,7 @@
 #pragma once
 
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
+#include "utils/PlaybackDiagnostics.h"
 
 #include <algorithm>
 #include <atomic>
@@ -88,6 +89,8 @@ public:
   {
     // Start/finish run on worker. Authorization and acceptance by main are
     // separate caller operations; these callbacks cannot impersonate main.
+    std::function<void()> enter;
+    std::function<int()> sampleCpu;
     std::function<bool()> start;
     std::function<void()> finish;
     std::function<Timing()> timing;
@@ -136,6 +139,7 @@ public:
       return false;
     m_reservations.erase(it);
     m_queue.push_back(std::move(frame));
+    ++m_progress.published;
     m_changed.notify_all();
     return true;
   }
@@ -199,6 +203,8 @@ public:
     if (m_stop || !request.frame || request.frame != m_pending.frame ||
         request.generation != m_pending.generation || request.generation != m_control)
       return false;
+    m_progress.controlUs += PLAYBACK_DIAGNOSTICS::NowUs() - m_controlSinceUs;
+    m_controlSinceUs = 0;
     m_applied = request.generation;
     m_appliedEpoch = request.frame->epoch;
     m_pending = {};
@@ -235,6 +241,34 @@ public:
     return {static_cast<int>(m_queue.size()) + (unfinished ? 1 : 0),
             static_cast<int>(retiring), m_late / 10,
             m_renderPts, m_current ? m_current->pts : m_renderPts};
+  }
+  struct DiagnosticSnapshot
+  {
+    PLAYBACK_DIAGNOSTICS::Sample sample;
+    size_t capacity, outstanding, queued, reservations, retiring;
+    uint64_t control, applied, epoch, pendingControlUs, operationUs;
+    int operation; // 0 idle, 1 Submit/admission, 2 Poll/admission, 3 Retire/admission
+    Phase phase;
+    uint64_t wakeLateMaxUs;
+    int sampledCpu;
+    uint64_t cpuSampleUs;
+    bool show;
+    double speed, clock, nextPts;
+    int skipped, late;
+  };
+  DiagnosticSnapshot Diagnostics() const
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto operation = m_operationToken.load(std::memory_order_relaxed);
+    const auto now = PLAYBACK_DIAGNOSTICS::NowUs();
+    return {{now, m_progress}, m_capacity, m_count, m_queue.size(), m_reservations.size(),
+            m_count - m_reservations.size() - m_queue.size() -
+                (m_current ? 1 : 0) - (m_past ? 1 : 0),
+            m_control, m_applied, m_current ? m_current->epoch : 0,
+            m_pending.frame ? now - m_controlSinceUs : 0,
+            operation ? now - (operation >> 2) : 0, static_cast<int>(operation & 3), m_phase.load(), m_wakeLateMaxUs, m_sampledCpu, m_cpuSampleUs, m_show, m_diagnosticTiming.speed,
+            m_diagnosticTiming.clock, m_queue.empty() ? DVD_NOPTS_VALUE : m_queue.front()->pts,
+            m_skipped, m_late};
   }
   bool WaitIdle(std::chrono::milliseconds timeout)
   {
@@ -308,6 +342,7 @@ private:
     m_reservations.clear();
     while (!m_queue.empty())
     {
+      ++m_progress.discarded;
       m_queue.front()->selected = true;
       m_retired.push_back(std::move(m_queue.front()));
       m_queue.pop_front();
@@ -350,6 +385,7 @@ private:
         m_retired.push_back(std::move(m_queue.front()));
         m_queue.pop_front();
         ++m_skipped;
+        ++m_progress.discarded;
         diff = render - m_queue.front()->pts;
       }
       m_late = static_cast<int>(std::max(0.0, diff / duration));
@@ -380,6 +416,8 @@ private:
           return;
         }
       }
+      if (m_hooks.enter)
+        m_hooks.enter();
       while (!m_stop)
       {
         if (m_hooks.start())
@@ -397,6 +435,13 @@ private:
       bool advance = true;
       while (started && !m_stop)
       {
+        if (m_hooks.sampleCpu && PLAYBACK_DIAGNOSTICS::NowUs() - m_cpuSampleUs >= 5000000)
+        {
+          const int cpu = m_hooks.sampleCpu();
+          std::lock_guard<std::mutex> lock(m_mutex);
+          m_sampledCpu = cpu;
+          m_cpuSampleUs = PLAYBACK_DIAGNOSTICS::NowUs();
+        }
         const Timing timing = m_hooks.timing();
         if (!(timing.refresh > 0) || !std::isfinite(timing.refresh))
           throw std::runtime_error("invalid presenter refresh rate");
@@ -408,6 +453,7 @@ private:
         std::vector<std::shared_ptr<Frame>> retired;
         {
           std::lock_guard<std::mutex> lock(m_mutex);
+          m_diagnosticTiming = timing;
           if (m_resetClock)
           {
             m_error = 0;
@@ -423,6 +469,7 @@ private:
             if (previous != m_current)
             {
               selectionChanged = true;
+              ++m_progress.selected;
               submitted = false;
               advance = false;
               m_current->selected = true;
@@ -436,28 +483,46 @@ private:
           m_hooks.selected(frame->pts);
         for (auto& old : retired)
         {
-          if (old->Retire())
+          BeginOperation(3);
+          const bool returned = old->Retire();
+          const auto retireUs = EndOperation();
+          if (returned)
           {
             old.reset();
             std::lock_guard<std::mutex> lock(m_mutex);
             --m_count;
+            ++m_progress.retired;
+            m_progress.retireUs += retireUs;
             m_changed.notify_all();
           }
           else
           {
             std::lock_guard<std::mutex> lock(m_mutex);
+            m_progress.retireUs += retireUs;
             m_retired.push_back(std::move(old));
           }
         }
         if (frame)
         {
+          BeginOperation(1);
           const auto result = frame->Submit(m_previousPts);
+          const auto submitUs = EndOperation();
+          {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_progress.submitUs += submitUs;
+            if (result == Frame::Submission::SUBMITTED)
+              ++m_progress.qbufAttempts;
+            if (result == Frame::Submission::BLOCKED)
+              ++m_progress.blocked;
+          }
           if (result == Frame::Submission::SUBMITTED || result == Frame::Submission::REUSED)
             submitted = true;
           if (result == Frame::Submission::INVALIDATED)
           {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_pending = {};
+            m_controlSinceUs = 0;
+            ++m_progress.discarded;
             m_retired.push_back(std::move(m_current));
             advance = true;
             submitted = false;
@@ -469,6 +534,8 @@ private:
             std::lock_guard<std::mutex> lock(m_mutex);
             if (submitted && (m_applied != m_control || m_appliedEpoch != frame->epoch))
             {
+              if (!m_pending.frame)
+                m_controlSinceUs = PLAYBACK_DIAGNOSTICS::NowUs();
               m_pending = {m_control, frame};
               ready = false;
             }
@@ -480,20 +547,32 @@ private:
             const unsigned int attempts = frame->method == Method::BLEND ? passes : 1;
             for (unsigned int pass = 0; pass < attempts && !m_stop; ++pass)
             {
-              if (!frame->Poll())
+              BeginOperation(2);
+              const bool polled = frame->Poll();
+              const auto pollUs = EndOperation();
+              std::lock_guard<std::mutex> lock(m_mutex);
+              m_progress.pollUs += pollUs;
+              if (!polled)
                 break;
               --passes;
-              std::lock_guard<std::mutex> lock(m_mutex);
+              ++m_progress.polls;
               m_observation = {frame->observation, frame->pts, frame->epoch};
               advance = passes == 0;
-              if (advance)
+              if (advance && !frame->presented)
+              {
+                ++m_progress.completed; // software pass completion, not scanout
                 frame->presented = true;
+              }
               m_changed.notify_all();
             }
           }
         }
         std::unique_lock<std::mutex> lock(m_mutex);
         m_changed.wait_until(lock, nextTick, [&] { return m_stop.load(); });
+        const auto late = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - nextTick).count();
+        if (late > 0)
+          m_wakeLateMaxUs = std::max(m_wakeLateMaxUs, static_cast<uint64_t>(late));
       }
       if (started)
         m_hooks.finish();
@@ -507,6 +586,23 @@ private:
     }
   }
 
+  void BeginOperation(int operation)
+  {
+    // No additional hot-path mutex: one token publishes operation and start.
+    m_operationToken.store((PLAYBACK_DIAGNOSTICS::NowUs() << 2) | operation,
+                           std::memory_order_relaxed);
+  }
+  uint64_t EndOperation()
+  {
+    const auto token = m_operationToken.exchange(0, std::memory_order_relaxed);
+    return PLAYBACK_DIAGNOSTICS::NowUs() - (token >> 2);
+  }
+  Timing m_diagnosticTiming;
+  PLAYBACK_DIAGNOSTICS::Progress m_progress;
+  uint64_t m_controlSinceUs{0};
+  std::atomic<uint64_t> m_operationToken{0};
+  int m_sampledCpu{-1};
+  uint64_t m_wakeLateMaxUs{0}, m_cpuSampleUs{0};
   const size_t m_capacity;
   Hooks m_hooks;
   mutable std::mutex m_mutex;

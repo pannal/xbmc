@@ -1987,6 +1987,10 @@ bool CAMLCodec::BeginLifecycle(Lifecycle operation, std::function<void()> before
     m_lifecycleFailed = false;
     m_lifecycleRequest = m_session.Fence();
     m_lifecycle = operation;
+    const auto state = m_session.Diagnostics();
+    CLog::Log(LOGINFO, "p3i-transition t_us={} session={} epoch={} request={} codec_op={} stage=requested",
+              PLAYBACK_DIAGNOSTICS::NowUs(), state.id, state.epoch, m_lifecycleRequest.serial,
+              static_cast<int>(operation));
   }
   return ContinueLifecycle();
 }
@@ -2019,6 +2023,13 @@ bool CAMLCodec::ContinueLifecycle()
   }
 
   const Lifecycle operation = m_lifecycle;
+  const auto executionStart = PLAYBACK_DIAGNOSTICS::NowUs();
+  const auto diagnostic = m_session.Diagnostics();
+  CLog::Log(LOGINFO, "p3i-transition t_us={} session={} epoch={} request={} native={} codec_op={} "
+            "stage=executing pending_us={}",
+            executionStart, diagnostic.id, diagnostic.epoch, m_lifecycleRequest.serial,
+            m_nativeLifecycleRequest->serial, static_cast<int>(operation),
+            executionStart - m_lifecycleRequest.sinceUs);
   bool success = true;
   try
   {
@@ -2052,6 +2063,9 @@ bool CAMLCodec::ContinueLifecycle()
     m_lifecycle = Lifecycle::NONE;
     CAMLSession::EndNative(m_nativeLifecycleRequest);
     m_nativeLifecycleRequest.reset();
+    CLog::Log(LOGERROR, "p3i-transition t_us={} session={} request={} codec_op={} stage=exception execution_us={}",
+              PLAYBACK_DIAGNOSTICS::NowUs(), diagnostic.id, m_lifecycleRequest.serial,
+              static_cast<int>(operation), PLAYBACK_DIAGNOSTICS::NowUs() - executionStart);
     throw;
   }
 
@@ -2060,6 +2074,14 @@ bool CAMLCodec::ContinueLifecycle()
   m_lifecycle = Lifecycle::NONE;
   CAMLSession::EndNative(m_nativeLifecycleRequest);
   m_nativeLifecycleRequest.reset();
+  const auto completed = m_session.Diagnostics();
+  CLog::Log(LOGINFO, "p3i-transition t_us={} session={} epoch={} request={} codec_op={} stage=completed "
+            "success={} execution_us={} qbuf={} drop={} qbuf_errors={} qbuf_us={} "
+            "poll(ready/timeout/error/other/us)={}/{}/{}/{}/{}",
+            PLAYBACK_DIAGNOSTICS::NowUs(), diagnostic.id, completed.epoch, m_lifecycleRequest.serial,
+            static_cast<int>(operation), success, PLAYBACK_DIAGNOSTICS::NowUs() - executionStart,
+            completed.qbufCalls, completed.dropCalls, completed.qbufErrors, completed.qbufUs,
+            completed.pollReady, completed.pollTimeout, completed.pollError, completed.pollOther, completed.pollUs);
   return success;
 }
 
@@ -2939,7 +2961,10 @@ int CAMLCodec::PollFrame(const CAMLSession::Permit& permit)
   codec_poll_fd[0].events = POLLOUT;
 
   std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
-  poll(codec_poll_fd, 1, 50);
+  const auto pollStart = PLAYBACK_DIAGNOSTICS::NowUs();
+  const int pollResult = poll(codec_poll_fd, 1, 50);
+  m_session.RecordPoll(pollResult, (codec_poll_fd[0].revents & POLLOUT) != 0,
+                       PLAYBACK_DIAGNOSTICS::NowUs() - pollStart);
   g_aml_sync_event.Set();
   int elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - now).count();
   CLog::Log(LOGDEBUG, LOGAVTIMING, "CAMLCodec::PollFrame elapsed:{:.3f}ms", elapsed / 1000.0);
@@ -2980,8 +3005,13 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, uint64_t generation, const CAM
 
   CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::ReleaseFrame idx:{:d}, drop:{:d}", index, static_cast<int>(drop));
 
-  if ((ret = m_amlVideoFile->IOControl(VIDIOC_QBUF, &vbuf)) < 0)
-    CLog::Log(LOGERROR, "CAMLCodec::ReleaseFrame - VIDIOC_QBUF failed: {}", strerror(errno));
+  const auto qbufStart = PLAYBACK_DIAGNOSTICS::NowUs();
+  ret = m_amlVideoFile->IOControl(VIDIOC_QBUF, &vbuf);
+  const int qbufError = errno;
+  const auto qbufUs = PLAYBACK_DIAGNOSTICS::NowUs() - qbufStart;
+  m_session.RecordQbuf(drop, ret, qbufUs);
+  if (ret < 0)
+    CLog::Log(LOGERROR, "CAMLCodec::ReleaseFrame - VIDIOC_QBUF failed: {}", strerror(qbufError));
   return ret;
 }
 

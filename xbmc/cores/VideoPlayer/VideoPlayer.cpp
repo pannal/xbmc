@@ -824,6 +824,9 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
 
   if (m_closeStage != CloseStage::NONE && m_closeStage != CloseStage::COMPLETE)
     return false;
+  CLog::Log(LOGINFO, "p3i-transition t_us={} player={} open={} running={} prior_close={}",
+            PLAYBACK_DIAGNOSTICS::NowUs(), m_renderManager.DiagnosticId(),
+            PLAYBACK_DIAGNOSTICS::NextId(), IsRunning(), static_cast<int>(m_closeStage));
   m_closeStage = CloseStage::NONE;
   m_vs10Action.Invalidate();
 
@@ -881,6 +884,8 @@ bool CVideoPlayer::CloseFile(bool reopen)
     if (m_pInputStream)
       m_pInputStream->Abort();
     m_closeStage = CloseStage::INITIAL_RENDERER;
+    CLog::Log(LOGINFO, "p3i-transition t_us={} player={} close=begin",
+              PLAYBACK_DIAGNOSTICS::NowUs(), m_renderManager.DiagnosticId());
   }
 
   m_renderManager.ProcessLifecycleRequests();
@@ -893,6 +898,9 @@ bool CVideoPlayer::CloseFile(bool reopen)
     // nor treat failure/cancellation as permission to destroy its owner.
     if (!m_closeReceipt || !m_closeReceipt->Wait(0ms))
       return false;
+    CLog::Log(LOGINFO, "p3i-transition t_us={} player={} close_stage={} renderer_session={} request={} acknowledged",
+              PLAYBACK_DIAGNOSTICS::NowUs(), m_renderManager.DiagnosticId(),
+              static_cast<int>(m_closeStage), m_closeReceipt->session, m_closeReceipt->serial);
     m_closeReceipt.reset();
     if (m_closeStage == CloseStage::INITIAL_RENDERER)
     {
@@ -907,6 +915,8 @@ bool CVideoPlayer::CloseFile(bool reopen)
       m_HasVideo = false;
       m_HasAudio = false;
       m_closeStage = CloseStage::COMPLETE;
+      CLog::Log(LOGINFO, "p3i-transition t_us={} player={} close=complete",
+                PLAYBACK_DIAGNOSTICS::NowUs(), m_renderManager.DiagnosticId());
       return true;
     }
   }

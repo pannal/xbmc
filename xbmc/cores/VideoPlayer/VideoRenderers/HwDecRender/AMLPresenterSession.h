@@ -2,6 +2,8 @@
 #pragma once
 
 #include "cores/VideoPlayer/DVDClock.h"
+#include "threads/PerformanceCores.h"
+#include "utils/log.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
 #include "cores/VideoPlayer/VideoRenderers/AMLPresenter.h"
@@ -66,7 +68,20 @@ public:
   {
     m_codec->RetainProcessInfo(std::move(processInfo));
     CAMLPresenter::Hooks hooks;
-    hooks.start = [this] { return m_codec->AcceptPresentationOwner(m_toWorker, true); };
+    hooks.enter = [this] {
+      PERFORMANCE_CORES::ApplyCurrentThread("aml-presenter", m_codec->GetDiagnostics().id);
+    };
+    hooks.sampleCpu = [] { return PERFORMANCE_CORES::CurrentCpu(); };
+    hooks.start = [this] {
+      const bool accepted = m_codec->AcceptPresentationOwner(m_toWorker, true);
+      if (accepted)
+      {
+        const auto state = m_codec->GetDiagnostics();
+        CLog::Log(LOGINFO, "p3i-transition t_us={} session={} epoch={} owner_gen={} owner=presenter accepted",
+                  PLAYBACK_DIAGNOSTICS::NowUs(), state.id, state.epoch, state.owner);
+      }
+      return accepted;
+    };
     hooks.finish = [this] { m_toMain = m_codec->RequestPresentationOwner(m_main); };
     hooks.timing = [this, reportClock]
     {
@@ -145,6 +160,8 @@ public:
     frame->buffer->ApplyGeometry(permit, source, destination);
     return queue->CompleteControl(request);
   }
+  CAMLSession::DiagnosticSnapshot AdmissionDiagnostics() const { return m_codec->GetDiagnostics(); }
+  PLAYBACK_DIAGNOSTICS::MainService mainService; // main-owned diagnostic interval
   std::unique_ptr<CAMLPresenter> queue;
 
 private:

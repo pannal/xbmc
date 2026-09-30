@@ -20,6 +20,7 @@
 #include "settings/lib/Setting.h"
 #include "settings/lib/SettingsManager.h"
 #include "utils/FileUtils.h"
+#include "utils/PlaybackDiagnostics.h"
 #include "utils/LangCodeExpander.h"
 #include "utils/StringUtils.h"
 #include "utils/SystemInfo.h"
@@ -499,6 +500,10 @@ bool CAdvancedSettings::Load(const CProfileManager &profileManager)
   DefaultAudioLatency();
   DefaultVideoLatency();
 
+  CLog::Log(LOGINFO, "p3i-transition schema=1 t_us={} settings={} presenter={} build={} built={} "
+            "progress=software-only-no-scanout",
+            PLAYBACK_DIAGNOSTICS::NowUs(), PLAYBACK_DIAGNOSTICS::NextId(),
+            m_videoAMLIndependentPresenter, CSysInfo::GetVersion(), CSysInfo::GetBuildDate());
   return true;
 }
 

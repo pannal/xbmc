@@ -394,11 +394,15 @@ bool CRenderManager::Configure()
 
     m_renderState = STATE_CONFIGURED;
 #if defined(HAS_LIBAMCODEC)
-    if (auto* aml = dynamic_cast<CRendererAML*>(m_pRenderer);
-        aml && (m_picture.stereoMode.empty() || m_picture.stereoMode == "mono") &&
-        m_processInfoLifetime &&
-        CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() == RENDER_STEREO_MODE_OFF &&
-        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoAMLIndependentPresenter)
+    auto* aml = dynamic_cast<CRendererAML*>(m_pRenderer);
+    const bool enabled = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoAMLIndependentPresenter;
+    const bool stereo = !(m_picture.stereoMode.empty() || m_picture.stereoMode == "mono") ||
+        CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF;
+    const char* reason = !enabled ? "disabled" : !aml ? "non-aml" : stereo ? "stereo" :
+                         !m_processInfoLifetime ? "missing-lifetime" : "activate";
+    CLog::Log(LOGINFO, "p3i-transition t_us={} render={} configure={} option={} lifecycle={}",
+              PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticId, reason, enabled, m_lifecycleGeneration);
+    if (enabled && aml && !stereo && m_processInfoLifetime)
     {
       m_amlPresenter = std::make_shared<CAMLPresenterSession>(
           aml->PresenterCodec(), m_dvdClock, m_QueueSize, m_processInfoLifetime,
@@ -406,6 +410,7 @@ bool CRenderManager::Configure()
           [this](double pts) { m_dataCacheCore.SetRenderPts(pts); });
       UpdateAMLPresenter();
       m_amlPresenter->queue->Show(m_showVideo);
+      LogAMLPresenter("start-requested", true);
     }
 #endif
 
@@ -505,7 +510,10 @@ void CRenderManager::FrameMove()
   if (m_amlPresenter)
   {
     if (CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF)
+    {
+      LogAMLPresenter("stereo-fallback", true);
       StopAMLPresenter(true);
+    }
     else
     {
       UpdateAMLPresenter();
@@ -2152,6 +2160,7 @@ void CRenderManager::UpdateAMLPresenter()
   std::unique_lock<CCriticalSection> present(m_presentlock);
   if (!m_amlPresenter)
     return;
+  LogAMLPresenter("periodic");
   auto* renderer = static_cast<CRendererAML*>(m_pRenderer);
   CRect source, destination;
   const auto generation = renderer->PrepareIndependentControl(source, destination);
@@ -2164,6 +2173,48 @@ void CRenderManager::UpdateAMLPresenter()
   m_QueueSkip = m_amlPresenter->queue->Skipped();
 }
 
+void CRenderManager::LogAMLPresenter(const char* event, bool transition)
+{
+  const auto q = m_amlPresenter->queue->Diagnostics();
+  const auto report = m_amlPresenter->mainService.Observe(q.sample, transition);
+  if (!transition && !report)
+    return;
+  const auto a = m_amlPresenter->AdmissionDiagnostics();
+  const auto& p = q.sample.progress;
+  CLog::Log(LOGINFO,
+            "p3i-presenter t_us={} render={} event={} session={} epoch={} request={} owner_gen={} "
+            "main_owner={} transferring={} phase={} native={} display={} fences={}/{}/{} "
+            "native_phase={} native_age_us={} display_phase={} control_pending={} "
+            "cpu={} cpu_sample_us={} wake_late_max_us={} leases={}/{} control={}/{} pending_us={} operation={}:{}us "
+            "capacity={} outstanding={} queued={} reserved={} retiring={} show={} speed={} clock={} next_pts={} skipped={} late={} "
+            "published={} selected={} submit_consumed={} pass_complete={} polls={} retired={} discarded={} "
+            "qbuf_calls={} drop_calls={} qbuf_errors={} blocked={} qbuf_us={} poll(ready/timeout/error/other/us)={}/{}/{}/{}/{} "
+            "native_us={}/{}/{} control_us={} main_control_wait_us={} hold_us={} active_us={} denied={}",
+            q.sample.atUs, m_diagnosticId, event, a.id, a.epoch, a.request, a.owner,
+            a.mainOwner, a.transferring, static_cast<int>(q.phase), a.native, a.display,
+            a.fenced, a.displayFenced, a.nativeFenced, a.nativePhase, a.nativeUs, a.displayPhase, a.controlPending, q.sampledCpu, q.cpuSampleUs, q.wakeLateMaxUs, a.active, a.retiring,
+            q.control, q.applied, q.pendingControlUs, q.operation, q.operationUs,
+            q.capacity, q.outstanding, q.queued, q.reservations, q.retiring, q.show, q.speed, q.clock, q.nextPts, q.skipped, q.late,
+            p.published, p.selected, p.qbufAttempts, p.completed, p.polls, p.retired, p.discarded,
+            a.qbufCalls, a.dropCalls, a.qbufErrors, p.blocked, a.qbufUs,
+            a.pollReady, a.pollTimeout, a.pollError, a.pollOther, a.pollUs,
+            p.submitUs, p.pollUs, p.retireUs, p.controlUs,
+            a.controlWaitUs, a.controlHoldUs, a.controlActiveUs, a.controlDenied);
+  if (report && report->gaps)
+  {
+    const auto& gap = report->worst;
+    const auto& delta = gap.progress;
+    CLog::Log(LOGINFO,
+              "p3i-presenter-gap render={} session={} gaps={} from_us={} to_us={} duration_us={} "
+              "published={} selected={} submit_consumed={} pass_complete={} polls={} retired={} "
+              "discarded={} blocked={} native_us={}/{}/{} control_completed_us={}",
+              m_diagnosticId, a.id, report->gaps, gap.fromUs, gap.toUs, gap.toUs - gap.fromUs,
+              delta.published, delta.selected, delta.qbufAttempts, delta.completed, delta.polls,
+              delta.retired, delta.discarded, delta.blocked,
+              delta.submitUs, delta.pollUs, delta.retireUs, delta.controlUs);
+  }
+}
+
 void CRenderManager::StopAMLPresenter(bool migrate)
 {
   std::unique_lock<CCriticalSection> present(m_presentlock);
@@ -2171,8 +2222,13 @@ void CRenderManager::StopAMLPresenter(bool migrate)
     return;
   // The worker never takes any RenderManager lock, invokes main, or waits for
   // its control receipt while stopping. Native return time remains unbounded.
+  LogAMLPresenter(migrate ? "stop-migrate-begin" : "stop-retire-begin", true);
   if (!m_amlPresenter->Stop())
+  {
+    LogAMLPresenter("stop-failed", true);
     throw std::runtime_error("AML presentation owner did not return to main");
+  }
+  LogAMLPresenter("stop-owner-returned", true);
   auto frames = m_amlPresenter->queue->TakeFrames();
   static_cast<CRendererAML*>(m_pRenderer)->ResumeIndependentPresentation(m_amlPresenter->queue->PreviousPts());
   m_amlPresenter.reset();

@@ -48,6 +48,10 @@ def main():
 
 
 PRELUDE = r'''
+#include "utils/PlaybackDiagnostics.h"
+constexpr int LOGINFO=1;
+struct CLog {template<class... T> static void Log(T&&...) {}};
+
 #include <algorithm>
 #include <array>
 #include <cassert>

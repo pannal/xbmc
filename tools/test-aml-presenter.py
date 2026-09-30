@@ -42,6 +42,7 @@ def main():
     renderer_header = (base / 'VideoRenderers/HwDecRender/RendererAML.h').read_text()
     code += SYNC_RENDERER.replace('@RESUME@', extract(renderer_header, 'void ResumeIndependentPresentation('))
     code += extract(renderer, 'void CRendererAML::RenderUpdate(')
+    code += extract(rm, 'void CRenderManager::LogAMLPresenter(')
     code += TESTS + ROUTE_TESTS
     with tempfile.TemporaryDirectory(prefix='aml-presenter-') as name:
         out = Path(name)
@@ -61,6 +62,15 @@ PRELUDE = r'''
 #include <future>
 #include <string>
 #include <iostream>
+constexpr int LOGINFO=1;
+struct CLog{template<class... T> static void Log(int,const char* format,T&&...) {
+  size_t count=0;for(std::string f=format;f.find("{}")!=std::string::npos;f=f.substr(f.find("{}")+2))++count;
+  assert(count==sizeof...(T));
+}};
+namespace PERFORMANCE_CORES {
+  void ApplyCurrentThread(const char*,uint64_t) {}
+  int CurrentCpu(){return -1;}
+}
 using namespace std::chrono_literals;
 struct CRect {};
 std::atomic<int> buffers{0}, peak{0};
@@ -79,6 +89,7 @@ public:
   std::atomic<int> qbufResult{0};
   std::shared_ptr<const void> lifetime;
   CAMLCodec() {auto r=session.Fence(); assert(session.BeginMutation(r)); assert(session.Complete(r,true));}
+  CAMLSession::DiagnosticSnapshot GetDiagnostics() const {return session.Diagnostics();}
   uint64_t GetOperationEpoch() const {return session.Epoch();}
   bool IsOperationInvalidated(uint64_t epoch) const {return session.IsInvalidated(epoch);}
   CAMLSession::Permit AcquirePresentation(uint64_t epoch,bool retirement=false) {return session.Acquire(epoch,retirement);}
@@ -90,6 +101,7 @@ public:
   void RetainProcessInfo(std::shared_ptr<const void> value) {lifetime=std::move(value);}
   int ReleaseFrame(uint32_t,uint64_t,const CAMLSession::Permit& permit,bool drop=false) {
     assert(!permit.IsControl() && session.Matches(permit,session.Epoch()));
+    session.RecordQbuf(drop,qbufResult);
     if(drop) ++drops; else {assert(!permit.IsRetirement()); ++releases;}
     return qbufResult;
   }
@@ -163,6 +175,8 @@ void IndependentProgress() {
   CAMLPresenterSession session(codec,clock,4,std::make_shared<int>(1));
   session.SetTiming(1000,25,0); session.queue->Show(true);
   Put(session,codec,clock,1,1); Acknowledge(session);
+  assert(session.queue->WaitIdle(1s));
+  const auto beforeGap=session.queue->Diagnostics().sample;
   const int geometry=codec->geometry;
   const int before=codec->releases;
   auto producer=std::async(std::launch::async,[&] {
@@ -174,6 +188,14 @@ void IndependentProgress() {
   assert(producer.wait_for(4s)==std::future_status::ready); producer.get();
   Await([&] {return codec->releases>=before+128;});
   assert(codec->geometry==geometry);
+  assert(session.queue->WaitIdle(1s));
+  const auto afterGap=session.queue->Diagnostics();
+  const auto progress=afterGap.sample.progress.Since(beforeGap.progress);
+  assert(progress.published==128 && progress.qbufAttempts==128 && progress.completed==128);
+  assert(progress.retired==128 && progress.polls>=128);
+  assert(afterGap.sample.progress.retired+afterGap.outstanding==129);
+  const auto admission=codec->GetDiagnostics();
+  assert(admission.qbufCalls==129 && admission.dropCalls==0 && admission.qbufErrors==0);
   assert(session.queue->Outstanding()<=4 && peak<=5);
   auto observation=session.queue->Observe();
   auto menu=std::static_pointer_cast<const CAMLPresenterSession::OverlayObservation>(observation.payload);
@@ -315,6 +337,8 @@ constexpr int DVP_FLAG_INTERLACED=1, DVP_FLAG_TOP_FIELD_FIRST=2;
 enum EINTERLACEMETHOD {VS_INTERLACEMETHOD_NONE,VS_INTERLACEMETHOD_RENDER_BLEND,VS_INTERLACEMETHOD_RENDER_BOB};
 class CRenderManager {
 public:
+  uint64_t m_diagnosticId=1;
+  void LogAMLPresenter(const char*,bool=false);
   @RESERVATION@
   std::shared_ptr<CAMLPresenterSession> m_amlPresenter;
   CCriticalSection m_presentlock;
@@ -344,10 +368,12 @@ void RouteProgress() {
     assert(manager.AddVideoPicture(reservation,picture,{n},stop,VS_INTERLACEMETHOD_NONE,false));
   };
   publish(1); Acknowledge(*session);
+  manager.LogAMLPresenter("test-start",true);
   auto producer=std::async(std::launch::async,[&] {for(int i=2;i<=129;++i) publish(i);});
   assert(producer.wait_for(4s)==std::future_status::ready); producer.get();
   Await([&] {return codec->releases==129;});
   assert(session->queue->WaitIdle(1s));
+  manager.LogAMLPresenter("test-complete",true);
   assert(session->queue->Stats().queued==0); // current frame cannot block EOS/drain
   CRenderManager::BufferReservation old;
   std::atomic_bool stop{false};

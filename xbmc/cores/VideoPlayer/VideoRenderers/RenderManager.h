@@ -21,6 +21,7 @@
 #include "threads/Event.h"
 #include "threads/SystemClock.h"
 #include "utils/Geometry.h"
+#include "utils/PlaybackDiagnostics.h"
 #include "utils/StreamDetails.h"
 #include "windowing/Resolution.h"
 #include "windowing/amlogic/AMLNativeTransaction.h"
@@ -68,6 +69,8 @@ public:
 
   void SetProcessInfoLifetime(std::shared_ptr<const void> lifetime)
   { m_processInfoLifetime = std::move(lifetime); }
+
+  uint64_t DiagnosticId() const { return m_diagnosticId; }
 
   // A producer-stack reservation must not outlive its render manager.
   // Destruction cancels unpublished capacity; it never calls the renderer.
@@ -340,11 +343,13 @@ protected:
   bool m_hasCaptures = false;
 
 private:
+  const uint64_t m_diagnosticId{PLAYBACK_DIAGNOSTICS::NextId()};
   std::shared_ptr<const void> m_processInfoLifetime;
 #if defined(HAS_LIBAMCODEC)
   std::shared_ptr<CAMLPresenterSession> m_amlPresenter;
   void UpdateAMLPresenter();
   void StopAMLPresenter(bool migrate);
+  void LogAMLPresenter(const char* event, bool transition = false);
 #endif
   // Called synchronously by FrameMove on the application thread.
   void ProcessPresentationQueue();

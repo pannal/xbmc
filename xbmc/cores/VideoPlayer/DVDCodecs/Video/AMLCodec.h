@@ -102,6 +102,7 @@ public:
   bool          LifecyclePending() const { return m_lifecycle != Lifecycle::NONE; }
   void          WaitForLifecycle();
   bool IsOperationInvalidated(uint64_t epoch) const { return m_session.IsInvalidated(epoch); }
+  CAMLSession::DiagnosticSnapshot GetDiagnostics() const { return m_session.Diagnostics(); }
   uint64_t      GetOperationEpoch() const { return m_session.Epoch(); }
   CAMLSession::Permit AcquirePresentation(uint64_t epoch, bool retirement = false)
   {

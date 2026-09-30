@@ -4,6 +4,8 @@
  */
 #pragma once
 
+#include "utils/PlaybackDiagnostics.h"
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -21,6 +23,10 @@ class CAMLSession
 {
   struct State
   {
+    const uint64_t diagnosticId{PLAYBACK_DIAGNOSTICS::NextId()};
+    std::atomic<uint64_t> qbufCalls{0}, dropCalls{0}, qbufErrors{0}, qbufUs{0};
+    std::atomic<uint64_t> pollReady{0}, pollTimeout{0}, pollError{0}, pollOther{0}, pollUs{0};
+    uint64_t controlWaitUs{0}, controlHoldUs{0}, controlSinceUs{0}, controlDenied{0};
     std::mutex mutex;
     std::condition_variable idle;
     uint64_t epoch{1};
@@ -47,6 +53,8 @@ public:
     enum class Phase { PENDING, ACTIVE, COMPLETED, CANCELLED };
     explicit NativeRequest(std::shared_ptr<const void> session = {})
       : sessionIdentity(std::move(session)) {}
+    const uint64_t serial{PLAYBACK_DIAGNOSTICS::NextId()};
+    const uint64_t sinceUs{PLAYBACK_DIAGNOSTICS::NowUs()};
     const std::thread::id owner{std::this_thread::get_id()};
     const std::shared_ptr<const void> sessionIdentity;
     Phase phase{Phase::PENDING}; // registry lock
@@ -81,7 +89,10 @@ public:
         std::lock_guard<std::mutex> lock(m_state->mutex);
         --(m_retirement ? m_state->retiring : m_state->active);
         if (m_control)
+        {
+          m_state->controlHoldUs += PLAYBACK_DIAGNOSTICS::NowUs() - m_state->controlSinceUs;
           m_state->controlActive = false;
+        }
         m_state->idle.notify_all();
       }
     }
@@ -163,8 +174,51 @@ public:
     std::shared_ptr<const void> identity;
     uint64_t serial{0};
     uint64_t epoch{0};
+    uint64_t sinceUs{PLAYBACK_DIAGNOSTICS::NowUs()};
   };
 
+  struct DiagnosticSnapshot
+  {
+    uint64_t id, epoch, request, owner, native, display;
+    unsigned int active, retiring;
+    bool mainOwner, transferring, fenced, displayFenced, nativeFenced, controlActive;
+    uint64_t controlWaitUs, controlHoldUs, controlActiveUs, controlDenied;
+    uint64_t qbufCalls, dropCalls, qbufErrors, qbufUs, pollReady, pollTimeout, pollError, pollOther, pollUs;
+    int nativePhase, displayPhase;
+    uint64_t nativeUs;
+    bool controlPending;
+  };
+  DiagnosticSnapshot Diagnostics() const
+  {
+    std::lock_guard<std::mutex> registry(s_registryMutex);
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    const auto& s = *m_state;
+    return {s.diagnosticId, s.epoch, s.request, s.ownerSerial,
+            s_nativeRequest ? s_nativeRequest->serial : 0, s_displaySerial,
+            s.active, s.retiring, s.owner == s.controller, s.transferring, s.fenced,
+            s.displayFenced, s.nativeFenced, s.controlActive, s.controlWaitUs, s.controlHoldUs,
+            s.controlActive ? PLAYBACK_DIAGNOSTICS::NowUs() - s.controlSinceUs : 0,
+            s.controlDenied, s.qbufCalls.load(), s.dropCalls.load(), s.qbufErrors.load(), s.qbufUs.load(),
+            s.pollReady.load(), s.pollTimeout.load(), s.pollError.load(), s.pollOther.load(), s.pollUs.load(),
+            s_nativeRequest ? static_cast<int>(s_nativeRequest->phase) : -1,
+            static_cast<int>(s_displayPhase),
+            s_nativeRequest ? PLAYBACK_DIAGNOSTICS::NowUs() - s_nativeRequest->sinceUs : 0,
+            s.controlPending};
+  }
+  void RecordQbuf(bool drop, int result, uint64_t elapsedUs = 0)
+  {
+    m_state->qbufUs.fetch_add(elapsedUs, std::memory_order_relaxed);
+    (drop ? m_state->dropCalls : m_state->qbufCalls).fetch_add(1, std::memory_order_relaxed);
+    if (result < 0)
+      m_state->qbufErrors.fetch_add(1, std::memory_order_relaxed);
+  }
+  void RecordPoll(int result, bool ready, uint64_t elapsedUs)
+  {
+    m_state->pollUs.fetch_add(elapsedUs, std::memory_order_relaxed);
+    auto& count = result < 0 ? m_state->pollError : result == 0 ? m_state->pollTimeout :
+                  ready ? m_state->pollReady : m_state->pollOther;
+    count.fetch_add(1, std::memory_order_relaxed);
+  }
   uint64_t Epoch() const
   {
     std::lock_guard<std::mutex> lock(m_state->mutex);
@@ -196,16 +250,27 @@ public:
     };
     if (std::this_thread::get_id() != m_state->controller ||
         m_state->controlPending || m_state->controlActive || !available())
+    {
+      ++m_state->controlDenied;
       return {};
+    }
     m_state->controlPending = true;
     if (wait)
+    {
+      const auto start = PLAYBACK_DIAGNOSTICS::NowUs();
       m_state->idle.wait(lock, [&] {
         return !available() || (!m_state->active && !m_state->retiring);
       });
+      m_state->controlWaitUs += PLAYBACK_DIAGNOSTICS::NowUs() - start;
+    }
     m_state->controlPending = false;
     if (!available() || m_state->active || m_state->retiring)
+    {
+      ++m_state->controlDenied;
       return {};
+    }
     m_state->controlActive = true;
+    m_state->controlSinceUs = PLAYBACK_DIAGNOSTICS::NowUs();
     ++m_state->active;
     Permit permit(m_state, epoch, false);
     permit.m_control = true;

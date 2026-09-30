@@ -324,6 +324,7 @@ protected:
 #endif
 
   private:
+    uint64_t m_diagnosticOpen{0};
     bool OpenStream(CFileItem &item);
     void SetupPlayerSettings() const;
     void ApplyUHDCapabilities() const;

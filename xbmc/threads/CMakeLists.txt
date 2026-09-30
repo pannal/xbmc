@@ -1,8 +1,10 @@
-set(SOURCES Event.cpp
+set(SOURCES PerformanceCores.cpp
+            Event.cpp
             Thread.cpp
             Timer.cpp)
 
-set(HEADERS Condition.h
+set(HEADERS PerformanceCores.h
+            Condition.h
             CriticalSection.h
             Event.h
             Lockables.h

@@ -616,6 +616,7 @@ constexpr int LOGINFO = 1, LOGDEBUG = 2, LOGWARNING = 3;
 struct CLog { template<class... T> static void Log(T&&...) {} };
 struct CRenderManager
 {
+  uint64_t DiagnosticId() const {return 1;}
   std::shared_ptr<CRenderLifecycle> m_lifecycle{CRenderLifecycle::Create()};
   std::atomic<bool> m_closing{false};
   std::recursive_mutex m_statelock;

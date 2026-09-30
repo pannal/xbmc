@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "utils/PlaybackDiagnostics.h"
+
 #include "DVDClock.h"
 #include "DVDCodecs/Video/DVDVideoCodec.h"
 #include "DVDMessageQueue.h"
@@ -133,6 +135,8 @@ protected:
   int m_retryProgressive;
   std::string m_vfmt;
   int m_iLateFrames;
+  PLAYBACK_DIAGNOSTICS::VideoStages m_diagnostics; // decode/output thread only
+  void LogDiagnostics(bool final = false);
   int m_iDroppedFrames;
   int m_iDroppedRequest;
 
