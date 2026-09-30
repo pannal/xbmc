@@ -346,6 +346,8 @@ private:
   const uint64_t m_diagnosticId{PLAYBACK_DIAGNOSTICS::NextId()};
   std::shared_ptr<const void> m_processInfoLifetime;
 #if defined(HAS_LIBAMCODEC)
+  // Sampled by main at playback PreInit; GUI changes do not transfer a live owner.
+  bool m_amlIndependentPresenter{false};
   std::shared_ptr<CAMLPresenterSession> m_amlPresenter;
   void UpdateAMLPresenter();
   void StopAMLPresenter(bool migrate);

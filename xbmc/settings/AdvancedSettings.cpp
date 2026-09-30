@@ -20,7 +20,6 @@
 #include "settings/lib/Setting.h"
 #include "settings/lib/SettingsManager.h"
 #include "utils/FileUtils.h"
-#include "utils/PlaybackDiagnostics.h"
 #include "utils/LangCodeExpander.h"
 #include "utils/StringUtils.h"
 #include "utils/SystemInfo.h"
@@ -182,7 +181,6 @@ void CAdvancedSettings::Initialize()
   m_videoDecoderDrainTimeout = 5;
   m_videoMenuDomainQueueTimeSize = 1.0f;
   m_videoBdBoundaryDrain = true;
-  m_videoAMLIndependentPresenter = false;
   if (aml_get_cpufamily_id() == AML_G12B)
   {
     m_videoDecoderBypassBufferReady = true;
@@ -500,10 +498,6 @@ bool CAdvancedSettings::Load(const CProfileManager &profileManager)
   DefaultAudioLatency();
   DefaultVideoLatency();
 
-  CLog::Log(LOGINFO, "p3i-transition schema=1 t_us={} settings={} presenter={} build={} built={} "
-            "progress=software-only-no-scanout",
-            PLAYBACK_DIAGNOSTICS::NowUs(), PLAYBACK_DIAGNOSTICS::NextId(),
-            m_videoAMLIndependentPresenter, CSysInfo::GetVersion(), CSysInfo::GetBuildDate());
   return true;
 }
 
@@ -745,7 +739,6 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetFloat(pElement, "menudomainqueuetimesize", m_videoMenuDomainQueueTimeSize, 0.0f,
                        16.0f);
     XMLUtils::GetBoolean(pElement, "bdboundarydrain", m_videoBdBoundaryDrain);
-    XMLUtils::GetBoolean(pElement, "amlindependentpresenter", m_videoAMLIndependentPresenter);
     XMLUtils::GetBoolean(pElement, "usetimeseeking", m_videoUseTimeSeeking);
     XMLUtils::GetInt(pElement, "timeseekforward", m_videoTimeSeekForward, 0, 6000);
     XMLUtils::GetInt(pElement, "timeseekbackward", m_videoTimeSeekBackward, -6000, 0);

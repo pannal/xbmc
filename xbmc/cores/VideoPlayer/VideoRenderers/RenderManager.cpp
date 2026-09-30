@@ -395,7 +395,7 @@ bool CRenderManager::Configure()
     m_renderState = STATE_CONFIGURED;
 #if defined(HAS_LIBAMCODEC)
     auto* aml = dynamic_cast<CRendererAML*>(m_pRenderer);
-    const bool enabled = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoAMLIndependentPresenter;
+    const bool enabled = m_amlIndependentPresenter;
     const bool stereo = !(m_picture.stereoMode.empty() || m_picture.stereoMode == "mono") ||
         CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF;
     const char* reason = !enabled ? "disabled" : !aml ? "non-aml" : stereo ? "stereo" :
@@ -647,6 +647,13 @@ void CRenderManager::PreInitOnMain()
   std::unique_lock<CCriticalSection> lock3(m_datalock);
   ClearFrameSelection();
   InvalidateReservations();
+
+#if defined(HAS_LIBAMCODEC)
+  m_amlIndependentPresenter = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+      CSettings::SETTING_COREELEC_AMLOGIC_INDEPENDENT_PRESENTER);
+  CLog::Log(LOGINFO, "p3i-transition t_us={} render={} presenter={} source=gui apply=playback-preinit",
+            PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticId, m_amlIndependentPresenter);
+#endif
 
   if (!m_pRenderer)
   {

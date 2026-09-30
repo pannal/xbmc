@@ -482,6 +482,7 @@ public:
   static constexpr auto SETTING_MASTERLOCK_LOCKCODE = "masterlock.lockcode";
   static constexpr auto SETTING_MASTERLOCK_STARTUPLOCK = "masterlock.startuplock";
   static constexpr auto SETTING_MASTERLOCK_MAXRETRIES = "masterlock.maxretries";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_INDEPENDENT_PRESENTER = "coreelec.amlogic.independentpresenter";
   static constexpr auto SETTING_COREELEC_AMLOGIC_NOISEREDUCTION = "coreelec.amlogic.noisereduction";
   static constexpr auto SETTING_COREELEC_AMLOGIC_LIMIT_CD = "coreelec.amlogic.limitcd";
   static constexpr auto SETTING_COREELEC_AMLOGIC_FORCE_CS = "coreelec.amlogic.forcecs";
@@ -659,7 +660,7 @@ public:
    \param hide Whether to hide the loaded settings or not
    \return True if the setting values were successfully loaded, false otherwise
    */
-  bool LoadHidden(const TiXmlElement *root) { return CSettingsBase::LoadHiddenValuesFromXml(root); }
+  bool LoadHidden(const TiXmlElement* root);
 
   /*!
    \brief Saves the setting values to the given (XML) file.
