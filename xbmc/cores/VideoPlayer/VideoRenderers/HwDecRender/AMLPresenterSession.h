@@ -160,6 +160,15 @@ public:
     frame->buffer->ApplyGeometry(permit, source, destination);
     return queue->CompleteControl(request);
   }
+  bool RequiresNativeGuiWait() const
+  {
+    const auto owner = m_codec->GetDiagnostics();
+    // Pointer presence includes unaccepted startup and returned-owner teardown.
+    // Decoder/display fences do not turn worker ownership into synchronous poll.
+    // A requested return does not change the acknowledged owner; main still
+    // skips synchronous polling until it accepts that return.
+    return !owner.mainOwner;
+  }
   CAMLSession::DiagnosticSnapshot AdmissionDiagnostics() const { return m_codec->GetDiagnostics(); }
   PLAYBACK_DIAGNOSTICS::ClockHistory::Report ClockDiagnostics()
   {

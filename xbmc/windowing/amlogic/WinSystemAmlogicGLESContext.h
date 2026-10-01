@@ -9,6 +9,7 @@
 #pragma once
 
 #include "AMLDisplayLifecycle.h"
+#include "AMLNativeGuiWait.h"
 #include "utils/EGLUtils.h"
 #include "cores/VideoPlayer/VideoRenderers/FrameBufferObject.h"
 #include "rendering/gles/GuiCompositeShaderGLES.h"
@@ -42,6 +43,7 @@ public:
   bool InitWindowSystem() override;
   bool DestroyWindowSystem() override;
   bool PrepareForShutdown() override;
+  void SetNativeGuiWait(bool enabled) override;
   bool DestroyRenderSystem() override;
   bool ResetRenderSystem(int width, int height) override;
   bool IsDisplayChangePending() const override { return m_displayLifecycle.Pending(); }
@@ -91,6 +93,8 @@ protected:
   void PresentRenderImpl(bool rendered) override;
 
 private:
+  NativeGuiWait<> m_nativeGuiWait;
+  int m_nativeGuiWaitReportedError{0};
   bool m_vsyncFailureReported{false}; // One failure per streak; retry remains on main.
   // Where PQ menu graphics can reach the sink raw: the VPP OSD stage in
   // passthrough (HDR10 out, DV core idle), or DV core2 told the OSD is PQ.

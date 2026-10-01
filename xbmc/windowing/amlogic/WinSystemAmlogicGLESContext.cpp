@@ -211,6 +211,7 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 bool CWinSystemAmlogicGLESContext::PrepareForShutdown()
 {
   m_shutdownRequested = true;
+  SetNativeGuiWait(false);
   // Drain settings/deferred users before taking display admission: a completing
   // callback must not be fenced out by the shutdown that is waiting for it.
   if (!RetireNativeTransactions())
@@ -416,6 +417,7 @@ bool CWinSystemAmlogicGLESContext::DestroyWindow()
   m_displayGeometryReady = false;
   InvalidateRenderTarget();
   CancelGuiComposite();
+  SetNativeGuiWait(false);
   m_pGLContext.DestroySurface();
   return CWinSystemAmlogic::DestroyWindow();
 }
@@ -450,6 +452,22 @@ bool CWinSystemAmlogicGLESContext::ResetRenderSystem(int width, int height)
   display.Finish(m_delayDispReset ? CAMLDisplayLifecycle::Phase::WAITING_FOR_RESET
                                  : CAMLDisplayLifecycle::Phase::READY);
   return true;
+}
+
+void CWinSystemAmlogicGLESContext::SetNativeGuiWait(bool enabled)
+{
+  const bool previous = m_nativeGuiWait.Enabled();
+  // Surface replacement/shutdown discards the lease. Main re-evaluates actual
+  // session ownership before publication on the replacement surface.
+  enabled = enabled && !m_shutdownRequested &&
+            m_pGLContext.GetEGLSurface() != EGL_NO_SURFACE;
+  m_nativeGuiWait.Apply(enabled, "/dev/" + m_framebuffer_name);
+  const int error = m_nativeGuiWait.Error();
+  if (previous != m_nativeGuiWait.Enabled() || error != m_nativeGuiWaitReportedError)
+    CLog::Log(error ? LOGERROR : LOGINFO,
+              "p3i-native-gui-wait requested={} enabled={} error={}",
+              enabled, m_nativeGuiWait.Enabled(), error);
+  m_nativeGuiWaitReportedError = error;
 }
 
 void CWinSystemAmlogicGLESContext::SetVSyncImpl(bool enable)

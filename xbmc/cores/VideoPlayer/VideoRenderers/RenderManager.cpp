@@ -484,6 +484,10 @@ void CRenderManager::FrameMove()
   m_configuredFramePending = false;
   m_deferredDVResolutionAttempted = false;
   UpdateResolution();
+#if defined(HAS_LIBAMCODEC)
+  if (!m_amlPresenter)
+    CServiceBroker::GetWinSystem()->SetNativeGuiWait(false);
+#endif
   if (!CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())
     CancelDeferredDV();
   else if (!m_deferredDVResolutionAttempted || !m_deferredDVNative)
@@ -2213,6 +2217,7 @@ void CRenderManager::UpdateAMLPresenter()
   std::unique_lock<CCriticalSection> present(m_presentlock);
   if (!m_amlPresenter)
     return;
+  CServiceBroker::GetWinSystem()->SetNativeGuiWait(m_amlPresenter->RequiresNativeGuiWait());
   LogAMLPresenter("periodic");
   auto* renderer = static_cast<CRendererAML*>(m_pRenderer);
   CRect source, destination;
@@ -2305,6 +2310,7 @@ void CRenderManager::StopAMLPresenter(bool migrate)
     throw std::runtime_error("AML presentation owner did not return to main");
   }
   LogAMLPresenter("stop-owner-returned", true);
+  CServiceBroker::GetWinSystem()->SetNativeGuiWait(false);
   auto frames = m_amlPresenter->queue->TakeFrames();
   static_cast<CRendererAML*>(m_pRenderer)->ResumeIndependentPresentation(m_amlPresenter->queue->PreviousPts());
   m_amlPresenter.reset();
