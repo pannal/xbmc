@@ -46,6 +46,7 @@ static int sleeps,swaps,iterations,inputs;
 static long long waited,inputAt=-1,inputHandled=-1;
 static bool independent=true,renderGUI=true,dirty=false,videoLayer=true,stopInFrame=false,reject=false;
 static int workUs=0;
+static bool displayReady=true,syncPoll=false;static long long readyAt=-1;
 static bool fallBack=false,inputDirty=false;
 namespace KODI::TIME {void Sleep(std::chrono::milliseconds d){++sleeps;waited+=d.count()*1000;Clock::now+=d;}}
 constexpr int LOGINFO=0,TMSG_PLAYLISTPLAYER_PLAY=0;
@@ -56,7 +57,7 @@ struct Params{CFileItemList list;CFileItemList& GetPlaylist(){return list;}};
 struct Playlist{void Add(PLAYLIST::Id,CFileItemList&){} void SetCurrentPlaylist(PLAYLIST::Id){}};
 struct Messenger{void PostMsg(int,int){}};
 struct Gfx {bool IsFullScreenVideo(){return true;}};
-struct Window {Gfx gfx;Gfx& GetGfxContext(){return gfx;}};
+struct Window {Gfx gfx;Gfx& GetGfxContext(){return gfx;}bool IsDisplayReadyForVideo(){return displayReady;}};
 struct Manager {int GetActiveWindow(){return 10025;}};
 struct Gui {Manager manager;Manager& GetWindowManager(){return manager;}};
 struct CServiceBroker{
@@ -109,7 +110,9 @@ struct CApplication {
  void FrameMove(bool events,bool gui){
   assert(events&&gui==renderGUI);
   if(inputAt>=0&&inputHandled<0&&Clock::Us()>=inputAt){++inputs;inputHandled=Clock::Us();if(inputDirty)dirty=true;}
+  if(readyAt>=0&&Clock::Us()>=readyAt)displayReady=true;
   Clock::now+=std::chrono::microseconds(workUs);
+  if(syncPoll&&displayReady)Clock::now+=40ms;
   if(fallBack)std::static_pointer_cast<CVideoPlayer>(player.player)->m_renderManager.m_amlPresenter.reset();
   if(stopInFrame)m_bStop=true;
  }
@@ -123,7 +126,8 @@ struct CApplication {
 };
 @RUN@
 static void reset(){Clock::now={};sleeps=swaps=iterations=inputs=0;waited=0;inputAt=inputHandled=-1;
- independent=renderGUI=videoLayer=true;dirty=stopInFrame=reject=fallBack=inputDirty=false;workUs=0;}
+ independent=renderGUI=videoLayer=true;dirty=stopInFrame=reject=fallBack=inputDirty=false;workUs=0;
+ displayReady=true;syncPoll=false;readyAt=-1;}
 int main(){
 #ifndef HAS_LIBAMCODEC
  CRenderManager manager;manager.m_amlPresenter=std::make_shared<int>(1);
@@ -143,13 +147,29 @@ int main(){
  reset();dirty=true;CApplication gui;gui.Run();assert(swaps>0&&sleeps==0);
  reset();independent=false;CApplication legacy;legacy.Run();assert(iterations==10000&&sleeps==0);
  reset();fallBack=true;CApplication fallback;fallback.Run();assert(sleeps==0);
+ // Display fences can leave OFF with no admitted poll or swap. Reproduce the
+ // startup spin with real Run/Present branches, then check bounded servicing.
+ reset();independent=false;displayReady=false;inputAt=153;
+ CApplication waiting;waiting.Run();
+ assert(iterations>=66&&iterations<=73&&sleeps==iterations-1&&swaps==0);
+ assert(inputs==1&&inputHandled-inputAt<=15200);
+ // Readiness is pumped on each iteration; normal synchronous work resumes
+ // without the idle budget once reset completes.
+ reset();independent=false;displayReady=false;readyAt=90000;syncPoll=true;
+ CApplication recovered;recovered.Run();assert(displayReady&&sleeps==6&&iterations<40);
+ // Fallback during a pending reset still needs servicing. Dirty GUI swaps
+ // remain outside this idle correction, preserving animations/OSD redraws.
+ reset();fallBack=true;displayReady=false;CApplication resetFallback;resetFallback.Run();
+ assert(iterations>=66&&iterations<=73&&sleeps==iterations-1);
+ reset();independent=false;displayReady=false;dirty=true;
+ CApplication resetGui;resetGui.Run();assert(swaps>0&&sleeps==0);
  reset();stopInFrame=true;CApplication stopped;stopped.Run();assert(sleeps==0&&swaps==0&&iterations==1);
  reset();reject=true;CApplication cancelled;cancelled.Run();assert(sleeps==0);
  reset();renderGUI=false;CApplication hidden;hidden.Run();assert(sleeps>0&&iterations<=73);
  reset();videoLayer=false;CApplication noVideo;noVideo.Run();assert(iterations<=26&&sleeps==iterations-1);
  CApplicationPlayer empty;assert(!empty.IsVideoPresentationIndependent());
  IPlayer other;assert(!other.IsVideoPresentationIndependent());
- std::cout<<"PASS clean-loop pacing, input/dirty wake, elapsed budget, fallback, stop and existing presentation branches\n";
+ std::cout<<"PASS clean-loop pacing, OFF reset spin/recovery, input/dirty wake, fallback, stop and existing presentation branches\n";
 }
 """
 
@@ -179,7 +199,7 @@ def main():
                                               'void CRenderSystemGLES::PresentRender(bool rendered, bool videoLayer)'))
     with tempfile.TemporaryDirectory(prefix='aml-main-pacing-') as tmp:
         out = Path(tmp)
-        def check(code, negative=False, aml=True):
+        def check(code, negative=False, aml=True, reset_gap=False):
             (out/'test.cpp').write_text(code)
             subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++17', '-Wall', '-Wextra', '-Werror',
                             *(['-DHAS_LIBAMCODEC'] if aml else []), '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
@@ -188,15 +208,20 @@ def main():
                                     capture_output=negative, text=True, timeout=10)
             if negative:
                 assert result.returncode != 0 and 'iterations>=66' in result.stderr, result
-                print('Rejected negative control: restoring the GUI-enabled no-redraw pacing gap')
+                print('Rejected negative control:', 'OFF display-reset spin' if reset_gap else 'independent GUI-enabled no-redraw spin')
             else:
                 result.check_returncode()
         check(source)
         check(source, aml=False)
         if args.negative_control:
-            needle = '(!renderGUI || idleIndependentVideo)'
+            needle = '(!renderGUI || idleVideoPresentation)'
             assert source.count(needle) == 1
-            check(source.replace(needle, '(!renderGUI || (idleIndependentVideo && false))'), True)
+            check(source.replace(needle, '(!renderGUI || (idleVideoPresentation && false))'), True)
+            lost = '!CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo()'
+            assert source.count(lost) == 1
+            # The independent idle case still passes, but the OFF reset case
+            # must fail if we restore the original readiness pacing omission.
+            check(source.replace(lost, 'false'), True, reset_gap=True)
 
 
 if __name__ == '__main__':

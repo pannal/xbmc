@@ -2042,15 +2042,16 @@ int CApplication::Run()
 #ifdef HAS_LIBAMCODEC
     const bool diagnosticRenderAttempted = renderGUI && !m_bStop;
 #endif
-    bool idleIndependentVideo = false;
+    bool idleVideoPresentation = false;
     if (renderGUI && !m_bStop)
     {
       Render();
-      idleIndependentVideo =
+      idleVideoPresentation =
           m_lastRenderAttempt.status == RenderAttemptStatus::COMMANDS_COMPLETED &&
           !m_lastRenderAttempt.guiRendered &&
           m_lastRenderAttempt.present == PresentResult::SKIPPED &&
-          GetComponent<CApplicationPlayer>()->IsVideoPresentationIndependent();
+          (GetComponent<CApplicationPlayer>()->IsVideoPresentationIndependent() ||
+           !CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo());
     }
 #ifdef HAS_LIBAMCODEC
     auto& trace = PLAYBACK_DIAGNOSTICS::endDisplay;
@@ -2072,10 +2073,11 @@ int CApplication::Run()
     }
     aml_end_display_diagnostics_pump();
 #endif
-    // A clean GUI does not swap, and independent video no longer polls on main.
-    // Reuse the idle-loop budget so input/control processing continues at ~66 Hz;
-    // count all work already done and never wait for a presenter frame receipt.
-    if (!m_bStop && (!renderGUI || idleIndependentVideo))
+    // A clean GUI does not swap. Independent video polls away from main;
+    // synchronous video may also have no admitted poll while display reset is
+    // pending. Reuse the idle-loop budget for both skipped cases so input and
+    // readiness still progress. Count elapsed work; never wait for a frame receipt.
+    if (!m_bStop && (!renderGUI || idleVideoPresentation))
     {
       auto now = std::chrono::steady_clock::now();
       frameTime = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFrameTime);
