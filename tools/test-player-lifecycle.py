@@ -58,6 +58,7 @@ constexpr int VideoPlayer_AUDIO=1, VideoPlayer_VIDEO=2, TMSG_SWITCHTOFULLSCREEN=
 constexpr double DVD_TIME_BASE=1000000;
 constexpr double DVD_SEC_TO_TIME(double value) { return value*DVD_TIME_BASE; }
 struct CLog { template<class... T> static void Log(T&&...) {} };
+namespace PLAYBACK_DIAGNOSTICS { inline int64_t NowUs() { return 0; } }
 struct Event { void Set() {} void Reset() {} bool Wait(std::chrono::milliseconds) { return false; } };
 struct CDVDMsg {
   enum Message { DEMUXER_PACKET, GENERAL_RESYNC, GENERAL_PAUSE, GENERAL_RESET,
@@ -103,6 +104,7 @@ struct CDVDMessageQueue {
   void UpdateTimeBack() { ++updates; }
   void UpdateTimeFront() { ++updates; }
   bool IsInited() const { return m_bInitialized; }
+  int GetDataSize() const { return m_iDataSize; }
   void Flush(CDVDMsg::Message type=CDVDMsg::DEMUXER_PACKET);
   bool m_bInitialized=true, m_bAbortRequest=false, m_drain=false;
   CCriticalSection m_section; Event m_hEvent; std::string m_owner="fixture";
@@ -136,6 +138,11 @@ struct Stats { int resets=0; void Reset() { ++resets; } void Flush() { ++resets;
 struct Renderer { int discards=0, hides=0; void DiscardBuffer() { ++discards; } void ShowVideo(bool show) { if(!show) ++hides; } };
 struct IDVDStreamPlayer { enum ESyncState { SYNC_STARTING, SYNC_WAITSYNC, SYNC_INSYNC }; };
 struct CVideoPlayerVideo {
+  struct Diagnostics {
+    struct Counter { void Add(int64_t) {} } lifecycle, input;
+    uint64_t modes=0, messagesTimedOut=0, inputEmpty=0;
+  } m_diagnostics;
+  void LogSyncTransition(const char*, double) {}
   std::atomic<uint64_t> m_syncRequest{0}; uint64_t m_syncEpoch=0;
   uint64_t GetSyncEpoch() const { return m_syncRequest.load(); }
   std::shared_ptr<CVideoFlushRequest> GetFlushRequest() const { return std::atomic_load(&m_flushRequest); }
@@ -592,7 +599,7 @@ def harness(root=ROOT):
     video = (root / 'xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp').read_text()
     parent = (root / 'xbmc/cores/VideoPlayer/VideoPlayer.cpp').read_text()
     messages = (root / 'xbmc/cores/VideoPlayer/DVDMessage.h').read_text()
-    selection = video[video.index('    const bool lifecyclePending ='):]
+    selection = video[video.index('    const auto lifecycleStart ='):]
     selection = selection[:selection.index('    onlyPrioMsgs = false;') + len('    onlyPrioMsgs = false;')]
     header = (root / 'xbmc/cores/VideoPlayer/VideoPlayer.h').read_text()
     interface = (root / 'xbmc/cores/VideoPlayer/IVideoPlayer.h').read_text()

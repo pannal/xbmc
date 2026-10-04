@@ -95,6 +95,23 @@ MsgQueueReturnCode CDVDMessageQueue::PutBack(const std::shared_ptr<CDVDMsg>& pMs
   return Put(pMsg, priority, false);
 }
 
+bool CDVDMessageQueue::PutIfNoMessages(const std::shared_ptr<CDVDMsg>& pMsg,
+                                      std::initializer_list<CDVDMsg::Message> types)
+{
+  std::unique_lock<CCriticalSection> lock(m_section);
+  const auto blocked = [&](const auto& item) {
+    return std::any_of(types.begin(), types.end(),
+                       [&](CDVDMsg::Message type) { return item.message->IsType(type); });
+  };
+  if (m_bAbortRequest || std::any_of(m_messages.begin(), m_messages.end(), blocked) ||
+      std::any_of(m_prioMessages.begin(), m_prioMessages.end(), blocked))
+    return false;
+
+  // CCriticalSection is recursive: keep the predicate and insertion serialized
+  // with producers without changing normal queue ordering or priority.
+  return Put(pMsg) == MSGQ_OK;
+}
+
 MsgQueueReturnCode CDVDMessageQueue::Put(const std::shared_ptr<CDVDMsg>& pMsg,
                                          int priority,
                                          bool front)

@@ -1654,6 +1654,7 @@ void CVideoPlayer::UpdateMenuDomainQueueDepth(bool segmentOpen)
 
 void CVideoPlayer::Prepare()
 {
+  m_audioRecoveryPending = false;
   m_menuDomainSegment = false;
   m_menuDomainClampPending = false;
   m_menuDomainFillPending = false;
@@ -4008,13 +4009,7 @@ void CVideoPlayer::HandleMessages()
           {
             m_dvd.iSelectedAudioStream = -1;
             CloseStream(m_CurrentAudio, false);
-            CDVDMsgPlayerSeek::CMode mode;
-            mode.time = (int)GetUpdatedTime();
-            mode.backward = true;
-            mode.accurate = true;
-            mode.trickplay = true;
-            mode.sync = true;
-            m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+            m_audioRecoveryPending = true;
           }
         }
         else
@@ -4035,13 +4030,7 @@ void CVideoPlayer::HandleMessages()
           OpenStream(m_CurrentAudio, st.demuxerId, st.id, st.source);
           AdaptForcedSubtitles();
 
-          CDVDMsgPlayerSeek::CMode mode;
-          mode.time = (int)GetUpdatedTime();
-          mode.backward = true;
-          mode.accurate = true;
-          mode.trickplay = true;
-          mode.sync = true;
-          m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+          m_audioRecoveryPending = true;
         }
       }
     }
@@ -4334,6 +4323,33 @@ void CVideoPlayer::HandleMessages()
     else if (pMsg->IsType(CDVDMsg::PLAYER_SET_UPDATE_STREAM_DETAILS))
       m_UpdateStreamDetails = true;
   }
+
+  QueueAudioRecoverySeek();
+}
+
+void CVideoPlayer::QueueAudioRecoverySeek()
+{
+  if (!m_audioRecoveryPending || m_bAbortRequest || m_bStop || m_waitingForVideoFlush ||
+      ParentLifecyclePending())
+    return;
+
+  if (!m_State.canseek)
+  {
+    // The seek handler cannot perform recovery for this stream either.
+    m_audioRecoveryPending = false;
+    return;
+  }
+
+  CDVDMsgPlayerSeek::CMode mode;
+  mode.time = static_cast<double>(GetUpdatedTime());
+  mode.backward = true;
+  mode.accurate = true;
+  mode.trickplay = true;
+  mode.sync = true;
+  // A deliberate time/chapter seek must keep its target. Retain the obligation
+  // until a sync flush starts: a refused chapter or non-sync scan cannot fulfill it.
+  m_messenger.PutIfNoMessages(std::make_shared<CDVDMsgPlayerSeek>(mode),
+                              {CDVDMsg::PLAYER_SEEK, CDVDMsg::PLAYER_SEEK_CHAPTER});
 }
 
 void CVideoPlayer::SetCaching(ECacheState state)
@@ -5452,6 +5468,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::funct
 
   if (sync)
   {
+    m_audioRecoveryPending = false;
     m_CurrentAudio.inited = false;
     m_CurrentAudio.avsync = CCurrentStream::AV_SYNC_FORCE;
     m_CurrentAudio.starttime = DVD_NOPTS_VALUE;
@@ -5534,6 +5551,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::funct
 
 void CVideoPlayer::CancelParentLifecycle()
 {
+  m_audioRecoveryPending = false;
   m_pendingFlush.reset();
   m_deferredFlush.reset();
   m_rendererRetirement.reset();

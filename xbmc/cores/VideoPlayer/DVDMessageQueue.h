@@ -60,6 +60,11 @@ public:
   MsgQueueReturnCode Put(const std::shared_ptr<CDVDMsg>& pMsg, int priority = 0);
   MsgQueueReturnCode PutBack(const std::shared_ptr<CDVDMsg>& pMsg, int priority = 0);
 
+  // Atomically append only if none of these message types is pending in either queue.
+  // Returns false if blocked, aborted or not initialized.
+  bool PutIfNoMessages(const std::shared_ptr<CDVDMsg>& pMsg,
+                       std::initializer_list<CDVDMsg::Message> types);
+
   /**
    * msg,       message type from DVDMessage.h
    * timeout,   timeout in msec

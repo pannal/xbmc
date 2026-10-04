@@ -490,6 +490,8 @@ protected:
   // Retain that one enclosing operation, never an unbounded continuation queue.
   std::optional<DeferredFlush> m_deferredFlush;
   std::shared_ptr<CRenderLifecycle::Request> m_rendererRetirement;
+  // An audio change still needs a synchronizing flush. A deliberate seek can supply it.
+  bool m_audioRecoveryPending{false};
   bool ParentLifecyclePending() const
   {
     return m_pendingFlush || m_deferredFlush || m_rendererRetirement;
@@ -502,6 +504,7 @@ protected:
   bool m_waitingForVideoFlush{false};
 
   void HandleMessages();
+  void QueueAudioRecoverySeek();
   void HandlePlaySpeed();
   bool IsInMenuInternal() const;
   void SynchronizeDemuxer();
