@@ -353,10 +353,11 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
       {
         double masterClock = m_pClock->GetClock();
         double audioDelay = m_audioSink.GetDelay();
-        double syncPts = masterClock + audioDelay * DVD_TIME_BASE;
+        // Both the master clock and sink delay are already in DVD_TIME_BASE units.
+        double syncPts = masterClock + audioDelay;
         passthroughCodec->SyncToResyncPts(syncPts);
         CLog::Log(LOGDEBUG, "CVideoPlayerAudio::OpenStream - Synced new codec to master clock {:.3f}s (delay {:.3f}s)",
-                  masterClock / DVD_TIME_BASE, audioDelay);
+                  masterClock / DVD_TIME_BASE, audioDelay / DVD_TIME_BASE);
       }
     }
   }
