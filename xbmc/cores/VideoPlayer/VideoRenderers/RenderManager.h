@@ -372,7 +372,7 @@ private:
   // Sampled by main at playback PreInit; GUI changes do not transfer a live owner.
   bool m_amlIndependentPresenter{false};
   std::shared_ptr<CAMLPresenterSession> m_amlPresenter;
-  void UpdateAMLPresenter();
+  bool UpdateAMLPresenter();
   void StopAMLPresenter(bool migrate);
   void LogAMLPresenter(const char* event, bool transition = false);
 #endif

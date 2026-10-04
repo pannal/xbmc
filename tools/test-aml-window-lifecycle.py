@@ -6,6 +6,8 @@ creation, SetFullScreen/ResetRenderSystem/Resize/Present, graphics resolution
 request/retry methods and RenderManager::UpdateResolution/FrameMove. FrameMove
 queue, GUI, capture and clock-sync callees are stubs; its readiness guard is real. Native mode/DV/EGL,
 GLES geometry implementation, services and callbacks are controlled stubs.
+Independent presentation is absent in this fixture; its stand-ins reject entry.
+Diagnostic formatting and native-wait/VSync backend effects are stand-ins.
 Direct shutdown/InitWindowSystem are outside this fixture and remain a separate
 production dependency. No real display, driver, GL or worker readiness is claimed.
 """
@@ -48,7 +50,12 @@ def harness():
         methods.extend(function(source, signature) for signature in signatures[group])
     header = (ROOT / 'xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h').read_text()
     query = function(header, 'bool IsDisplayReadyForVideo()').replace(' override', '')
-    return PRELUDE.replace('@READY_QUERY@', query) + '\n'.join(methods) + TESTS
+    render_header = (ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h').read_text()
+    applied = function(render_header, 'struct AppliedResolution') + ';'
+    result = function((ROOT / 'xbmc/windowing/WinSystem.h').read_text(),
+                      'enum class NativeGuiWaitResult') + ';'
+    return (PRELUDE.replace('@READY_QUERY@', query).replace('@APPLIED_RESOLUTION@', applied)
+            .replace('@NATIVE_WAIT_RESULT@', result) + '\n'.join(methods) + TESTS)
 
 
 def run(source, negative=False):
@@ -89,7 +96,7 @@ def main():
             ('pending graphics intent lost', 'm_pendingVideoResolution = ResolutionRequest{res, forceUpdate};',
              '(void)ResolutionRequest{res, forceUpdate};'),
             ('render trigger cleared while pending',
-             'return; // Retain resolution/HDR intent until actual window completion.',
+             'return; // Failed/pending window work must still retry.',
              '{m_bTriggerUpdateResolution = false;return;}'),
             ('no-mode engage bypasses display readiness',
              'if (!CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())',
@@ -114,6 +121,7 @@ PRELUDE = r'''
 #include "windowing/amlogic/AMLDisplayLifecycle.h"
 #include "windowing/amlogic/AMLNativeTransaction.h"
 #include "rendering/RenderResource.h"
+#include "utils/PlaybackEndDiagnostics.h"
 #include <cassert>
 #include <cmath>
 #include <functional>
@@ -133,8 +141,9 @@ constexpr int RENDER_STEREO_VIEW_OFF=0;
 enum STEREOSCOPIC_PLAYBACK_MODE{STEREOSCOPIC_PLAYBACK_MODE_OFF,STEREOSCOPIC_PLAYBACK_MODE_ASK};
 constexpr int ADJUST_REFRESHRATE_OFF=0;
 enum class StreamHdrType{HDR_TYPE_NONE,HDR_TYPE_HDR10,HDR_TYPE_DOLBYVISION};
-struct RESOLUTION_INFO{int iWidth{1920},iHeight{1080},iScreenWidth{1920},iScreenHeight{1080},iBlanking{0};float fRefreshRate{60.0f};unsigned dwFlags{0};};
+struct RESOLUTION_INFO{int iWidth{1920},iHeight{1080},iScreenWidth{1920},iScreenHeight{1080},iBlanking{0};float fRefreshRate{60.0f};unsigned dwFlags{0};std::string strId;};
 struct CLog{template<class... T>static void Log(T&&...) {}};
+namespace fmt{template<class... T>std::string format(T&&...){return {};}}
 struct CStreamDetails{static const char* DynamicRangeToString(StreamHdrType){return "hdr";}};
 std::vector<std::string> events;
 CAMLSession* probe=nullptr;
@@ -194,7 +203,7 @@ public:
   RESOLUTION m_Resolution{RES_DESKTOP};bool m_bFullScreenRoot{true};
   int m_iScreenWidth{1920},m_iScreenHeight{1080};float m_fFPSOverride{0};Rect m_scissors;
   StreamHdrType hdr{StreamHdrType::HDR_TYPE_NONE};RENDER_STEREO_MODE stereo{RENDER_STEREO_MODE_OFF};
-  bool SetVideoResolution(RESOLUTION,bool);bool SetVideoResolutionInternal(RESOLUTION,bool);
+  bool SetVideoResolution(RESOLUTION,bool,bool retryPending=true);bool SetVideoResolutionInternal(RESOLUTION,bool,bool retryPending=true);
   void ProcessPendingVideoResolution();
   bool IsValidResolution(int res){return res>=0&&res<=3;}
   void UpdateInternalStateWithResolution(int res){m_Resolution=res;auto info=CDisplaySettings::GetInstance().GetResolutionInfo(res);m_iScreenWidth=info.iWidth;m_iScreenHeight=info.iHeight;m_fFPSOverride=info.fRefreshRate;event("provisional:"+std::to_string(res));}
@@ -209,15 +218,21 @@ struct IDispResource{
   virtual void OnLostDisplay(){native("lost");}
   virtual void OnResetDisplay(){native("reset-callback");}
 };
-struct Timer{bool past=false;void Set(std::chrono::milliseconds){past=false;}bool IsTimePast(){return past;}};
+struct Timer{
+  bool past=false;std::chrono::steady_clock::time_point start{};std::chrono::milliseconds timeout{};
+  void Set(std::chrono::milliseconds value){past=false;start=std::chrono::steady_clock::now();timeout=value;}
+  bool IsTimePast(){return past;}
+  auto GetStartTime()const{return start;}auto GetInitialTimeoutValue()const{return timeout;}
+};
 struct fbdev_window{int width{},height{};};
 using EGLNativeWindowType=fbdev_window*;
+struct CEGLContextUtils{struct SwapDiagnostics{bool attempted=false;int error=0;};};
 struct EGL{
   bool surfaceOk=true,bindOk=true,swapOk=true;
   bool CreateSurface(EGLNativeWindowType){native("surface-create");return surfaceOk;}
   bool BindContext(){native("bind");currentBound=bindOk;return bindOk;}
   void DestroySurface(){native("surface-destroy");currentBound=false;}
-  bool TrySwapBuffers(){event("swap");return swapOk;}
+  bool TrySwapBuffers(CEGLContextUtils::SwapDiagnostics* diagnostics=nullptr){event("swap");if(diagnostics){diagnostics->attempted=true;diagnostics->error=swapOk?0:1;}return swapOk;}
 };
 class CWinSystemAmlogic{
 public:
@@ -234,10 +249,15 @@ class CRenderSystemGLES{
 public:
   bool geometryOk=true;
   bool ResetRenderSystem(int,int){native("geometry");return geometryOk&&currentBound;}
+  void ResetVSync(){event("reset-vsync");}
 };
 class CWinSystemAmlogicGLESContext:public CWinSystemAmlogic,public CRenderSystemGLES{
 public:
   CAMLDisplayLifecycle m_displayLifecycle;bool m_displayGeometryReady{true};bool m_shutdownRequested=false;
+  bool m_vsyncFailureReported=false;
+  @NATIVE_WAIT_RESULT@
+  NativeGuiWaitResult SetNativeGuiWait(bool enabled){assert(!enabled);event("disable-native-wait");return NativeGuiWaitResult::READY;}
+  void ObserveEndDisplay(const char*,bool=false){}
   EGL m_pGLContext;StreamHdrType m_hdrType{StreamHdrType::HDR_TYPE_NONE};
   uint64_t target{1};PresentResult m_presentResult{PresentResult::NOT_ATTEMPTED};
   struct PendingSwitch{const char* path{nullptr};int value{0};};PendingSwitch m_pendingSwitches[2];
@@ -249,6 +269,7 @@ public:
   void InvalidateRenderTarget(){++target;event("invalidate");}
   void CancelGuiComposite(){event("cancel-composite");}
   bool IsDisplayChangePending(){return m_displayLifecycle.Pending();}
+  uint64_t GetDisplayGeneration()const{return m_displayLifecycle.Serial();}
   @READY_QUERY@
   bool CreateNewWindow(const std::string&,bool,RESOLUTION_INFO&);bool DestroyWindow();
   bool SetFullScreen(bool,RESOLUTION_INFO&,bool);bool ResetRenderSystem(int,int);
@@ -257,8 +278,29 @@ public:
 };
 void SetKernelSwitch(const char* path,int value){event(std::string("kernel:")+path+":"+std::to_string(value));}
 struct CResolutionUtils{static inline int chosen=2;static RESOLUTION ChooseBestResolution(float,int,int,bool){return chosen;}};
+// FrameMove is extracted whole; independent-presentation bodies must compile,
+// but are outside this window/readiness fixture and may never execute here.
+struct CRendererAML{void Update(){event("renderer-update");}void SetPresentationEpoch(uint64_t){assert(false);}};
+struct CAMLPresenterSession{
+  struct OverlayObservation{int field,method;std::vector<int> overlays;};
+  struct Queue{
+    struct Observation{std::shared_ptr<void> payload;uint64_t epoch;double pts;};
+    Observation Observe(){assert(false);return {};}
+    struct Control{bool frame;};Control PendingControl(){assert(false);return {};}
+  };
+  std::shared_ptr<Queue> queue;
+};
 class CRenderManager{
 public:
+  @APPLIED_RESOLUTION@
+  std::optional<AppliedResolution> m_appliedResolution;
+  std::shared_ptr<CAMLPresenterSession> m_amlPresenter;
+  void LogAMLPresenter(const char*,bool){assert(false);}void StopAMLPresenter(bool){assert(false);}
+  bool UpdateAMLPresenter(){assert(false);return false;}
+  enum EPRESENTMETHOD{SINGLE};struct SPresent{double pts;int field;EPRESENTMETHOD method;};
+  struct FrameSelection{int index,index2;SPresent info;std::vector<int> overlays;};
+  std::shared_ptr<const FrameSelection> m_frameSelection;CCriticalSection m_presentlock;
+  bool m_presentstarted=false;double m_presentpts=0;Timer m_presentTimer;
   CCriticalSection m_resolutionlock,m_statelock;bool m_bTriggerUpdateResolution{true};
   bool m_configuredFramePending{false};
   enum {STATE_UNCONFIGURED,STATE_CONFIGURING,STATE_CONFIGURED};
@@ -279,8 +321,8 @@ public:
   void ManageCaptures(){}
   void FrameMove();
   StreamHdrType m_hdrType_override{StreamHdrType::HDR_TYPE_HDR10};float m_fps{24};
-  struct{StreamHdrType hdrType{StreamHdrType::HDR_TYPE_NONE};int iWidth{1920},iHeight{1080};std::string stereoMode;}m_picture;
-  struct Renderer{void Update(){event("renderer-update");}}renderer;Renderer* m_pRenderer{&renderer};
+  struct{StreamHdrType hdrType{StreamHdrType::HDR_TYPE_NONE};unsigned iWidth{1920},iHeight{1080};std::string stereoMode;}m_picture;
+  CRendererAML renderer;CRendererAML* m_pRenderer{&renderer};
   struct Port{void VideoParamsChange(){event("params");}}port;Port* m_playerPort{&port};
   void UpdateLatencyTweak(){event("latency");}void UpdateResolution(bool force=false);
 };

@@ -77,8 +77,12 @@ public:
   virtual void UpdateDisplayHardwareScaling(const RESOLUTION_INFO& resInfo) { }
   virtual void SetDirtyRegions(const CDirtyRegionList& dirtyRegionsList) {}
   virtual int GetBufferAge() { return 2; }
-  // Main publishes acknowledged video ownership to the native GUI backend.
-  virtual void SetNativeGuiWait(bool enabled) {}
+  enum class NativeGuiWaitResult { READY, DEFERRED, FAILED };
+  // Main establishes native GUI pacing before authorizing independent video ownership.
+  virtual NativeGuiWaitResult SetNativeGuiWait(bool enabled)
+  {
+    return enabled ? NativeGuiWaitResult::FAILED : NativeGuiWaitResult::READY;
+  }
   virtual bool MoveWindow(int topLeft, int topRight){return false;}
   virtual void FinishModeChange(RESOLUTION res){}
   virtual void FinishWindowResize(int newWidth, int newHeight) {ResizeWindow(newWidth, newHeight, -1, -1);}

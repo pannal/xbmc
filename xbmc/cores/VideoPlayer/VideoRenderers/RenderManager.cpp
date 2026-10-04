@@ -411,9 +411,11 @@ bool CRenderManager::Configure()
           aml->PresenterCodec(), m_dvdClock, m_QueueSize, m_processInfoLifetime,
           [this](bool enabled) { m_playerPort->UpdateClockSync(enabled); },
           [this](double pts) { m_dataCacheCore.SetRenderPts(pts); });
-      UpdateAMLPresenter();
-      m_amlPresenter->queue->Show(m_showVideo);
-      LogAMLPresenter("start-requested", true);
+      if (UpdateAMLPresenter())
+      {
+        m_amlPresenter->queue->Show(m_showVideo);
+        LogAMLPresenter("start-requested", true);
+      }
     }
 #endif
 
@@ -521,9 +523,8 @@ void CRenderManager::FrameMove()
       LogAMLPresenter("stereo-fallback", true);
       StopAMLPresenter(true);
     }
-    else
+    else if (UpdateAMLPresenter())
     {
-      UpdateAMLPresenter();
       const auto observed = m_amlPresenter->queue->Observe();
       if (observed.payload)
       {
@@ -2211,13 +2212,20 @@ void CRenderManager::CheckEnableClockSync()
 }
 
 #if defined(HAS_LIBAMCODEC)
-void CRenderManager::UpdateAMLPresenter()
+bool CRenderManager::UpdateAMLPresenter()
 {
   std::unique_lock<CCriticalSection> state(m_statelock);
   std::unique_lock<CCriticalSection> present(m_presentlock);
   if (!m_amlPresenter)
-    return;
-  CServiceBroker::GetWinSystem()->SetNativeGuiWait(m_amlPresenter->RequiresNativeGuiWait());
+    return false;
+  const auto wait = CServiceBroker::GetWinSystem()->SetNativeGuiWait(
+      m_amlPresenter->RequiresNativeGuiWait());
+  if (wait == CWinSystemBase::NativeGuiWaitResult::FAILED)
+  {
+    LogAMLPresenter("native-wait-fallback", true);
+    StopAMLPresenter(true);
+    return false;
+  }
   LogAMLPresenter("periodic");
   auto* renderer = static_cast<CRendererAML*>(m_pRenderer);
   CRect source, destination;
@@ -2229,6 +2237,9 @@ void CRenderManager::UpdateAMLPresenter()
   m_amlPresenter->queue->SetControl(generation);
   m_amlPresenter->ApplyControl(source, destination);
   m_QueueSkip = m_amlPresenter->queue->Skipped();
+  if (wait == CWinSystemBase::NativeGuiWaitResult::READY)
+    m_amlPresenter->Authorize();
+  return true;
 }
 
 void CRenderManager::LogAMLPresenter(const char* event, bool transition)

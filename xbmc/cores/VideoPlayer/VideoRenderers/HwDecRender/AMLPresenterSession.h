@@ -115,8 +115,9 @@ public:
     m_toWorker = m_codec->RequestPresentationOwner(queue->Launch());
     if (!m_toWorker)
       throw std::runtime_error("AML presentation owner transfer refused");
-    queue->Authorized();
   }
+  // Main calls this only after the native GUI wait prerequisite is established.
+  void Authorize() { queue->Authorized(); }
   ~CAMLPresenterSession()
   {
     if (!Stop())
@@ -163,11 +164,10 @@ public:
   bool RequiresNativeGuiWait() const
   {
     const auto owner = m_codec->GetDiagnostics();
-    // Pointer presence includes unaccepted startup and returned-owner teardown.
-    // Decoder/display fences do not turn worker ownership into synchronous poll.
-    // A requested return does not change the acknowledged owner; main still
-    // skips synchronous polling until it accepts that return.
-    return !owner.mainOwner;
+    // RequestOwner already fences synchronous polling during outgoing transfer.
+    // Keep GUI waiting through worker ownership and pending return, until main
+    // accepts the return. Decoder/display fences do not change this ownership.
+    return owner.transferring || !owner.mainOwner;
   }
   CAMLSession::DiagnosticSnapshot AdmissionDiagnostics() const { return m_codec->GetDiagnostics(); }
   PLAYBACK_DIAGNOSTICS::ClockHistory::Report ClockDiagnostics()

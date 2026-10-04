@@ -46,6 +46,7 @@ HARNESS = r"""
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <optional>
 using CCriticalSection = std::recursive_mutex;
 constexpr int LOGINFO=1, STATE_UNCONFIGURED=0, STATE_CONFIGURED=1;
 constexpr int PRESENT_IDLE=0, RENDER_STEREO_MODE_OFF=0;
@@ -57,7 +58,10 @@ struct CLog { template<class... T> static void Log(int, const char* fmt, T... va
 }};
 namespace PLAYBACK_DIAGNOSTICS {
 uint64_t NowUs(){return 100;} uint64_t NextId(){return 200;}
+struct EndDisplay {template<class F> void Record(uint64_t,const char*,F&&) {}};
+[[maybe_unused]] inline EndDisplay endDisplay;
 }
+namespace fmt {template<class... T> std::string format(const char*,T&&...){return {};}}
 struct CSysInfo {static const char* GetVersion(){return "test";} static const char* GetBuildDate(){return "today";}};
 struct TiXmlNode {};
 // Minimal in-memory XML tree substitute for the production override filter.
@@ -112,13 +116,15 @@ struct CRenderManager {
  int m_renderState=STATE_UNCONFIGURED,m_QueueSize=0,m_QueueSkip=0,m_presentstep=0;
  bool m_bRenderGUI=false,m_showVideo=true,m_processInfoLifetime=true;
  int m_dvdClock=0,m_diagnosticId=3,m_lifecycleGeneration=1;
+ std::optional<int> m_appliedResolution;
+ int DiagnosticId(){return m_diagnosticId;}
  struct Picture {std::string stereoMode;} m_picture;
  Renderer* m_pRenderer=nullptr;
  Port port; Port* m_playerPort=&port; Cache m_dataCacheCore;
  bool m_amlIndependentPresenter=false;
  std::shared_ptr<CAMLPresenterSession> m_amlPresenter;
  void ClearFrameSelection(){} void InvalidateReservations(){} void CreateRenderer(){}
- void UpdateLatencyTweak(){} void UpdateAMLPresenter(){} void LogAMLPresenter(const char*,bool){}
+ void UpdateLatencyTweak(){} bool UpdateAMLPresenter(){return true;} void LogAMLPresenter(const char*,bool){}
  void PreInitOnMain();
  void ConfigureSelection(){
 #ifdef HAS_LIBAMCODEC

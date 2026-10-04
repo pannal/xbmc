@@ -454,20 +454,23 @@ bool CWinSystemAmlogicGLESContext::ResetRenderSystem(int width, int height)
   return true;
 }
 
-void CWinSystemAmlogicGLESContext::SetNativeGuiWait(bool enabled)
+CWinSystemBase::NativeGuiWaitResult CWinSystemAmlogicGLESContext::SetNativeGuiWait(bool enabled)
 {
   const bool previous = m_nativeGuiWait.Enabled();
   // Surface replacement/shutdown discards the lease. Main re-evaluates actual
   // session ownership before publication on the replacement surface.
-  enabled = enabled && !m_shutdownRequested &&
-            m_pGLContext.GetEGLSurface() != EGL_NO_SURFACE;
-  m_nativeGuiWait.Apply(enabled, "/dev/" + m_framebuffer_name);
+  const bool deferred = enabled &&
+                        (m_shutdownRequested || m_pGLContext.GetEGLSurface() == EGL_NO_SURFACE);
+  const bool applied = m_nativeGuiWait.Apply(enabled && !deferred, "/dev/" + m_framebuffer_name);
   const int error = m_nativeGuiWait.Error();
   if (previous != m_nativeGuiWait.Enabled() || error != m_nativeGuiWaitReportedError)
     CLog::Log(error ? LOGERROR : LOGINFO,
               "p3i-native-gui-wait requested={} enabled={} error={}",
               enabled, m_nativeGuiWait.Enabled(), error);
   m_nativeGuiWaitReportedError = error;
+  if (!applied)
+    return NativeGuiWaitResult::FAILED;
+  return deferred ? NativeGuiWaitResult::DEFERRED : NativeGuiWaitResult::READY;
 }
 
 void CWinSystemAmlogicGLESContext::SetVSyncImpl(bool enable)

@@ -174,6 +174,7 @@ void Acknowledge(CAMLPresenterSession& session) {
 void IndependentProgress() {
   auto codec=std::make_shared<CAMLCodec>(); CDVDClock clock;
   CAMLPresenterSession session(codec,clock,4,std::make_shared<int>(1));
+  session.Authorize();
   session.SetTiming(1000,25,0); session.queue->Show(true);
   Put(session,codec,clock,1,1); Acknowledge(session);
   assert(session.queue->WaitIdle(1s));
@@ -217,6 +218,7 @@ void IndependentProgress() {
 void ControlsAndEpochs() {
   auto codec=std::make_shared<CAMLCodec>(); CDVDClock clock;
   CAMLPresenterSession session(codec,clock,4,std::make_shared<int>(2));
+  session.Authorize();
   session.SetTiming(1000,25,0); session.queue->Show(true);
   codec->qbufResult=-1;
   Put(session,codec,clock,100);
@@ -247,6 +249,7 @@ void ControlsAndEpochs() {
 void HeldBobDrain() {
   auto codec=std::make_shared<CAMLCodec>(); CDVDClock clock;
   CAMLPresenterSession session(codec,clock,2,std::make_shared<int>(3));
+  session.Authorize();
   session.SetTiming(1000,25,0); session.queue->Show(true);
   Put(session,codec,clock,199,0,CAMLPresenter::Method::BOB);
   Acknowledge(session);
@@ -263,6 +266,7 @@ void HeldBobDrain() {
 void PendingHandoffAndDrain() {
   auto codec=std::make_shared<CAMLCodec>(); CDVDClock clock;
   CAMLPresenterSession session(codec,clock,2,std::make_shared<int>(3));
+  session.Authorize();
   session.SetTiming(1000,25,0); session.queue->Show(true);
   Put(session,codec,clock,201);
   Await([&] {return bool(session.queue->PendingControl().frame);});
@@ -290,6 +294,7 @@ void PendingHandoffAndDrain() {
 void CancelAfterSubmit() {
   auto codec=std::make_shared<CAMLCodec>(); CDVDClock clock;
   CAMLPresenterSession session(codec,clock,2,std::make_shared<int>(3));
+  session.Authorize();
   session.SetTiming(1000,25,0); session.queue->Show(true);
   Put(session,codec,clock,200);
   Await([&] {return bool(session.queue->PendingControl().frame);});
@@ -307,6 +312,7 @@ void LateFramesAndNativeFence() {
   {
     auto previousOwner=codec->AcquirePresentation(codec->GetOperationEpoch());
     session=std::make_unique<CAMLPresenterSession>(codec,clock,4,std::make_shared<int>(4));
+    session->Authorize();
     session->SetTiming(1000,25,0); session->queue->Show(true);
     for(int n=1;n<=4;++n) Put(*session,codec,clock,n,n,CAMLPresenter::Method::SINGLE,200000);
   }
@@ -325,9 +331,21 @@ void LateFramesAndNativeFence() {
   assert(producer.wait_for(3s)==std::future_status::ready); producer.get();
   assert(session->Stop()); auto frames=session->queue->TakeFrames(); frames.clear(); assert(buffers==0);
 }
+void UnapprovedStartup() {
+  auto codec=std::make_shared<CAMLCodec>(); CDVDClock clock;
+  CAMLPresenterSession session(codec,clock,2,std::make_shared<int>(0));
+  session.queue->Show(true);Put(session,codec,clock,900);
+  assert(session.RequiresNativeGuiWait());
+  std::this_thread::sleep_for(20ms);
+  const auto owner=codec->GetDiagnostics();
+  assert(owner.mainOwner && owner.transferring && codec->polls==0 && codec->releases==0);
+  assert(session.Stop());assert(!session.RequiresNativeGuiWait());
+  auto frames=session.queue->TakeFrames();assert(frames.size()==1);frames.clear();
+  assert(buffers==0 && codec->AcquirePresentation(codec->GetOperationEpoch()));
+}
 void RouteProgress();
 int main() {
-  RouteProgress(); IndependentProgress(); ControlsAndEpochs(); HeldBobDrain(); PendingHandoffAndDrain(); CancelAfterSubmit(); LateFramesAndNativeFence();
+  UnapprovedStartup(); RouteProgress(); IndependentProgress(); ControlsAndEpochs(); HeldBobDrain(); PendingHandoffAndDrain(); CancelAfterSubmit(); LateFramesAndNativeFence();
   std::cout<<"production presenter scenarios passed\n";
 }
 '''
@@ -358,6 +376,7 @@ void RouteProgress() {
   CRenderManager manager;
   manager.m_amlPresenter=std::make_shared<CAMLPresenterSession>(codec,clock,4,std::make_shared<int>(0));
   auto session=manager.m_amlPresenter;
+  session->Authorize();
   session->SetTiming(1000,25,0); session->queue->Show(true);
   auto publish=[&](int n) {
     std::atomic_bool stop{false};

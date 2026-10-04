@@ -43,7 +43,7 @@ public:
   bool InitWindowSystem() override;
   bool DestroyWindowSystem() override;
   bool PrepareForShutdown() override;
-  void SetNativeGuiWait(bool enabled) override;
+  NativeGuiWaitResult SetNativeGuiWait(bool enabled) override;
   bool DestroyRenderSystem() override;
   bool ResetRenderSystem(int width, int height) override;
   bool IsDisplayChangePending() const override { return m_displayLifecycle.Pending(); }
