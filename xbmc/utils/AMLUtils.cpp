@@ -2441,10 +2441,9 @@ static void _auto_letterbox_watch_run(const CAMLNativeWorker::Run& run, int w, i
   {
     if (!run.WaitFor(std::chrono::milliseconds(AUTO_LB_POLL_MS)))
       return;
-    // Sample and apply under a separate transaction on this retained run.
-    // Startup/stop can own admission while cancelling us; Admit must then exit.
-    CAMLNativeTransaction native;
-    if (!run.Admit(native) || !CServiceBroker::IsServiceManagerUp())
+    // Cached metadata sampling does not touch the driver. Fencing native
+    // presentation here would interrupt playback even for no-op samples.
+    if (!CServiceBroker::IsServiceManagerUp())
       return;
     /* Settings / override can change mid-playback — stop once we're not the
      * ones driving the override any more. */
@@ -2467,6 +2466,19 @@ static void _auto_letterbox_watch_run(const CAMLNativeWorker::Run& run, int w, i
                                                               : AUTO_LB_TRIP_SAMPLES;
     if (++agree < needed)
       continue;
+
+    // Only the override write needs native exclusion. Recheck after waiting:
+    // cancellation, settings or the source metadata may have changed meanwhile.
+    CAMLNativeTransaction native;
+    if (!run.Admit(native) || !CServiceBroker::IsServiceManagerUp() ||
+        !aml_dv_auto_letterbox_active())
+      return;
+    if (_auto_letterbox_duplicate_sample(gapTop, gapBottom, gapLeft, gapRight,
+                                        w, h, src, reason) != verdict)
+    {
+      agree = 0;
+      continue;
+    }
 
     CLog::Log(LOGINFO, "AMLUtils::auto-letterbox - {} ({}x{}, source T={} B={} L={} R={} vs "
               "gap T={} B={} L={} R={}) — dropping additive composition, the geometry "
