@@ -58,10 +58,10 @@ def main():
     source += '\n' + function(ov, 'CRenderer::OverlayBatch CRenderer::GetOverlays(')
     for name in ['SelectFrame', 'ClearFrameSelection', 'FrameMove', 'ProcessPresentationQueue',
                  'RetireBuffer', 'PrepareNextRender', 'DiscardBuffer', 'UpdateGuiPresentationState',
-                 'RenderCapture', 'SubmitVideoDraw']:
+                 'RenderCapture']:
         source += '\n' + function(rm, 'void CRenderManager::' + name + '(')
     source += '\n' + function(rm, 'CRenderManager::PreparedVideoDraw CRenderManager::PrepareVideoDraw(')
-    for name in ['IsGuiLayer', 'IsPresenting']:
+    for name in ['IsGuiLayer', 'IsPresenting', 'SubmitVideoDraw']:
         source += '\n' + function(rm, 'bool CRenderManager::' + name + '(')
     start = render.index('    CWinSystemBase* winSystem =')
     end = render.index('    m_overlays.Render(frame->overlays);', start)
@@ -136,7 +136,7 @@ struct Renderer {
   bool NeedBuffer(int){return need;}
   void ReleaseBuffer(int i){released.push_back(i);}
   bool RenderCapture(int i,CRenderCapture*){captureSource=i;return captureOk;}
-  void RenderUpdate(int i,int p,bool c,DWORD f,DWORD a){calls.push_back({i,p,c,f,a});}
+  bool RenderUpdateVideo(int i,int p,bool c,DWORD f,DWORD a){calls.push_back({i,p,c,f,a});return true;}
 };
 namespace OVERLAY {
 struct COverlay {const CDVDOverlay* value=nullptr;};
@@ -178,6 +178,11 @@ struct CRenderManager {
   double m_displayLatency=0,m_latencyTweak=0,m_audioLatencyTweak=0,m_videoDelay=0,m_presentpts=0;
   struct {bool m_enabled=false;double m_error=0,m_syncOffset=0;int m_errCount=0;} m_clockSync;
   bool m_configuredFramePending=false;
+  // Deferred display policy has its own lifecycle fixture. This selection
+  // fixture observes only whether FrameMove services/cancels it when ready.
+  bool m_deferredDVResolutionAttempted=false,m_deferredDVNative=false;
+  void CancelDeferredDV(){}
+  bool ContinueDeferredDV(bool){aml_dv_engage_stale_deferred_disc();return true;}
   bool m_presentstarted=false,m_showVideo=true,m_forceNext=false,m_bRenderGUI=true,m_renderedOverlay=false,m_renderDebug=false;
   std::atomic<bool> m_subtitleEnabled{true};
   int m_presentsource=0,m_presentsourcePast=-1,m_lateframes=0,m_QueueSkip=0;
@@ -192,7 +197,7 @@ struct CRenderManager {
   void PrepareNextRender();void DiscardBuffer();void UpdateGuiPresentationState(bool);void RenderCapture(CRenderCapture*);
   bool IsGuiLayer();bool IsPresenting();void DrawMenus();
   static PreparedVideoDraw PrepareVideoDraw(const FrameSelection&,EPRESENTSTEP,bool,DWORD,DWORD);
-  void SubmitVideoDraw(const PreparedVideoDraw&);
+  bool SubmitVideoDraw(const PreparedVideoDraw&);
 };
 '''
 

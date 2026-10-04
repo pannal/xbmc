@@ -42,6 +42,7 @@ def main():
     renderer_header = (base / 'VideoRenderers/HwDecRender/RendererAML.h').read_text()
     code += SYNC_RENDERER.replace('@RESUME@', extract(renderer_header, 'void ResumeIndependentPresentation('))
     code += extract(renderer, 'void CRendererAML::RenderUpdate(')
+    code += extract(renderer, 'bool CRendererAML::RenderUpdateVideo(')
     code += extract(rm, 'void CRenderManager::LogAMLPresenter(')
     code += TESTS + ROUTE_TESTS
     with tempfile.TemporaryDirectory(prefix='aml-presenter-') as name:
@@ -147,6 +148,7 @@ struct CRendererAML {
   bool m_resumeControl=false;
   @RESUME@
   void RenderUpdate(int,int,bool,unsigned int,unsigned int);
+  bool RenderUpdateVideo(int,int,bool,unsigned int,unsigned int);
 };
 '''
 TESTS = r'''

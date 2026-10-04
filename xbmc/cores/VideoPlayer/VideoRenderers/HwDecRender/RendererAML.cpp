@@ -205,11 +205,23 @@ bool CRendererAML::Flush(bool saveBuffers)
 
 void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha)
 {
+  RenderUpdateVideo(index, index2, clear, flags, alpha);
+}
+
+bool CRendererAML::RenderUpdateVideo(int index, int index2, bool clear, unsigned int flags,
+                                    unsigned int alpha)
+{
   auto* buffer = dynamic_cast<CAMLVideoBuffer*>(m_buffers[index].videoBuffer);
   auto permit = buffer ? buffer->AcquirePresentation() :
       (m_pollCodec ? m_pollCodec->AcquirePresentation(m_pollEpoch) : CAMLSession::Permit{});
   if (!permit)
-    return;
+  {
+    // Display/control fences can reopen, but reset/close invalidates the old
+    // frame permanently. Let an obsolete selection retire so a new epoch can
+    // reach selection/configuration, even when no explicit discard was sent.
+    const auto codec = buffer ? buffer->Codec() : m_pollCodec;
+    return !codec || codec->IsOperationInvalidated(buffer ? buffer->OperationEpoch() : m_pollEpoch);
+  }
   const PreparedVideoGeometry geometry = PrepareVideoLayer();
   if (buffer)
   {
@@ -224,6 +236,7 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
   }
   else
     m_pollCodec->PollFrame(permit);
+  return true;
 }
 
 CRendererAML::PreparedVideoGeometry CRendererAML::PrepareVideoLayer()

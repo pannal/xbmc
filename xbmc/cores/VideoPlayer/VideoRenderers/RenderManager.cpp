@@ -558,7 +558,10 @@ void CRenderManager::ProcessPresentationQueue()
 
   if (m_queued.empty())
   {
-    m_presentstep = PRESENT_IDLE;
+    // An empty producer queue does not complete the selected frame/field.
+    // It may still be waiting for a video pass or native admission.
+    if (m_presentstep == PRESENT_READY)
+      m_presentstep = PRESENT_IDLE;
   }
   else
   {
@@ -1207,6 +1210,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   if (!gui && m_pRenderer->IsGuiLayer())
     return;
 
+  bool videoComplete = false;
 #if defined(HAS_LIBAMCODEC)
   if (m_amlPresenter)
     UpdateAMLPresenter();
@@ -1217,7 +1221,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     const auto step =
         frame->present.presentmethod == PRESENT_METHOD_BOB ? m_presentstep : PRESENT_IDLE;
     const PreparedVideoDraw draw = PrepareVideoDraw(*frame, step, clear, flags, alpha);
-    SubmitVideoDraw(draw);
+    videoComplete = SubmitVideoDraw(draw);
   }
 
   if (gui)
@@ -1400,6 +1404,8 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   if (m_amlPresenter)
     return; // The executor alone advances presentation state.
 #endif
+  if (!videoComplete)
+    return; // GUI-only work and rejected native passes cannot complete video.
   const SPresent& m = frame->present;
 
   {
@@ -1505,13 +1511,15 @@ CRenderManager::PreparedVideoDraw CRenderManager::PrepareVideoDraw(const FrameSe
   return draw;
 }
 
-void CRenderManager::SubmitVideoDraw(const PreparedVideoDraw& draw)
+bool CRenderManager::SubmitVideoDraw(const PreparedVideoDraw& draw)
 {
   for (unsigned int i = 0; i < draw.count; ++i)
   {
     const auto& pass = draw.passes[i];
-    m_pRenderer->RenderUpdate(draw.source, draw.past, pass.clear, pass.flags, pass.alpha);
+    if (!m_pRenderer->RenderUpdateVideo(draw.source, draw.past, pass.clear, pass.flags, pass.alpha))
+      return false;
   }
+  return true;
 }
 
 void CRenderManager::UpdateLatencyTweak()
@@ -2122,8 +2130,10 @@ void CRenderManager::DiscardBuffer()
     m_queued.pop_front();
   }
 
-  if(m_presentstep == PRESENT_READY)
-    m_presentstep = PRESENT_IDLE;
+  // Explicit discard cancels a selected field as well as queued work. After a
+  // decoder reset its old epoch can never regain native admission; fresh
+  // pictures must be allowed to replace it. Keep the slot until replacement.
+  m_presentstep = PRESENT_IDLE;
   m_presentevent.notifyAll();
 }
 

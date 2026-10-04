@@ -66,6 +66,15 @@ public:
   virtual CRenderInfo GetRenderInfo() { return CRenderInfo(); }
   virtual void Update() = 0;
   virtual void RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha) = 0;
+  // False defers presentation-state advancement while native admission is
+  // temporarily blocked. True completes the pass (including obsolete frames),
+  // without claiming that scanout completed.
+  virtual bool RenderUpdateVideo(int index, int index2, bool clear, unsigned int flags,
+                                 unsigned int alpha)
+  {
+    RenderUpdate(index, index2, clear, flags, alpha);
+    return true;
+  }
   virtual bool RenderCapture(int index, CRenderCapture* capture) = 0;
   virtual bool ConfigChanged(const VideoPicture &picture) = 0;
 

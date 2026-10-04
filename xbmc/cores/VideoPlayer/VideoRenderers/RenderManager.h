@@ -318,7 +318,7 @@ protected:
                                            bool clear,
                                            DWORD flags,
                                            DWORD alpha);
-  void SubmitVideoDraw(const PreparedVideoDraw& draw);
+  bool SubmitVideoDraw(const PreparedVideoDraw& draw);
 
   std::deque<int> m_free;
   std::deque<int> m_queued;

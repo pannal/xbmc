@@ -35,6 +35,8 @@ public:
   virtual void UnInit() override {};
   virtual void Update() override {};
   virtual void RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha) override;
+  bool RenderUpdateVideo(int index, int index2, bool clear, unsigned int flags,
+                         unsigned int alpha) override;
   virtual bool SupportsMultiPassRendering()override { return false; };
   virtual bool Flush(bool saveBuffers) override;
 
