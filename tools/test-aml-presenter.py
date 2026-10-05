@@ -52,7 +52,8 @@ def main():
                         '-Werror', '-Wno-unused-parameter', '-DHAS_LIBAMCODEC=1', '-pthread', '-fsanitize=address,undefined',
                         '-fno-omit-frame-pointer', '-I', str(ROOT / 'xbmc'),
                         str(out / 'test.cpp'), '-o', str(out / 'test')], check=True)
-        subprocess.run([str(out / 'test')], check=True, timeout=30)
+        for mode in [[], ['debug']]:
+            subprocess.run([str(out / 'test'), *mode], check=True, timeout=30)
     print('AML presenter: PASS (production executor/adapter/buffers; concurrent producer; '
           'main absent beyond pool capacity; ASan/UBSan; native/clock stubs)')
 
@@ -63,7 +64,7 @@ PRELUDE = r'''
 #include <future>
 #include <string>
 #include <iostream>
-constexpr int LOGINFO=1;
+constexpr int LOGDEBUG=0, LOGINFO=1;
 struct CLog{template<class... T> static void Log(int,const char* format,T&&...) {
   size_t count=0;for(std::string f=format;f.find("{}")!=std::string::npos;f=f.substr(f.find("{}")+2))++count;
   assert(count==sizeof...(T));
@@ -346,7 +347,8 @@ void UnapprovedStartup() {
   assert(buffers==0 && codec->AcquirePresentation(codec->GetOperationEpoch()));
 }
 void RouteProgress();
-int main() {
+int main(int argc,char**) {
+  PLAYBACK_DIAGNOSTICS::SetEnabled(argc>1);
   UnapprovedStartup(); RouteProgress(); IndependentProgress(); ControlsAndEpochs(); HeldBobDrain(); PendingHandoffAndDrain(); CancelAfterSubmit(); LateFramesAndNativeFence();
   std::cout<<"production presenter scenarios passed\n";
 }

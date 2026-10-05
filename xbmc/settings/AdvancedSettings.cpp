@@ -59,7 +59,9 @@ void CAdvancedSettings::OnSettingsLoaded()
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   if (settings->GetBool(CSettings::SETTING_DEBUG_SHOWLOGINFO))
   {
-    m_logLevel = std::max(m_logLevelHint, LOG_LEVEL_DEBUG_FREEMEM);
+    const int guiLevel = settings->GetBool(CSettings::SETTING_DEBUG_SHOWLOGOVERLAY) ?
+                            LOG_LEVEL_DEBUG_FREEMEM : LOG_LEVEL_DEBUG;
+    m_logLevel = std::max(m_logLevelHint, guiLevel);
     CLog::Log(LOGINFO, "Enabled debug logging due to GUI setting ({})", m_logLevel);
   }
   else
@@ -81,8 +83,10 @@ void CAdvancedSettings::OnSettingChanged(const std::shared_ptr<const CSetting>& 
     return;
 
   const std::string &settingId = setting->GetId();
-  if (settingId == CSettings::SETTING_DEBUG_SHOWLOGINFO)
-    SetDebugMode(std::static_pointer_cast<const CSettingBool>(setting)->GetValue());
+  if (settingId == CSettings::SETTING_DEBUG_SHOWLOGINFO ||
+      settingId == CSettings::SETTING_DEBUG_SHOWLOGOVERLAY)
+    SetDebugMode(CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+        CSettings::SETTING_DEBUG_SHOWLOGINFO));
 }
 
 void CAdvancedSettings::Initialize(CSettingsManager& settingsMgr)
@@ -111,6 +115,7 @@ void CAdvancedSettings::Initialize(CSettingsManager& settingsMgr)
   settingsMgr.RegisterSettingsHandler(this, true);
   std::set<std::string> settingSet;
   settingSet.insert(CSettings::SETTING_DEBUG_SHOWLOGINFO);
+  settingSet.insert(CSettings::SETTING_DEBUG_SHOWLOGOVERLAY);
   settingsMgr.RegisterCallback(this, settingSet);
 }
 
@@ -1666,7 +1671,10 @@ void CAdvancedSettings::SetDebugMode(bool debug)
 {
   if (debug)
   {
-    int level = std::max(m_logLevelHint, LOG_LEVEL_DEBUG_FREEMEM);
+    const int guiLevel = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+                            CSettings::SETTING_DEBUG_SHOWLOGOVERLAY) ?
+                            LOG_LEVEL_DEBUG_FREEMEM : LOG_LEVEL_DEBUG;
+    int level = std::max(m_logLevelHint, guiLevel);
     m_logLevel = level;
     CServiceBroker::GetLogging().SetLogLevel(level);
     CLog::Log(LOGINFO, "Enabled debug logging due to GUI setting. Level {}.", level);

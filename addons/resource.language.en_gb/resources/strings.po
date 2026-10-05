@@ -8860,7 +8860,17 @@ msgctxt "#14310"
 msgid "Let supported Amlogic video playback continue independently of GUI processing. Software-decoded and stereoscopic video use the standard presentation path. Changes apply after stopping playback and opening a video again. This does not change CPU affinity or scheduling priority."
 msgstr ""
 
-#empty strings from id 14311 to 15010
+#: system/settings/settings.xml
+msgctxt "#14311"
+msgid "Show debug information on screen"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#14312"
+msgid "Show the debug overlay while debug logging is enabled. Leave this off to collect a full debug log without covering playback."
+msgstr ""
+
+#empty strings from id 14313 to 15010
 
 #: xbmc/music/MusicDatabase.cpp
 #: xbmc/video/VideoDatabase.cpp

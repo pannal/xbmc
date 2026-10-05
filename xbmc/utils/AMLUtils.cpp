@@ -1302,6 +1302,11 @@ void aml_dv_reset_l5_signals()
 void aml_end_display_diagnostics_pump()
 {
   auto& trace = PLAYBACK_DIAGNOSTICS::endDisplay;
+  if (!PLAYBACK_DIAGNOSTICS::Enabled())
+  {
+    trace.Cancel();
+    return;
+  }
   const auto now = PLAYBACK_DIAGNOSTICS::NowUs();
   // Called only by Run, outside Render/Flip, graphics/resource/DV locks. These
   // small read-only values are sequential observations, not an atomic hardware
@@ -1316,7 +1321,7 @@ void aml_end_display_diagnostics_pump()
           ch = ' ';
       return text;
     };
-    CLog::Log(LOGINFO, "p3i-end-display t_us={} trace={} display={} output={} "
+    CLog::Log(LOGDEBUG, "p3i-end-display t_us={} trace={} display={} output={} "
         "dv_mode=[{}] dv_enable=[{}] xosd=[{}] fb_blank=[{}] fb_scale=[{}] "
         "video_disable=[{}] blackout=[{}] mode=[{}] attr=[{}] hpd=[{}]",
         now, trace.Id(), trace.Display(), reason,
@@ -1330,11 +1335,11 @@ void aml_end_display_diagnostics_pump()
   }
   trace.Expire(now);
   trace.Drain([](const PLAYBACK_DIAGNOSTICS::EndDisplayTrace::Entry& entry) {
-    CLog::Log(LOGINFO, "p3i-end-display t_us={} trace={} display={} event={} {}",
+    CLog::Log(LOGDEBUG, "p3i-end-display t_us={} trace={} display={} event={} {}",
               entry.at, entry.trace, entry.display, entry.kind, entry.detail);
   });
   if (const auto lost = trace.TakeLost())
-    CLog::Log(LOGINFO, "p3i-end-display queue_lost={}", lost);
+    CLog::Log(LOGDEBUG, "p3i-end-display queue_lost={}", lost);
 }
 
 void aml_dv_dump_state(const char* tag)

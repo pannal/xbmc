@@ -90,7 +90,8 @@ public:
         --(m_retirement ? m_state->retiring : m_state->active);
         if (m_control)
         {
-          m_state->controlHoldUs += PLAYBACK_DIAGNOSTICS::NowUs() - m_state->controlSinceUs;
+          if (m_state->controlSinceUs)
+            m_state->controlHoldUs += PLAYBACK_DIAGNOSTICS::NowUs() - m_state->controlSinceUs;
           m_state->controlActive = false;
         }
         m_state->idle.notify_all();
@@ -197,7 +198,7 @@ public:
             s_nativeRequest ? s_nativeRequest->serial : 0, s_displaySerial,
             s.active, s.retiring, s.owner == s.controller, s.transferring, s.fenced,
             s.displayFenced, s.nativeFenced, s.controlActive, s.controlWaitUs, s.controlHoldUs,
-            s.controlActive ? PLAYBACK_DIAGNOSTICS::NowUs() - s.controlSinceUs : 0,
+            s.controlActive && s.controlSinceUs ? PLAYBACK_DIAGNOSTICS::NowUs() - s.controlSinceUs : 0,
             s.controlDenied, s.qbufCalls.load(), s.dropCalls.load(), s.qbufErrors.load(), s.qbufUs.load(),
             s.pollReady.load(), s.pollTimeout.load(), s.pollError.load(), s.pollOther.load(), s.pollUs.load(),
             s_nativeRequest ? static_cast<int>(s_nativeRequest->phase) : -1,
@@ -257,11 +258,13 @@ public:
     m_state->controlPending = true;
     if (wait)
     {
-      const auto start = PLAYBACK_DIAGNOSTICS::NowUs();
+      const bool diagnostics = PLAYBACK_DIAGNOSTICS::Enabled();
+      const auto start = diagnostics ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
       m_state->idle.wait(lock, [&] {
         return !available() || (!m_state->active && !m_state->retiring);
       });
-      m_state->controlWaitUs += PLAYBACK_DIAGNOSTICS::NowUs() - start;
+      if (diagnostics)
+        m_state->controlWaitUs += PLAYBACK_DIAGNOSTICS::NowUs() - start;
     }
     m_state->controlPending = false;
     if (!available() || m_state->active || m_state->retiring)
@@ -270,7 +273,7 @@ public:
       return {};
     }
     m_state->controlActive = true;
-    m_state->controlSinceUs = PLAYBACK_DIAGNOSTICS::NowUs();
+    m_state->controlSinceUs = PLAYBACK_DIAGNOSTICS::Enabled() ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
     ++m_state->active;
     Permit permit(m_state, epoch, false);
     permit.m_control = true;

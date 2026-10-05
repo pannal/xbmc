@@ -37,7 +37,8 @@ bool CScreenshotAML::CaptureVideoFrame(unsigned char *buffer, int iWidth, int iH
   const int stride = ((iWidth + 31) & ~31) * 3;
   if (iHeight > std::numeric_limits<int>::max() / stride)
     return false;
-  const auto captureStart = PLAYBACK_DIAGNOSTICS::NowUs();
+  const bool diagnostics = PLAYBACK_DIAGNOSTICS::Enabled();
+  const auto captureStart = diagnostics ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
   bool captured = false;
   int captureFd = open(CAPTURE_DEVICEPATH, O_RDWR, 0);
   if (captureFd >= 0)
@@ -91,10 +92,13 @@ bool CScreenshotAML::CaptureVideoFrame(unsigned char *buffer, int iWidth, int iH
     delete [] videoBuffer;
   }
   static PLAYBACK_DIAGNOSTICS::CaptureTimings timings;
-  if (const auto report = timings.Complete(captureStart, PLAYBACK_DIAGNOSTICS::NowUs(), captured))
-    CLog::Log(LOGINFO, "p3i-capture from_us={} to_us={} calls={} failures={} total_us={} max_us={} "
+  if (diagnostics)
+  {
+    if (const auto report = timings.Complete(captureStart, PLAYBACK_DIAGNOSTICS::NowUs(), captured))
+      CLog::Log(LOGDEBUG, "p3i-capture from_us={} to_us={} calls={} failures={} total_us={} max_us={} "
               "includes=io-and-copy",
               report->fromUs, report->toUs, report->duration.calls, report->failures,
               report->duration.totalUs, report->duration.maxUs);
+  }
   return captured;
 }

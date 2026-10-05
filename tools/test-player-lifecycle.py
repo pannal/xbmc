@@ -164,6 +164,7 @@ struct CVideoPlayerVideo {
     [[maybe_unused]] double pts=17;
     for(int once=0; once<1; ++once) {
       int iPriority=0; auto timeout=0ms; bool onlyPrioMsgs=false;
+      const bool diagnostics=false; // Normal logging: lifecycle policy remains exercised.
       @SELECTION@
       (void)onlyPrioMsgs;
       if(ret==MSGQ_ABORT) { aborted=true; return; }

@@ -12,6 +12,11 @@
 // Observation only. No playback policy, persisted state, or native admission.
 namespace PLAYBACK_DIAGNOSTICS
 {
+// Set by CLog when the existing debug level changes. Reading this flag avoids
+// logger lookups/locks in decode and presentation paths; it changes observation only.
+inline std::atomic<bool> debugEnabled{false};
+inline bool Enabled() { return debugEnabled.load(std::memory_order_relaxed); }
+inline void SetEnabled(bool enabled) { debugEnabled.store(enabled, std::memory_order_relaxed); }
 inline const auto origin = std::chrono::steady_clock::now();
 inline std::atomic<uint64_t> nextId{0};
 inline uint64_t NextId() { return ++nextId; }
@@ -39,6 +44,11 @@ public:
   };
   void Record(double absolute, double target, double vsync)
   {
+    if (!Enabled())
+    {
+      m_events.clear();
+      return;
+    }
     if (m_events.size() == 8)
       m_events.pop_front();
     m_events.push_back({++m_serial, NowUs(), absolute, target, vsync});
@@ -46,6 +56,8 @@ public:
   void MarkCorrection(double error, double adjustment)
   {
     // ErrorAdjust holds the clock lock across Discontinuity and this annotation.
+    if (!Enabled() || m_events.empty())
+      return;
     auto& event = m_events.back();
     event.correction = true;
     event.error = error;
@@ -111,13 +123,15 @@ private:
 };
 struct VideoStages
 {
-  uint64_t sinceUs{NowUs()}, loopUs{sinceUs}, maxLoopUs{0}, modes{0};
+  uint64_t sinceUs{0}, loopUs{0}, maxLoopUs{0}, modes{0};
   uint64_t messagesTimedOut{0}, inputEmpty{0}, addRejected{0};
   uint64_t decoderNone{0}, decoderNoBuffer{0};
   uint64_t decoderBuffer{0}, pictures{0}, decoderErrors{0}, decoderEof{0}, capacityRejected{0};
   Duration input, add, decode, capacity, lifecycle, publish;
   void BeginIteration(uint64_t now, unsigned int mode)
   {
+    if (!sinceUs)
+      sinceUs = loopUs = now;
     if (now - loopUs > maxLoopUs)
       maxLoopUs = now - loopUs;
     loopUs = now;

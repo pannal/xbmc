@@ -65,6 +65,7 @@ void selection(TestClock& clock,bool correction){
  q.TakeFrames();
 }
 int main(){
+ PLAYBACK_DIAGNOSTICS::SetEnabled(true);
  TestClock c;
  c.Discontinuity(1000000000,1000000);auto first=c.GetDiagnosticEvents(0);
  assert(first.serial==1&&first.events.size()==1&&!first.events[0].correction);

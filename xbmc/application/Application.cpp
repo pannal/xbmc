@@ -2060,7 +2060,7 @@ int CApplication::Run()
     }
 #ifdef HAS_LIBAMCODEC
     auto& trace = PLAYBACK_DIAGNOSTICS::endDisplay;
-    const auto nowUs = PLAYBACK_DIAGNOSTICS::NowUs();
+    const auto nowUs = PLAYBACK_DIAGNOSTICS::Enabled() ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
     if (trace.Active(nowUs))
     {
       const auto attempt = diagnosticRenderAttempted ? m_lastRenderAttempt : RenderAttemptResult{};

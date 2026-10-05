@@ -17,6 +17,7 @@
 #include "settings/SettingsComponent.h"
 #include "settings/lib/Setting.h"
 #include "settings/lib/SettingsManager.h"
+#include "utils/PlaybackDiagnostics.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 
@@ -163,6 +164,7 @@ void CLog::SetLogLevel(int level)
     return;
 
   m_logLevel = level;
+  PLAYBACK_DIAGNOSTICS::SetEnabled(level >= LOG_LEVEL_DEBUG);
 
   auto spdLevel = spdlog::level::info;
   if (level <= LOG_LEVEL_NONE)

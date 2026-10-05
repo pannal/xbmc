@@ -472,6 +472,7 @@ public:
   static constexpr auto SETTING_POWERMANAGEMENT_WAKEONACCESS = "powermanagement.wakeonaccess";
   static constexpr auto SETTING_POWERMANAGEMENT_WAITFORNETWORK = "powermanagement.waitfornetwork";
   static constexpr auto SETTING_DEBUG_SHOWLOGINFO = "debug.showloginfo";
+  static constexpr auto SETTING_DEBUG_SHOWLOGOVERLAY = "debug.showlogoverlay";
   static constexpr auto SETTING_DEBUG_EXTRALOGGING = "debug.extralogging";
   static constexpr auto SETTING_DEBUG_SETEXTRALOGLEVEL = "debug.setextraloglevel";
   static constexpr auto SETTING_DEBUG_SCREENSHOTPATH = "debug.screenshotpath";

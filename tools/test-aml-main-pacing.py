@@ -33,7 +33,6 @@ HARNESS = r"""
 #include "rendering/RenderResource.h"
 #include "utils/PlaybackEndDiagnostics.h"
 namespace fmt {template<class... T>std::string format(const char*,T...){return {};}}
-namespace PLAYBACK_DIAGNOSTICS {static uint64_t NowUs(){return 0;}}
 inline void aml_end_display_diagnostics_pump(){}
 struct CEGLContextUtils {struct SwapDiagnostics {bool attempted=false;int error=0;};};
 using namespace std::chrono_literals;

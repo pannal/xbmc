@@ -527,6 +527,8 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
     m_displayLifecycle.Resume();
   CEGLContextUtils::SwapDiagnostics swap;
   auto observe = [&] {
+    if (!PLAYBACK_DIAGNOSTICS::Enabled())
+      return;
     auto& trace = PLAYBACK_DIAGNOSTICS::endDisplay;
     const auto now = PLAYBACK_DIAGNOSTICS::NowUs();
     trace.SwapResult(now, swap.attempted, m_presentResult == PresentResult::SWAP_ACCEPTED, swap.error);
@@ -559,7 +561,8 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   // failed swap presented nothing new, so the switches stay pending.
   // This AML caller has no existing eglGetError consumer. Other platforms and
   // frames outside the trace use the unchanged default error ownership.
-  auto* diagnostics = PLAYBACK_DIAGNOSTICS::endDisplay.Active(PLAYBACK_DIAGNOSTICS::NowUs())
+  auto* diagnostics = PLAYBACK_DIAGNOSTICS::Enabled() &&
+                              PLAYBACK_DIAGNOSTICS::endDisplay.Active(PLAYBACK_DIAGNOSTICS::NowUs())
                           ? &swap : nullptr;
   if (m_pGLContext.TrySwapBuffers(diagnostics))
   {

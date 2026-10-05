@@ -131,6 +131,7 @@ void bounded_events()
  assert(q.TakeSkipEpisodes().empty());q.TakeFrames();
 }
 int main(){
+  PLAYBACK_DIAGNOSTICS::SetEnabled(true);
  steady(24000.0/1001,false,CAMLPresenter::Method::SINGLE);
  steady(24000.0/1001,true,CAMLPresenter::Method::SINGLE);
  steady(48000.0/1001,true,CAMLPresenter::Method::SINGLE);

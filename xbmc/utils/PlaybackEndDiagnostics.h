@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #pragma once
 
+#include "utils/PlaybackDiagnostics.h"
+
 #include <array>
 #include <cstdint>
 #include <deque>
@@ -23,7 +25,13 @@ public:
     const char* kind;
     std::string detail;
   };
-  bool Active(uint64_t now) const { return m_active && now < m_deadline; }
+  bool Active(uint64_t now) const { return Enabled() && m_active && now < m_deadline; }
+  void Cancel()
+  {
+    m_active = false;
+    m_queue.clear();
+    m_lost = 0;
+  }
   uint64_t Id() const { return m_id; }
   uint64_t Display() const { return m_display; }
   void Generation(uint64_t value)
@@ -36,6 +44,11 @@ public:
   }
   void Begin(uint64_t now, const char* reason)
   {
+    if (!Enabled())
+    {
+      Cancel();
+      return;
+    }
     Finish(now, "superseded");
     ++m_id;
     m_active = true;
@@ -131,7 +144,7 @@ public:
   // pump records timeout even if neither Render nor Present ever succeeded.
   const char* SnapshotReason(uint64_t now)
   {
-    if (!m_active)
+    if (!Enabled() || !m_active)
       return nullptr;
     if (now >= m_deadline)
       return m_generationSwap ? nullptr : "timeout-no-gui-swap";

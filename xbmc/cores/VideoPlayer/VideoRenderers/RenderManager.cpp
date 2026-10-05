@@ -2254,13 +2254,20 @@ bool CRenderManager::UpdateAMLPresenter()
 
 void CRenderManager::LogAMLPresenter(const char* event, bool transition)
 {
+  if (transition)
+    CLog::Log(LOGINFO, "p3i-presenter render={} event={}", m_diagnosticId, event);
+  if (!PLAYBACK_DIAGNOSTICS::Enabled())
+  {
+    m_amlPresenter->mainService = {};
+    return;
+  }
   const auto q = m_amlPresenter->queue->Diagnostics();
   const auto report = m_amlPresenter->mainService.Observe(q.sample, transition);
   if (!transition && !report)
     return;
   const auto a = m_amlPresenter->AdmissionDiagnostics();
   const auto& p = q.sample.progress;
-  CLog::Log(LOGINFO,
+  CLog::Log(LOGDEBUG,
             "p3i-presenter t_us={} render={} event={} session={} epoch={} request={} owner_gen={} "
             "main_owner={} transferring={} phase={} native={} display={} fences={}/{}/{} "
             "native_phase={} native_age_us={} display_phase={} control_pending={} "
@@ -2281,11 +2288,11 @@ void CRenderManager::LogAMLPresenter(const char* event, bool transition)
             a.controlWaitUs, a.controlHoldUs, a.controlActiveUs, a.controlDenied);
   const auto clock = m_amlPresenter->ClockDiagnostics();
   if (clock.lost)
-    CLog::Log(LOGINFO, "p3i-clock render={} session={} events_lost={} through_serial={}",
+    CLog::Log(LOGDEBUG, "p3i-clock render={} session={} events_lost={} through_serial={}",
               m_diagnosticId, a.id, clock.lost, clock.serial);
   for (const auto& change : clock.events)
   {
-    CLog::Log(LOGINFO,
+    CLog::Log(LOGDEBUG,
               "p3i-clock render={} session={} serial={} t_us={} absolute={} target={} "
               "correction={} error_us={} adjustment_us={} vsync_adjust_us={}",
               m_diagnosticId, a.id, change.serial, change.atUs, change.absolute, change.target,
@@ -2293,7 +2300,7 @@ void CRenderManager::LogAMLPresenter(const char* event, bool transition)
   }
   for (const auto& skip : m_amlPresenter->queue->TakeSkipEpisodes())
   {
-    CLog::Log(LOGINFO,
+    CLog::Log(LOGDEBUG,
               "p3i-presenter-skip render={} session={} episode={} t_us={} epoch={} count={} "
               "queued={} clock={} pts={} render_pts={} diff_us={} refresh={} latency_us={} "
               "speed={} sync={} sync_offset_us={} loop_gap_us={} wake_late_us={}",
@@ -2306,7 +2313,7 @@ void CRenderManager::LogAMLPresenter(const char* event, bool transition)
   {
     const auto& gap = report->worst;
     const auto& delta = gap.progress;
-    CLog::Log(LOGINFO,
+    CLog::Log(LOGDEBUG,
               "p3i-presenter-gap render={} session={} gaps={} from_us={} to_us={} duration_us={} "
               "published={} selected={} submit_consumed={} pass_complete={} polls={} retired={} "
               "discarded={} blocked={} native_us={}/{}/{} control_completed_us={}",

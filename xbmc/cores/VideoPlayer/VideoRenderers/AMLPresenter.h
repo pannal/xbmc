@@ -203,7 +203,8 @@ public:
     if (m_stop || !request.frame || request.frame != m_pending.frame ||
         request.generation != m_pending.generation || request.generation != m_control)
       return false;
-    m_progress.controlUs += PLAYBACK_DIAGNOSTICS::NowUs() - m_controlSinceUs;
+    if (m_controlSinceUs)
+      m_progress.controlUs += PLAYBACK_DIAGNOSTICS::NowUs() - m_controlSinceUs;
     m_controlSinceUs = 0;
     m_applied = request.generation;
     m_appliedEpoch = request.frame->epoch;
@@ -281,7 +282,7 @@ public:
             m_count - m_reservations.size() - m_queue.size() -
                 (m_current ? 1 : 0) - (m_past ? 1 : 0),
             m_control, m_applied, m_current ? m_current->epoch : 0,
-            m_pending.frame ? now - m_controlSinceUs : 0,
+            m_pending.frame && m_controlSinceUs ? now - m_controlSinceUs : 0,
             operation ? now - (operation >> 2) : 0, static_cast<int>(operation & 3), m_phase.load(), m_wakeLateMaxUs, m_loopGapMaxUs, m_missedDeadlines, m_lostSkipEpisodes, m_sampledCpu, m_cpuSampleUs, m_show, m_diagnosticTiming.speed,
             m_diagnosticTiming.clock, m_queue.empty() ? DVD_NOPTS_VALUE : m_queue.front()->pts,
             m_skipped, m_late};
@@ -407,7 +408,7 @@ private:
         ++m_progress.discarded;
         diff = render - m_queue.front()->pts;
       }
-      if (m_skipped != skipped)
+      if (PLAYBACK_DIAGNOSTICS::Enabled() && m_skipped != skipped)
       {
         if (m_skipEpisodes.size() == 8)
         {
@@ -469,7 +470,8 @@ private:
       while (started && !m_stop)
       {
         const auto iterationStart = std::chrono::steady_clock::now();
-        if (m_hooks.sampleCpu && PLAYBACK_DIAGNOSTICS::NowUs() - m_cpuSampleUs >= 5000000)
+        const bool diagnostics = PLAYBACK_DIAGNOSTICS::Enabled();
+        if (diagnostics && m_hooks.sampleCpu && PLAYBACK_DIAGNOSTICS::NowUs() - m_cpuSampleUs >= 5000000)
         {
           const int cpu = m_hooks.sampleCpu();
           std::lock_guard<std::mutex> lock(m_mutex);
@@ -488,13 +490,16 @@ private:
         std::vector<std::shared_ptr<Frame>> retired;
         {
           std::lock_guard<std::mutex> lock(m_mutex);
-          m_diagnosticTiming = timing;
-          m_loopGapUs = firstIteration ? 0 : static_cast<uint64_t>(
-              std::chrono::duration_cast<std::chrono::microseconds>(
-                  iterationStart - previousIteration).count());
-          m_loopGapMaxUs = std::max(m_loopGapMaxUs, m_loopGapUs);
-          previousIteration = iterationStart;
-          firstIteration = false;
+          if (diagnostics)
+          {
+            m_diagnosticTiming = timing;
+            m_loopGapUs = firstIteration ? 0 : static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    iterationStart - previousIteration).count());
+            m_loopGapMaxUs = std::max(m_loopGapMaxUs, m_loopGapUs);
+            previousIteration = iterationStart;
+          }
+          firstIteration = !diagnostics;
 
           // Keep a continuous refresh timeline: rebasing every tick to now
           // accumulates even small wake delays until healthy frames are late.
@@ -590,7 +595,7 @@ private:
             if (submitted && (m_applied != m_control || m_appliedEpoch != frame->epoch))
             {
               if (!m_pending.frame)
-                m_controlSinceUs = PLAYBACK_DIAGNOSTICS::NowUs();
+                m_controlSinceUs = diagnostics ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
               m_pending = {m_control, frame};
               ready = false;
             }
@@ -624,10 +629,13 @@ private:
         }
         std::unique_lock<std::mutex> lock(m_mutex);
         m_changed.wait_until(lock, nextTick, [&] { return m_stop.load(); });
-        const auto late = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - nextTick).count();
-        m_wakeLateUs = late > 0 ? static_cast<uint64_t>(late) : 0;
-        m_wakeLateMaxUs = std::max(m_wakeLateMaxUs, m_wakeLateUs);
+        if (diagnostics)
+        {
+          const auto late = std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - nextTick).count();
+          m_wakeLateUs = late > 0 ? static_cast<uint64_t>(late) : 0;
+          m_wakeLateMaxUs = std::max(m_wakeLateMaxUs, m_wakeLateUs);
+        }
       }
       if (started)
         m_hooks.finish();
@@ -644,13 +652,14 @@ private:
   void BeginOperation(int operation)
   {
     // No additional hot-path mutex: one token publishes operation and start.
-    m_operationToken.store((PLAYBACK_DIAGNOSTICS::NowUs() << 2) | operation,
-                           std::memory_order_relaxed);
+    if (PLAYBACK_DIAGNOSTICS::Enabled())
+      m_operationToken.store((PLAYBACK_DIAGNOSTICS::NowUs() << 2) | operation,
+                             std::memory_order_relaxed);
   }
   uint64_t EndOperation()
   {
     const auto token = m_operationToken.exchange(0, std::memory_order_relaxed);
-    return PLAYBACK_DIAGNOSTICS::NowUs() - (token >> 2);
+    return token ? PLAYBACK_DIAGNOSTICS::NowUs() - (token >> 2) : 0;
   }
   Timing m_diagnosticTiming;
   PLAYBACK_DIAGNOSTICS::Progress m_progress;

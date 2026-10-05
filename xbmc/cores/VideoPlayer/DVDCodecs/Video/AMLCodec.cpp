@@ -2985,14 +2985,21 @@ int CAMLCodec::PollFrame(const CAMLSession::Permit& permit)
   codec_poll_fd[0].fd = m_pollDevice;
   codec_poll_fd[0].events = POLLOUT;
 
-  std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
-  const auto pollStart = PLAYBACK_DIAGNOSTICS::NowUs();
+  const bool diagnostics = PLAYBACK_DIAGNOSTICS::Enabled();
+  const auto now = diagnostics ? std::chrono::system_clock::now() :
+                                std::chrono::system_clock::time_point{};
+  const auto pollStart = diagnostics ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
   const int pollResult = poll(codec_poll_fd, 1, 50);
-  m_session.RecordPoll(pollResult, (codec_poll_fd[0].revents & POLLOUT) != 0,
-                       PLAYBACK_DIAGNOSTICS::NowUs() - pollStart);
+  if (diagnostics)
+    m_session.RecordPoll(pollResult, (codec_poll_fd[0].revents & POLLOUT) != 0,
+                         PLAYBACK_DIAGNOSTICS::NowUs() - pollStart);
   g_aml_sync_event.Set();
-  int elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - now).count();
-  CLog::Log(LOGDEBUG, LOGAVTIMING, "CAMLCodec::PollFrame elapsed:{:.3f}ms", elapsed / 1000.0);
+  if (diagnostics)
+  {
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now() - now).count();
+    CLog::Log(LOGDEBUG, LOGAVTIMING, "CAMLCodec::PollFrame elapsed:{:.3f}ms", elapsed / 1000.0);
+  }
   return 1;
 }
 
@@ -3030,11 +3037,12 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, uint64_t generation, const CAM
 
   CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::ReleaseFrame idx:{:d}, drop:{:d}", index, static_cast<int>(drop));
 
-  const auto qbufStart = PLAYBACK_DIAGNOSTICS::NowUs();
+  const bool diagnostics = PLAYBACK_DIAGNOSTICS::Enabled();
+  const auto qbufStart = diagnostics ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
   ret = m_amlVideoFile->IOControl(VIDIOC_QBUF, &vbuf);
   const int qbufError = errno;
-  const auto qbufUs = PLAYBACK_DIAGNOSTICS::NowUs() - qbufStart;
-  m_session.RecordQbuf(drop, ret, qbufUs);
+  if (diagnostics)
+    m_session.RecordQbuf(drop, ret, PLAYBACK_DIAGNOSTICS::NowUs() - qbufStart);
   if (ret < 0)
     CLog::Log(LOGERROR, "CAMLCodec::ReleaseFrame - VIDIOC_QBUF failed: {}", strerror(qbufError));
   return ret;

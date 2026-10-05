@@ -17,6 +17,7 @@ TEST = r'''
 using namespace PLAYBACK_DIAGNOSTICS;
 using namespace std::chrono_literals;
 int main() {
+  PLAYBACK_DIAGNOSTICS::SetEnabled(true);
   MainService tracker;
   Sample first{100,{}}; first.progress.qbufAttempts=500;
   assert(!tracker.Observe(first));
@@ -115,8 +116,24 @@ struct CVideoPlayerVideo {
 namespace PERFORMANCE_CORES {int CurrentCpu(){return -1;}}
 @METHODS@
 int main(){
+  PLAYBACK_DIAGNOSTICS::SetEnabled(false);
+  CAMLCodec unobserved;auto offRequest=unobserved.m_session.Fence();
+  assert(unobserved.m_session.BeginMutation(offRequest));assert(unobserved.m_session.Complete(offRequest,true));
+  {
+    auto permit=unobserved.m_session.Acquire(unobserved.m_session.Epoch());assert(permit);
+    assert(unobserved.PollFrame(permit)==1);
+    assert(unobserved.ReleaseFrame(2,1,permit)==0);
+  }
+  const auto off=unobserved.m_session.Diagnostics();
+  assert(off.pollTimeout==0&&off.qbufCalls==0&&off.pollUs==0&&off.qbufUs==0);
+  CVideoPlayerVideo muted;muted.m_diagnostics.pictures=3;CLog::lastLevel=-1;
+  muted.LogDiagnostics(true);assert(CLog::lastLevel==-1);
+  PLAYBACK_DIAGNOSTICS::SetEnabled(true);
   CVideoPlayerVideo video;video.m_diagnostics.pictures=3;video.LogDiagnostics(true);
   assert(video.m_diagnostics.pictures==0);
+  const auto origin=video.m_diagnostics.loopUs;assert(origin>0&&video.m_diagnostics.sinceUs==origin);
+  video.m_diagnostics.BeginIteration(origin+6000000,0);
+  assert(video.m_diagnostics.maxLoopUs==6000000);
   CAMLCodec codec;auto r=codec.m_session.Fence();assert(codec.m_session.BeginMutation(r));assert(codec.m_session.Complete(r,true));
   {
     auto permit=codec.m_session.Acquire(codec.m_session.Epoch());assert(permit);
@@ -161,6 +178,7 @@ int FakeGet(pid_t tid,size_t,cpu_set_t* mask) {
 #define sched_getaffinity FakeGet
 #include "threads/PerformanceCores.cpp"
 int main() {
+  PLAYBACK_DIAGNOSTICS::SetEnabled(true);
   for(mode=0;mode<4;++mode){
     std::thread worker([]{PERFORMANCE_CORES::ApplyCurrentThread("fixture",19);});worker.join();
 #ifdef HAS_LIBAMCODEC

@@ -30,6 +30,7 @@ struct CEGLContextUtils {
 };
 @SWAP@
 int main(){
+ PLAYBACK_DIAGNOSTICS::SetEnabled(true);
  CEGLContextUtils gl;CEGLContextUtils::SwapDiagnostics result;
  assert(gl.TrySwapBuffers(&result)&&result.attempted&&result.error==EGL_SUCCESS&&errors==0);
  accepted=false;assert(!gl.TrySwapBuffers()&&errors==0); // unchanged default consumer
