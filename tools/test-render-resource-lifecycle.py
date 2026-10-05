@@ -38,9 +38,7 @@ def main():
     assert 'return false;' in create[bind:invalidation]
     init = function(gles, 'bool CRenderSystemGLES::InitRenderSystem()')
     # Failed bootstrap must not leave the previous shader regime for later use.
-    assert init.index('if (!IsPrimaryContextCurrent())') < init.index('shader.second->Abandon();')
-    assert init.index('shader.second->Abandon();') < init.index('ReleaseShaders();')
-    assert init.index('ReleaseShaders();') < init.index('CloseTextureResources();')
+    assert init.index('ReleaseShaders(!IsPrimaryContextCurrent());') < init.index('CloseTextureResources();')
     assert init.index('CloseTextureResources();') < init.index('glGetIntegerv(')
     methods = '\n'.join(function(base, signature) for signature in [
         'RenderTargetToken CaptureRenderTarget()', 'bool IsRenderTargetCurrent(',
@@ -57,7 +55,9 @@ def main():
                       'bool CRenderSystemGLES::ResetRenderSystem(',
                       'void CRenderSystemGLES::DrainTextureResources()',
                       'void CRenderSystemGLES::CloseTextureResources()',
-                      'bool CRenderSystemGLES::DestroyRenderSystem()']:
+                      'bool CRenderSystemGLES::DestroyRenderSystem()',
+                      'void CRenderSystemGLES::ReleaseShaderSet(',
+                      'void CRenderSystemGLES::ReleaseShaders(']:
         source += '\n' + function(gles, signature)
     for signature in ['bool CWinSystemAmlogicGLESContext::IsPrimaryContextCurrent()',
                       'void CWinSystemAmlogicGLESContext::ReleaseCompositeResources()',
@@ -93,6 +93,7 @@ PRELUDE = r'''
 #include "windowing/amlogic/AMLDisplayLifecycle.h"
 #include "rendering/gles/TextureResources.h"
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <map>
@@ -176,7 +177,8 @@ struct CGuiCompositeShaderGLES
   };
   bool live=false,compileSucceeds=true,lutSucceeds=true;GuiTransfer transfer;
   explicit CGuiCompositeShaderGLES(const std::string& = ""){}
-  ~CGuiCompositeShaderGLES(){if(live)gpu("delete shader");}
+  ~CGuiCompositeShaderGLES(){Free();}
+  void Free(){if(live)gpu("delete shader");live=false;}
   void Abandon(){events.push_back("abandon shader");live=false;}
   bool CompileAndLink(){gpu("compile shader");live=compileSucceeds;return live;}
   void SetGuiTransfer(const GuiTransfer& value){transfer=value;}
@@ -207,8 +209,11 @@ public:
   void ResetScissors(){gpu("reset scissors");}
   void ClearBuffers(int){gpu("clear buffers");}
   void PresentRenderImpl(bool){gpu("present");}
-  void ReleaseShaders(){m_pShader.clear();}
-  std::map<int,std::unique_ptr<CGuiCompositeShaderGLES>> m_pShader;
+  using ShaderSet=std::map<int,std::unique_ptr<CGuiCompositeShaderGLES>>;
+  static void ReleaseShaderSet(ShaderSet&,bool);
+  void ReleaseShaders(bool abandon=false);
+  ShaderSet m_pShader;
+  std::array<ShaderSet,4> m_shaderVariants;
   std::shared_ptr<CGLESTextureResources> m_textureResources=std::make_shared<CGLESTextureResources>();
 };
 class CWinSystemAmlogic
@@ -230,6 +235,9 @@ public:
   bool ResizeWindow(int,int,int,int);
   bool ResetRenderSystem(int,int);
   bool PrepareForShutdown();bool RetireNativeTransactions(){return true;}
+  // Native presentation admission and display diagnostics are fixture boundaries.
+  void SetNativeGuiWait(bool){}
+  void ObserveEndDisplay(const char*){}
   bool m_shutdownRequested=false;
   std::unique_ptr<CAMLDisplayLifecycle::Mutation> m_shutdownAdmission;
   CAMLDisplayLifecycle m_displayLifecycle;
@@ -266,6 +274,11 @@ void provision(CWinSystemAmlogicGLESContext& w)
   assert(w.m_compositeShader->CompileAndLink());
   auto shader=std::make_unique<CGuiCompositeShaderGLES>();
   assert(shader->CompileAndLink());w.m_pShader.emplace(1,std::move(shader));
+  for(auto& variant:w.m_shaderVariants)
+  {
+    auto inactive=std::make_unique<CGuiCompositeShaderGLES>();
+    assert(inactive->CompileAndLink());variant.emplace(1,std::move(inactive));
+  }
   w.m_textureResources->Register(42);
   w.m_guiFboBound=w.m_menuFboHasContent=true;
   events.clear();
@@ -306,6 +319,7 @@ int main()
     w.m_pGLContext.surface=1;currentSurface=2;
     assert(!w.IsPrimaryContextCurrent());
     currentSurface=1;assert(w.IsPrimaryContextCurrent());
+    provision(w);
     const auto token=w.CaptureRenderTarget();
     auto textures=w.m_textureResources;
     w.m_guiFboBound=w.m_menuFboHasContent=true;
@@ -314,6 +328,8 @@ int main()
     assert(event("end fbo")<event("unbind"));
     assert(event("disable")<event("unbind"));
     assert(!w.CanRender()&&!w.IsRenderTargetCurrent(token));
+    assert(!w.m_pShader.empty());
+    for(const auto& variant:w.m_shaderVariants)assert(!variant.empty());
     assert(!w.m_guiFboBound&&!w.m_menuFboHasContent);
     assert(textures->IsOpen()); // surface loss retains the context namespace
     w.m_pGLContext.surface=2;w.m_pGLContext.bindSucceeds=false;
@@ -352,6 +368,7 @@ int main()
     currentContext=currentSurface=0;
     assert(!w.InitRenderSystem());
     assert(!w.m_bRenderCreated&&w.m_pShader.empty()&&!w.m_textureResources->IsOpen());
+    for(const auto& variant:w.m_shaderVariants)assert(variant.empty());
     assert(std::find(events.begin(),events.end(),"bootstrap")==events.end());
     for(const auto& e:events)assert(e.find("delete ")!=0);
     w.DestroyWindowSystem();
@@ -364,6 +381,8 @@ int main()
     const auto token=w.CaptureRenderTarget();
     assert(w.DestroyRenderSystem());
     assert(!w.CanRender()&&!w.IsRenderTargetCurrent(token));
+    assert(w.m_pShader.empty());
+    for(const auto& variant:w.m_shaderVariants)assert(variant.empty());
     assert(!w.m_compositeShader&&!w.m_guiFbo.IsValid()&&!w.m_menuFbo.IsValid());
     assert(!w.m_guiFboBound&&!w.m_menuFboHasContent);
     assert(w.m_guiFboWidth==0&&w.m_menuFboWidth==0);
@@ -389,6 +408,7 @@ int main()
     assert(w.DestroyWindowSystem());
     assert(!w.m_textureResources->IsOpen()&&!w.m_guiFbo.IsValid());
     assert(!w.m_compositeShader&&w.m_pShader.empty());
+    for(const auto& variant:w.m_shaderVariants)assert(variant.empty());
     for(const auto& e:events)assert(e.find("delete ")!=0);
   }
 

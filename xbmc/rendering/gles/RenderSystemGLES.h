@@ -14,6 +14,7 @@
 #include "utils/ColorUtils.h"
 #include "utils/Map.h"
 
+#include <array>
 #include <map>
 
 #include <fmt/format.h>
@@ -125,7 +126,7 @@ public:
   std::string GetShaderPath(const std::string &filename) override { return "GLES/2.0/"; }
 
   void InitialiseShaders();
-  void ReleaseShaders();
+  void ReleaseShaders(bool abandon = false);
   void EnableGUIShader(ShaderMethodGLES method);
   void DisableGUIShader();
 
@@ -160,7 +161,12 @@ protected:
 
   std::string m_RenderExtensions;
 
-  std::map<ShaderMethodGLES, std::unique_ptr<CGLESShader>> m_pShader;
+  using ShaderSet = std::map<ShaderMethodGLES, std::unique_ptr<CGLESShader>>;
+  static void ReleaseShaderSet(ShaderSet& shaders, bool abandon);
+
+  ShaderSet m_pShader;
+  // Inactive variants share the current EGL context; surface changes retain them.
+  std::array<ShaderSet, 4> m_shaderVariants;
   ShaderMethodGLES m_method = ShaderMethodGLES::SM_DEFAULT;
 
   GLint      m_viewPort[4];

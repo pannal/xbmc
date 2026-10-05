@@ -22,6 +22,8 @@
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
 
+#include <algorithm>
+
 #if defined(TARGET_LINUX)
 #include "utils/EGLUtils.h"
 #endif
@@ -73,11 +75,7 @@ bool CRenderSystemGLES::InitRenderSystem()
 {
   // Reinitialization may fail before new shaders exist. Retire the previous
   // regime while its context is current, or abandon it with that namespace.
-  if (!IsPrimaryContextCurrent())
-    for (auto& shader : m_pShader)
-      if (shader.second)
-        shader.second->Abandon();
-  ReleaseShaders();
+  ReleaseShaders(!IsPrimaryContextCurrent());
   CloseTextureResources();
   m_bRenderCreated = false;
   if (!IsPrimaryContextCurrent())
@@ -162,6 +160,10 @@ bool CRenderSystemGLES::InitRenderSystem()
   m_textureResources = std::make_shared<CGLESTextureResources>();
   m_bRenderCreated = true;
 
+  const bool menuComposite = CServiceBroker::GetWinSystem()->IsMenuCompositeActive();
+  m_limitedColorRange = CServiceBroker::GetWinSystem()->UseLimitedColor() && !menuComposite;
+  m_transferPQ =
+      CServiceBroker::GetWinSystem()->GetGfxContext().IsTransferPQ() && !menuComposite;
   InitialiseShaders();
 
   CGUITextureGLES::Register();
@@ -210,10 +212,7 @@ bool CRenderSystemGLES::DestroyRenderSystem()
   InvalidateRenderTarget();
   if (!CanRender())
   {
-    for (auto& shader : m_pShader)
-      if (shader.second)
-        shader.second->Abandon();
-    ReleaseShaders();
+    ReleaseShaders(true);
     CloseTextureResources();
     m_bRenderCreated = false;
     return true;
@@ -252,7 +251,17 @@ bool CRenderSystemGLES::BeginRender()
   if (m_limitedColorRange != useLimited || m_transferPQ != usePQ)
   {
     InvalidateRenderTarget();
-    ReleaseShaders();
+    // Keep complete variants for the next transition. Retry a failed set only
+    // when it is requested again, rather than retrying every frame.
+    if (!m_pShader.empty() &&
+        std::all_of(m_pShader.begin(), m_pShader.end(),
+                    [](const auto& shader) { return shader.second != nullptr; }))
+    {
+      const unsigned int variant = (m_limitedColorRange ? 1 : 0) | (m_transferPQ ? 2 : 0);
+      m_pShader.swap(m_shaderVariants[variant]);
+    }
+    else
+      ReleaseShaderSet(m_pShader, false);
 
     m_limitedColorRange = useLimited;
     m_transferPQ = usePQ;
@@ -521,9 +530,14 @@ void CRenderSystemGLES::SetDepthCulling(DEPTH_CULLING culling)
 
 void CRenderSystemGLES::InitialiseShaders()
 {
+  const unsigned int variant = (m_limitedColorRange ? 1 : 0) | (m_transferPQ ? 2 : 0);
+  if (!m_shaderVariants[variant].empty())
+  {
+    m_pShader.swap(m_shaderVariants[variant]);
+    return;
+  }
+
   std::string defines;
-  m_limitedColorRange = CServiceBroker::GetWinSystem()->UseLimitedColor() &&
-                        !CServiceBroker::GetWinSystem()->IsMenuCompositeActive();
   if (m_limitedColorRange)
   {
     defines += "#define KODI_LIMITED_RANGE 1\n";
@@ -680,67 +694,24 @@ void CRenderSystemGLES::InitialiseShaders()
   }
 }
 
-void CRenderSystemGLES::ReleaseShaders()
+void CRenderSystemGLES::ReleaseShaderSet(ShaderSet& shaders, bool abandon)
 {
-  if (m_pShader[ShaderMethodGLES::SM_DEFAULT])
-    m_pShader[ShaderMethodGLES::SM_DEFAULT]->Free();
-  m_pShader[ShaderMethodGLES::SM_DEFAULT].reset();
+  for (auto& shader : shaders)
+  {
+    if (!shader.second)
+      continue;
+    if (abandon)
+      shader.second->Abandon();
+    shader.second->Free();
+  }
+  shaders.clear();
+}
 
-  if (m_pShader[ShaderMethodGLES::SM_TEXTURE])
-    m_pShader[ShaderMethodGLES::SM_TEXTURE]->Free();
-  m_pShader[ShaderMethodGLES::SM_TEXTURE].reset();
-
-  if (m_pShader[ShaderMethodGLES::SM_MULTI])
-    m_pShader[ShaderMethodGLES::SM_MULTI]->Free();
-  m_pShader[ShaderMethodGLES::SM_MULTI].reset();
-
-  if (m_pShader[ShaderMethodGLES::SM_FONTS])
-    m_pShader[ShaderMethodGLES::SM_FONTS]->Free();
-  m_pShader[ShaderMethodGLES::SM_FONTS].reset();
-
-  if (m_pShader[ShaderMethodGLES::SM_FONTS_SHADER_CLIP])
-    m_pShader[ShaderMethodGLES::SM_FONTS_SHADER_CLIP]->Free();
-  m_pShader[ShaderMethodGLES::SM_FONTS_SHADER_CLIP].reset();
-
-  if (m_pShader[ShaderMethodGLES::SM_FONTS_SUBTITLE])
-    m_pShader[ShaderMethodGLES::SM_FONTS_SUBTITLE]->Free();
-  m_pShader[ShaderMethodGLES::SM_FONTS_SUBTITLE].reset();
-
-  if (m_pShader[ShaderMethodGLES::SM_TEXTURE_NOBLEND])
-    m_pShader[ShaderMethodGLES::SM_TEXTURE_NOBLEND]->Free();
-  m_pShader[ShaderMethodGLES::SM_TEXTURE_NOBLEND].reset();
-
-  if (m_pShader[ShaderMethodGLES::SM_TEXTURE_NOBLEND_PQ_TO_SDR])
-    m_pShader[ShaderMethodGLES::SM_TEXTURE_NOBLEND_PQ_TO_SDR]->Free();
-  m_pShader[ShaderMethodGLES::SM_TEXTURE_NOBLEND_PQ_TO_SDR].reset();
-
-  if (m_pShader[ShaderMethodGLES::SM_MULTI_BLENDCOLOR])
-    m_pShader[ShaderMethodGLES::SM_MULTI_BLENDCOLOR]->Free();
-  m_pShader[ShaderMethodGLES::SM_MULTI_BLENDCOLOR].reset();
-
-  if (m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA])
-    m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA]->Free();
-  m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA].reset();
-
-  if (m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA_BLENDCOLOR])
-    m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA_BLENDCOLOR]->Free();
-  m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA_BLENDCOLOR].reset();
-
-  if (m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA_BOB])
-    m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA_BOB]->Free();
-  m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA_BOB].reset();
-
-  if (m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA_OES])
-    m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA_OES]->Free();
-  m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA_OES].reset();
-
-  if (m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA_BOB_OES])
-    m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA_BOB_OES]->Free();
-  m_pShader[ShaderMethodGLES::SM_TEXTURE_RGBA_BOB_OES].reset();
-
-  if (m_pShader[ShaderMethodGLES::SM_TEXTURE_NOALPHA])
-    m_pShader[ShaderMethodGLES::SM_TEXTURE_NOALPHA]->Free();
-  m_pShader[ShaderMethodGLES::SM_TEXTURE_NOALPHA].reset();
+void CRenderSystemGLES::ReleaseShaders(bool abandon)
+{
+  ReleaseShaderSet(m_pShader, abandon);
+  for (auto& shaders : m_shaderVariants)
+    ReleaseShaderSet(shaders, abandon);
 }
 
 void CRenderSystemGLES::EnableGUIShader(ShaderMethodGLES method)
