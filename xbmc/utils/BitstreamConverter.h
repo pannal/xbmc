@@ -102,7 +102,8 @@ enum DOVICMv40Mode : int
   CMV40_NONE = 0,
   CMV40_NO_L2,
   CMV40_ALWAYS,
-  CMV40_SMART,  // append unless content signal peak (source_max_pq) > display EDID max nits
+  CMV40_SMART, // per-frame L1 peak versus display peak plus headroom
+  CMV40_SOURCE_AUTO = 4, // stream source peak versus display or selected peak
 };
 
 class CBitstreamParser
@@ -143,11 +144,22 @@ public:
                       m_append_cmv40 = value;
                       m_smart_last_effective = CMV40_SMART;
                     }
-                    // Smart-bypass inputs: display EDID peak nits and the
-                    // percent headroom above it before CMv4.0 append is
-                    // bypassed. Only consulted when m_append_cmv40 == CMV40_SMART.
-  void              SetSmartBypassDisplayNits(int nits) { m_smart_display_nits = nits; }
-  void              SetSmartBypassThresholdPct(int pct) { m_smart_threshold_pct = pct; }
+                    // Display peak serves Smart and source Auto. Percent
+                    // headroom is consulted only by Smart's per-frame policy.
+  void              SetSmartBypassDisplayNits(int nits) {
+                      if (m_smart_display_nits != nits) InvalidateDoViCache();
+                      m_smart_display_nits = nits;
+                    }
+  void              SetSmartBypassThresholdPct(int pct) {
+                      if (m_smart_threshold_pct != pct) InvalidateDoViCache();
+                      m_smart_threshold_pct = pct;
+                    }
+                    // Source Auto: 0 uses display peak; 1..4 use
+                    // 1000, 2000, 4000 and 10000 nits respectively.
+  void              SetCMv40AutoTrigger(int trigger) {
+                      if (m_cmv40_auto_trigger != trigger) InvalidateDoViCache();
+                      m_cmv40_auto_trigger = trigger;
+                    }
                     // Strip CMv4.0 ext blocks -> clean CMv2.9 (for old DV TVs
                     // that fail to fall back). Mutually exclusive with append;
                     // strip wins (see ProcessDoViRpu).
@@ -268,6 +280,7 @@ protected:
   enum DOVICMv40Mode m_append_cmv40;
   int               m_smart_display_nits{0};
   int               m_smart_threshold_pct{20};
+  int               m_cmv40_auto_trigger{0};
   DOVICMv40Mode     m_smart_last_effective{CMV40_SMART};
   bool              m_strip_cmv40{false};
   bool              m_l5_override_active{false};

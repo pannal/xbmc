@@ -528,6 +528,7 @@ public:
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY = "coreelec.amlogic.dolbyvision.dual.priority";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND = "coreelec.amlogic.dolbyvision.cmv40.append";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD = "coreelec.amlogic.dolbyvision.cmv40.smart.threshold";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER = "coreelec.amlogic.dolbyvision.cmv40.auto.trigger";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_CMV40_STRIP = "coreelec.amlogic.dolbyvision.cmv40.strip";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_LEVEL5_OVERRIDE = "coreelec.amlogic.dolbyvision.level5.override";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_AUDIO_SEAMLESSBRANCH = "coreelec.amlogic.dolbyvision.audio.seamlessbranch";

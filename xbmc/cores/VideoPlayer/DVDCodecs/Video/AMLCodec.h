@@ -64,7 +64,7 @@ struct pq_ctrl_s {
 class CAMLCodec
 {
 public:
-  CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints);
+  CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints, StreamHdrType originalSourceHdrType);
   virtual ~CAMLCodec();
 
   struct CaptureSource
@@ -272,6 +272,7 @@ private:
   static double m_ttd;
 
   CDVDStreamInfo  &m_hints;         // Reference as values can change.
+  const StreamHdrType m_originalSourceHdrType; // Captured before bitstream conversion.
   CProcessInfo    &m_processInfo;
   CDataCacheCore  &m_dataCacheCore;
 

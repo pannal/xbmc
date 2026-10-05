@@ -47,6 +47,9 @@ def main():
         return (ROOT / path).read_text()
 
     aml, render, winsys = read(AML), read(RENDER), read(WINSYS)
+    render_header = read("xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h")
+    applied_resolution = (function(render_header, "struct AppliedResolution") + ";"
+                          if "struct AppliedResolution" in render_header else "")
 
     # The stand-in aml_dv_on() below mirrors this production request.
     dv_on = function(aml, "unsigned int aml_dv_on(")
@@ -63,7 +66,9 @@ def main():
     codec = read("xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp")
     picture = read("xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.cpp")
     assert 'm_dvSession = std::make_shared<const unsigned char>(0);' in codec
-    assert 'false, m_dvSession);' in codec
+    assert re.search(r'aml_dv_open\([^;\n]+false, m_dvSession(?:, m_originalSourceHdrType)?\);', codec)
+    if 'm_originalSourceHdrType' in codec:
+        assert 'false, m_dvSession, m_originalSourceHdrType);' in codec
     assert 'aml_dv_cancel_deferred_session(m_dvSession);' in function(codec, 'bool CAMLCodec::BeginLifecycle(')
     getpicture = function(codec, "CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(")
     assert getpicture.index('if (!operation)') < getpicture.index('videoPicture.amlDVSession = m_dvSession;')
@@ -84,6 +89,7 @@ def main():
     harness = r'''
 #include "windowing/amlogic/AMLNativeTransaction.h"
 #include <atomic>
+#include <optional>
 #include <cstdint>
 #include <iostream>
 #include <mutex>
@@ -181,6 +187,7 @@ void aml_dv_engage_deferred_disc(bool, const std::shared_ptr<const void>& sessio
 
 // ---- CWinSystemAmlogic::CreateNewWindow's engage gate ------------------------
 int g_modeSets = 0;
+uint64_t g_displayGeneration = 1;
 void CreateNewWindow(const RESOLUTION_INFO& res) {
   const bool m_force_mode_switch = g_forceSwitch;
 @GATE@
@@ -193,10 +200,12 @@ struct CGfxContext {
   bool IsFullScreenVideo() { return g_fullscreen; }
   bool IsFullScreenRoot() { return true; }
   void SetHDRType(StreamHdrType) {}
-  bool SetVideoResolution(RESOLUTION, bool) { if (!g_windowReady) return false; CreateNewWindow(RESOLUTION_INFO{}); return true; }
+  int GetStereoMode() const { return 0; }
+  bool SetVideoResolution(RESOLUTION, bool, bool = true) { if (!g_windowReady) return false; CreateNewWindow(RESOLUTION_INFO{}); ++g_displayGeneration; return true; }
 };
 struct CWinSystem {
   bool IsDisplayReadyForVideo() const { return g_windowReady; }
+  uint64_t GetDisplayGeneration() const { return g_displayGeneration; }
   CGfxContext g;
   CGfxContext& GetGfxContext() { return g; }
 };
@@ -209,7 +218,7 @@ struct CServiceBroker {
 using CCriticalSection = std::recursive_mutex;
 struct Picture {
   std::string stereoMode;
-  int iWidth = 3840, iHeight = 2160;
+  unsigned int iWidth = 3840, iHeight = 2160;
   StreamHdrType hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
   std::shared_ptr<const void> amlDVSession;
 };
@@ -218,6 +227,8 @@ struct Renderer { void Update() {} };
 class CRenderManager {
 public:
   CCriticalSection m_resolutionlock;
+@APPLIEDRESOLUTION@
+@APPLIEDSTATE@
   bool m_closing=false;
   enum {STATE_CONFIGURED};int m_renderState=STATE_CONFIGURED;
   std::shared_ptr<const void> m_deferredDVSession;
@@ -443,7 +454,10 @@ int main() {
 }
 '''
     for key, value in [("ENGAGE", engage), ("PENDING", pending), ("CONTINUATION", continuation), ("STALE", stale), ("GATE", gate),
-                       ("UPDATE", update), ("FRAME", frame)]:
+                       ("UPDATE", update), ("FRAME", frame),
+                       ("APPLIEDRESOLUTION", applied_resolution),
+                       ("APPLIEDSTATE", "std::optional<AppliedResolution> m_appliedResolution;"
+                        if applied_resolution else "")]:
         harness = harness.replace(f"@{key}@", value)
     def run(code, negative=False):
         with tempfile.TemporaryDirectory(prefix="dv-disc-hold-") as temp:

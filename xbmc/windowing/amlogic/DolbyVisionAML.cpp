@@ -751,6 +751,7 @@ static void set_dv_settings_visible(bool show)
   set_visible(CSettings::SETTING_VIDEOPLAYER_CONVERTDOVI, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD, show);
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_STRIP, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5_OVERRIDE, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_AUDIO_SEAMLESSBRANCH, show);
@@ -1244,7 +1245,7 @@ void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& se
   // CMv4.0 append and CMv4.0->CMv2.9 strip are mutually exclusive (appending then
   // stripping is nonsense). Enforced here in code rather than via a settings.xml
   // enable-dependency: the dependency greyed the control and fought the TV-preset
-  // auto-apply (which force-writes append=2 on Display-LED). Whichever the user just
+  // auto-apply (which selects Smart on Display-LED). Whichever the user just
   // turned on wins; the other is forced off.
   if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_STRIP)
   {

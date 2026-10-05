@@ -115,6 +115,8 @@ AML_SUPPORT_H264_4K2K aml_support_h264_4k2k();
 bool aml_support_vp9();
 bool aml_support_av1();
 bool aml_support_dolby_vision();
+// Cached native initialization result; never reads sysfs from settings callers.
+bool aml_dv_new_backend_available();
 bool aml_dolby_vision_enabled();
 std::string aml_dv_output_mode_to_string(unsigned int mode);
 std::string aml_dv_mode_to_string(enum DV_MODE mode);
@@ -171,7 +173,9 @@ AMLDVCapability aml_read_dv_cap();
 unsigned int aml_dv_dolby_vision_mode();
 // swDecoded: true when the caller is the software/GLES render path (no AML hardware
 // video layer / VD1). Such streams cannot use VS10 conversion — see aml_dv_open().
-void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries colorPrimaries = AVCOL_PRI_UNSPECIFIED, bool swDecoded = false, std::shared_ptr<const void> session = {});
+// originalSourceHdrType is captured before bitstream metadata conversion. Its
+// conservative default prevents callers without provenance selecting a new backend.
+void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries colorPrimaries = AVCOL_PRI_UNSPECIFIED, bool swDecoded = false, std::shared_ptr<const void> session = {}, StreamHdrType originalSourceHdrType = StreamHdrType::HDR_TYPE_NONE);
 void aml_dv_close();
 bool aml_dv_playback_active();
 // Hold DV_MODE_ON_DEMAND's DV output across the decoder closes of a Blu-ray

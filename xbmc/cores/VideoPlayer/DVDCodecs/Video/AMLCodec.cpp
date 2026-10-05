@@ -1845,7 +1845,7 @@ static inline int calc_chunk_size(int size)
 }
 
 /*************************************************************************/
-CAMLCodec::CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints)
+CAMLCodec::CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints, StreamHdrType originalSourceHdrType)
   : m_session(CServiceBroker::GetAppMessenger()->GetProcessThreadId())
   , m_opened(false)
   , m_speed(DVD_PLAYSPEED_NORMAL)
@@ -1854,6 +1854,7 @@ CAMLCodec::CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints)
   , m_bufferIndex(-1)
   , m_state(0)
   , m_hints(hints)
+  , m_originalSourceHdrType(originalSourceHdrType)
   , m_processInfo(processInfo)
   , m_dataCacheCore(CServiceBroker::GetDataCacheCore())
 {
@@ -2391,7 +2392,7 @@ bool CAMLCodec::OpenDecoderInternal()
   if (m_dvOpened)
   {
     m_dvSession = std::make_shared<const unsigned char>(0);
-    aml_dv_open(hints.hdrType, hints.bitdepth, hints.colorPrimaries, false, m_dvSession);
+    aml_dv_open(hints.hdrType, hints.bitdepth, hints.colorPrimaries, false, m_dvSession, m_originalSourceHdrType);
   }
 
   // L5 active area detection: only for native DV content (not VS10 SDR/HDR10/HLG

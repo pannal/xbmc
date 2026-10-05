@@ -1657,6 +1657,27 @@ void CBitstreamConverter::ProcessDoViRpu(uint8_t *nal_buf, int32_t nal_size, uin
           m_smart_last_effective = effectiveMode;
         }
       }
+      else if (m_append_cmv40 == DOVICMv40Mode::CMV40_SOURCE_AUTO)
+      {
+        const bool level2IsEmpty = !vdrDmData || (vdrDmData->dm_data.level2.len == 0);
+        const int sourcePq = vdrDmData ? static_cast<int>(vdrDmData->source_max_pq) : 0;
+        int threshold = m_smart_display_nits;
+        switch (m_cmv40_auto_trigger)
+        {
+          case 0: break;
+          case 1: threshold = 1000; break;
+          case 2: threshold = 2000; break;
+          case 3: threshold = 4000; break;
+          case 4: threshold = 10000; break;
+          default: threshold = 0; break;
+        }
+        // Missing peak information follows Smart's safe append fallback.
+        // No-L2 streams always remain upgrade candidates. Authored CMv4
+        // is preserved by AppendCMv40's Level 254 guard below.
+        const bool hasData = sourcePq > 0 && sourcePq <= 4095 && threshold > 0;
+        const bool bypass = !level2IsEmpty && hasData && max_pq_to_nits(sourcePq) > threshold;
+        effectiveMode = bypass ? DOVICMv40Mode::CMV40_NONE : DOVICMv40Mode::CMV40_ALWAYS;
+      }
       if (effectiveMode != DOVICMv40Mode::CMV40_NONE)
         appended = AppendCMv40(effectiveMode, header, vdrDmData, opaque,
                                nal_buf, nal_size, appendRpuData);

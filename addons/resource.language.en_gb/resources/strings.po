@@ -26411,7 +26411,7 @@ msgid "Append CMv4.0 metadata"
 msgstr ""
 
 msgctxt "#60321"
-msgid "Append CMv4.0 extension blocks to Dolby Vision RPU metadata during playback. CMv4.0 enables display-managed tonemapping which generally produces better picture quality than CMv2.9."
+msgid "Append CMv4.0 metadata during native Dolby Vision playback on display-led output or supported player-led output. Existing CMv4.0 metadata is preserved. Smart uses each frame's Level 1 peak; Auto (source peak) uses the stream's source peak metadata."
 msgstr ""
 
 msgctxt "#60322"
@@ -26467,7 +26467,39 @@ msgid "CMv4.0 smart bypass threshold (%)"
 msgstr ""
 
 msgctxt "#60333"
-msgid "Percentage above the display's EDID peak brightness at which CMv4.0 append is bypassed. At 0% any content mastered above display peak triggers bypass; at 20% the content must exceed display peak by at least 20% (e.g. 1200 nits on a 1000-nit display). Only applies when CMv4.0 mode is Smart."
+msgid "Only applies to Smart. Bypass CMv4.0 append when a frame's Level 1 peak exceeds the display's peak brightness plus this percentage. At 20%, a frame above 1200 nits bypasses append on a 1000-nit display. Metadata without L2 trims or usable peak information is still upgraded. Existing CMv4.0 metadata is preserved."
+msgstr ""
+
+msgctxt "#60334"
+msgid "Auto (source peak)"
+msgstr ""
+
+msgctxt "#60335"
+msgid "CMv4.0 source peak threshold"
+msgstr ""
+
+msgctxt "#60336"
+msgid "Only applies to Auto (source peak). Append CMv4.0 when the stream's source peak metadata is at or below the display peak or selected threshold. Metadata without L2 trims and streams with unavailable peak information are also upgraded. Existing CMv4.0 metadata is preserved."
+msgstr ""
+
+msgctxt "#60337"
+msgid "Display peak"
+msgstr ""
+
+msgctxt "#60338"
+msgid "1000 nits"
+msgstr ""
+
+msgctxt "#60339"
+msgid "2000 nits"
+msgstr ""
+
+msgctxt "#60348"
+msgid "4000 nits"
+msgstr ""
+
+msgctxt "#60349"
+msgid "10000 nits"
 msgstr ""
 
 msgctxt "#60340"

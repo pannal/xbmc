@@ -729,6 +729,15 @@ bool aml_support_av1()
   return (has_av1 == 1);
 }
 
+// Sampled once when native DV support is initialized during admitted Setup.
+// Settings conditions and callbacks only read this conservative CPU cache.
+static std::atomic<bool> s_dvNewBackendAvailable{false};
+
+bool aml_dv_new_backend_available()
+{
+  return s_dvNewBackendAvailable.load(std::memory_order_acquire);
+}
+
 bool aml_support_dolby_vision()
 {
   static int support_dv = -1;
@@ -741,6 +750,12 @@ bool aml_support_dolby_vision()
     {
       support_dv = (int)((support_info.Get<int>().value() & 7) == 7);
       if (support_dv == 1) {
+        // The kernel reports availability only with both original and new
+        // function tables registered. Missing legacy-target node stays false.
+        CSysfsPath new_backend{"/sys/module/amdolby_vision/parameters/dv_new_backend_available"};
+        s_dvNewBackendAvailable.store(
+            new_backend.Exists() && new_backend.Get<unsigned int>().value_or(0) == 1,
+            std::memory_order_release);
         CSysfsPath ko_info{"/sys/class/amdolby_vision/ko_info"};
         if (ko_info.Exists())
           CLog::Log(LOGDEBUG, "Amlogic Dolby Vision info: {}", ko_info.Get<std::string>().value().c_str());
@@ -1592,7 +1607,7 @@ unsigned int aml_dv_dolby_vision_mode()
 }
 
 void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries colorPrimaries, bool swDecoded,
-                 std::shared_ptr<const void> session)
+                 std::shared_ptr<const void> session, StreamHdrType originalSourceHdrType)
 {
   // Detect PM4K once at playback start for OSD visibility override.
   // MUST stay above the CDVCoreGuard: GetWindow()/GetProperty() take the gfx
@@ -1605,6 +1620,11 @@ void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries 
       pm4kHome && !pm4kHome->GetProperty("script.plex.is_active").asString().empty();
 
   CDVCoreGuard dvlock(__FUNCTION__);
+  // Bitstream conversion can replace hints with DV, but cannot turn an
+  // HDR10+/VS10 conversion into an authored native-DV source for routing.
+  CSysfsPath native_source{"/sys/module/amdolby_vision/parameters/xbmc_dv_source_native"};
+  if (native_source.Exists())
+    native_source.Set(!swDecoded && originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION ? 1u : 0u);
   aml_dv_dump_state("dv_open/pre");
   std::atomic_store(&s_dvPlaybackSession, std::move(session));
   s_dvPlaybackActive = true;
@@ -1695,6 +1715,11 @@ void aml_dv_close()
   aml_dv_auto_letterbox_watch_stop();
 
   CDVCoreGuard dvlock(__FUNCTION__);
+  // Clear provenance before every early-return/held-GUI route. The existing
+  // admitted close owner and DV-core guard serialize this with the next open.
+  CSysfsPath native_source{"/sys/module/amdolby_vision/parameters/xbmc_dv_source_native"};
+  if (native_source.Exists())
+    native_source.Set(0u);
   aml_dv_dump_state("dv_close/pre");
   std::atomic_store(&s_dvPlaybackSession, std::shared_ptr<const void>{});
   s_dvPlaybackActive = false;
