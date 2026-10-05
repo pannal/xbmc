@@ -1972,6 +1972,10 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
   }
 
   appPlayer->FrameMove();
+  if (appPlayer->PlaybackCleanupPending())
+    PlaybackCleanup();
+  // Finish the original Stop before advancing an accepted replacement.
+  appPlayer->CompleteCloseCompletions();
   const bool openingVideo = appPlayer->HasPendingVideoOpen();
   const bool opening = appPlayer->HasPendingOpen();
   appPlayer->OpenNext(m_ServiceManager->GetPlayerCoreFactory());
@@ -1981,6 +1985,7 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
     PlaybackCleanup();
   // A started video may not report HasVideo yet. Preserve the current window;
   // its original fullscreen option, not cleanup of the old player, owns navigation.
+  appPlayer->CompleteCloseCompletions();
 
   // this will go away when render systems gets its own thread
   CServiceBroker::GetWinSystem()->DriveRenderLoop();
@@ -2296,6 +2301,8 @@ bool CApplication::Stop(int exitCode)
       m_pendingStop = exitCode;
     return false;
   }
+  // Shutdown supersedes window cleanup; release retired callers before services stop.
+  appPlayer->CompleteCloseCompletions();
   if (auto* window = CServiceBroker::GetWinSystem(); window && !window->PrepareForShutdown())
   {
     m_pendingStop = exitCode;
@@ -2980,7 +2987,7 @@ bool CApplication::IsFullScreen()
          CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_SLIDESHOW;
 }
 
-void CApplication::StopPlaying()
+void CApplication::StopPlaying(std::shared_ptr<CEvent> completion)
 {
   CGUIComponent *gui = CServiceBroker::GetGUI();
 
@@ -2990,7 +2997,7 @@ void CApplication::StopPlaying()
     const auto appPlayer = GetComponent<CApplicationPlayer>();
     if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen())
     {
-      appPlayer->ClosePlayer();
+      appPlayer->ClosePlayer(false, std::move(completion));
 
       // turn off visualisation window when stopping
       if ((iWin == WINDOW_VISUALISATION ||
@@ -3000,8 +3007,12 @@ void CApplication::StopPlaying()
         PlaybackCleanup();
 
       g_partyModeManager.Disable();
+      appPlayer->CompleteCloseCompletions();
     }
   }
+  // An empty/no-GUI stop has no retirement owner to retain a synchronous reply.
+  if (completion)
+    completion->Set();
 }
 
 bool CApplication::OnMessage(CGUIMessage& message)
@@ -3234,6 +3245,7 @@ bool CApplication::OnMessage(CGUIMessage& message)
     m_playerEvent.Set();
     ResetCurrentItem();
     PlaybackCleanup();
+    GetComponent<CApplicationPlayer>()->CompleteCloseCompletions();
 #ifdef HAS_PYTHON
     CServiceBroker::GetXBPython().OnPlayBackStopped();
 #endif
@@ -3275,6 +3287,7 @@ bool CApplication::OnMessage(CGUIMessage& message)
       PlaybackCleanup();
     }
 
+    GetComponent<CApplicationPlayer>()->CompleteCloseCompletions();
 #ifdef HAS_PYTHON
     CServiceBroker::GetXBPython().OnPlayBackEnded();
 #endif

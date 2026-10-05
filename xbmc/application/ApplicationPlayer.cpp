@@ -17,6 +17,7 @@
 #include "guilib/GUIWindowManager.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
+#include "threads/Event.h"
 
 #include <mutex>
 
@@ -34,20 +35,28 @@ std::shared_ptr<IPlayer> CApplicationPlayer::GetInternal()
   return m_pPlayer;
 }
 
-bool CApplicationPlayer::ClosePlayer(bool shutdown)
+bool CApplicationPlayer::ClosePlayer(bool shutdown, std::shared_ptr<CEvent> completion)
 {
   m_shutdown = m_shutdown || shutdown;
   m_nextItem.pItem.reset();
-  ResetPlayer();
+  ResetPlayer(std::move(completion));
   return !GetInternal();
 }
 
-void CApplicationPlayer::ResetPlayer()
+void CApplicationPlayer::ResetPlayer(std::shared_ptr<CEvent> completion)
 {
   if (!m_closingPlayer)
   {
     m_closingPlayer = GetInternal();
     m_closeAcknowledged = false;
+  }
+  // Attach the reply before close/destruction can reenter with another player.
+  if (completion)
+  {
+    if (m_closingPlayer)
+      m_closeCompletionEvents.emplace_back(std::move(completion));
+    else
+      m_retiredCloseCompletionEvents.emplace_back(std::move(completion));
   }
   ContinueClose();
 }
@@ -68,14 +77,29 @@ void CApplicationPlayer::ContinueClose()
       m_pPlayer.reset();
   }
   m_closingPlayer.reset();
-  // The local original keeps final destruction outside the application lock.
+  // Move replies before destruction, which can reenter and start another close.
+  auto completions = std::move(m_closeCompletionEvents);
+  m_closeCompletionEvents.clear();
+  // Finish the original outside the application lock before replying. New open
+  // intents and repeated Stops cannot redirect this completion to another player.
+  original.reset();
+  for (auto& completion : completions)
+    m_retiredCloseCompletionEvents.emplace_back(std::move(completion));
+}
+
+void CApplicationPlayer::CompleteCloseCompletions()
+{
+  auto completions = std::move(m_retiredCloseCompletionEvents);
+  m_retiredCloseCompletionEvents.clear();
+  for (const auto& completion : completions)
+    completion->Set();
 }
 
 bool CApplicationPlayer::PreparePlaybackCleanup()
 {
   if (HasPendingOpen())
     return false;
-  if (IsPlaying())
+  if (IsPlaying() && !m_closingPlayer)
     return true; // Existing nonterminal audio/video cleanup policy stays in Application.
   if (m_cleanupGeneration == m_openGeneration && !m_cleanupPending)
     return false;

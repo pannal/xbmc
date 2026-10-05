@@ -87,7 +87,7 @@ struct CApplication {
  IPlayerCallback callback;
  template<class T>T* GetComponent(){if constexpr(std::is_same_v<T,CApplicationPlayer>)return &player;
  else if constexpr(std::is_same_v<T,CApplicationStackHelper>)return &stack;else return &power;}
- void PlaybackCleanup();void StopPlaying();bool PlaylistStopped();void ResetCurrentItem(){}
+ void PlaybackCleanup();void StopPlaying(std::shared_ptr<CEvent> = {});bool PlaylistStopped();void ResetCurrentItem(){}
  void Frame(){auto appPlayer=&player;appPlayer->ContinueClose();@CONTINUATION@}
 };
 bool CPlayListPlayer::Play(int,const std::string& name,bool){
@@ -97,7 +97,7 @@ bool CPlayListPlayer::Play(int,const std::string& name,bool){
 }
 void CPlayListPlayer::StopMessage(int requestedPlaylist){
  auto appPlayer=&app->player;auto& g_application=*app;
- struct {int param1;} message{requestedPlaylist};auto* pMsg=&message;auto wakeScreensaver=[]{};
+ struct {int param1;std::shared_ptr<CEvent> DeferCompletion(){return {};}} message{requestedPlaylist};auto* pMsg=&message;auto wakeScreensaver=[]{};
  @MEDIASTOP@
 }
 bool CApplication::PlaylistStopped(){@PLAYLISTSTOP@}
@@ -213,9 +213,9 @@ def main():
     args=parser.parse_args()
     source=(ROOT/'xbmc/application/ApplicationPlayer.cpp').read_text()
     signatures=['std::shared_ptr<IPlayer> CApplicationPlayer::GetInternal()',
-                'void CApplicationPlayer::ContinueClose()', 'bool CApplicationPlayer::ClosePlayer(',
+                'void CApplicationPlayer::ContinueClose()', 'void CApplicationPlayer::CompleteCloseCompletions()', 'bool CApplicationPlayer::ClosePlayer(',
                 'void CApplicationPlayer::OnPlaybackStopped()', 'void CApplicationPlayer::OpenNext(',
-                'void CApplicationPlayer::ResetPlayer()', 'bool CApplicationPlayer::OpenFile(']
+                'void CApplicationPlayer::ResetPlayer(', 'bool CApplicationPlayer::OpenFile(']
     signatures+=['bool CApplicationPlayer::HasPendingOpen() const',
                      'bool CApplicationPlayer::HasPendingVideoOpen() const',
                      'bool CApplicationPlayer::PreparePlaybackCleanup()',
@@ -230,7 +230,7 @@ def main():
     assert 'options.fullscreen = !CServiceBroker::GetPlaylistPlayer().HasPlayedFirstFile()' in playfile
     code=PRELUDE+'\n'.join(function(source,s) for s in signatures)+HARNESS
     code=code.replace('@CONTINUATION@',continuation).replace('@CLEANUP@',cleanup)
-    code=code.replace('@STOP@',function(application,'void CApplication::StopPlaying()'))
+    code=code.replace('@STOP@',function(application,'void CApplication::StopPlaying('))
     playlist=(ROOT/'xbmc/PlayListPlayer.cpp').read_text()
     stop=function(playlist,'  case TMSG_MEDIA_STOP:')
     code=code.replace('@MEDIASTOP@',stop[stop.index('{')+1:-1])

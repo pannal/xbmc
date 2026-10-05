@@ -1091,9 +1091,12 @@ void PLAYLIST::CPlayListPlayer::OnApplicationMessage(KODI::MESSAGING::ThreadMess
 
     if (!m_bIsDeferredPlayPending)
     {
+      // An owned video may still be playing while its cooperative close is
+      // pending. Terminal cleanup leaves fullscreen after renderer retirement.
+      const bool ownsPlayback = appPlayer->HasPlayer() || appPlayer->HasPendingOpen();
       if ((stopSlideshow && CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_SLIDESHOW) ||
-        (stopVideo && CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_VIDEO) ||
-        (stopVideo && CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_GAME) ||
+        (stopVideo && !ownsPlayback && CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_VIDEO) ||
+        (stopVideo && !ownsPlayback && CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_GAME) ||
         (stopMusic && CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_VISUALISATION))
         CServiceBroker::GetGUI()->GetWindowManager().PreviousWindow();
     }
@@ -1103,10 +1106,11 @@ void PLAYLIST::CPlayListPlayer::OnApplicationMessage(KODI::MESSAGING::ThreadMess
     // A replacement can remain queued even after the original player retires.
     if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen())
     {
+      auto completion = pMsg->DeferCompletion();
       if (m_bIsDeferredPlayPending)
-        appPlayer->ClosePlayer();
+        appPlayer->ClosePlayer(false, std::move(completion));
       else
-        g_application.StopPlaying();
+        g_application.StopPlaying(std::move(completion));
     }
   }
   break;

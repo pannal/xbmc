@@ -42,7 +42,8 @@ struct WindowManager {
 };
 struct GUI {WindowManager wm;WindowManager& GetWindowManager(){return wm;}};
 struct CWinSystemAmlogicGLESContext {
-  bool m_shutdownRequested=false;
+  bool m_shutdownRequested=false,nativeGuiWait=true;
+  void SetNativeGuiWait(bool enabled){assert(!enabled);nativeGuiWait=enabled;}
   int retireCalls=0;
   CAMLDisplayLifecycle m_displayLifecycle;
   std::unique_ptr<CAMLDisplayLifecycle::Mutation> m_shutdownAdmission;
@@ -99,6 +100,7 @@ int main(int argc,char** argv) {
   std::unique_ptr<CWinSystemAmlogicGLESContext> window;
   std::shared_ptr<CRenderLifecycle> renderer;
   std::shared_ptr<CRenderLifecycle::Request> receipt;
+  auto stopReply=std::make_shared<CEvent>();
   if(scenario==1 || scenario==2) {
     window=std::make_unique<CWinSystemAmlogicGLESContext>();
     CServiceBroker::window=window.get();
@@ -119,6 +121,7 @@ int main(int argc,char** argv) {
     app.app.m_waitForPlaybackStop=true;
     app.app.m_nextItem.pItem=std::make_shared<CFileItem>();
     std::weak_ptr<IPlayer> original=app.app.m_pPlayer;
+    app.app.ResetPlayer(stopReply);
     renderer=CRenderLifecycle::Create();
     receipt=renderer->Submit([original]{auto player=original.lock();assert(player);player->canClose=true;return true;});
   }
@@ -136,9 +139,9 @@ int main(int argc,char** argv) {
     if(scenario==2) {
       assert(receipt->status==CRenderLifecycle::Status::COMPLETED);
       assert(!app.app.m_nextItem.pItem && app.app.m_shutdown);
-      if(sleeps<=8)assert(destroyed==0 && app.app.HasPlayer());
+      if(sleeps<=8)assert(destroyed==0 && app.app.HasPlayer() && !stopReply->signaled);
       if(sleeps==8)app.m_pGUI->wm.messages.push_back(GUI_MSG_PLAYBACK_ENDED);
-      if(sleeps>9)assert(destroyed==1 && !app.app.HasPlayer());
+      if(sleeps>9)assert(destroyed==1 && !app.app.HasPlayer() && stopReply->signaled);
     }
     if(sleeps==100) {
       assert(window && window->m_shutdownRequested && !*window->m_shutdownAdmission);
@@ -153,9 +156,9 @@ int main(int argc,char** argv) {
     assert(app.teardowns==1 && !app.m_frameMoveGuard.held);
     assert(app.cleanups==(scenario==3?0:1));
     assert(sleeps==((scenario==1 || scenario==2)?100:0));
-    if(window)assert(*window->m_shutdownAdmission);
+    if(window)assert(*window->m_shutdownAdmission && !window->nativeGuiWait);
     if(scenario==2) {
-      assert(destroyed==1);
+      assert(destroyed==1 && stopReply->signaled);
       assert(app.m_pGUI->wm.messages==std::vector<int>{GUI_MSG_PLAYBACK_STARTED});
     }
   }
@@ -173,8 +176,8 @@ def build_source():
     player = (ROOT / 'xbmc/application/ApplicationPlayer.cpp').read_text()
     methods = '\n'.join(function(player, signature) for signature in [
         'std::shared_ptr<IPlayer> CApplicationPlayer::GetInternal()',
-        'bool CApplicationPlayer::ClosePlayer(', 'void CApplicationPlayer::ResetPlayer()',
-        'void CApplicationPlayer::ContinueClose()', 'void CApplicationPlayer::OnPlaybackStopped()'])
+        'bool CApplicationPlayer::ClosePlayer(', 'void CApplicationPlayer::ResetPlayer(',
+        'void CApplicationPlayer::ContinueClose()', 'void CApplicationPlayer::CompleteCloseCompletions()', 'void CApplicationPlayer::OnPlaybackStopped()'])
     window = (ROOT / 'xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp').read_text()
     entry = (ROOT / 'xbmc/platform/xbmc.cpp').read_text()
     harness = HARNESS.replace('@PREPARE@', function(window, 'bool CWinSystemAmlogicGLESContext::PrepareForShutdown()'))

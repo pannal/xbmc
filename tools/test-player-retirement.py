@@ -22,6 +22,7 @@ PRELUDE = r'''
 #include <optional>
 #include <string>
 #include <utility>
+struct CEvent {bool signaled=false;void Set(){signaled=true;}};
 struct CCriticalSection {
   bool held=false;
   void lock(){assert(!held);held=true;}
@@ -46,6 +47,7 @@ struct Timer {int expires=0;void SetExpired(){++expires;}};
 struct CApplicationPlayer {
   CCriticalSection m_playerLock;
   std::shared_ptr<IPlayer> m_pPlayer,m_closingPlayer;
+  std::vector<std::shared_ptr<CEvent>> m_closeCompletionEvents,m_retiredCloseCompletionEvents;
   bool m_closeAcknowledged=false,m_waitForPlaybackStop=false,m_shutdown=false;
   uint64_t m_openGeneration=0;std::optional<uint64_t> m_cleanupGeneration;bool m_cleanupPending=false;
   struct {
@@ -56,7 +58,7 @@ struct CApplicationPlayer {
   int created=0;
   std::shared_ptr<IPlayer> GetInternal();
   bool HasPlayer() {return bool(GetInternal());}
-  bool ClosePlayer(bool=false);void ResetPlayer();void ContinueClose();void OnPlaybackStopped();
+  bool ClosePlayer(bool=false,std::shared_ptr<CEvent> = {});void ResetPlayer(std::shared_ptr<CEvent> = {});void ContinueClose();void OnPlaybackStopped();void CompleteCloseCompletions();
   void OpenNext(const CPlayerCoreFactory&);
   bool OpenFile(const CFileItem&,const CPlayerOptions&,const CPlayerCoreFactory&,
                 const std::string&,IPlayerCallback&);
@@ -129,9 +131,9 @@ def main():
     source = (ROOT / 'xbmc/application/ApplicationPlayer.cpp').read_text()
     code = PRELUDE + '\n'.join(function(source, signature) for signature in [
         'std::shared_ptr<IPlayer> CApplicationPlayer::GetInternal()',
-        'void CApplicationPlayer::ContinueClose()', 'bool CApplicationPlayer::ClosePlayer(',
+        'void CApplicationPlayer::ContinueClose()', 'void CApplicationPlayer::CompleteCloseCompletions()', 'bool CApplicationPlayer::ClosePlayer(',
         'void CApplicationPlayer::OnPlaybackStopped()', 'void CApplicationPlayer::OpenNext(',
-        'void CApplicationPlayer::ResetPlayer()', 'bool CApplicationPlayer::OpenFile(']) + TESTS
+        'void CApplicationPlayer::ResetPlayer(', 'bool CApplicationPlayer::OpenFile(']) + TESTS
     # Main-frame retry and shutdown order are source wiring checks, not a full
     # Application runtime. The management methods above execute real bodies.
     application = (ROOT / 'xbmc/application/Application.cpp').read_text()
@@ -143,7 +145,7 @@ def main():
     assert 'm_pendingStop = exitCode;' in stop and 'return false;' in stop
     assert 'm_pendingStop && !appPlayer->HasPlayer()' in frame
     assert 'Powerdown()' in frame and 'Reboot()' in frame
-    assert 'if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen())' in function(application, 'void CApplication::StopPlaying()')
+    assert 'if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen())' in function(application, 'void CApplication::StopPlaying(')
     playlist = (ROOT / 'xbmc/PlayListPlayer.cpp').read_text()
     media_stop = playlist[playlist.index('  case TMSG_MEDIA_STOP:'):playlist.index('  case TMSG_MEDIA_PAUSE:')]
     assert 'if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen())' in media_stop

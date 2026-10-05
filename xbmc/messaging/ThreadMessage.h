@@ -135,6 +135,11 @@ public:
     if (result)
       *result = res;
   }
+
+  // A cooperative receiver can retain the off-main reply until its operation
+  // finishes. Posted and main-thread messages have no waiting event.
+  // The receiver owns signalling the returned event; dispatch will not signal it.
+  std::shared_ptr<CEvent> DeferCompletion() { return std::move(waitEvent); }
 protected:
   std::shared_ptr<CEvent> waitEvent;
   std::shared_ptr<int> result;

@@ -24,6 +24,7 @@
 #include <vector>
 
 class CAction;
+class CEvent;
 class CPlayerCoreFactory;
 class CPlayerOptions;
 class CStreamDetails;
@@ -39,9 +40,12 @@ public:
   CApplicationPlayer() = default;
 
   // player management
-  bool ClosePlayer(bool shutdown = false);
+  // An off-main synchronous Stop reply follows retirement of the original player.
+  bool ClosePlayer(bool shutdown = false, std::shared_ptr<CEvent> completion = {});
   void OnPlaybackStopped();
-  void ResetPlayer();
+  void ResetPlayer(std::shared_ptr<CEvent> completion = {});
+  // Main releases retired Stop replies after cleanup or its replacement intent.
+  void CompleteCloseCompletions();
   // Main-owned terminal cleanup follows the retained player's final retirement.
   bool PreparePlaybackCleanup();
   bool PlaybackCleanupCompleted() const;
@@ -203,6 +207,8 @@ private:
 
   std::shared_ptr<IPlayer> m_pPlayer;
   std::shared_ptr<IPlayer> m_closingPlayer;
+  std::vector<std::shared_ptr<CEvent>> m_closeCompletionEvents;
+  std::vector<std::shared_ptr<CEvent>> m_retiredCloseCompletionEvents;
   bool m_closeAcknowledged{false};
   bool m_waitForPlaybackStop{false};
   bool m_shutdown{false};

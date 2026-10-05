@@ -211,11 +211,11 @@ void CApplicationMessenger::ProcessMessages()
     //Leave here as the message might make another
     //thread call processmessages or sendmessage
 
-    std::shared_ptr<CEvent> waitEvent = pMsg->waitEvent;
     lock.unlock(); // <- see the large comment in SendMessage ^
 
     ProcessMessage(pMsg);
 
+    std::shared_ptr<CEvent> waitEvent = pMsg->waitEvent;
     if (waitEvent)
       waitEvent->Set();
     delete pMsg;
@@ -259,10 +259,10 @@ void CApplicationMessenger::ProcessWindowMessages()
 
     // leave here in case we make more thread messages from this one
 
-    std::shared_ptr<CEvent> waitEvent = pMsg->waitEvent;
     lock.unlock(); // <- see the large comment in SendMessage ^
 
     ProcessMessage(pMsg);
+    std::shared_ptr<CEvent> waitEvent = pMsg->waitEvent;
     if (waitEvent)
       waitEvent->Set();
     delete pMsg;

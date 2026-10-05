@@ -136,7 +136,7 @@ public:
                                PLAYLIST::Id playlistId,
                                int track = 0);
   bool PlayFile(CFileItem item, const std::string& player, bool bRestart = false);
-  void StopPlaying();
+  void StopPlaying(std::shared_ptr<CEvent> completion = {});
   void Restart(bool bSamePosition = true);
   void DelayedPlayerRestart();
   void CheckDelayedPlayerRestart();
