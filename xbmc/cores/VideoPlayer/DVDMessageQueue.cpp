@@ -180,6 +180,7 @@ MsgQueueReturnCode CDVDMessageQueue::Get(std::shared_ptr<CDVDMsg>& pMsg,
                                          int& priority,
                                          int lifecyclePending)
 {
+  const auto start = std::chrono::steady_clock::now();
   std::unique_lock<CCriticalSection> lock(m_section);
 
   int ret = 0;
@@ -239,11 +240,18 @@ MsgQueueReturnCode CDVDMessageQueue::Get(std::shared_ptr<CDVDMsg>& pMsg,
     }
     else
     {
+      // Ineligible producer wakeups must not renew the caller's budget. In
+      // particular, the video loop must return to recheck lifecycle admission.
+      const auto remaining = timeout - std::chrono::duration_cast<std::chrono::milliseconds>(
+                                           std::chrono::steady_clock::now() - start);
+      if (remaining <= 0ms)
+        return MSGQ_TIMEOUT;
+
       m_hEvent.Reset();
       lock.unlock();
 
       // wait for a new message
-      if (!m_hEvent.Wait(timeout))
+      if (!m_hEvent.Wait(remaining))
         return MSGQ_TIMEOUT;
 
       lock.lock();

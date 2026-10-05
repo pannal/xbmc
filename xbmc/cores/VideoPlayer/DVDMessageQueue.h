@@ -67,7 +67,7 @@ public:
 
   /**
    * msg,       message type from DVDMessage.h
-   * timeout,   timeout in msec
+   * timeout,   total wait budget in msec, including ineligible-message wakeups
    * priority,  minimum priority to get, outputs returned packets priority
    * lifecyclePending, 0: normal, 1: decode resync/pause only, 2: parent started/abort only
    */
