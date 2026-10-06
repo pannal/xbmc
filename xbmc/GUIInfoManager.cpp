@@ -1189,7 +1189,11 @@ const infomap player_times[] =   {{ "seektime",         PLAYER_SEEKTIME },
 ///     playback, bypass, missing/failed reads, or until fresh settings are applied
 ///     after open/reset. GUI DV and disc holds do not establish video identity.
 ///     Sampled at most four times per second; an unrefreshed snapshot expires
-///     after one second. GUI reads only the cache. Requires the paired kernel's
+///     after one second while running. Explicit speed-zero pauses (including
+///     buffering) retain an already confirmed identity for the same session.
+///     Resume requires a new sample; reset/close/reconfiguration still invalidate.
+///     Display-loss suspension alone does not retain identity. GUI reads only the
+///     cache. Requires the paired kernel's
 ///     read-only `backend_state` publication; last-applied `amdv_multi_dv_mode`
 ///     alone cannot prove the current decoder lifetime.
 ///     Example skin label: `<label>$INFO[Player.Process(amlogic.dv.backend)]</label>`.

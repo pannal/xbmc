@@ -741,6 +741,7 @@ struct AMLDVBackendSnapshot
   std::shared_ptr<const void> session;
   int backend;
   int64_t sampled;
+  bool paused{false};
 };
 static std::shared_ptr<const AMLDVBackendSnapshot> s_dvBackendSnapshot;
 
@@ -754,7 +755,7 @@ std::string aml_dv_backend_label()
 {
   const auto snapshot = std::atomic_load(&s_dvBackendSnapshot);
   if (!snapshot || snapshot->session != std::atomic_load(&s_dvPlaybackSession) ||
-      aml_steady_ms() - snapshot->sampled > 1000)
+      (!snapshot->paused && aml_steady_ms() - snapshot->sampled > 1000))
     return "";
   return snapshot->backend == 1 ? "dovi5" : "dovi";
 }
@@ -766,6 +767,24 @@ void aml_dv_backend_invalidate(const std::shared_ptr<const void>& session)
          !std::atomic_compare_exchange_weak(&s_dvBackendSnapshot, &expected,
                                            std::shared_ptr<const AMLDVBackendSnapshot>{}))
   {
+  }
+}
+
+void aml_dv_backend_pause(const std::shared_ptr<const void>& session, bool paused)
+{
+  auto expected = std::atomic_load(&s_dvBackendSnapshot);
+  while (session && session == std::atomic_load(&s_dvPlaybackSession) &&
+         expected && expected->session == session && expected->paused != paused)
+  {
+    // Pause can retain only a fresh, confirmed observation. Resume discards it:
+    // the next admitted decoder sample must establish the current identity.
+    std::shared_ptr<const AMLDVBackendSnapshot> desired;
+    if (paused && aml_steady_ms() - expected->sampled <= 1000)
+      desired = std::make_shared<const AMLDVBackendSnapshot>(
+          AMLDVBackendSnapshot{session, expected->backend, expected->sampled, true});
+    if (std::atomic_compare_exchange_weak(&s_dvBackendSnapshot, &expected, desired))
+      return;
+    // Invalidation/replacement wins over retention; never resurrect its snapshot.
   }
 }
 

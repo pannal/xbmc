@@ -56,6 +56,9 @@ def main():
         assert body.index('aml_dv_backend_epoch()') < body.index('m_dll->' + call)
     picture = function(codec, 'CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(')
     assert picture.index('AcquireDecoder()') < picture.index('aml_dv_backend_sample(')
+    speed = function(codec, 'void CAMLCodec::SetSpeed(')
+    assert speed.index('aml_dv_backend_pause(') < speed.index('AcquireDecoder()')
+    assert 'CSysfsPath' not in function(aml, 'void aml_dv_backend_pause(')
     assert 'std::atomic_store(&s_dvPlaybackSession, std::shared_ptr<const void>{})' in function(aml, 'void aml_dv_close(')
     assert 'atomic_compare_exchange_strong(&s_dvPlaybackSession' in function(aml, 'void aml_dv_cancel_deferred_session(')
 
@@ -151,7 +154,8 @@ int main(){
  aml_dv_backend_invalidate(first);assert(aml_dv_backend_label()=="dovi5"); // stale owner cannot erase newer state
  aml_dv_backend_invalidate(second);assert(aml_dv_backend_label().empty());
  clock_ms+=250;aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_label()=="dovi5");
- clock_ms+=1001;assert(aml_dv_backend_label().empty()); // paused/stalled sampling expires
+ clock_ms+=1001;assert(aml_dv_backend_label().empty()); // ordinary running stall expires
+ aml_dv_backend_pause(second,true);assert(aml_dv_backend_label().empty()); // cannot revive expired identity
  nodes.erase(path);aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_label().empty());assert(aml_dv_new_backend_status()==-1);
  nodes[path]="13 1 1";clock_ms+=250;aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_label()=="dovi5");
  nodes[path]="bad";clock_ms+=250;aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_label().empty());
@@ -165,6 +169,71 @@ int main(){
   nodes[capability]=bad;clock_ms+=250;aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_available_label().empty());
  }
  std::cout<<"Backend cache/session/expiry/capability and switch checks passed\n";
+}
+'''
+    # Execute the actual speed message handler and admitted GetPicture prefix.
+    # Native driver effects are a recording substitute; admission is production.
+    pause_codec = r'''
+#include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
+constexpr int DVD_PLAYSPEED_PAUSE=0, DVD_PLAYSPEED_NORMAL=1000;
+struct CDVDVideoCodec {enum VCReturn {VC_NONE, VC_ERROR};};
+struct VideoPicture {std::shared_ptr<const void> amlDVSession;};
+struct CAMLCodec {
+ CAMLSession m_session;
+ std::shared_ptr<const void> m_dvSession;
+ uint64_t m_dvBackendEpoch=20;
+ int64_t m_dvBackendSampleTime=0;
+ bool m_dvBackendPaused=false,m_opened=true,m_speedPending=false;
+ int m_speed=1000,m_requestedSpeed=1000,driverCalls=0;
+ bool LifecyclePending(){return false;}
+ bool ContinueLifecycle(){return true;}
+ void SetSpeed(int);
+ void SetSpeedInternal(int speed){m_speed=speed;++driverCalls;}
+ CDVDVideoCodec::VCReturn GetPicture(VideoPicture&);
+ CAMLCodec(){auto r=m_session.Fence();assert(m_session.BeginMutation(r));assert(m_session.Complete(r,true));}
+};
+''' + speed + '\n' + picture[:picture.index('  struct vdec_info vi;')] + 'return CDVDVideoCodec::VC_NONE;\n}\n'
+    pause_tests = r'''
+int main(){
+ const char* path="/sys/class/amdolby_vision/backend_state";
+ CSysfsPath::nodes[path]="21 1 1";
+ CAMLCodec codec;auto owner=std::make_shared<const int>(3);codec.m_dvSession=owner;
+ std::atomic_store(&s_dvPlaybackSession,std::shared_ptr<const void>(owner));
+ VideoPicture picture;
+ codec.SetSpeed(0);codec.GetPicture(picture);clock_ms+=5000;
+ assert(aml_dv_backend_label().empty()); // pause before confirmation cannot sample/establish identity
+ codec.SetSpeed(1000);codec.GetPicture(picture);assert(aml_dv_backend_label()=="dovi5");
+ // Message handling retains immediately even while native speed work is deferred.
+ auto display=CAMLSession::FenceDisplay();int calls=codec.driverCalls;
+ codec.SetSpeed(0);assert(codec.m_speedPending&&codec.m_speed==1000&&codec.driverCalls==calls);
+ clock_ms+=5000;assert(aml_dv_backend_label()=="dovi5");
+ auto stale=std::make_shared<const int>(4);
+ aml_dv_backend_pause(stale,false);aml_dv_backend_pause(stale,true);
+ assert(aml_dv_backend_label()=="dovi5");
+ assert(CAMLSession::TryBeginDisplay(display));
+ assert(CAMLSession::EndDisplay(display,CAMLSession::DisplayPhase::READY));
+ codec.SetSpeed(0); // retrying native pause must not renew/reset the retained observation
+ int reads=CSysfsPath::reads;
+ CSysfsPath::nodes[path]="22 0 1";codec.GetPicture(picture);
+ assert(CSysfsPath::reads==reads&&aml_dv_backend_label()=="dovi5");
+ codec.SetSpeed(1000);assert(aml_dv_backend_label().empty());
+ codec.GetPicture(picture);assert(aml_dv_backend_label()=="dovi"); // fresh resume, even inside 250ms window
+ clock_ms+=1001;assert(aml_dv_backend_label().empty()); // running stalls still expire
+ codec.GetPicture(picture);assert(aml_dv_backend_label()=="dovi");
+ codec.SetSpeed(0);clock_ms+=5000;assert(aml_dv_backend_label()=="dovi");
+ aml_dv_backend_invalidate(owner);assert(aml_dv_backend_label().empty()); // reset/seek/reconfiguration
+ codec.SetSpeed(0);codec.GetPicture(picture);assert(aml_dv_backend_label().empty());
+ codec.SetSpeed(1000);codec.GetPicture(picture);assert(aml_dv_backend_label()=="dovi");
+ codec.SetSpeed(0);std::atomic_store(&s_dvPlaybackSession,std::shared_ptr<const void>{});
+ assert(aml_dv_backend_label().empty()); // stop/owner revocation while paused
+ auto replacement=std::make_shared<const int>(5);
+ std::atomic_store(&s_dvPlaybackSession,std::shared_ptr<const void>(replacement));
+ assert(aml_dv_backend_label().empty());
+ int64_t sampled=0;aml_dv_backend_sample(replacement,21,sampled);
+ assert(aml_dv_backend_label()=="dovi");
+ codec.SetSpeed(1000);codec.SetSpeed(0); // stale codec cannot retain or erase replacement
+ assert(aml_dv_backend_label()=="dovi");clock_ms+=1001;assert(aml_dv_backend_label().empty());
+ std::cout<<"Explicit pause, deferred speed, resume, invalidation, owner and running expiry passed\n";
 }
 '''
     import ast
@@ -209,6 +278,7 @@ int main(){
                 print('Rejected negative control:', name)
 
         run(preamble + state + tests, 'cache')
+        run(preamble + state + pause_codec + pause_tests, 'pause')
         run('#include <cassert>\nint current=-1;int aml_dv_new_backend_status(){return current;}\n' + status +
             'int main(){assert(DVBackendDescriptionStatus()==60355);current=0;assert(DVBackendDescriptionStatus()==60353);current=1;assert(DVBackendDescriptionStatus()==60352);current=2;assert(DVBackendDescriptionStatus()==60354);}', 'help-status')
         help_methods = function(description, 'void CGUIWindowSettingsCategory::SetDescription(')
@@ -269,6 +339,15 @@ int main(){GUI gui;std::string value="stale";assert(gui.Get(1,value)&&value.empt
                                    ('old-generation', 'state->epoch <= baseline', 'false')]:
                 assert old in state
                 run(preamble + state.replace(old, new) + tests, name, False)
+            for name, old, new in [
+                    ('resume-keeps-paused', 'expected->paused != paused', 'expected->paused != paused && paused'),
+                    ('pause-samples-unknown', 'if (!m_dvBackendPaused)', 'if (true)'),
+                    ('pause-revives-expired', 'paused && aml_steady_ms() - expected->sampled <= 1000', 'paused')]:
+                source = preamble + state + pause_codec
+                assert old in source
+                # Expired retention is exercised by the original running-expiry checks.
+                suffix = tests if name == 'pause-revives-expired' else pause_tests
+                run(source.replace(old, new) + suffix, name, False)
     print('Backend label IDs, GUI build guards, native admission and DV-tree wiring passed')
 
 

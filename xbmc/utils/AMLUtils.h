@@ -124,6 +124,8 @@ void aml_dv_apply_new_backend_setting();
 std::string aml_dv_backend_label();
 std::string aml_dv_backend_available_label();
 void aml_dv_backend_invalidate(const std::shared_ptr<const void>& session);
+// Explicit speed-zero pause retains a fresh observation; resume requires sampling.
+void aml_dv_backend_pause(const std::shared_ptr<const void>& session, bool paused);
 uint64_t aml_dv_backend_epoch();
 void aml_dv_backend_sample(const std::shared_ptr<const void>& session,
                            uint64_t baseline, int64_t& lastSample);

@@ -3195,7 +3195,8 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
   if (!m_opened)
     return CDVDVideoCodec::VC_ERROR;
 
-  aml_dv_backend_sample(m_dvSession, m_dvBackendEpoch, m_dvBackendSampleTime);
+  if (!m_dvBackendPaused)
+    aml_dv_backend_sample(m_dvSession, m_dvBackendEpoch, m_dvBackendSampleTime);
   videoPicture.amlDVSession = m_dvSession;
 
   struct vdec_info vi;
@@ -3486,6 +3487,16 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
 
 void CAMLCodec::SetSpeed(int speed)
 {
+  // The player stops requesting pictures as soon as it consumes speed zero,
+  // even if native speed admission is deferred. Publish only CPU cache state.
+  const bool paused = speed == DVD_PLAYSPEED_PAUSE;
+  if (m_dvBackendPaused != paused)
+  {
+    aml_dv_backend_pause(m_dvSession, paused);
+    m_dvBackendPaused = paused;
+    if (!paused)
+      m_dvBackendSampleTime = 0;
+  }
   if (!m_opened)
   {
     m_speed = speed;

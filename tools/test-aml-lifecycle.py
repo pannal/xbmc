@@ -97,8 +97,8 @@ def main():
             # removing its first guard is redundant, so inject false completion.
             ('wrapper reports terminal failure complete', 'if (LifecycleFailed())\n    return false;',
              'if (LifecycleFailed())\n    return true;'),
-            ('poll accepts foreign session', 'if (!m_session.Matches(permit, permit.Epoch()))',
-             'if (false && !m_session.Matches(permit, permit.Epoch()))'),
+            ('poll accepts foreign session', '!m_session.Matches(permit, permit.Epoch())',
+             'false'),
             ('poll changes timeout policy', 'poll(codec_poll_fd, 1, 50);', 'poll(codec_poll_fd, 1, 0);'),
         ]
         for name, before, after in controls:
@@ -180,12 +180,17 @@ struct Dll {
   template<class Codec> void codec_set_cntl_mode(Codec*,int mode) { modes.push_back(mode); }
 };
 std::shared_ptr<const void> s_dvPlaybackSession;
+// Cache semantics are exercised with production bodies in test-dv-backend-info.py.
+void aml_dv_backend_invalidate(const std::shared_ptr<const void>&) {}
+void aml_dv_backend_pause(const std::shared_ptr<const void>&,bool) {}
 @DV_CANCEL@
 class CAMLCodec {
 public:
   enum class Lifecycle {NONE,OPEN,RESET,REOPEN,CLOSE};
   CAMLSession m_session;
   std::shared_ptr<const void> m_dvSession;
+  bool m_dvBackendPaused{false};
+  int64_t m_dvBackendSampleTime{0};
   Lifecycle m_lifecycle{Lifecycle::NONE};
   CAMLSession::Request m_lifecycleRequest;
   std::shared_ptr<CAMLSession::NativeRequest> m_nativeLifecycleRequest;
