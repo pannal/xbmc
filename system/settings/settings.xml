@@ -4302,7 +4302,7 @@
         <setting id="coreelec.amlogic.dolbyvision.new.backend" type="boolean" label="60350" help="60351" parent="coreelec.amlogic.dolbyvision.mode">
           <requirement>HAVE_AMCODEC</requirement>
           <visible>false</visible>
-          <level>2</level>
+          <level>3</level>
           <default>true</default>
           <dependencies>
             <dependency type="visible" setting="coreelec.amlogic.dolbyvision.mode" operator="!is">2</dependency>

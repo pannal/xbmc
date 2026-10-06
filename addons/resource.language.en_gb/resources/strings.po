@@ -27484,15 +27484,15 @@ msgid "Tells a Blu-ray 3D disc that the connected display can show 3D, whether o
 msgstr ""
 
 msgctxt "#60350"
-msgid "Use newer Dolby Vision backend (dovi5)"
+msgid "Prefer newer Dolby Vision backend (dovi5)"
 msgstr ""
 
 msgctxt "#60351"
-msgid "Prefer dovi5 for supported native Dolby Vision playback. Disable to use the original processor. Turning this off does not unload either module; unsupported routes and processing failures use the original processor. This preference stays enabled if dovi5 is unavailable, so it can take effect when the backend becomes usable. Changes apply during playback when new frame settings are programmed."
+msgid "Use this preference for compatibility testing and troubleshooting. When enabled, dovi5 is permitted on supported native Dolby Vision routes. Unsupported routes or processing failures use the original processor. Disabling selects the original processor without unloading modules. The preference stays enabled if dovi5 is unavailable. Changes take effect during playback when new frame settings are programmed."
 msgstr ""
 
 msgctxt "#60352"
-msgid "Observed backend state: registered and ready."
+msgid "Observed backend state: registered."
 msgstr ""
 
 msgctxt "#60353"

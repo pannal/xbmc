@@ -20225,16 +20225,16 @@ msgid "Show the debug overlay while debug logging is enabled. Leave this off to 
 msgstr "Zeigt die Debuganzeige bei aktivierter Debugprotokollierung an. Deaktiviert lassen, um ein vollständiges Debugprotokoll zu erstellen, ohne die Wiedergabe zu verdecken."
 
 msgctxt "#60350"
-msgid "Use newer Dolby Vision backend (dovi5)"
-msgstr "Neueren Dolby-Vision-Prozessor verwenden (dovi5)"
+msgid "Prefer newer Dolby Vision backend (dovi5)"
+msgstr "Neueren Dolby-Vision-Prozessor bevorzugen (dovi5)"
 
 msgctxt "#60351"
-msgid "Prefer dovi5 for supported native Dolby Vision playback. Disable to use the original processor. Turning this off does not unload either module; unsupported routes and processing failures use the original processor. This preference stays enabled if dovi5 is unavailable, so it can take effect when the backend becomes usable. Changes apply during playback when new frame settings are programmed."
-msgstr "Bevorzugt dovi5 bei unterstützter nativer Dolby-Vision-Wiedergabe. Deaktivieren, um den ursprünglichen Prozessor zu verwenden. Ausschalten entlädt keines der Module; nicht unterstützte Wiedergabewege und Verarbeitungsfehler verwenden den ursprünglichen Prozessor. Diese Einstellung bleibt aktiviert, wenn dovi5 nicht verfügbar ist, damit sie wirksam werden kann, sobald der Prozessor verwendbar ist. Änderungen werden während der Wiedergabe mit den Einstellungen eines neuen Bildes übernommen."
+msgid "Use this preference for compatibility testing and troubleshooting. When enabled, dovi5 is permitted on supported native Dolby Vision routes. Unsupported routes or processing failures use the original processor. Disabling selects the original processor without unloading modules. The preference stays enabled if dovi5 is unavailable. Changes take effect during playback when new frame settings are programmed."
+msgstr "Diese Einstellung dient Kompatibilitätstests und der Fehlersuche. Wenn aktiviert, darf dovi5 unterstützte native Dolby-Vision-Wiedergabewege verarbeiten. Nicht unterstützte Wiedergabewege und Verarbeitungsfehler verwenden den ursprünglichen Prozessor. Bei deaktivierter Einstellung wird der ursprüngliche Prozessor verwendet, ohne Module zu entladen. Die Einstellung bleibt aktiviert, wenn dovi5 nicht verfügbar ist. Änderungen werden während der Wiedergabe mit den Einstellungen eines neuen Bildes übernommen."
 
 msgctxt "#60352"
-msgid "Observed backend state: registered and ready."
-msgstr "Beobachteter Prozessorstatus: registriert und bereit."
+msgid "Observed backend state: registered."
+msgstr "Beobachteter Prozessorstatus: registriert."
 
 msgctxt "#60353"
 msgid "Observed backend state: the newer backend is not registered."

@@ -69,7 +69,7 @@ def main():
     assert siblings.index(switch_id) == siblings.index('coreelec.amlogic.dolbyvision.mode') + 1
     assert switch.get('parent') == 'coreelec.amlogic.dolbyvision.mode'
     assert switch.findtext('requirement') == 'HAVE_AMCODEC'
-    assert switch.findtext('level') == '2' and switch.findtext('default') == 'true'
+    assert switch.findtext('level') == '3' and switch.findtext('default') == 'true'
     assert switch.find('./dependencies/dependency[@type="enable"]') is None
     assert 'SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND, show' in dv
     assert 'settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND)' in dv
