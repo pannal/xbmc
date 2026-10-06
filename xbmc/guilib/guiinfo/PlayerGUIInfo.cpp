@@ -981,6 +981,19 @@ bool CPlayerGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
       value = CServiceBroker::GetDataCacheCore().GetVideoHDRStaticMetadataInfo().colour_primaries;
       return true;
 
+    case PLAYER_PROCESS_AML_DV_BACKEND:
+      value.clear();
+#ifdef HAS_LIBAMCODEC
+      if (m_appPlayer->IsPlayingVideo())
+        value = aml_dv_backend_label();
+#endif
+      return true;
+    case PLAYER_PROCESS_AML_DV_BACKEND_AVAILABLE:
+      value.clear();
+#ifdef HAS_LIBAMCODEC
+      value = aml_dv_backend_available_label();
+#endif
+      return true;
     case PLAYER_PROCESS_AML_PIXELFORMAT:
       value = GetAMLConfigInfo("Colour depth") + ", " + GetAMLConfigInfo("Colourspace");
       return true;

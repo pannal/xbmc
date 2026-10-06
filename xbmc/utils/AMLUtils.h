@@ -117,6 +117,16 @@ bool aml_support_av1();
 bool aml_support_dolby_vision();
 // Cached native initialization result; never reads sysfs from settings callers.
 bool aml_dv_new_backend_available();
+// Cached registration/runtime-failure status: -1 unknown, 0 absent, 1 ready, 2 failed.
+int aml_dv_new_backend_status();
+void aml_dv_apply_new_backend_setting();
+// CPU-only GUI accessors; bounded sampling belongs to the admitted AML decoder.
+std::string aml_dv_backend_label();
+std::string aml_dv_backend_available_label();
+void aml_dv_backend_invalidate(const std::shared_ptr<const void>& session);
+uint64_t aml_dv_backend_epoch();
+void aml_dv_backend_sample(const std::shared_ptr<const void>& session,
+                           uint64_t baseline, int64_t& lastSample);
 bool aml_dolby_vision_enabled();
 std::string aml_dv_output_mode_to_string(unsigned int mode);
 std::string aml_dv_mode_to_string(enum DV_MODE mode);

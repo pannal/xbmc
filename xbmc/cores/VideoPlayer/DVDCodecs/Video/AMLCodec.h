@@ -152,6 +152,8 @@ private:
   std::shared_ptr<const void> m_processInfoLifetime;
   CAMLSession m_session;
   std::shared_ptr<const void> m_dvSession; // native lifecycle owner; copied under decoder admission
+  uint64_t m_dvBackendEpoch{0};
+  int64_t m_dvBackendSampleTime{0};
   Lifecycle m_lifecycle{Lifecycle::NONE};
   CAMLSession::Request m_lifecycleRequest;
   std::shared_ptr<CAMLSession::NativeRequest> m_nativeLifecycleRequest;

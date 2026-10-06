@@ -264,6 +264,7 @@ CDVDVideoCodecAmlogic::CDVDVideoCodecAmlogic(CProcessInfo &processInfo)
         CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,
         CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER,
         CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR,
+        CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND,
         CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE,
         CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV,
         CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_STRIP,
@@ -316,7 +317,8 @@ void CDVDVideoCodecAmlogic::UpdateAppendCMv40SettingCache()
       const bool nativeOutput = output == DOLBY_VISION_OUTPUT_MODE_IPT ||
                                 output == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
       const bool metadataOutput = type == DV_TYPE_DISPLAY_LED ||
-                                  (playerLed && nativeOutput && aml_dv_new_backend_available());
+                                  (playerLed && nativeOutput && aml_dv_new_backend_available() &&
+                                   settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND));
       if (!metadataOutput || m_originalSourceHdrType.load() != StreamHdrType::HDR_TYPE_DOLBYVISION ||
           settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE) == DV_MODE_OFF ||
           settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR) != 0)
@@ -345,7 +347,8 @@ void CDVDVideoCodecAmlogic::UpdateStripCMv40SettingCache()
       const bool nativeOutput = output == DOLBY_VISION_OUTPUT_MODE_IPT ||
                                 output == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
       const bool metadataOutput = type == DV_TYPE_DISPLAY_LED ||
-                                  (playerLed && nativeOutput && aml_dv_new_backend_available());
+                                  (playerLed && nativeOutput && aml_dv_new_backend_available() &&
+                                   settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND));
       if (!metadataOutput || m_originalSourceHdrType.load() != StreamHdrType::HDR_TYPE_DOLBYVISION ||
           settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE) == DV_MODE_OFF ||
           settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR) != 0)
@@ -396,6 +399,7 @@ void CDVDVideoCodecAmlogic::OnSettingChanged(const std::shared_ptr<const CSettin
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR ||
+      id == CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE ||
@@ -403,6 +407,7 @@ void CDVDVideoCodecAmlogic::OnSettingChanged(const std::shared_ptr<const CSettin
     UpdateAppendCMv40SettingCache();
   if (id == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_STRIP ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR ||
+      id == CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE)

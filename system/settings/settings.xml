@@ -4299,6 +4299,16 @@
           </constraints>
           <control type="spinner" format="string" />
         </setting>
+        <setting id="coreelec.amlogic.dolbyvision.new.backend" type="boolean" label="60350" help="60351" parent="coreelec.amlogic.dolbyvision.mode">
+          <requirement>HAVE_AMCODEC</requirement>
+          <visible>false</visible>
+          <level>2</level>
+          <default>true</default>
+          <dependencies>
+            <dependency type="visible" setting="coreelec.amlogic.dolbyvision.mode" operator="!is">2</dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
         <setting id="coreelec.amlogic.dolbyvision.mode.on.luminance" type="integer" label="60016" help="60017" parent="coreelec.amlogic.dolbyvision.mode">
           <requirement>HAVE_AMCODEC</requirement>
           <visible>false</visible>
@@ -4853,6 +4863,7 @@
                 <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">0</condition>
                 <and>
                   <condition on="property" name="dvnewbackendavailable" />
+                  <condition setting="coreelec.amlogic.dolbyvision.new.backend" operator="is">true</condition>
                   <or>
                     <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">1</condition>
                     <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">2</condition>
@@ -4890,6 +4901,7 @@
                 <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">0</condition>
                 <and>
                   <condition on="property" name="dvnewbackendavailable" />
+                  <condition setting="coreelec.amlogic.dolbyvision.new.backend" operator="is">true</condition>
                   <or>
                     <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">1</condition>
                     <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">2</condition>
@@ -4923,6 +4935,7 @@
                 <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">0</condition>
                 <and>
                   <condition on="property" name="dvnewbackendavailable" />
+                  <condition setting="coreelec.amlogic.dolbyvision.new.backend" operator="is">true</condition>
                   <or>
                     <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">1</condition>
                     <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">2</condition>
@@ -4961,6 +4974,7 @@
                 <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">0</condition>
                 <and>
                   <condition on="property" name="dvnewbackendavailable" />
+                  <condition setting="coreelec.amlogic.dolbyvision.new.backend" operator="is">true</condition>
                   <or>
                     <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">1</condition>
                     <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">2</condition>

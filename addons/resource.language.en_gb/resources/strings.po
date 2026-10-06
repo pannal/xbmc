@@ -27482,3 +27482,27 @@ msgstr ""
 msgctxt "#69246"
 msgid "Tells a Blu-ray 3D disc that the connected display can show 3D, whether or not it can. Some 3D discs refuse to start on a display that answers no and park on a single still frame with no menu, picture or sound. Turning this on lets them run their normal path; the film then plays in 2D, because only the base view is presented. It does not enable 3D output: a 3D display whose capability is lost through an AV receiver or scaler that rewrites EDID also plays these discs in 2D. Affects Blu-ray 3D discs only."
 msgstr ""
+
+msgctxt "#60350"
+msgid "Use newer Dolby Vision backend (dovi5)"
+msgstr ""
+
+msgctxt "#60351"
+msgid "Prefer dovi5 for supported native Dolby Vision playback. Disable to use the original processor. Turning this off does not unload either module; unsupported routes and processing failures use the original processor. This preference stays enabled if dovi5 is unavailable, so it can take effect when the backend becomes usable. Changes apply during playback when new frame settings are programmed."
+msgstr ""
+
+msgctxt "#60352"
+msgid "Observed backend state: registered and ready."
+msgstr ""
+
+msgctxt "#60353"
+msgid "Observed backend state: the newer backend is not registered."
+msgstr ""
+
+msgctxt "#60354"
+msgid "Observed backend state: the driver reported a failure; newer processing is unavailable."
+msgstr ""
+
+msgctxt "#60355"
+msgid "Observed backend state: unknown. State is sampled at initialization and during native playback."
+msgstr ""

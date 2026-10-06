@@ -2008,6 +2008,7 @@ bool CAMLCodec::BeginLifecycle(Lifecycle operation, std::function<void()> before
   }
   if (m_lifecycle != operation)
   {
+    aml_dv_backend_invalidate(m_dvSession);
     if (operation == Lifecycle::CLOSE || operation == Lifecycle::REOPEN)
       aml_dv_cancel_deferred_session(m_dvSession);
     // Select the prefix only with the new operation. Retries, including nested
@@ -2541,6 +2542,8 @@ bool CAMLCodec::OpenDecoderInternal()
   if (am_private->vcodec.dec_mode == STREAM_TYPE_SINGLE)
     SetVfmMap("default", "decoder ppmgr amlvideo deinterlace amvideo");
 
+  m_dvBackendEpoch = m_dvSession ? aml_dv_backend_epoch() : 0;
+  m_dvBackendSampleTime = 0;
   int ret = m_dll->codec_init(&am_private->vcodec);
   if (ret != CODEC_ERROR_NONE)
   {
@@ -2742,6 +2745,10 @@ void CAMLCodec::ResetInternal()
   }
   m_dll->codec_pause(&am_private->vcodec);
 
+  // Capture the old provider lifetime before the decoder reset invalidates it.
+  aml_dv_backend_invalidate(m_dvSession);
+  m_dvBackendEpoch = m_dvSession ? aml_dv_backend_epoch() : 0;
+  m_dvBackendSampleTime = 0;
   // reset the decoder
   m_dll->codec_reset(&am_private->vcodec);
   m_dll->codec_set_video_delay_limited_ms(&am_private->vcodec, 1000);
@@ -3188,6 +3195,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
   if (!m_opened)
     return CDVDVideoCodec::VC_ERROR;
 
+  aml_dv_backend_sample(m_dvSession, m_dvBackendEpoch, m_dvBackendSampleTime);
   videoPicture.amlDVSession = m_dvSession;
 
   struct vdec_info vi;

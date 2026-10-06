@@ -24,6 +24,7 @@
 #include <thread>
 
 #include "AMLUtils.h"
+#include "DVBackendState.h"
 #include "utils/PlaybackDiagnostics.h"
 #include "utils/PlaybackEndDiagnostics.h"
 #include "AMLNativeWorker.h"
@@ -729,9 +730,113 @@ bool aml_support_av1()
   return (has_av1 == 1);
 }
 
-// Sampled once when native DV support is initialized during admitted Setup.
-// Settings conditions and callbacks only read this conservative CPU cache.
+// Initialized during admitted Setup and refreshed by the bounded decoder sampler.
+// Settings conditions, help and GUI labels only read these CPU caches.
 static std::atomic<bool> s_dvNewBackendAvailable{false};
+static std::atomic<int> s_dvNewBackendStatus{-1}; // -1: unknown; 0: unregistered; 1: ready; 2: failed
+static std::atomic<int> s_dvNewBackendAvailability{-1}; // -1: unsupported/unknown
+
+struct AMLDVBackendSnapshot
+{
+  std::shared_ptr<const void> session;
+  int backend;
+  int64_t sampled;
+};
+static std::shared_ptr<const AMLDVBackendSnapshot> s_dvBackendSnapshot;
+
+std::string aml_dv_backend_available_label()
+{
+  const int available = s_dvNewBackendAvailability.load(std::memory_order_acquire);
+  return available < 0 ? "" : available == 1 ? "1" : "0";
+}
+
+std::string aml_dv_backend_label()
+{
+  const auto snapshot = std::atomic_load(&s_dvBackendSnapshot);
+  if (!snapshot || snapshot->session != std::atomic_load(&s_dvPlaybackSession) ||
+      aml_steady_ms() - snapshot->sampled > 1000)
+    return "";
+  return snapshot->backend == 1 ? "dovi5" : "dovi";
+}
+
+void aml_dv_backend_invalidate(const std::shared_ptr<const void>& session)
+{
+  auto expected = std::atomic_load(&s_dvBackendSnapshot);
+  while (expected && expected->session == session &&
+         !std::atomic_compare_exchange_weak(&s_dvBackendSnapshot, &expected,
+                                           std::shared_ptr<const AMLDVBackendSnapshot>{}))
+  {
+  }
+}
+
+static std::optional<DVBackendState> aml_dv_read_backend_state()
+{
+  CSysfsPath state{"/sys/class/amdolby_vision/backend_state"};
+  const auto text = state.Get<std::string>();
+  return text ? DVBackendState::Parse(*text) : std::nullopt;
+}
+
+// Called before codec_init/codec_reset under native admission. Only a newer
+// provider lifetime with successfully programmed video settings may be shown.
+uint64_t aml_dv_backend_epoch()
+{
+  const auto state = aml_dv_read_backend_state();
+  return state ? state->epoch : 0;
+}
+
+void aml_dv_backend_sample(const std::shared_ptr<const void>& session,
+                           uint64_t baseline, int64_t& lastSample)
+{
+  if (!session || session != std::atomic_load(&s_dvPlaybackSession))
+    return;
+  const int64_t now = aml_steady_ms();
+  if (lastSample && now - lastSample < 250)
+    return;
+  lastSample = now;
+
+  // Registration can be withdrawn; labels and the existing routing condition
+  // share the capability cache, without performing I/O from their readers.
+  CSysfsPath capability{"/sys/module/amdolby_vision/parameters/dv_new_backend_available"};
+  const auto capabilityText = capability.Get<std::string>();
+  const auto available = capabilityText ? DVBackendState::ParseAvailability(*capabilityText) : std::nullopt;
+  s_dvNewBackendAvailable.store(available && *available == 1, std::memory_order_release);
+  s_dvNewBackendAvailability.store(available && *available <= 1 ? static_cast<int>(*available) : -1,
+                                   std::memory_order_release);
+
+  const auto state = aml_dv_read_backend_state();
+  s_dvNewBackendStatus.store(available && *available == 0 ? 0 :
+                              available && *available == 1 && state ?
+                                (state->newUsable ? 1 : 2) : -1,
+                            std::memory_order_release);
+  if (!baseline || !state || state->epoch <= baseline || state->backend < 0)
+  {
+    aml_dv_backend_invalidate(session);
+    return;
+  }
+  // A close/reopen can revoke the owner while the sysfs read is in flight.
+  // GUI readers independently compare the owner before exposing this snapshot.
+  if (session == std::atomic_load(&s_dvPlaybackSession))
+    std::atomic_store(&s_dvBackendSnapshot,
+        std::make_shared<const AMLDVBackendSnapshot>(AMLDVBackendSnapshot{session, state->backend, now}));
+}
+
+int aml_dv_new_backend_status()
+{
+  return s_dvNewBackendStatus.load(std::memory_order_acquire);
+}
+
+// Native Setup and the deferred settings owner hold admission for this write.
+void aml_dv_apply_new_backend_setting()
+{
+  const auto state = aml_dv_read_backend_state();
+  const int available = s_dvNewBackendAvailability.load(std::memory_order_acquire);
+  s_dvNewBackendStatus.store(available == 0 ? 0 : available == 1 && state ?
+                              (state->newUsable ? 1 : 2) : -1,
+                            std::memory_order_release);
+  CSysfsPath enabled{"/sys/module/amdolby_vision/parameters/dv_new_blob_enable"};
+  if (enabled.Exists())
+    enabled.Set(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND));
+}
 
 bool aml_dv_new_backend_available()
 {
@@ -753,9 +858,11 @@ bool aml_support_dolby_vision()
         // The kernel reports availability only with both original and new
         // function tables registered. Missing legacy-target node stays false.
         CSysfsPath new_backend{"/sys/module/amdolby_vision/parameters/dv_new_backend_available"};
-        s_dvNewBackendAvailable.store(
-            new_backend.Exists() && new_backend.Get<unsigned int>().value_or(0) == 1,
-            std::memory_order_release);
+        const auto capabilityText = new_backend.Get<std::string>();
+        const auto available = capabilityText ? DVBackendState::ParseAvailability(*capabilityText) : std::nullopt;
+        s_dvNewBackendAvailable.store(available && *available == 1, std::memory_order_release);
+        s_dvNewBackendAvailability.store(available && *available <= 1 ? static_cast<int>(*available) : -1,
+                                         std::memory_order_release);
         CSysfsPath ko_info{"/sys/class/amdolby_vision/ko_info"};
         if (ko_info.Exists())
           CLog::Log(LOGDEBUG, "Amlogic Dolby Vision info: {}", ko_info.Get<std::string>().value().c_str());
@@ -1496,6 +1603,7 @@ void aml_hdmi_link_probe(const char* ctx)
 void aml_dv_off(bool skip_hdmi_update)
 {
   CDVCoreGuard dvlock(__FUNCTION__);
+  aml_dv_backend_invalidate(std::atomic_load(&s_dvPlaybackSession));
   aml_dv_detect_active_area_stop();
   aml_dv_auto_letterbox_watch_stop();
 

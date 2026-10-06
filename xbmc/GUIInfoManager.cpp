@@ -1179,6 +1179,33 @@ const infomap player_times[] =   {{ "seektime",         PLAYER_SEEKTIME },
 ///     @skinning_v17 **[New Infolabel]** \link Player_Process_aml_eoft_gamut `Player.Process(amlogic.eoft_gamut)`\endlink
 ///     <p>
 ///   }
+///   \table_row3{   <b>`Player.Process(amlogic.dv.backend)`</b>,
+///                  \anchor Player_Process_aml_dv_backend
+///                  _string_,
+///     @return `dovi` (original) or `dovi5` (newer) for observed applied video
+///     processing in the current admitted Amlogic decoder session. This covers
+///     display-led/player-led DV and original VS10/VP/conversion routes, including
+///     VS10 SDR output. Empty for unsupported kernels/builds, stopped or software
+///     playback, bypass, missing/failed reads, or until fresh settings are applied
+///     after open/reset. GUI DV and disc holds do not establish video identity.
+///     Sampled at most four times per second; an unrefreshed snapshot expires
+///     after one second. GUI reads only the cache. Requires the paired kernel's
+///     read-only `backend_state` publication; last-applied `amdv_multi_dv_mode`
+///     alone cannot prove the current decoder lifetime.
+///     Example skin label: `<label>$INFO[Player.Process(amlogic.dv.backend)]</label>`.
+///   }
+///   \table_row3{   <b>`Player.Process(amlogic.dv.backend.available)`</b>,
+///                  \anchor Player_Process_aml_dv_backend_available
+///                  _string_,
+///     @return `1` when the newer backend is registered, `0` when the supported
+///     kernel reports it unregistered; empty for unsupported/unknown capability.
+///     Cached during native DV initialization and refreshed during admitted video
+///     sampling. Availability does not promise use on every stream or frame.
+///     `lsmod` establishes module presence; `dv_new_backend_available` establishes
+///     registration; `amdv_multi_dv_mode` retains the last applied identity after
+///     stop. Rising shim `dvshim_cp_calls`/`dvshim_mp_calls` prove newer callback
+///     attempts, which may fail and fall back before settings are applied.
+///   }
 ///   \table_row3{   <b>`Player.Process(amlogic.dv.target.max.nits)`</b>,
 ///                  \anchor Player_Process_aml_dv_target_max_nits
 ///                  _string_,
@@ -1339,6 +1366,8 @@ const infomap player_process[] = {{"videodecoder", PLAYER_PROCESS_VIDEODECODER},
                                   {"video.hdmi.output", PLAYER_PROCESS_VIDEO_HDMI_OUTPUT },
                                   {"video.dovi.vsvdb.max.lum", PLAYER_PROCESS_VIDEO_DOVI_VSVDB_MAX_LUM },
                                   {"amlogic.dv.target.max.nits", PLAYER_PROCESS_VIDEO_DOVI_VSVDB_MAX_LUM },
+                                  {"amlogic.dv.backend", PLAYER_PROCESS_AML_DV_BACKEND },
+                                  {"amlogic.dv.backend.available", PLAYER_PROCESS_AML_DV_BACKEND_AVAILABLE },
 
                                   {"video.dovi.l1.min.pq", PLAYER_PROCESS_VIDEO_DOVI_L1_MIN_PQ },
                                   {"video.dovi.l1.max.pq", PLAYER_PROCESS_VIDEO_DOVI_L1_MAX_PQ },

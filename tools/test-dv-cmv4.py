@@ -100,7 +100,7 @@ def main():
         equal = str(values[node.get('setting')]) == (node.text or '').strip()
         return not equal if node.get('operator') == '!is' else equal
 
-    for available in [False, True]:
+    for available, enabled in [(a, e) for a in [False, True] for e in [False, True]]:
         for type_value in [0, 1, 2, 3, 4]:
             for mode in [0, 1, 2]:
                 for vp in [0, 1]:
@@ -110,9 +110,10 @@ def main():
                                       'coreelec.amlogic.dolbyvision.mode': mode,
                                       'coreelec.amlogic.dolbyvision.video.processor': vp,
                                       'coreelec.amlogic.dolbyvision.vs10.dv': output,
-                                      prefix + 'append': append}
+                                      prefix + 'append': append,
+                                      'coreelec.amlogic.dolbyvision.new.backend': 'true' if enabled else 'false'}
                             route_allowed = (mode != 2 and vp == 0 and
-                                             (type_value == 0 or available and
+                                             (type_value == 0 or available and enabled and
                                               type_value in [1, 2, 4] and output in [0, 1]))
                             for suffix, mode_allowed in [('append', True), ('strip', True),
                                                          ('smart.threshold', append == 3),
@@ -130,7 +131,9 @@ def main():
     # Paired kernel ABI is unsigned decimal 0/1 (not bool parameter Y/N).
     # Check Kodi's contract without making the fixture depend on another repo.
     availability = function(aml, 'bool aml_support_dolby_vision(')
-    assert 'new_backend.Get<unsigned int>().value_or(0) == 1' in availability
+    assert 'new_backend.Get<std::string>()' in availability
+    assert 'DVBackendState::ParseAvailability(*capabilityText)' in availability
+    assert 'available && *available == 1' in availability
     cached_availability = function(aml, 'bool aml_dv_new_backend_available(')
     assert 'CSysfsPath' not in cached_availability
     opening = function(aml, 'void aml_dv_open(')
@@ -324,6 +327,7 @@ int main() {
  // Real callbacks update settings atomics; real Apply propagates same-mode
  // threshold, display and Auto trigger changes to the cached-input converter.
  CDVDVideoCodecAmlogic codec;codec.m_bitstream=&c;
+ changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND,1);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,0);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM,1000);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,3);
@@ -337,6 +341,8 @@ int main() {
  newBackendAvailable=true;
  for(int type:{1,2,4}) {
   changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE,type);expect(c,rpu(3388),true);
+  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND,0);expect(c,rpu(3388),false);
+  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND,1);expect(c,rpu(3388),true);
   changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV,3);expect(c,rpu(3388),false);
   changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV,0);expect(c,rpu(3388),true);
  }
@@ -365,7 +371,7 @@ int main() {
             cpp = path / (name + '.cpp')
             exe = path / name
             cpp.write_text(text)
-            subprocess.run(['g++', '-std=c++17', '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-Wdouble-promotion', '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-no-pie', str(cpp), '-o', str(exe)], check=True)
+            subprocess.run(['g++', '-std=c++17', '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-Wdouble-promotion', '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-no-pie', '-I' + str(args.root / 'xbmc'), str(cpp), '-o', str(exe)], check=True)
             result = subprocess.run([str(exe)], capture_output=True, text=True)
             if success:
                 assert result.returncode == 0, result.stdout + result.stderr
@@ -393,6 +399,7 @@ int main() {
 #include <optional>
 #include <string>
 #include <type_traits>
+#include "utils/DVBackendState.h"
 constexpr int LOGDEBUG=1;
 struct CLog {template<class... T> static void Log(T...) {}};
 using SettingConstPtr=const void*;
@@ -403,7 +410,7 @@ struct CSysfsPath {
  explicit CSysfsPath(const char* name):path(name) {}
  bool Exists() const {return nodes.count(path);}
  template<class T> std::optional<T> Get() const {
-  ++reads;if constexpr(std::is_same_v<T,std::string>)return std::string();
+  ++reads;if constexpr(std::is_same_v<T,std::string>)return nodes.count(path)?std::optional<T>(std::to_string(nodes[path])):std::nullopt;
   else return static_cast<T>(nodes[path]);
  }
  template<class T> void Set(T value) {nodes[path]=value;}
@@ -411,6 +418,7 @@ struct CSysfsPath {
 std::map<std::string,unsigned int> CSysfsPath::nodes;
 int CSysfsPath::reads=0;
 static std::atomic<bool> s_dvNewBackendAvailable{false};
+static std::atomic<int> s_dvNewBackendAvailability{-1};
 ''' + cached_availability + availability + condition + r'''
 enum class StreamHdrType {HDR_TYPE_NONE,HDR_TYPE_DOLBYVISION,HDR_TYPE_HDR10PLUS};
 void open(StreamHdrType hdrType,StreamHdrType originalSourceHdrType,bool swDecoded) {

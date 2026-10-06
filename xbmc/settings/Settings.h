@@ -497,6 +497,7 @@ public:
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_MODE = "coreelec.amlogic.dolbyvision.mode";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_MODE_ON_LUMINANCE = "coreelec.amlogic.dolbyvision.mode.on.luminance";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_OSD_BRIGHTNESS = "coreelec.amlogic.dolbyvision.osd.brightness";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND = "coreelec.amlogic.dolbyvision.new.backend";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR = "coreelec.amlogic.dolbyvision.video.processor";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR_TM = "coreelec.amlogic.dolbyvision.video.processor.tm";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_TYPE = "coreelec.amlogic.dolbyvision.type";
