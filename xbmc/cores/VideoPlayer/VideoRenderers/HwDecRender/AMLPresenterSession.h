@@ -49,13 +49,18 @@ public:
     }
     bool Poll() override
     {
+      m_nativePaced = false;
       auto permit = buffer->AcquirePresentation();
       if (!permit)
         return false;
-      buffer->Poll(permit);
+      m_nativePaced = buffer->Poll(permit);
       return true;
     }
+    bool PollPaces() const override { return m_nativePaced; }
     bool Retire() override { return buffer->Drop(); }
+
+  private:
+    bool m_nativePaced{false};
   };
 
   CAMLPresenterSession(std::shared_ptr<CAMLCodec> codec,

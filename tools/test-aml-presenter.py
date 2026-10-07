@@ -20,7 +20,7 @@ def main():
     methods = '\n'.join(extract(source, signature) for signature in [
         'void CAMLVideoBuffer::Set(', 'CAMLSession::Permit CAMLVideoBuffer::AcquirePresentation()',
         'void CAMLVideoBuffer::Commit(', 'bool CAMLVideoBuffer::Submit(', 'void CAMLVideoBuffer::ApplyGeometry(',
-        'void CAMLVideoBuffer::Poll(', 'bool CAMLVideoBuffer::Drop()'])
+        'bool CAMLVideoBuffer::Poll(', 'bool CAMLVideoBuffer::Drop()'])
     code = PRELUDE + extract(header, 'class CAMLVideoBuffer :') + ';\n' + methods
     code += PICTURE + extract(adapter, 'class CAMLPresenterSession\n') + ';\n'
     rm = (base / 'VideoRenderers/RenderManager.cpp').read_text()
@@ -88,6 +88,7 @@ public:
   const std::thread::id mainThread=std::this_thread::get_id();
   CAMLSession session;
   std::atomic<int> releases{0}, drops{0}, polls{0}, geometry{0};
+  std::atomic<int> pollPacing{1};
   std::atomic<int> qbufResult{0};
   std::shared_ptr<const void> lifetime;
   CAMLCodec() {auto r=session.Fence(); assert(session.BeginMutation(r)); assert(session.Complete(r,true));}
@@ -114,7 +115,7 @@ public:
   void RefreshDecoderRate(const CAMLSession::Permit&) {}
   int PollFrame(const CAMLSession::Permit& permit) {
     assert(!permit.IsControl()&&!permit.IsRetirement()&&session.Matches(permit,session.Epoch()));
-    ++polls; return 1;
+    ++polls; return pollPacing;
   }
 };
 '''
@@ -173,6 +174,25 @@ void Put(CAMLPresenterSession& session,const std::shared_ptr<CAMLCodec>& codec,C
 void Acknowledge(CAMLPresenterSession& session) {
   Await([&] {return bool(session.queue->PendingControl().frame);});
   Await([&] {return session.ApplyControl({},{});});
+}
+void AdapterPacing() {
+  auto codec=std::make_shared<CAMLCodec>();
+  VideoPicture picture;
+  auto* buffer=new CAMLVideoBuffer(1); buffer->Set(codec,1,40,1,1);
+  picture.videoBuffer=buffer;
+  auto content=std::make_shared<CAMLPresenterSession::OverlayObservation>();
+  CAMLPresenterSession::Frame frame(picture,content);
+  assert(!frame.PollPaces());
+  assert(frame.Poll() && frame.PollPaces());
+  codec->pollPacing=0;
+  assert(frame.Poll() && !frame.PollPaces()); // admitted errors keep completion semantics
+  codec->pollPacing=1;
+  assert(frame.Poll() && frame.PollPaces());
+  auto native=CAMLSession::FenceNative();assert(native);
+  assert(CAMLSession::TryBeginNative(native));
+  assert(!frame.Poll() && !frame.PollPaces()); // admission cannot reuse a prior pacing result
+  assert(CAMLSession::EndNative(native));
+  assert(frame.Poll() && frame.PollPaces());
 }
 void IndependentProgress() {
   auto codec=std::make_shared<CAMLCodec>(); CDVDClock clock;
@@ -349,7 +369,7 @@ void UnapprovedStartup() {
 void RouteProgress();
 int main(int argc,char**) {
   PLAYBACK_DIAGNOSTICS::SetEnabled(argc>1);
-  UnapprovedStartup(); RouteProgress(); IndependentProgress(); ControlsAndEpochs(); HeldBobDrain(); PendingHandoffAndDrain(); CancelAfterSubmit(); LateFramesAndNativeFence();
+  AdapterPacing(); UnapprovedStartup(); RouteProgress(); IndependentProgress(); ControlsAndEpochs(); HeldBobDrain(); PendingHandoffAndDrain(); CancelAfterSubmit(); LateFramesAndNativeFence();
   std::cout<<"production presenter scenarios passed\n";
 }
 '''

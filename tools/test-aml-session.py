@@ -28,7 +28,7 @@ def harness():
     methods = '\n'.join(function(source, signature) for signature in [
         'void CAMLVideoBuffer::Set(', 'CAMLSession::Permit CAMLVideoBuffer::AcquirePresentation()',
         'void CAMLVideoBuffer::Commit(', 'bool CAMLVideoBuffer::Submit(',
-        'void CAMLVideoBuffer::ApplyGeometry(', 'void CAMLVideoBuffer::Poll(',
+        'void CAMLVideoBuffer::ApplyGeometry(', 'bool CAMLVideoBuffer::Poll(',
         'bool CAMLVideoBuffer::Drop()', 'void CAMLVideoBufferPool::Return('])
     return PRELUDE + buffer + POOL + methods + TESTS
 

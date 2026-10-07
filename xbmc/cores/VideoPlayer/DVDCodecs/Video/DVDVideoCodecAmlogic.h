@@ -44,7 +44,7 @@ public:
   bool WasSubmitted() const { return m_submitted.load(); }
   void ApplyGeometry(const CAMLSession::Permit& permit, const CRect& source,
                      const CRect& destination);
-  void Poll(const CAMLSession::Permit& permit) const;
+  bool Poll(const CAMLSession::Permit& permit) const;
   bool Drop();
   std::shared_ptr<CAMLCodec> Codec() const { return m_codec; }
   uint64_t OperationEpoch() const { return m_operationEpoch; }

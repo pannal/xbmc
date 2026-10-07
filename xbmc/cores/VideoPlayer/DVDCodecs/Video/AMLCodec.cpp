@@ -2992,6 +2992,7 @@ int CAMLCodec::PollFrame(const CAMLSession::Permit& permit)
   struct pollfd codec_poll_fd[1];
   codec_poll_fd[0].fd = m_pollDevice;
   codec_poll_fd[0].events = POLLOUT;
+  codec_poll_fd[0].revents = 0;
 
   const bool diagnostics = PLAYBACK_DIAGNOSTICS::Enabled();
   const auto now = diagnostics ? std::chrono::system_clock::now() :
@@ -3008,7 +3009,11 @@ int CAMLCodec::PollFrame(const CAMLSession::Permit& permit)
         std::chrono::system_clock::now() - now).count();
     CLog::Log(LOGDEBUG, LOGAVTIMING, "CAMLCodec::PollFrame elapsed:{:.3f}ms", elapsed / 1000.0);
   }
-  return 1;
+  // A timeout still provided a bounded wait. Errors and interrupted polls
+  // cannot pace the independent presenter; it must use its timer fallback.
+  return pollResult == 0 ||
+         (pollResult > 0 && (codec_poll_fd[0].revents & POLLOUT) != 0 &&
+          (codec_poll_fd[0].revents & (POLLERR | POLLHUP | POLLNVAL)) == 0);
 }
 
 void CAMLCodec::SetPollDevice(int dev)

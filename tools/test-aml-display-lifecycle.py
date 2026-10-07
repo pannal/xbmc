@@ -28,7 +28,7 @@ def harness():
         'CAMLVideoBufferPool::~CAMLVideoBufferPool()', 'CVideoBuffer* CAMLVideoBufferPool::Get()',
         'void CAMLVideoBuffer::Set(', 'CAMLSession::Permit CAMLVideoBuffer::AcquirePresentation()',
         'void CAMLVideoBuffer::Commit(', 'bool CAMLVideoBuffer::Submit(',
-        'void CAMLVideoBuffer::ApplyGeometry(', 'void CAMLVideoBuffer::Poll(', 'bool CAMLVideoBuffer::Drop()',
+        'void CAMLVideoBuffer::ApplyGeometry(', 'bool CAMLVideoBuffer::Poll(', 'bool CAMLVideoBuffer::Drop()',
         'void CAMLVideoBufferPool::Return(', 'void CAMLVideoBufferPool::QueueReturns(',
         'bool CAMLVideoBufferPool::HasPendingReturns()',
         'void CAMLVideoBufferPool::ProcessPendingReturns()',
@@ -168,7 +168,7 @@ public:
     returned.push_back(index);return 0;
   }
   void SetVideoRect(const CRect&,const CRect&,uint64_t,const CAMLSession::Permit&){}
-  void PollFrame(const CAMLSession::Permit&){}
+  int PollFrame(const CAMLSession::Permit&){return 1;}
   CDVDVideoCodec::VCReturn GetPicture(VideoPicture&){++dequeues;return output;}
   int GetOMXPts()const{return 1;}int GetAmlDuration()const{return 40;}
   uint32_t GetBufferIndex()const{return dequeues;}

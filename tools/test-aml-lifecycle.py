@@ -100,6 +100,9 @@ def main():
             ('poll accepts foreign session', '!m_session.Matches(permit, permit.Epoch())',
              'false'),
             ('poll changes timeout policy', 'poll(codec_poll_fd, 1, 50);', 'poll(codec_poll_fd, 1, 0);'),
+            ('poll errors falsely pace', 'return pollResult == 0 ||', 'return true || pollResult == 0 ||'),
+            ('poll ignores error event flags',
+             '(codec_poll_fd[0].revents & (POLLERR | POLLHUP | POLLNVAL)) == 0', 'true'),
         ]
         for name, before, after in controls:
             assert before in source, name
@@ -134,11 +137,14 @@ std::mutex pollSyncMutex;
 struct PollCall {int fd;short events;int timeout;};
 std::vector<PollCall> polls;
 std::function<void()> pollHook;
+int pollResult=1;
+short pollEvents=POLLOUT;
 int poll(pollfd* descriptors,nfds_t count,int timeout) {
   assert(count==1);
   polls.push_back({descriptors[0].fd,descriptors[0].events,timeout});
   if(pollHook) pollHook();
-  return 1;
+  descriptors[0].revents=pollEvents;
+  return pollResult;
 }
 struct SyncEvent {std::atomic<int> signals{0};void Set(){++signals;}} g_aml_sync_event;
 constexpr double DVD_TIME_BASE=1000000,DVD_NOPTS_VALUE=-1000000;
@@ -370,6 +376,23 @@ void PollSessionAndDescriptor() {
   auto current=original.m_session.Acquire(original.m_session.Epoch());
   assert(original.PollFrame(current)==1);
   assert(polls.size()==2 && polls.back().fd==43 && g_aml_sync_event.signals==2);
+}
+void PollPacingResults() {
+  CAMLCodec codec; assert(codec.OpenDecoder());
+  auto permit=codec.m_session.Acquire(codec.m_session.Epoch());
+  const int signals=g_aml_sync_event.signals;
+  for (short events : {short(POLLERR), short(POLLHUP), short(POLLNVAL),
+                       short(POLLOUT|POLLERR), short(POLLIN), short(0)}) {
+    pollEvents=events;
+    assert(codec.PollFrame(permit)==0);
+  }
+  pollResult=-1; pollEvents=POLLOUT;
+  assert(codec.PollFrame(permit)==0); // Includes EINTR: no usable wait/edge.
+  pollResult=0; pollEvents=0;
+  assert(codec.PollFrame(permit)==1); // The real syscall waited its timeout.
+  pollResult=1; pollEvents=POLLOUT;
+  assert(codec.PollFrame(permit)==1);
+  assert(g_aml_sync_event.signals==signals+9); // Existing wake semantics survive.
 }
 void PendingThroughActualPoll() {
   CAMLCodec codec; codec.nextDescriptor=100; assert(codec.OpenDecoder()); codec.trace.clear();
@@ -637,7 +660,8 @@ void InternalRecovery() {
 }
 int main() {
   SpeedDuringDisplay(); DecoderDisplayAdmission();
-  PollSessionAndDescriptor(); PendingThroughActualPoll();
+  PollSessionAndDescriptor();
+  PollPacingResults(); PendingThroughActualPoll();
   FreshReset(); PendingAndReopen(); CloseSupersedes(); FailedOpen();
   WaitPinsOriginalSession(); WrapperCleanup(false); WrapperCleanup(true); InternalRecovery();
   WrapperFailure(false); WrapperFailure(true);

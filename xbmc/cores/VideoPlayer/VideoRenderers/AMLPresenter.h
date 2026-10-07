@@ -72,6 +72,9 @@ public:
     };
     virtual Submission Submit(int& previousPts) = 0;
     virtual bool Poll() = 0;
+    // Whether the last Poll used the native pacing source. Readiness may be a
+    // previous IRQ's notification; this is not a receipt for this frame.
+    virtual bool PollPaces() const { return false; }
     virtual bool Retire() = 0;
   };
   struct Observation
@@ -562,6 +565,7 @@ private:
             m_retired.push_back(std::move(old));
           }
         }
+        bool nativePaced = false;
         if (frame)
         {
           BeginOperation(1);
@@ -609,6 +613,7 @@ private:
             {
               BeginOperation(2);
               const bool polled = frame->Poll();
+              nativePaced = polled && frame->PollPaces();
               const auto pollUs = EndOperation();
               std::lock_guard<std::mutex> lock(m_mutex);
               m_progress.pollUs += pollUs;
@@ -628,6 +633,16 @@ private:
           }
         }
         std::unique_lock<std::mutex> lock(m_mutex);
+        if (nativePaced)
+        {
+          // As in the serialized renderer, poll again on the next pass even
+          // when holding the same frame. A stale notification then leads to a
+          // fresh IRQ wait instead of an unrelated timer phase between polls.
+          // Re-enter timer fallback from now if native pacing becomes unavailable.
+          scheduledRefresh = 0;
+          m_wakeLateUs = 0;
+          continue;
+        }
         m_changed.wait_until(lock, nextTick, [&] { return m_stop.load(); });
         if (diagnostics)
         {

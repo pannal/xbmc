@@ -126,10 +126,9 @@ void CAMLVideoBuffer::ApplyGeometry(const CAMLSession::Permit& permit, const CRe
     m_codec->SetVideoRect(source, destination, m_presentationGeneration, permit);
 }
 
-void CAMLVideoBuffer::Poll(const CAMLSession::Permit& permit) const
+bool CAMLVideoBuffer::Poll(const CAMLSession::Permit& permit) const
 {
-  if (m_codec)
-    m_codec->PollFrame(permit);
+  return m_codec && m_codec->PollFrame(permit) != 0;
 }
 
 bool CAMLVideoBuffer::Drop()
