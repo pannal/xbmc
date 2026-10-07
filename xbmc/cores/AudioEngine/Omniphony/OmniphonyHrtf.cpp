@@ -8,15 +8,15 @@
 
 #include "OmniphonyHrtf.h"
 
+#include "FileItem.h"
+#include "OmniphonyCache.h"
 #include "filesystem/Directory.h"
 #include "filesystem/File.h"
 #include "filesystem/SpecialProtocol.h"
 #include "guilib/LocalizeStrings.h"
+#include "utils/StringUtils.h"
+#include "utils/URIUtils.h"
 #include "utils/log.h"
-
-#include <algorithm>
-#include <cstring>
-#include <vector>
 
 namespace ActiveAE
 {
@@ -24,230 +24,376 @@ namespace ActiveAE
 namespace
 {
 
-constexpr const char* HRTF_DIR = "special://masterprofile/omniphony/";
-constexpr const char* HRTF_FILE = "special://masterprofile/omniphony/hrtf.sofa";
-//! Written first, promoted only once it has been checked.
-constexpr const char* HRTF_TEMP = "special://masterprofile/omniphony/hrtf.sofa.part";
-//! Where the staged copy came from - see StageIfChanged.
-constexpr const char* HRTF_SOURCE = "special://masterprofile/omniphony/hrtf.source";
-
-//! Every SOFA file is an HDF5 container, and every HDF5 file starts with this.
-constexpr unsigned char HDF5_SIGNATURE[8] = {0x89, 'H', 'D', 'F', '\r', '\n', 0x1a, '\n'};
-
-/*!
- * Smallest plausible set of impulse responses. A real one is measured at
- * hundreds of directions; the smallest the engine's own test corpus carries is
- * about 20 kB. Anything under this is a truncated download or the wrong file
- * with the right extension.
- */
-constexpr int64_t MIN_SIZE = 8 * 1024;
-
-//! Read in pieces so a large file never has to be resident.
-constexpr size_t CHUNK = 256 * 1024;
-
-/*!
- * \brief Whether \a needle appears anywhere in the file.
- *
- * Both markers this looks for are stored as plain text: one is a dataset name
- * in the object header, the other an attribute value. Searching for them is
- * not a substitute for parsing HDF5, and does not pretend to be - it answers
- * the two questions that separate a usable HRIR file from every other file
- * with a .sofa extension, which is what the engine's reader will not tell us.
- * Chunks overlap by the needle length so a match cannot fall down the seam.
- */
-bool Contains(XFILE::CFile& file, const char* needle)
+//! The grid of \p name for streams at \p rate Hz, as a Kodi path.
+std::string GridFor(const std::string& name, unsigned int rate)
 {
-  const size_t len = std::strlen(needle);
-  if (len == 0 || len >= CHUNK)
-    return false;
+  return COmniphonyCache::File(name, "-" + std::to_string(rate / 1000) + ".grid");
+}
 
-  if (file.Seek(0, SEEK_SET) < 0)
-    return false;
-
-  std::vector<char> buffer(CHUNK);
-  size_t carry = 0;
-
-  while (true)
+/*!
+ * \brief What the engine says the file at \p path is, as a result: Ok for
+ * an HRTF set. Describing a set hands it over whole and reads its shape and
+ * identity; a few MB at most.
+ */
+COmniphonyHrtf::Result Check(const std::string& path, bool interactive, COmniphonyHrtf::Outcome& o)
+{
+  using Result = COmniphonyHrtf::Result;
+  std::string failure;
+  switch (COmniphonyTool::Describe(path, interactive, o.contents, failure))
   {
-    const ssize_t got = file.Read(buffer.data() + carry, CHUNK - carry);
-    if (got <= 0)
-      return false;
-
-    const size_t have = carry + static_cast<size_t>(got);
-    if (std::search(buffer.begin(), buffer.begin() + have, needle, needle + len) !=
-        buffer.begin() + have)
-      return true;
-
-    // Keep the last len-1 bytes: a marker may straddle two reads.
-    carry = std::min(have, len - 1);
-    std::memmove(buffer.data(), buffer.data() + have - carry, carry);
+    case COmniphonyTool::Status::Cancelled:
+      return Result::Cancelled;
+    case COmniphonyTool::Status::Unreadable:
+      return Result::NotFound;
+    case COmniphonyTool::Status::Unavailable:
+      return Result::Unavailable;
+    case COmniphonyTool::Status::Failed:
+      return Result::EngineFailed;
+    case COmniphonyTool::Status::Done:
+      break;
   }
+  // The helper's words for why it could not describe the file - see its
+  // --describe. An engine missing or too old is Unavailable; one that
+  // failed on the file says why in contents.reason.
+  if (failure == "unusable")
+    return Result::Unusable;
+  if (failure == "memory")
+    return Result::TooLarge;
+  if (failure == "input")
+    return Result::ReadFailed;
+  if (failure == "internal")
+    return Result::EngineFailed;
+  if (!failure.empty())
+    return Result::Unavailable;
+  o.described = true;
+  if (o.contents.hrtf)
+    return Result::Ok;
+  return o.contents.room ? Result::RoomResponse : Result::WrongConvention;
+}
+
+//! The engine's HRTF_MAX_FILE_BYTES: 2^24 stored values of 8 bytes, plus
+//! 16 MB for the rest of the file. No larger file is an HRTF set it reads.
+constexpr int64_t HRTF_MAX_FILE_BYTES = (int64_t{8} << 24) + (int64_t{16} << 20);
+
+//! \p o, refused by Check: logged, with the engine's words where it gave any.
+COmniphonyHrtf::Outcome Refused(const std::string& chosen, COmniphonyHrtf::Outcome& o)
+{
+  using Result = COmniphonyHrtf::Result;
+  o.detail = o.result == Result::Unusable || o.result == Result::EngineFailed ||
+                     o.result == Result::TooLarge
+                 ? o.contents.reason
+                 : std::string();
+  CLog::Log(LOGWARNING, "COmniphonyHrtf: '{}' refused as an HRTF set ({})", chosen,
+            static_cast<int>(o.result));
+  return o;
+}
+
+//! What became of building a set's grid when it was chosen.
+enum class Grid
+{
+  Built,
+  //! Not now - no helper, an engine without the call, a grid it could not
+  //! write - and the first film builds it.
+  Later,
+  //! The engine cannot load the set: it said so, or stopped on it. A film
+  //! would do no better, so the set is not kept.
+  Refused,
+  Cancelled,
+};
+
+/*!
+ * \brief Have the engine build the GRID_RATE grid of the set at \p sofa into
+ * \p grid (a Kodi path) now, behind a busy dialog, so that the first film
+ * plays the set from its start rather than after the seconds its grid takes.
+ * Nothing is built when \p grid already holds it. \p why takes the engine's
+ * words when it refuses the set.
+ */
+Grid BuildGrid(const std::string& sofa, const std::string& grid, std::string& why)
+{
+  COmniphonyTool tool({"--prepare-hrtf", COmniphonyTool::EnginePath(),
+                       CSpecialProtocol::TranslatePath(sofa), CSpecialProtocol::TranslatePath(grid),
+                       std::to_string(COmniphonyHrtf::GRID_RATE), "1"},
+                      {});
+  const COmniphonyTool::Status status = tool.Execute(true);
+  if (status == COmniphonyTool::Status::Done && tool.Word() == "prepared")
+  {
+    CLog::Log(LOGINFO, "COmniphonyHrtf: HRIR grid {}: {}", grid, tool.Detail());
+    return Grid::Built;
+  }
+  // A killed engine leaves its part behind; it writes nothing in place.
+  XFILE::CFile::Delete(grid + ".part");
+  if (status == COmniphonyTool::Status::Cancelled)
+    return Grid::Cancelled;
+  if (status == COmniphonyTool::Status::Failed ||
+      (status == COmniphonyTool::Status::Done && tool.Reason() == "unusable"))
+  {
+    why = tool.Detail();
+    CLog::Log(LOGWARNING, "COmniphonyHrtf: the engine cannot load {} as an HRTF set ({})", sofa,
+              why.empty() ? "it stopped without an answer" : why);
+    return Grid::Refused;
+  }
+  CLog::Log(LOGWARNING,
+            "COmniphonyHrtf: HRIR grid {} not built now ({} {}), the first film "
+            "builds it",
+            grid, tool.Reason(), tool.Detail());
+  return Grid::Later;
+}
+
+/*!
+ * \brief Every grid of \p name but \p keep: the grids of a set no longer
+ * kept under that name, which no stream could use.
+ */
+void DiscardGrids(const std::string& name, const std::string& keep)
+{
+  CFileItemList items;
+  XFILE::CDirectory::GetDirectory(COmniphonyCache::Folder(), items, "",
+                                  XFILE::DIR_FLAG_BYPASS_CACHE | XFILE::DIR_FLAG_NO_FILE_DIRS);
+  for (const auto& item : items)
+  {
+    const std::string file = URIUtils::GetFileName(item->GetPath());
+    if (COmniphonyCache::IsGridOf(file, name) && item->GetPath() != keep)
+      XFILE::CFile::Delete(item->GetPath());
+  }
+}
+
+/*!
+ * \brief \p o, the set kept as \p sofa chosen again: nothing is copied, and
+ * its \p grid is built only if it has gone since.
+ */
+COmniphonyHrtf::Outcome KeptAgain(const std::string& chosen,
+                                  const std::string& sofa,
+                                  const std::string& grid,
+                                  COmniphonyHrtf::Outcome& o)
+{
+  using Result = COmniphonyHrtf::Result;
+  o.result = Result::Cached;
+  if (XFILE::CFile::Exists(grid, false))
+    o.gridKept = true;
+  else
+    switch (BuildGrid(sofa, grid, o.detail))
+    {
+      case Grid::Built:
+        o.gridKept = true;
+        break;
+      case Grid::Refused:
+        o.result = Result::EngineFailed;
+        return o;
+      case Grid::Later:
+      case Grid::Cancelled:
+        break;
+    }
+  COmniphonyCache::Touch(sofa);
+  CLog::Log(LOGINFO, "COmniphonyHrtf: '{}' is already kept as {}", chosen, sofa);
+  return o;
 }
 
 } // unnamed namespace
 
-COmniphonyHrtf::Result COmniphonyHrtf::Validate(const std::string& path)
+COmniphonyHrtf::Outcome COmniphonyHrtf::Choose(const std::string& chosen)
 {
-  XFILE::CFile file;
-  if (!file.Open(path))
-    return Result::NotFound;
+  Outcome o;
+  o.name = COmniphonyCache::Name(chosen);
+  const std::string sofa = COmniphonyCache::File(o.name, ".sofa");
+  const std::string part = sofa + ".part";
+  const std::string grid = GridFor(o.name, GRID_RATE);
+  const std::string next = grid + ".next";
+  COmniphonyCache::Folder();
+  // Held to the end: a copy a stream makes again meanwhile is not put in
+  // place of this one - see ForStream.
+  const COmniphonyCache::Pick pick(sofa);
 
-  if (file.GetLength() < MIN_SIZE)
-    return Result::TooSmall;
-
-  // The signature, then the superblock revision immediately after it. The
-  // engine's reader handles revisions 0 to 3; 4 and later are a newer HDF5
-  // than it knows, and it refuses them outright.
-  unsigned char header[9] = {};
-  if (file.Read(header, sizeof(header)) != static_cast<ssize_t>(sizeof(header)))
-    return Result::NotSofa;
-  if (std::memcmp(header, HDF5_SIGNATURE, sizeof(HDF5_SIGNATURE)) != 0)
-    return Result::NotSofa;
-  if (header[8] > 3)
-    return Result::Unreadable;
-
-  if (!Contains(file, "Data.IR"))
-    return Result::NoImpulseResponses;
-  if (!Contains(file, "SimpleFreeFieldHRIR"))
-    return Result::WrongConvention;
-
-  return Result::Ok;
-}
-
-COmniphonyHrtf::Result COmniphonyHrtf::Stage(const std::string& path)
-{
-  if (path.empty())
+  // A file larger than any HRTF set the engine reads (its
+  // HRTF_MAX_FILE_BYTES, 144 MB) is checked where it is rather than copied:
+  // it can only be refused, and a measured room chosen here is named for
+  // what it is without first filling the cache with it.
+  struct __stat64 st;
+  const bool sized = XFILE::CFile::Stat(chosen, &st) == 0;
+  if (sized && st.st_size > HRTF_MAX_FILE_BYTES)
   {
-    Clear();
-    return Result::Ok;
+    o.result = Check(chosen, true, o);
+    if (o.result != Result::Ok)
+      return Refused(chosen, o);
   }
 
-  if (!XFILE::CDirectory::Exists(HRTF_DIR) && !XFILE::CDirectory::Create(HRTF_DIR))
+  // The same file chosen again is checked where it is and matched against
+  // what is kept, so nothing is copied. Sizes first: a kept copy of another
+  // size is another file, and only one of the same size is read to compare
+  // their identities.
+  struct __stat64 keptSt;
+  if (sized && XFILE::CFile::Stat(sofa, &keptSt) == 0 && keptSt.st_size == st.st_size)
   {
-    CLog::Log(LOGERROR, "Omniphony: could not create {}", HRTF_DIR);
-    return Result::CopyFailed;
+    o.result = Check(chosen, true, o);
+    if (o.result != Result::Ok)
+      return Refused(chosen, o);
+    Outcome kept;
+    if (Check(sofa, false, kept) == Result::Ok && !kept.contents.source.empty() &&
+        kept.contents.source == o.contents.source)
+      return KeptAgain(chosen, sofa, grid, o);
   }
 
-  // Copy first, check second. The chosen file may be on a share, and reading
-  // it twice - once to check, once to copy - would read it twice over the
-  // network and leave a window where it could change in between.
-  XFILE::CFile::Delete(HRTF_TEMP);
-  if (!XFILE::CFile::Copy(path, HRTF_TEMP))
+  // Another file: copied first and checked as the copy, so that a file on a
+  // share is read once more at most, and what is kept is what was checked.
+  XFILE::CFile::Delete(part);
+  if (!XFILE::CFile::Copy(chosen, part))
   {
-    CLog::Log(LOGERROR, "Omniphony: could not copy '{}' into the profile", path);
-    return Result::CopyFailed;
+    XFILE::CFile::Delete(part);
+    o.result = XFILE::CFile::Exists(chosen) ? Result::CopyFailed : Result::NotFound;
+    return o;
   }
-
-  const Result result = Validate(HRTF_TEMP);
-  if (result != Result::Ok)
+  o.result = Check(part, true, o);
+  if (o.result != Result::Ok)
   {
-    XFILE::CFile::Delete(HRTF_TEMP);
-    CLog::Log(LOGWARNING, "Omniphony: '{}' refused as an HRTF: {}", path, static_cast<int>(result));
-    return result;
+    XFILE::CFile::Delete(part);
+    return Refused(chosen, o);
   }
-
-  // Rename over the top rather than deleting first: on this platform that is
-  // one atomic replace, so there is no instant at which the listener has no
-  // HRTF at all, and a rename that fails leaves the previous file untouched.
-  // Only if the replace is refused - a filesystem that will not rename onto an
-  // existing name - is the older, lossy order worth trying.
-  if (!XFILE::CFile::Rename(HRTF_TEMP, HRTF_FILE))
+  // A file whose size could not be read where it is was not matched above:
+  // matched as the copy instead.
+  if (!sized)
   {
-    XFILE::CFile::Delete(HRTF_FILE);
-    if (!XFILE::CFile::Rename(HRTF_TEMP, HRTF_FILE))
+    Outcome kept;
+    if (XFILE::CFile::Exists(sofa) && Check(sofa, false, kept) == Result::Ok &&
+        !kept.contents.source.empty() && kept.contents.source == o.contents.source)
     {
-      XFILE::CFile::Delete(HRTF_TEMP);
-      CLog::Log(LOGERROR, "Omniphony: could not put the checked HRTF in place");
-      return Result::CopyFailed;
+      XFILE::CFile::Delete(part);
+      return KeptAgain(chosen, sofa, grid, o);
     }
   }
 
-  CLog::Log(LOGINFO, "Omniphony: using the personal HRTF copied from '{}'", path);
-  return Result::Ok;
+  // Built before the copy replaces anything, so that a cancel leaves the set
+  // and grids kept under the name as they were.
+  XFILE::CFile::Delete(next);
+  const Grid built = BuildGrid(part, next, o.detail);
+  if (built == Grid::Cancelled || built == Grid::Refused)
+  {
+    XFILE::CFile::Delete(part);
+    XFILE::CFile::Delete(next);
+    o.result = built == Grid::Cancelled ? Result::Cancelled : Result::EngineFailed;
+    return o;
+  }
+  if (!pick.Promote(part))
+  {
+    XFILE::CFile::Delete(next);
+    o.result = Result::CopyFailed;
+    return o;
+  }
+  // The grids of what was kept under the name before go; the one just built
+  // takes the place of its rate's.
+  DiscardGrids(o.name, built == Grid::Built ? next : std::string());
+  o.gridKept = built == Grid::Built && COmniphonyCache::Promote(next, grid);
+  COmniphonyCache::Touch(sofa);
+  COmniphonyCache::Trim(".sofa");
+  CLog::Log(LOGINFO, "COmniphonyHrtf: '{}' kept as {}", chosen, sofa);
+  return o;
 }
 
-COmniphonyHrtf::Result COmniphonyHrtf::StageIfChanged(const std::string& path)
+std::string COmniphonyHrtf::ForStream(const std::string& chosen, Copy& copy, uint64_t epoch)
 {
-  // What was staged last time, and from where. Both have to still hold: the
-  // note without the file means the copy was removed underneath us.
-  std::string was;
-  if (IsStaged())
-  {
-    XFILE::CFile note;
-    if (note.Open(HRTF_SOURCE))
-    {
-      char buf[1024] = {};
-      const ssize_t got = note.Read(buf, sizeof(buf) - 1);
-      if (got > 0)
-        was.assign(buf, static_cast<size_t>(got));
-    }
-  }
-
-  if (was == path)
-    return Result::Ok;
-
-  const Result result = Stage(path);
-  if (result != Result::Ok)
-    return result;
-
-  XFILE::CFile note;
-  if (path.empty())
-  {
-    XFILE::CFile::Delete(HRTF_SOURCE);
-  }
-  else if (note.OpenForWrite(HRTF_SOURCE, true))
-  {
-    note.Write(path.data(), path.size());
-    note.Close();
-  }
-  return Result::Ok;
-}
-
-void COmniphonyHrtf::Clear()
-{
-  XFILE::CFile::Delete(HRTF_TEMP);
-  XFILE::CFile::Delete(HRTF_SOURCE);
-  if (XFILE::CFile::Exists(HRTF_FILE))
-  {
-    XFILE::CFile::Delete(HRTF_FILE);
-    CLog::Log(LOGINFO, "Omniphony: personal HRTF discarded, using the built-in set");
-  }
-}
-
-std::string COmniphonyHrtf::StagedPath()
-{
-  if (!XFILE::CFile::Exists(HRTF_FILE))
+  copy = Copy::Kept;
+  if (chosen.empty())
     return {};
-  return CSpecialProtocol::TranslatePath(HRTF_FILE);
+  const std::string name = COmniphonyCache::Name(chosen);
+  const std::string sofa = COmniphonyCache::File(name, ".sofa");
+  if (!XFILE::CFile::Exists(sofa))
+  {
+    // Gone from the cache since it was chosen: copied again if the file is
+    // still there and still a set. No dialog - a stream is opening - and no
+    // grid: the engine builds it as the film starts. Copied beside the set,
+    // not through the part a pick in the settings copies through, and put in
+    // its place only if the set has not been picked since the stream read
+    // its settings: a file of the same name picked since is the newer choice.
+    COmniphonyCache::Folder();
+    const std::string again = sofa + ".again";
+    Outcome o;
+    XFILE::CFile::Delete(again);
+    COmniphonyCache::Placed placed = COmniphonyCache::Placed::Failed;
+    if (XFILE::CFile::Copy(chosen, again) && Check(again, false, o) == Result::Ok)
+      placed = COmniphonyCache::PromoteUnlessPicked(epoch, again, sofa);
+    switch (placed)
+    {
+      case COmniphonyCache::Placed::Done:
+        copy = Copy::Again;
+        COmniphonyCache::Trim(".sofa");
+        CLog::Log(LOGINFO, "COmniphonyHrtf: '{}' kept again as {}", chosen, sofa);
+        break;
+      case COmniphonyCache::Placed::Picked:
+        // The pick's copy plays, once it is there.
+        if (!XFILE::CFile::Exists(sofa))
+        {
+          copy = Copy::Picked;
+          CLog::Log(LOGINFO, "COmniphonyHrtf: '{}' is being picked in the settings - built-in set",
+                    chosen);
+          return {};
+        }
+        break;
+      case COmniphonyCache::Placed::Failed:
+        XFILE::CFile::Delete(again);
+        copy = XFILE::CFile::Exists(chosen) ? Copy::Refused : Copy::Gone;
+        CLog::Log(LOGWARNING, "COmniphonyHrtf: '{}' cannot be kept again - built-in set", chosen);
+        return {};
+    }
+  }
+  COmniphonyCache::Touch(sofa);
+  return CSpecialProtocol::TranslatePath(sofa);
 }
 
-bool COmniphonyHrtf::IsStaged()
+std::string COmniphonyHrtf::GridPath(const std::string& chosen)
 {
-  return XFILE::CFile::Exists(HRTF_FILE);
+  return COmniphonyCache::LocalFile(COmniphonyCache::Name(chosen), "-{khz}.grid");
 }
 
-std::string COmniphonyHrtf::Explain(Result result)
+std::string COmniphonyHrtf::Explain(const Outcome& o)
 {
-  switch (result)
+  const std::string sofa = COmniphonyCache::LocalFile(o.name, ".sofa");
+  std::string text;
+  switch (o.result)
   {
     case Result::Ok:
-      return g_localizeStrings.Get(39333);
+      text = StringUtils::Format(g_localizeStrings.Get(39333), sofa);
+      break;
+    case Result::Cached:
+      text = g_localizeStrings.Get(39372);
+      break;
     case Result::NotFound:
-      return g_localizeStrings.Get(39334);
-    case Result::TooSmall:
-      return g_localizeStrings.Get(39335);
-    case Result::NotSofa:
-      return g_localizeStrings.Get(39336);
-    case Result::Unreadable:
-      return g_localizeStrings.Get(39337);
-    case Result::NoImpulseResponses:
-      return g_localizeStrings.Get(39338);
+      text = g_localizeStrings.Get(39334);
+      break;
+    case Result::Unusable:
+      text = StringUtils::Format(g_localizeStrings.Get(39336), o.detail);
+      break;
     case Result::WrongConvention:
-      return g_localizeStrings.Get(39339);
+      text = g_localizeStrings.Get(39339);
+      break;
+    case Result::RoomResponse:
+      text = g_localizeStrings.Get(39354);
+      break;
     case Result::CopyFailed:
-      return g_localizeStrings.Get(39340);
+      text = g_localizeStrings.Get(39340);
+      break;
+    case Result::TooLarge:
+      // The engine's numbers say how far short the memory was.
+      text = g_localizeStrings.Get(39358);
+      if (!o.detail.empty())
+        text += "[CR][CR][I]" + o.detail + "[/I]";
+      break;
+    case Result::ReadFailed:
+      text = g_localizeStrings.Get(39359);
+      break;
+    case Result::Unavailable:
+      text = g_localizeStrings.Get(39361);
+      break;
+    case Result::EngineFailed:
+      // The engine's words say why; English, but more use than nothing.
+      text = g_localizeStrings.Get(39376);
+      if (!o.detail.empty())
+        text += "[CR][CR][I]" + o.detail + "[/I]";
+      break;
+    case Result::Cancelled:
+      return {};
   }
-  return {};
+  if ((o.result == Result::Ok || o.result == Result::Cached) && o.gridKept)
+    text += "[CR][CR]" + g_localizeStrings.Get(39371);
+  if (o.described)
+    text += "[CR][CR]" + OmniphonyDescribeSofaInfo(o.contents);
+  return text;
 }
 
 } // namespace ActiveAE
