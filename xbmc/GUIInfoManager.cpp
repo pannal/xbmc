@@ -1280,8 +1280,9 @@ const infomap player_times[] =   {{ "seektime",         PLAYER_SEEKTIME },
 ///                  \anchor Player_Process_omniphony_render
 ///                  _string_,
 ///     @return How the binaural renderer places the sound: `Direct` for every
-///     source on its own or `Cascade 12` through twelve virtual speakers. Empty
-///     when the audio is not being rendered binaurally.
+///     source on its own\, `Cascade 12` through twelve virtual speakers\, or
+///     `Room 13` through the loudspeakers of a measured room\, as many as the
+///     room has. Empty when the audio is not being rendered binaurally.
 ///     <p><hr>
 ///     @skinning_v21 **[New Infolabel]** \link Player_Process_omniphony_render `Player.Process(omniphony.render)`\endlink
 ///     <p>
@@ -1289,12 +1290,23 @@ const infomap player_times[] =   {{ "seektime",         PLAYER_SEEKTIME },
 ///   \table_row3{   <b>`Player.Process(omniphony.sofa)`</b>,
 ///                  \anchor Player_Process_omniphony_sofa
 ///                  _string_,
-///     @return The head model the binaural renderer is convolving with: `Built-in`
-///     or `Personal`. A personal file the engine could not load reads `Built-in`.
-///     Empty when the audio is not being rendered binaurally or the engine does
-///     not report it.
+///     @return The response the binaural renderer is convolving with:
+///     `Built-in HRIR`\, `Custom HRIR` or `Custom BRIR`. A custom file the engine
+///     could not load\, or a room still loading\, reads `Built-in HRIR`. Empty when
+///     the audio is not being rendered binaurally or the engine does not report it.
 ///     <p><hr>
 ///     @skinning_v21 **[New Infolabel]** \link Player_Process_omniphony_sofa `Player.Process(omniphony.sofa)`\endlink
+///     <p>
+///   }
+///   \table_row3{   <b>`Player.Process(omniphony.config)`</b>,
+///                  \anchor Player_Process_omniphony_config
+///                  _string_,
+///     @return `config` while the binaural renderer plays the listener's own
+///     config.yaml over the settings; empty when it plays the settings alone\,
+///     because there is no config.yaml\, it sets nothing or it was refused\, and
+///     when the audio is not being rendered binaurally.
+///     <p><hr>
+///     @skinning_v21 **[New Infolabel]** \link Player_Process_omniphony_config `Player.Process(omniphony.config)`\endlink
 ///     <p>
 ///   }
 ///   \table_row3{ <b>`Player.Process(audio.dialnorm)`</b>, _string_,
@@ -1444,7 +1456,8 @@ const infomap player_process[] = {{"videodecoder", PLAYER_PROCESS_VIDEODECODER},
 
                                   {"omniphony.input", PLAYER_PROCESS_OMNIPHONY_INPUT },
                                   {"omniphony.render", PLAYER_PROCESS_OMNIPHONY_RENDER },
-                                  {"omniphony.sofa", PLAYER_PROCESS_OMNIPHONY_SOFA }};
+                                  {"omniphony.sofa", PLAYER_PROCESS_OMNIPHONY_SOFA },
+                                  {"omniphony.config", PLAYER_PROCESS_OMNIPHONY_CONFIG }};
 
 /// \page modules__infolabels_boolean_conditions
 /// \subsection modules__infolabels_boolean_conditions_Weather Weather

@@ -1103,7 +1103,10 @@ void CGUIControlButtonSetting::Update(bool fromControl, bool updateDisplayOnly)
           else
           {
             std::string strValue = std::static_pointer_cast<CSettingString>(setting)->GetValue();
-            if (controlFormat == "file")
+            // A file setting whose button is an action, browsed for by the
+            // code that handles it, names its file as a file button does.
+            if (controlFormat == "file" ||
+                (controlFormat == "action" && std::dynamic_pointer_cast<CSettingPath>(setting)))
             {
               // MakeShortenPath elides directories from the front and then cuts
               // whatever still does not fit off the end, which is the file name

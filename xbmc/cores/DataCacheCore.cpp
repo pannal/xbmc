@@ -603,6 +603,20 @@ std::string CDataCacheCore::GetOmniphonySofa()
   return m_playerAudioInfo.omniphonySofa;
 }
 
+void CDataCacheCore::SetOmniphonyConfig(std::string config)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  m_playerAudioInfo.omniphonyConfig = std::move(config);
+}
+
+std::string CDataCacheCore::GetOmniphonyConfig()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+
+  return m_playerAudioInfo.omniphonyConfig;
+}
+
 void CDataCacheCore::SetAudioSampleRate(int sampleRate)
 {
   std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);

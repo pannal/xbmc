@@ -866,6 +866,7 @@ static constexpr unsigned int SYSTEM_LOCALE = 1012;
 #define PLAYER_PROCESS_OMNIPHONY_INPUT (PLAYER_PROCESS + 160)
 #define PLAYER_PROCESS_OMNIPHONY_RENDER (PLAYER_PROCESS + 161)
 #define PLAYER_PROCESS_OMNIPHONY_SOFA (PLAYER_PROCESS + 162)
+#define PLAYER_PROCESS_OMNIPHONY_CONFIG (PLAYER_PROCESS + 163)
 
 // The spatial presentation a passthrough stream declares, in words rather than
 // figures. Its own block so the family can grow without borrowing from the

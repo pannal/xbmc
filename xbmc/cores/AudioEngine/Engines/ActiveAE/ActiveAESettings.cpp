@@ -14,9 +14,14 @@
 #include "cores/AudioEngine/Engines/ActiveAE/ActiveAE.h"
 #include "cores/AudioEngine/Interfaces/AE.h"
 #include "cores/AudioEngine/Omniphony/OmniphonyHrtf.h"
+#include "cores/AudioEngine/Omniphony/OmniphonyRoom.h"
 #include "dialogs/GUIDialogFileBrowser.h"
 #include "dialogs/GUIDialogOK.h"
+#include "dialogs/GUIDialogTextViewer.h"
+#include "guilib/GUIComponent.h"
+#include "guilib/GUIWindowManager.h"
 #include "guilib/LocalizeStrings.h"
+#include "guilib/WindowIDs.h"
 #include "storage/MediaManager.h"
 #include "utils/Variant.h"
 #include "settings/Settings.h"
@@ -25,11 +30,43 @@
 #include "settings/lib/SettingsManager.h"
 #include "utils/log.h"
 #include "utils/StringUtils.h"
+#include "utils/URIUtils.h"
 
 #include <mutex>
 
 namespace ActiveAE
 {
+
+namespace
+{
+
+/*!
+ * \brief Answer a chosen SOFA file or room under \p heading.
+ *
+ * An answer that says what the file holds runs to more lines than the OK
+ * dialog's text box shows without scrolling - a room names every loudspeaker
+ * - and that box is the skin's to size. So it opens in the text viewer, the
+ * window every skin sizes for a page of text; a bare answer stays in the OK
+ * dialog.
+ */
+void ShowAnswer(int heading, const std::string& text, bool contents)
+{
+  CGUIDialogTextViewer* viewer =
+      contents ? CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogTextViewer>(
+                     WINDOW_DIALOG_TEXT_VIEWER)
+               : nullptr;
+  if (!viewer)
+  {
+    CGUIDialogOK::ShowAndGetInput(CVariant{heading}, CVariant{text});
+    return;
+  }
+  viewer->SetHeading(g_localizeStrings.Get(heading));
+  viewer->SetText(text);
+  viewer->UseMonoFont(false);
+  viewer->Open();
+}
+
+} // unnamed namespace
 
 CActiveAESettings* CActiveAESettings::m_instance = nullptr;
 
@@ -71,6 +108,7 @@ CActiveAESettings::CActiveAESettings(CActiveAE &ae) : m_audioEngine(ae)
   // do something the moment they are touched rather than at the next stream.
   // See OnOmniphonyHrtfModeChanged and EnforceExclusiveOutput.
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTF);
+  settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYBRIR);
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTFMODE);
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONY);
   settings->GetSettingsManager()->RegisterCallback(this, settingSet);
@@ -96,63 +134,114 @@ CActiveAESettings::~CActiveAESettings()
   m_instance = nullptr;
 }
 
-bool CActiveAESettings::OnSettingChanging(const std::shared_ptr<const CSetting>& setting)
+void CActiveAESettings::OnSettingAction(const std::shared_ptr<const CSetting>& setting)
 {
-  if (setting->GetId() != CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTF)
-    return true;
+  // The file buttons. Outside the lock: this opens dialogs and writes
+  // settings, which re-enter this class.
+  if (setting->GetId() == CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTF)
+    ChooseFile(false);
+  else if (setting->GetId() == CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYBRIR)
+    ChooseFile(true);
+}
 
-  const std::string path = std::static_pointer_cast<const CSettingString>(setting)->GetValue();
-  const COmniphonyHrtf::Result result = COmniphonyHrtf::Stage(path);
+bool CActiveAESettings::ChooseFile(bool room)
+{
+  const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  const char* const pathId = room ? CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYBRIR
+                                  : CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTF;
+  const char* const otherId = room ? CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTF
+                                   : CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYBRIR;
 
-  // Clearing the setting is how the listener goes back to the engine's own
-  // measurements, and cannot fail; say nothing and let the empty control speak.
-  if (path.empty())
-    return true;
+  // The drives and the network, from where the file was last chosen.
+  VECSOURCES shares;
+  CServiceBroker::GetMediaManager().GetLocalDrives(shares);
+  CServiceBroker::GetMediaManager().GetNetworkLocations(shares);
+  std::string path = settings->GetString(pathId);
+  if (!CGUIDialogFileBrowser::ShowAndGetFile(shares, "*.sofa",
+                                             g_localizeStrings.Get(room ? 39348 : 39332), path) ||
+      path.empty() || URIUtils::HasSlashAtEnd(path))
+    return false;
 
-  // Checked and answered here rather than when a film next starts, because a
-  // .sofa file that the engine cannot read is refused silently otherwise - it
-  // would simply render with the built-in set and never say why. 39332 rather
-  // than the setting's own label, which carries the dash that marks it as one
-  // of the object-audio children and reads badly as a heading.
-  CGUIDialogOK::ShowAndGetInput(CVariant{39332}, CVariant{COmniphonyHrtf::Explain(result)});
-  return result == COmniphonyHrtf::Result::Ok;
+  /*
+   * Checked and answered now rather than when a film next starts, because a
+   * file that the engine cannot use would otherwise render with the built-in
+   * set and never say why. The answer says what the file holds as well as
+   * whether it can be used, because the two kinds of file share a container:
+   * an HRTF set chosen as a room, or a room as an HRTF set, is the mistake
+   * worth catching by name. A file chosen again is matched against what the
+   * cache keeps for it, and nothing is made again that is already there. 39332
+   * and 39348 rather than the settings' own labels, which carry the dash that
+   * marks them as children of the binaural switch and read badly as a
+   * heading. A cancel says nothing: the listener knows they cancelled.
+   */
+  bool usable;
+  if (room)
+  {
+    const COmniphonyRoom::Outcome outcome = COmniphonyRoom::Choose(path);
+    if (outcome.result == COmniphonyRoom::Result::Cancelled)
+      return false;
+    usable = outcome.result == COmniphonyRoom::Result::Ok ||
+             outcome.result == COmniphonyRoom::Result::Cached;
+    ShowAnswer(39348, COmniphonyRoom::Explain(outcome), outcome.described);
+  }
+  else
+  {
+    const COmniphonyHrtf::Outcome outcome = COmniphonyHrtf::Choose(path);
+    if (outcome.result == COmniphonyHrtf::Result::Cancelled)
+      return false;
+    usable = outcome.result == COmniphonyHrtf::Result::Ok ||
+             outcome.result == COmniphonyHrtf::Result::Cached;
+    ShowAnswer(39332, COmniphonyHrtf::Explain(outcome), outcome.described);
+  }
+  if (!usable)
+    return false;
+
+  // One response at a time: the other's file is no longer chosen. What the
+  // cache keeps of it stays, so choosing it again costs nothing.
+  settings->SetString(pathId, path);
+  settings->SetString(otherId, "");
+  return true;
 }
 
 void CActiveAESettings::OnOmniphonyHrtfModeChanged(int mode)
 {
+  // Set while the mode is put back below, which arrives here again: the mode
+  // being restored already has its file, and must not ask for another.
+  static bool restoring = false;
+  if (restoring)
+    return;
+
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 
-  if (mode != OMNI_HRTF_PERSONAL)
+  if (mode != OMNI_HRTF_PERSONAL && mode != OMNI_HRTF_ROOM)
   {
-    // Going back is what discards the copy, so the profile holds a file only
-    // while a personal one is selected. Emptying the control matters as much:
-    // a name left behind describes a file no longer in use, and the browser
-    // would refuse to reopen on it.
-    COmniphonyHrtf::Clear();
+    // The built-in set needs no file, and a name left in a control would
+    // describe one no longer in use. What the cache keeps stays, so that
+    // choosing a file again costs nothing.
     settings->SetString(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTF, "");
+    settings->SetString(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYBRIR, "");
     return;
   }
 
-  // Nothing to ask for if a file is already staged - the listener is switching
-  // back to one they chose earlier in this same visit.
-  if (COmniphonyHrtf::IsStaged())
+  const bool room = mode == OMNI_HRTF_ROOM;
+  const char* const otherId = room ? CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTF
+                                   : CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYBRIR;
+
+  // What was in use before, which a cancel returns to: the other response if
+  // its file is still set - it is emptied only once this one has a file - or
+  // else the built-in set.
+  const int previous = settings->GetString(otherId).empty()
+                           ? OMNI_HRTF_BUILTIN
+                           : (room ? OMNI_HRTF_PERSONAL : OMNI_HRTF_ROOM);
+
+  // A response with no file is not a state worth keeping, so ask for the file
+  // now rather than leaving a mode that describes nothing.
+  if (ChooseFile(room))
     return;
 
-  // "Personal" with no file is not a state worth keeping, so ask for the file
-  // now rather than leaving a mode that describes nothing. SetString runs the
-  // check in OnSettingChanging above, which reports the outcome and refuses a
-  // file it cannot use; either way, no file means back to the built-in set.
-  std::string path;
-  VECSOURCES shares;
-  CServiceBroker::GetMediaManager().GetLocalDrives(shares);
-  CServiceBroker::GetMediaManager().GetNetworkLocations(shares);
-
-  const bool chosen =
-      CGUIDialogFileBrowser::ShowAndGetFile(shares, "*.sofa", g_localizeStrings.Get(39332), path);
-
-  if (!chosen || path.empty() ||
-      !settings->SetString(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTF, path))
-    settings->SetInt(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTFMODE, OMNI_HRTF_BUILTIN);
+  restoring = previous != OMNI_HRTF_BUILTIN;
+  settings->SetInt(CSettings::SETTING_AUDIOOUTPUT_OMNIPHONYHRTFMODE, previous);
+  restoring = false;
 }
 
 void CActiveAESettings::EnforceExclusiveOutput(const std::string& changedId)

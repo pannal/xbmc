@@ -8,6 +8,8 @@
 
 #include "DVDAudioCodecOmniphony.h"
 
+#include <cstring>
+
 /*
  * Apart from the codec's own translation unit so a test can link it without a
  * helper process, a settings component and an ActiveAE behind it. The same
@@ -58,4 +60,17 @@ OmniphonyRateVerdict OmniphonyRateCheck(unsigned int reported,
     return OmniphonyRateVerdict::Midstream;
 
   return OmniphonyRateVerdict::Retune;
+}
+
+CAEStreamParser::SyncFamily OmniphonySyncFamily(const char* codec)
+{
+  if (!codec)
+    return CAEStreamParser::SyncFamily::Any;
+  if (std::strcmp(codec, "eac3") == 0)
+    return CAEStreamParser::SyncFamily::AC3;
+  if (std::strcmp(codec, "truehd") == 0)
+    return CAEStreamParser::SyncFamily::TrueHD;
+  if (std::strcmp(codec, "dts") == 0)
+    return CAEStreamParser::SyncFamily::DTS;
+  return CAEStreamParser::SyncFamily::Any;
 }

@@ -46,8 +46,10 @@ bool CSettingPath::Deserialize(const TiXmlNode *node, bool update /* = false */)
   if (!CSettingString::Deserialize(node, update))
     return false;
 
+  // An action button is a path chosen by the code that handles the action,
+  // with dialogs of its own.
   if (m_control != nullptr &&
-     (m_control->GetType() != "button" || (m_control->GetFormat() != "path" && m_control->GetFormat() != "file" && m_control->GetFormat() != "image")))
+     (m_control->GetType() != "button" || (m_control->GetFormat() != "path" && m_control->GetFormat() != "file" && m_control->GetFormat() != "image" && m_control->GetFormat() != "action")))
   {
     CLog::Log(LOGERROR, "CSettingPath: invalid <control> of \"{}\"", m_id);
     return false;
