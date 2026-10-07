@@ -35,7 +35,7 @@ public:
     Discontinuity(clock, GetAbsoluteClock());
   }
 
-  void Reset() { m_bReset = true; }
+  void Reset();
   void SetSpeed(int iSpeed);
   void SetSpeedAdjust(double adjust);
   double GetSpeedAdjust();

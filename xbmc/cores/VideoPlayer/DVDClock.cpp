@@ -68,15 +68,23 @@ double CDVDClock::GetClock(bool interpolated /*= true*/)
 
 double CDVDClock::GetClock(double& absolute, bool interpolated /*= true*/)
 {
+  // Both overloads advance the same playback state. Serialize the sample too,
+  // so it cannot straddle a discontinuity or another clock update.
+  std::unique_lock<CCriticalSection> lock(m_critSection);
   int64_t current = m_videoRefClock->GetTime(interpolated);
 
-  std::unique_lock<CCriticalSection> lock(m_systemsection);
   absolute = SystemToAbsolute(current);
 
   m_systemAdjust += m_speedAdjust * (current - m_lastSystemTime);
   m_lastSystemTime = current;
 
   return SystemToPlaying(current);
+}
+
+void CDVDClock::Reset()
+{
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  m_bReset = true;
 }
 
 void CDVDClock::SetVsyncAdjust(double adjustment)
@@ -242,7 +250,10 @@ int CDVDClock::UpdateFramerate(double fps, double* interval /*= NULL*/)
   if(fps == 0.0)
     return -1;
 
-  m_frameTime = 1/fps * DVD_TIME_BASE;
+  {
+    std::unique_lock<CCriticalSection> lock(m_critSection);
+    m_frameTime = 1 / fps * DVD_TIME_BASE;
+  }
 
   //check if the videoreferenceclock is running, will return -1 if not
   double rate = m_videoRefClock->GetRefreshRate(interval);
