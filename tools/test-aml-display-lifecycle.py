@@ -40,7 +40,7 @@ def harness():
     return PRELUDE + classes + STATICS + methods + WRAPPER + wrapper + TESTS
 
 
-def run(source, header, negative=False):
+def run(source, header, negative=None):
     with tempfile.TemporaryDirectory(prefix='aml-display-') as temporary:
         out = Path(temporary)
         include = out / SESSION
@@ -56,7 +56,9 @@ def run(source, header, negative=False):
         result = subprocess.run([str(out / 'test')], capture_output=negative,
                                 text=True, timeout=20, check=not negative)
         if negative:
-            assert result.returncode != 0 and 'Assertion' in result.stderr, result.stderr
+            assert result.returncode != 0 and 'Assertion' in result.stderr, (
+                f'{negative}: expected a runtime assertion failure; exit={result.returncode}\n'
+                f'stdout: {result.stdout}\nstderr: {result.stderr}')
 
 
 def main():
@@ -66,33 +68,42 @@ def main():
     source, header = harness(), (ROOT / 'xbmc' / SESSION).read_text()
     if args.negative_controls:
         controls = [
-            ('display ignores active permits', 'header', 'ready && !state.active &&', 'ready &&'),
-            ('display permits retirement', 'header', 'm_state->displayFenced || epoch',
-             '(m_state->displayFenced && !retirement) || epoch'),
-            ('display rejection tombstones return', 'source',
+            ('display ignores active permits', 'header', 'static bool TryBeginDisplay(',
+             'ready && !state.active &&', 'ready &&'),
+            ('display permits retirement', 'header', 'Permit Acquire(',
+             'm_state->displayFenced', '(m_state->displayFenced && !retirement)'),
+            ('display rejection tombstones return', 'source', None,
              'if (m_codec->IsOperationInvalidated(m_operationEpoch))',
              'if (true || m_codec->IsOperationInvalidated(m_operationEpoch))'),
-            ('old pools exceed global budget', 'source',
+            ('old pools exceed global budget', 'source', None,
              'if (outstanding >= MAX_OUTSTANDING_BUFFERS)', 'if (false && outstanding >= MAX_OUTSTANDING_BUFFERS)'),
-            ('pool rejection leaks global token', 'source',
+            ('pool rejection leaks global token', 'source', None,
              '--s_outstandingBuffers;\n      return nullptr;', '(void)s_outstandingBuffers;\n      return nullptr;'),
-            ('late enqueue retains empty pool', 'source',
+            ('late enqueue retains empty pool', 'source', None,
              'if (pool->HasPendingReturns() &&', 'if (true &&'),
-            ('player picture reference leaks', 'source',
+            ('player picture reference leaks', 'source', None,
              '    if (pVideoPicture->videoBuffer)\n      pVideoPicture->videoBuffer->Release();\n', ''),
-            ('pool exceeds bounded capacity', 'source', 'if (m_videoBuffers.size() >= MAX_BUFFERS)',
+            ('pool exceeds bounded capacity', 'source', None, 'if (m_videoBuffers.size() >= MAX_BUFFERS)',
              'if (false && m_videoBuffers.size() >= MAX_BUFFERS)'),
-            ('failed-context cancellation reopens', 'header',
+            ('failed-context cancellation reopens', 'header', None,
              'state.displayFenced = !s_cancelDisplayReady;', 'state.displayFenced = false;'),
-            ('deferred return publishes capacity', 'source',
+            ('deferred return publishes capacity', 'source', None,
              'm_pendingReturns.insert(id);', 'm_freeBuffers.push_back(id);'),
         ]
-        for name, target, before, after in controls:
+        for name, target, signature, before, after in controls:
             original = header if target == 'header' else source
-            assert before in original, name
-            changed = original.replace(before, after, 1)
-            run(changed if target == 'source' else source,
-                changed if target == 'header' else header, negative=True)
+            if signature:
+                assert original.count(signature) == 1, f'{name}: missing or ambiguous function {signature}'
+                scope = function(original, signature)
+            else:
+                scope = original
+            assert scope.count(before) == 1, f'{name}: expected one mutation anchor, found {scope.count(before)}'
+            changed = original.replace(scope, scope.replace(before, after, 1), 1)
+            try:
+                run(changed if target == 'source' else source,
+                    changed if target == 'header' else header, negative=name)
+            except (AssertionError, subprocess.SubprocessError) as error:
+                raise RuntimeError(f'Negative control failed: {name}\n{error}') from error
             print('Rejected runtime negative control:', name)
     else:
         run(source, header)
