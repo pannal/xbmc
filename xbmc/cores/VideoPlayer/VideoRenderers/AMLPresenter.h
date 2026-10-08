@@ -161,6 +161,7 @@ public:
   void ResetClock()
   {
     std::lock_guard<std::mutex> lock(m_mutex);
+    ++m_timingGeneration;
     m_resetClock = true;
     m_changed.notify_all();
   }
@@ -178,6 +179,7 @@ public:
   void Show(bool show)
   {
     std::lock_guard<std::mutex> lock(m_mutex);
+    ++m_timingGeneration;
     m_show = show;
     if (!show)
       CancelQueued();
@@ -186,6 +188,7 @@ public:
   void Discard()
   {
     std::lock_guard<std::mutex> lock(m_mutex);
+    ++m_timingGeneration;
     CancelQueued();
     m_changed.notify_all();
   }
@@ -481,6 +484,13 @@ private:
           m_sampledCpu = cpu;
           m_cpuSampleUs = PLAYBACK_DIAGNOSTICS::NowUs();
         }
+        uint64_t timingGeneration;
+        {
+          std::lock_guard<std::mutex> lock(m_mutex);
+          timingGeneration = m_timingGeneration;
+        }
+        // The session timing hook takes its own lock. Keep it outside ours,
+        // but reject a sample if a seek replaced the queue while it was read.
         const Timing timing = m_hooks.timing();
         if (!(timing.refresh > 0) || !std::isfinite(timing.refresh))
           throw std::runtime_error("invalid presenter refresh rate");
@@ -493,6 +503,8 @@ private:
         std::vector<std::shared_ptr<Frame>> retired;
         {
           std::lock_guard<std::mutex> lock(m_mutex);
+          if (timingGeneration != m_timingGeneration)
+            continue;
           if (diagnostics)
           {
             m_diagnosticTiming = timing;
@@ -566,6 +578,7 @@ private:
           }
         }
         bool nativePaced = false;
+        bool waitingForControl = false;
         if (frame)
         {
           BeginOperation(1);
@@ -602,6 +615,7 @@ private:
                 m_controlSinceUs = diagnostics ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
               m_pending = {m_control, frame};
               ready = false;
+              waitingForControl = true;
             }
           }
           if (ready)
@@ -643,7 +657,15 @@ private:
           m_wakeLateUs = 0;
           continue;
         }
-        m_changed.wait_until(lock, nextTick, [&] { return m_stop.load(); });
+        // Main-thread setup can finish well before the fallback deadline.
+        // Resume polling on its receipt, including one that preceded this wait.
+        // Other notifications must not turn unavailable native pacing into a spin.
+        const bool woke = m_changed.wait_until(lock, nextTick, [&]
+        {
+          return m_stop.load() || (waitingForControl && !m_pending.frame);
+        });
+        if (woke)
+          scheduledRefresh = 0;
         if (diagnostics)
         {
           const auto late = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -696,6 +718,7 @@ private:
   bool m_show{false};
   bool m_forceNext{false};
   bool m_resetClock{false};
+  uint64_t m_timingGeneration{0};
   uint64_t m_serial{0};
   size_t m_count{0};
   std::vector<uint64_t> m_reservations;
