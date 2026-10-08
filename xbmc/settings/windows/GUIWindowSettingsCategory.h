@@ -35,9 +35,6 @@ protected:
   int GetSettingLevel() const override;
   std::shared_ptr<CSettingSection> GetSection() override;
   bool Save() override;
-  void SetDescription(const CVariant& label) override;
-  void DoProcess(unsigned int currentTime, CDirtyRegionList& dirtyregions) override;
-  int m_dvBackendDescriptionStatus{0};
 
   // implementation of CGUIDialogSettingsManagerBase
   CSettingsManager* GetSettingsManager() const override;

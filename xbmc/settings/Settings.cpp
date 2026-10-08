@@ -21,7 +21,6 @@
 #include "input/keyboard/KeyboardLayoutManager.h"
 
 #include <mutex>
-#include <string_view>
 #if defined(TARGET_POSIX)
 #include "platform/posix/PosixTimezone.h"
 #endif // defined(TARGET_POSIX)
@@ -51,7 +50,6 @@
 #include "settings/SubtitlesSettings.h"
 #include "settings/lib/SettingsManager.h"
 #include "utils/CharsetConverter.h"
-#include "utils/PlaybackDiagnostics.h"
 #include "utils/RssManager.h"
 #include "utils/StringUtils.h"
 #include "utils/SystemInfo.h"
@@ -154,23 +152,7 @@ bool CSettings::LoadHidden(const TiXmlElement* root)
   if (root == nullptr)
     return false;
 
-  // Independent presentation is selected only through the GUI setting. Ignore
-  // both generic override encodings without changing the caller's XML tree.
-  TiXmlElement overrides(*root);
-  for (auto* setting = overrides.FirstChildElement("setting"); setting;)
-  {
-    auto* next = setting->NextSiblingElement("setting");
-    const char* id = setting->Attribute("id");
-    if (id && std::string_view(id) == SETTING_COREELEC_AMLOGIC_INDEPENDENT_PRESENTER)
-      overrides.RemoveChild(setting);
-    setting = next;
-  }
-  if (auto* category = overrides.FirstChildElement("coreelec"))
-  {
-    while (auto* setting = category->FirstChildElement("amlogic.independentpresenter"))
-      category->RemoveChild(setting);
-  }
-  return CSettingsBase::LoadHiddenValuesFromXml(&overrides);
+  return CSettingsBase::LoadHiddenValuesFromXml(root);
 }
 
 bool CSettings::Save()
@@ -248,14 +230,6 @@ bool CSettings::Load(const TiXmlElement* root, bool& updated)
   if (!Load(static_cast<const TiXmlNode*>(root)))
     return false;
 
-  bool presenter = false;
-#if defined(HAS_LIBAMCODEC)
-  presenter = GetBool(SETTING_COREELEC_AMLOGIC_INDEPENDENT_PRESENTER);
-#endif
-  CLog::Log(LOGINFO, "p3i-transition schema=1 t_us={} settings={} presenter={} build={} built={} "
-            "source=gui progress=software-only-no-scanout",
-            PLAYBACK_DIAGNOSTICS::NowUs(), PLAYBACK_DIAGNOSTICS::NextId(),
-            presenter, CSysInfo::GetVersion(), CSysInfo::GetBuildDate());
   return true;
 }
 

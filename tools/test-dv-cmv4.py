@@ -100,7 +100,7 @@ def main():
         equal = str(values[node.get('setting')]) == (node.text or '').strip()
         return not equal if node.get('operator') == '!is' else equal
 
-    for available, enabled in [(a, e) for a in [False, True] for e in [False, True]]:
+    for available in [False, True]:
         for type_value in [0, 1, 2, 3, 4]:
             for mode in [0, 1, 2]:
                 for vp in [0, 1]:
@@ -110,10 +110,9 @@ def main():
                                       'coreelec.amlogic.dolbyvision.mode': mode,
                                       'coreelec.amlogic.dolbyvision.video.processor': vp,
                                       'coreelec.amlogic.dolbyvision.vs10.dv': output,
-                                      prefix + 'append': append,
-                                      'coreelec.amlogic.dolbyvision.new.backend': 'true' if enabled else 'false'}
+                                      prefix + 'append': append}
                             route_allowed = (mode != 2 and vp == 0 and
-                                             (type_value == 0 or available and enabled and
+                                             (type_value == 0 or available and
                                               type_value in [1, 2, 4] and output in [0, 1]))
                             for suffix, mode_allowed in [('append', True), ('strip', True),
                                                          ('smart.threshold', append == 3),
@@ -327,7 +326,6 @@ int main() {
  // Real callbacks update settings atomics; real Apply propagates same-mode
  // threshold, display and Auto trigger changes to the cached-input converter.
  CDVDVideoCodecAmlogic codec;codec.m_bitstream=&c;
- changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND,1);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,0);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM,1000);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,3);
@@ -341,8 +339,8 @@ int main() {
  newBackendAvailable=true;
  for(int type:{1,2,4}) {
   changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE,type);expect(c,rpu(3388),true);
-  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND,0);expect(c,rpu(3388),false);
-  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND,1);expect(c,rpu(3388),true);
+  newBackendAvailable=false;codec.UpdateAppendCMv40SettingCache();codec.ApplyDynamicDoViSettings();expect(c,rpu(3388),false);
+  newBackendAvailable=true;codec.UpdateAppendCMv40SettingCache();codec.ApplyDynamicDoViSettings();expect(c,rpu(3388),true);
   changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV,3);expect(c,rpu(3388),false);
   changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV,0);expect(c,rpu(3388),true);
  }

@@ -483,7 +483,6 @@ public:
   static constexpr auto SETTING_MASTERLOCK_LOCKCODE = "masterlock.lockcode";
   static constexpr auto SETTING_MASTERLOCK_STARTUPLOCK = "masterlock.startuplock";
   static constexpr auto SETTING_MASTERLOCK_MAXRETRIES = "masterlock.maxretries";
-  static constexpr auto SETTING_COREELEC_AMLOGIC_INDEPENDENT_PRESENTER = "coreelec.amlogic.independentpresenter";
   static constexpr auto SETTING_COREELEC_AMLOGIC_NOISEREDUCTION = "coreelec.amlogic.noisereduction";
   static constexpr auto SETTING_COREELEC_AMLOGIC_LIMIT_CD = "coreelec.amlogic.limitcd";
   static constexpr auto SETTING_COREELEC_AMLOGIC_FORCE_CS = "coreelec.amlogic.forcecs";
@@ -497,7 +496,6 @@ public:
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_MODE = "coreelec.amlogic.dolbyvision.mode";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_MODE_ON_LUMINANCE = "coreelec.amlogic.dolbyvision.mode.on.luminance";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_OSD_BRIGHTNESS = "coreelec.amlogic.dolbyvision.osd.brightness";
-  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND = "coreelec.amlogic.dolbyvision.new.backend";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR = "coreelec.amlogic.dolbyvision.video.processor";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR_TM = "coreelec.amlogic.dolbyvision.video.processor.tm";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_TYPE = "coreelec.amlogic.dolbyvision.type";

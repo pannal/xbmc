@@ -182,6 +182,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     int  m_videoFpsDetect;
     float m_maxTempo;
     bool m_videoPreferStereoStream = false;
+    bool m_amlIndependentPresenter = true;
 
     std::string m_videoDefaultPlayer;
     float m_videoPlayCountMinimumPercent;

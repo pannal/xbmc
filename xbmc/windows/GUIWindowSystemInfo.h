@@ -12,6 +12,9 @@
 
 #include <string>
 #include <vector>
+#ifdef HAS_LIBAMCODEC
+#include <chrono>
+#endif
 
 class CGUIWindowSystemInfo : public CGUIWindow
 {
@@ -27,5 +30,13 @@ private:
   void LoadPrivacyPolicy();
   std::vector<std::string> m_diskUsage;
   bool m_privacyPolicyLoaded{false};
+#ifdef HAS_LIBAMCODEC
+  void UpdateDVModuleStatus();
+  std::chrono::steady_clock::time_point m_dvModuleStatusUpdated{};
+  bool m_doviLoaded{false};
+  bool m_dovi5Loaded{false};
+  std::string m_doviModulePath;
+  std::string m_dovi5ModulePath;
+#endif
 };
 

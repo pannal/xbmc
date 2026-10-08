@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-check live backend labels/cache, lifecycle guards and GUI switch policy.
+"""Host-check live backend labels/cache, lifecycle guards and automatic backend use.
 
 Sysfs and clocks are injected; this verifies code and cache semantics, not native
 video timing or hardware. Production parser, sampler and label readers are used.
@@ -44,7 +44,7 @@ def main():
         assert offsets == [name], offsets
     cases = gui[gui.index('    case PLAYER_PROCESS_AML_DV_BACKEND:'):gui.index('    case PLAYER_PROCESS_AML_PIXELFORMAT:')]
     assert cases.count('#ifdef HAS_LIBAMCODEC') == 2
-    for name in ['aml_dv_backend_label(', 'aml_dv_backend_available_label(', 'aml_dv_new_backend_status(']:
+    for name in ['aml_dv_backend_label(', 'aml_dv_backend_available_label(']:
         body = function(aml, name if name.startswith('std::') else
                         ('std::string ' if 'label' in name else 'int ') + name)
         assert 'CSysfsPath' not in body and 'CDVCoreGuard' not in body
@@ -66,20 +66,10 @@ def main():
     controls = {s.get('id'): s for s in xml.findall('.//setting')}
     assert len(controls) == len(xml.findall('.//setting'))
     switch_id = 'coreelec.amlogic.dolbyvision.new.backend'
-    switch = controls[switch_id]
-    group = next(g for g in xml.findall('.//group') if switch in list(g))
-    siblings = [s.get('id') for s in group.findall('setting')]
-    assert siblings.index(switch_id) == siblings.index('coreelec.amlogic.dolbyvision.mode') + 1
-    assert switch.get('parent') == 'coreelec.amlogic.dolbyvision.mode'
-    assert switch.findtext('requirement') == 'HAVE_AMCODEC'
-    assert switch.findtext('level') == '3' and switch.findtext('default') == 'true'
-    assert switch.find('./dependencies/dependency[@type="enable"]') is None
-    assert 'SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND, show' in dv
-    assert 'settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND)' in dv
-    setting_change = function(dv, 'void CDolbyVisionAML::OnSettingChanged(')
-    assert 'aml_dv_apply_new_backend_setting()' not in setting_change
-    assert setting_change.index('SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND') < setting_change.index('schedule_native_setting_apply(setting->GetId())')
-    assert 'aml_dv_apply_new_backend_setting()' in function(dv, 'void CDolbyVisionAML::Setup(') if 'void CDolbyVisionAML::Setup(' in dv else 'aml_dv_apply_new_backend_setting()' in function(dv, 'bool CDolbyVisionAML::Setup(')
+    assert switch_id not in controls
+    assert 'SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND' not in dv
+    assert 'aml_dv_enable_new_backend()' in function(dv, 'bool CDolbyVisionAML::Setup(')
+    assert 'Set(true)' in function(aml, 'void aml_dv_enable_new_backend(')
 
     state = aml[aml.index('static std::atomic<bool> s_dvNewBackendAvailable'):aml.index('bool aml_support_dolby_vision(')]
     preamble = r'''
@@ -95,14 +85,6 @@ def main():
 static int64_t clock_ms=1000;
 static int64_t aml_steady_ms(){return clock_ms;}
 static std::shared_ptr<const void> s_dvPlaybackSession;
-struct CSettings {static constexpr auto SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND="switch";};
-struct Settings {
- bool enabled=true;int writes=0;
- bool GetBool(const char*) {return enabled;}
- void SetBool(const char*,bool value) {enabled=value;++writes;}
-};
-static Settings preferences;
-static Settings* settings(){return &preferences;}
 struct CSysfsPath {
  static std::map<std::string,std::string> nodes;static int reads;
  std::string path;
@@ -128,19 +110,19 @@ int main(){
  for(auto text:{"", "0 1 1", "-1 1 1", "1 2 1", "1 -2 1", "1 1 2", "1 1", "1 1 1x", "18446744073709551616 1 1", "1 1 1 0"})assert(!DVBackendState::Parse(text));
  assert(!DVBackendState::Parse(std::string_view{}));assert(DVBackendState::Parse("2 -1 0\n"));
  assert(aml_dv_backend_label().empty());assert(aml_dv_backend_available_label().empty());
- assert(aml_dv_new_backend_status()==-1);
+
  auto first=std::make_shared<const int>(1);std::atomic_store(&s_dvPlaybackSession,std::shared_ptr<const void>(first));
  int64_t sampled=0;
  assert(!aml_dv_backend_epoch());
- aml_dv_backend_sample(first,0,sampled);assert(aml_dv_backend_label().empty());assert(preferences.enabled);
+ aml_dv_backend_sample(first,0,sampled);assert(aml_dv_backend_label().empty());
  nodes[capability]="0";nodes[path]="10 -1 0";clock_ms+=250;
- aml_dv_backend_sample(first,10,sampled);assert(aml_dv_backend_available_label()=="0");assert(aml_dv_new_backend_status()==0);
+ aml_dv_backend_sample(first,10,sampled);assert(aml_dv_backend_available_label()=="0");
  nodes[capability]="1";nodes[path]="10 1 1";clock_ms+=250;
- aml_dv_backend_sample(first,10,sampled);assert(aml_dv_backend_label().empty());assert(aml_dv_backend_available_label()=="1");assert(aml_dv_new_backend_status()==1);
+ aml_dv_backend_sample(first,10,sampled);assert(aml_dv_backend_label().empty());assert(aml_dv_backend_available_label()=="1");
  nodes[path]="11 0 1";clock_ms+=250;aml_dv_backend_sample(first,10,sampled);
  assert(aml_dv_backend_label()=="dovi"); // available newer, actual original
  int reads=CSysfsPath::reads;
- for(int i=0;i<100;++i){assert(aml_dv_backend_label()=="dovi");assert(aml_dv_backend_available_label()=="1");assert(aml_dv_new_backend_status()==1);aml_dv_backend_sample(first,10,sampled);}
+ for(int i=0;i<100;++i){assert(aml_dv_backend_label()=="dovi");assert(aml_dv_backend_available_label()=="1");aml_dv_backend_sample(first,10,sampled);}
  assert(CSysfsPath::reads==reads); // CPU readers and sampling throttle
  nodes[path]="11 1 1";clock_ms+=250;aml_dv_backend_sample(first,10,sampled);assert(aml_dv_backend_label()=="dovi5");
  nodes[path]="11 0 1";clock_ms+=250;aml_dv_backend_sample(first,10,sampled);assert(aml_dv_backend_label()=="dovi");
@@ -156,19 +138,22 @@ int main(){
  clock_ms+=250;aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_label()=="dovi5");
  clock_ms+=1001;assert(aml_dv_backend_label().empty()); // ordinary running stall expires
  aml_dv_backend_pause(second,true);assert(aml_dv_backend_label().empty()); // cannot revive expired identity
- nodes.erase(path);aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_label().empty());assert(aml_dv_new_backend_status()==-1);
+ nodes.erase(path);aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_label().empty());
  nodes[path]="13 1 1";clock_ms+=250;aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_label()=="dovi5");
  nodes[path]="bad";clock_ms+=250;aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_label().empty());
- nodes[path]="13 0 0";preferences.enabled=true;clock_ms+=250;
- aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_label()=="dovi");assert(aml_dv_backend_available_label()=="1");assert(aml_dv_new_backend_status()==2);assert(preferences.enabled);
- nodes[enable]="1";preferences.enabled=true;aml_dv_apply_new_backend_setting();assert(preferences.enabled);assert(nodes[enable]=="1");
- nodes[path]="13 0 1";preferences.enabled=true;aml_dv_apply_new_backend_setting();assert(preferences.enabled);assert(nodes[enable]=="1");assert(aml_dv_new_backend_status()==1);
- preferences.enabled=false;aml_dv_apply_new_backend_setting();assert(nodes[enable]=="0");assert(aml_dv_backend_available_label()=="1");assert(aml_dv_new_backend_status()==1);
- nodes.erase(capability);clock_ms+=250;preferences.enabled=true;aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_available_label().empty());assert(preferences.enabled);
+ nodes[path]="13 0 0";clock_ms+=250;
+ aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_label()=="dovi");assert(aml_dv_backend_available_label()=="1");
+ // Automatic enabling must recover even if the old GUI preference left the
+ // native switch off. Backend identity still reports actual fallback on failure.
+ nodes[enable]="0";aml_dv_enable_new_backend();assert(nodes[enable]=="1");
+ assert(aml_dv_backend_label()=="dovi"); // failed newer processing remains original
+ nodes.erase(enable);aml_dv_enable_new_backend();assert(!nodes.count(enable));
+ assert(aml_dv_backend_available_label()=="1");
+ nodes.erase(capability);clock_ms+=250;aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_available_label().empty());
  for(auto bad:{"", "2", "1x", "Y", "-1", "4294967296"}) {
   nodes[capability]=bad;clock_ms+=250;aml_dv_backend_sample(second,baseline,sampled);assert(aml_dv_backend_available_label().empty());
  }
- std::cout<<"Backend cache/session/expiry/capability and switch checks passed\n";
+ std::cout<<"Backend cache/session/expiry/capability and automatic backend checks passed\n";
 }
 '''
     # Execute the actual speed message handler and admitted GetPicture prefix.
@@ -253,15 +238,16 @@ int main(){
         return found
     english = entries((ROOT / 'addons/resource.language.en_gb/resources/strings.po').read_text())
     german = entries((ROOT / 'addons/resource.language.de_de/resources/strings.po').read_text())
-    for number in range(60350, 60356):
+    for number in range(60350, 60353):
         key = '#' + str(number)
         assert english[key]['msgid'] == german[key]['msgid']
         assert german[key]['msgstr']
 
-    description = (ROOT / 'xbmc/settings/windows/GUIWindowSettingsCategory.cpp').read_text()
-    status = function(description, 'static int DVBackendDescriptionStatus(')
-    assert 'CSysfsPath' not in status and 'CDVCoreGuard' not in status
-    assert 'm_dvBackendDescriptionStatus != DVBackendDescriptionStatus()' in description
+    system_info = (ROOT / 'xbmc/windows/GUIWindowSystemInfo.cpp').read_text()
+    module_method = function(system_info, 'void CGUIWindowSystemInfo::UpdateDVModuleStatus(')
+    assert 'SetWidthControl(label->GetWidth(), true)' in system_info
+    assert '{0}' in english['#60352']['msgid'] and '{1}' in english['#60352']['msgid']
+    assert '{0}' in german['#60352']['msgstr'] and '{1}' in german['#60352']['msgstr']
 
     with tempfile.TemporaryDirectory(prefix='dv-backend-info-') as tmp:
         tmp = Path(tmp)
@@ -277,47 +263,61 @@ int main(){
             else:
                 print('Rejected negative control:', name)
 
+        module_preamble = r'''
+#include <cassert>
+#include <chrono>
+#include <fstream>
+#include <map>
+#include <string>
+int directoryReads=0;
+std::map<std::string,bool> modules;
+namespace XFILE {struct CDirectory {static bool Exists(const char* path){++directoryReads;return modules[path];}};}
+struct CGUIWindowSystemInfo {
+ std::chrono::steady_clock::time_point m_dvModuleStatusUpdated{};
+ bool m_doviLoaded=false,m_dovi5Loaded=false;
+ std::string m_doviModulePath,m_dovi5ModulePath;
+ void UpdateDVModuleStatus();
+};
+'''
+        module_tests = r'''
+int main(){
+ CGUIWindowSystemInfo window;
+ const char* first="@ROOT@/dovi-loaded-path";
+ const char* second="@ROOT@/dovi5-loaded-path";
+ for(bool old:{false,true})for(bool newer:{false,true}) {
+  std::ofstream(first)<<"/flash/dovi.ko\n";
+  std::ofstream(second)<<"/storage/.dovi5/generations/example/dovi5.ko\n";
+  modules["/sys/module/dovi"]=old;modules["/sys/module/dovi5"]=newer;
+  window.m_dvModuleStatusUpdated={};window.UpdateDVModuleStatus();
+  assert(window.m_doviLoaded==old&&window.m_dovi5Loaded==newer);
+  assert(window.m_doviModulePath==(old?"/flash/dovi.ko":""));
+  assert(window.m_dovi5ModulePath==(newer?"/storage/.dovi5/generations/example/dovi5.ko":""));
+  const int reads=directoryReads;
+  modules["/sys/module/dovi"]=!old;modules["/sys/module/dovi5"]=!newer;
+  window.UpdateDVModuleStatus();assert(directoryReads==reads); // per-frame calls stay cached
+  assert(window.m_doviLoaded==old&&window.m_dovi5Loaded==newer);
+  window.m_dvModuleStatusUpdated-=std::chrono::seconds(1);window.UpdateDVModuleStatus();
+  assert(directoryReads==reads+2&&window.m_doviLoaded==!old&&window.m_dovi5Loaded==!newer);
+ }
+ modules["/sys/module/dovi"]=true;modules["/sys/module/dovi5"]=true;
+ std::remove(first);std::ofstream(second)<<"relative/candidate.ko\n";
+ window.m_dvModuleStatusUpdated={};window.UpdateDVModuleStatus();
+ assert(window.m_doviLoaded&&window.m_dovi5Loaded); // residency survives unknown provenance
+ assert(window.m_doviModulePath.empty()&&window.m_dovi5ModulePath.empty());
+}
+'''.replace('@ROOT@',str(tmp))
+        adapted_module = module_method.replace('/run/',str(tmp)+'/')
+        run(module_preamble + adapted_module + module_tests, 'module-residency-path')
+        if args.negative_controls:
+            for name, old, new in [
+                    ('module-cache-bypassed', 'now - m_dvModuleStatusUpdated < std::chrono::seconds(1)', 'false'),
+                    ('unloaded-module-uses-stale-path', 'if (loaded)', 'if (true)'),
+                    ('dovi5-residency-aliases-original', 'Exists("/sys/module/dovi5")', 'Exists("/sys/module/dovi")')]:
+                assert old in adapted_module
+                run(module_preamble + adapted_module.replace(old,new) + module_tests,name,False)
+
         run(preamble + state + tests, 'cache')
         run(preamble + state + pause_codec + pause_tests, 'pause')
-        run('#include <cassert>\nint current=-1;int aml_dv_new_backend_status(){return current;}\n' + status +
-            'int main(){assert(DVBackendDescriptionStatus()==60355);current=0;assert(DVBackendDescriptionStatus()==60353);current=1;assert(DVBackendDescriptionStatus()==60352);current=2;assert(DVBackendDescriptionStatus()==60354);}', 'help-status')
-        help_methods = function(description, 'void CGUIWindowSettingsCategory::SetDescription(')
-        help_methods += function(description, 'void CGUIWindowSettingsCategory::DoProcess(')
-        for supported in [False, True]:
-            help_source = ('#define HAS_LIBAMCODEC\n' if supported else '') + r'''
-#include <cassert>
-#include <string>
-struct CVariant {
- int number=-1;std::string text;
- CVariant(int n):number(n){} CVariant(std::string t):text(t){}
- bool isInteger()const{return number>=0;}int asInteger()const{return number;}
-};
-struct CDirtyRegionList{};
-int current=-1, labels=0;
-int aml_dv_new_backend_status(){return current;}
-struct Localize {std::string Get(int id){++labels;return std::to_string(id);}} g_localizeStrings;
-struct CGUIDialogSettingsManagerBase {
- std::string shown;int processes=0;
- void SetDescription(const CVariant& label){shown=label.isInteger()?std::to_string(label.asInteger()):label.text;}
- void DoProcess(unsigned int,CDirtyRegionList&){++processes;}
-};
-struct CGUIWindowSettingsCategory:CGUIDialogSettingsManagerBase {
- int m_dvBackendDescriptionStatus=0;
- void SetDescription(const CVariant&);
- void DoProcess(unsigned int,CDirtyRegionList&);
-};
-''' + status + help_methods + r'''
-int main(){CGUIWindowSettingsCategory window;CDirtyRegionList dirty;
- window.SetDescription(CVariant{60351});
-''' + (r'''
- assert(window.shown=="60351 60355");current=1;window.DoProcess(0,dirty);assert(window.shown=="60351 60352");
- int count=labels;window.DoProcess(1,dirty);assert(labels==count);
- current=2;window.DoProcess(2,dirty);assert(window.shown=="60351 60354");
- window.SetDescription(CVariant{100});current=0;window.DoProcess(3,dirty);assert(window.shown=="100");
-''' if supported else r'''
- assert(window.shown=="60351");current=1;window.DoProcess(0,dirty);assert(window.shown=="60351");assert(labels==0);
-''') + '}'
-            run(help_source, 'help-window-' + str(supported))
         # Compile and execute actual cases for supported and unsupported builds.
         for supported in [False, True]:
             source = ('#define HAS_LIBAMCODEC\n' if supported else '') + r'''

@@ -666,9 +666,9 @@ void CRenderManager::PreInitOnMain()
   InvalidateReservations();
 
 #if defined(HAS_LIBAMCODEC)
-  m_amlIndependentPresenter = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-      CSettings::SETTING_COREELEC_AMLOGIC_INDEPENDENT_PRESENTER);
-  CLog::Log(LOGINFO, "p3i-transition t_us={} render={} presenter={} source=gui apply=playback-preinit",
+  m_amlIndependentPresenter =
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_amlIndependentPresenter;
+  CLog::Log(LOGINFO, "p3i-transition t_us={} render={} presenter={} source=advancedsettings apply=playback-preinit",
             PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticId, m_amlIndependentPresenter);
 #endif
 

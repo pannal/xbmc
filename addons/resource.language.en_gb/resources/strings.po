@@ -8851,16 +8851,6 @@ msgid "If the HDMI vsync clock (FBIO_WAITFORVSYNC_64) keeps stalling, latch lega
 msgstr ""
 
 #: system/settings/settings.xml
-msgctxt "#14309"
-msgid "Independent Amlogic video presentation (experimental)"
-msgstr ""
-
-#: system/settings/settings.xml
-msgctxt "#14310"
-msgid "Let supported Amlogic video playback continue independently of GUI processing. Software-decoded and stereoscopic video use the standard presentation path. Changes apply after stopping playback and opening a video again. This does not change CPU affinity or scheduling priority."
-msgstr ""
-
-#: system/settings/settings.xml
 msgctxt "#14311"
 msgid "Show debug information on screen"
 msgstr ""
@@ -27484,25 +27474,13 @@ msgid "Tells a Blu-ray 3D disc that the connected display can show 3D, whether o
 msgstr ""
 
 msgctxt "#60350"
-msgid "Prefer newer Dolby Vision backend (dovi5)"
+msgid "Loaded"
 msgstr ""
 
 msgctxt "#60351"
-msgid "Use this preference for compatibility testing and troubleshooting. When enabled, dovi5 is permitted on supported native Dolby Vision routes. Unsupported routes or processing failures use the original processor. Disabling selects the original processor without unloading modules. The preference stays enabled if dovi5 is unavailable. Changes take effect during playback when new frame settings are programmed."
+msgid "Not loaded"
 msgstr ""
 
 msgctxt "#60352"
-msgid "Observed backend state: registered."
-msgstr ""
-
-msgctxt "#60353"
-msgid "Observed backend state: the newer backend is not registered."
-msgstr ""
-
-msgctxt "#60354"
-msgid "Observed backend state: the driver reported a failure; newer processing is unavailable."
-msgstr ""
-
-msgctxt "#60355"
-msgid "Observed backend state: unknown. State is sampled at initialization and during native playback."
+msgid "{0} (from: {1})"
 msgstr ""

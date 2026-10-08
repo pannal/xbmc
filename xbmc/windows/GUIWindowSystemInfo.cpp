@@ -12,6 +12,7 @@
 #include "ServiceBroker.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIMessage.h"
+#include "guilib/GUILabelControl.h"
 #include "guilib/LocalizeStrings.h"
 #include "guilib/WindowIDs.h"
 #include "guilib/guiinfo/GUIInfoLabels.h"
@@ -20,6 +21,10 @@
 #include "utils/CPUInfo.h"
 #include "utils/StringUtils.h"
 #include "utils/SystemInfo.h"
+#ifdef HAS_LIBAMCODEC
+#include "filesystem/Directory.h"
+#include <fstream>
+#endif
 
 constexpr int CONTROL_TEXT_START = 2;
 constexpr int CONTROL_TEXT_END = 13; // 12 lines
@@ -58,6 +63,9 @@ bool CGUIWindowSystemInfo::OnMessage(CGUIMessage& message)
     case GUI_MSG_WINDOW_INIT:
     {
       CGUIWindow::OnMessage(message);
+#ifdef HAS_LIBAMCODEC
+      m_dvModuleStatusUpdated = {};
+#endif
       SET_CONTROL_LABEL(52, "AMLogic running " + CSysInfo::GetAppName() + " " + CSysInfo::GetVersion());
       SET_CONTROL_LABEL(53, CSysInfo::GetBuildDate());
       CONTROL_ENABLE_ON_CONDITION(CONTROL_BT_PVR, CServiceBroker::GetPVRManager().IsStarted());
@@ -192,6 +200,22 @@ void CGUIWindowSystemInfo::FrameMove()
     SET_CONTROL_LABEL(
         i++, StringUtils::Format("{}: {}", g_localizeStrings.Get(39174),
                                  hdrTypes.empty() ? g_localizeStrings.Get(231) : hdrTypes));
+#ifdef HAS_LIBAMCODEC
+    UpdateDVModuleStatus();
+    const auto moduleStatus = [](bool loaded, const std::string& path) {
+      return loaded ? StringUtils::Format(g_localizeStrings.Get(60352),
+                                          g_localizeStrings.Get(60350),
+                                          path.empty() ? g_localizeStrings.Get(13205) : path)
+                    : g_localizeStrings.Get(60351);
+    };
+    const auto setModuleLabel = [this](int id, const std::string& text) {
+      if (auto* label = dynamic_cast<CGUILabelControl*>(GetControl(id)))
+        label->SetWidthControl(label->GetWidth(), true);
+      SET_CONTROL_LABEL(id, text);
+    };
+    setModuleLabel(i++, "dovi.ko: " + moduleStatus(m_doviLoaded, m_doviModulePath));
+    setModuleLabel(i++, "dovi5.ko: " + moduleStatus(m_dovi5Loaded, m_dovi5ModulePath));
+#endif
   }
 
   else if (m_section == CONTROL_BT_HARDWARE)
@@ -255,6 +279,34 @@ void CGUIWindowSystemInfo::FrameMove()
   }
   CGUIWindow::FrameMove();
 }
+
+#ifdef HAS_LIBAMCODEC
+void CGUIWindowSystemInfo::UpdateDVModuleStatus()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (m_dvModuleStatusUpdated != std::chrono::steady_clock::time_point{} &&
+      now - m_dvModuleStatusUpdated < std::chrono::seconds(1))
+    return;
+
+  // Module residency is independent of playback, registration and active routing.
+  m_doviLoaded = XFILE::CDirectory::Exists("/sys/module/dovi");
+  m_dovi5Loaded = XFILE::CDirectory::Exists("/sys/module/dovi5");
+  const auto loadedPath = [](bool loaded, const char* record) {
+    std::string path;
+    if (loaded)
+    {
+      std::ifstream stream(record);
+      std::getline(stream, path);
+      if (path.empty() || path.front() != '/')
+        path.clear();
+    }
+    return path;
+  };
+  m_doviModulePath = loadedPath(m_doviLoaded, "/run/dovi-loaded-path");
+  m_dovi5ModulePath = loadedPath(m_dovi5Loaded, "/run/dovi5-loaded-path");
+  m_dvModuleStatusUpdated = now;
+}
+#endif
 
 void CGUIWindowSystemInfo::ResetLabels()
 {

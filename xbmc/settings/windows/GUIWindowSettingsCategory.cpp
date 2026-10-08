@@ -10,10 +10,6 @@
 
 #include "GUIPassword.h"
 #include "guilib/LocalizeStrings.h"
-#include "utils/Variant.h"
-#ifdef HAS_LIBAMCODEC
-#include "utils/AMLUtils.h"
-#endif
 #include "GUIUserMessages.h"
 #include "ServiceBroker.h"
 #include "input/actions/Action.h"
@@ -126,46 +122,6 @@ bool CGUIWindowSettingsCategory::OnMessage(CGUIMessage &message)
   }
 
   return CGUIDialogSettingsManagerBase::OnMessage(message);
-}
-
-#ifdef HAS_LIBAMCODEC
-// CPU-only status of the last admitted observation, separate from the preference.
-static int DVBackendDescriptionStatus()
-{
-  switch (aml_dv_new_backend_status())
-  {
-    case 0: return 60353;
-    case 1: return 60352;
-    case 2: return 60354;
-    default: return 60355;
-  }
-}
-#endif
-
-void CGUIWindowSettingsCategory::SetDescription(const CVariant& label)
-{
-#ifdef HAS_LIBAMCODEC
-  if (label.isInteger() && label.asInteger() == 60351)
-  {
-    m_dvBackendDescriptionStatus = DVBackendDescriptionStatus();
-    CGUIDialogSettingsManagerBase::SetDescription(
-        g_localizeStrings.Get(60351) + " " + g_localizeStrings.Get(m_dvBackendDescriptionStatus));
-    return;
-  }
-#endif
-  m_dvBackendDescriptionStatus = 0;
-  CGUIDialogSettingsManagerBase::SetDescription(label);
-}
-
-void CGUIWindowSettingsCategory::DoProcess(unsigned int currentTime, CDirtyRegionList& dirtyregions)
-{
-#ifdef HAS_LIBAMCODEC
-  // Refresh an already focused help text only when its cached status changes.
-  if (m_dvBackendDescriptionStatus &&
-      m_dvBackendDescriptionStatus != DVBackendDescriptionStatus())
-    SetDescription(CVariant{60351});
-#endif
-  CGUIDialogSettingsManagerBase::DoProcess(currentTime, dirtyregions);
 }
 
 bool CGUIWindowSettingsCategory::OnAction(const CAction &action)

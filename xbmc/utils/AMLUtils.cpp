@@ -733,7 +733,6 @@ bool aml_support_av1()
 // Initialized during admitted Setup and refreshed by the bounded decoder sampler.
 // Settings conditions, help and GUI labels only read these CPU caches.
 static std::atomic<bool> s_dvNewBackendAvailable{false};
-static std::atomic<int> s_dvNewBackendStatus{-1}; // -1: unknown; 0: unregistered; 1: ready; 2: failed
 static std::atomic<int> s_dvNewBackendAvailability{-1}; // -1: unsupported/unknown
 
 struct AMLDVBackendSnapshot
@@ -823,10 +822,6 @@ void aml_dv_backend_sample(const std::shared_ptr<const void>& session,
                                    std::memory_order_release);
 
   const auto state = aml_dv_read_backend_state();
-  s_dvNewBackendStatus.store(available && *available == 0 ? 0 :
-                              available && *available == 1 && state ?
-                                (state->newUsable ? 1 : 2) : -1,
-                            std::memory_order_release);
   if (!baseline || !state || state->epoch <= baseline || state->backend < 0)
   {
     aml_dv_backend_invalidate(session);
@@ -839,22 +834,12 @@ void aml_dv_backend_sample(const std::shared_ptr<const void>& session,
         std::make_shared<const AMLDVBackendSnapshot>(AMLDVBackendSnapshot{session, state->backend, now}));
 }
 
-int aml_dv_new_backend_status()
+// Native Setup holds admission; eligible routes automatically use the new backend.
+void aml_dv_enable_new_backend()
 {
-  return s_dvNewBackendStatus.load(std::memory_order_acquire);
-}
-
-// Native Setup and the deferred settings owner hold admission for this write.
-void aml_dv_apply_new_backend_setting()
-{
-  const auto state = aml_dv_read_backend_state();
-  const int available = s_dvNewBackendAvailability.load(std::memory_order_acquire);
-  s_dvNewBackendStatus.store(available == 0 ? 0 : available == 1 && state ?
-                              (state->newUsable ? 1 : 2) : -1,
-                            std::memory_order_release);
   CSysfsPath enabled{"/sys/module/amdolby_vision/parameters/dv_new_blob_enable"};
   if (enabled.Exists())
-    enabled.Set(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_NEW_BACKEND));
+    enabled.Set(true);
 }
 
 bool aml_dv_new_backend_available()

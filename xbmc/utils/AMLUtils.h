@@ -117,9 +117,8 @@ bool aml_support_av1();
 bool aml_support_dolby_vision();
 // Cached native initialization result; never reads sysfs from settings callers.
 bool aml_dv_new_backend_available();
-// Cached registration/runtime-failure status: -1 unknown, 0 absent, 1 ready, 2 failed.
-int aml_dv_new_backend_status();
-void aml_dv_apply_new_backend_setting();
+// Enables automatic eligible routing; caller holds native Setup admission.
+void aml_dv_enable_new_backend();
 // CPU-only GUI accessors; bounded sampling belongs to the admitted AML decoder.
 std::string aml_dv_backend_label();
 std::string aml_dv_backend_available_label();
