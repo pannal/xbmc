@@ -30,6 +30,11 @@ varying vec4 m_cord0;
 uniform float m_sdrPeak;
 uniform float m_pma;
 
+#if !defined(KODI_PQ_TO_SDR)
+uniform float m_sdrBrightness;
+uniform float m_sdrSaturation;
+#endif
+
 #if defined(KODI_PQ_TO_SDR)
 uniform float m_pqRefNits;
 uniform float m_pqSaturation;
@@ -102,6 +107,22 @@ void main ()
     rgb.rgb /= rgb.a;
     rgb.rgb = pqToSdr(rgb.rgb);
     rgb.rgb *= rgb.a;
+  }
+#endif
+
+#if !defined(KODI_PQ_TO_SDR)
+  // Normal bitmap textures encode linear-light premultiplied RGB with gamma 2.2.
+  // Luma mixing and gain are homogeneous, so they also work before dividing by
+  // alpha. Clamp in linear light to alpha for PMA, then restore the encoding.
+  // Bypass neutral values exactly to preserve the existing appearance.
+  if (m_sdrBrightness != 1.0 || m_sdrSaturation != 1.0)
+  {
+    vec3 linear = pow(max(rgb.rgb, vec3(0.0)), vec3(2.2));
+    float luma = dot(linear, vec3(0.2126, 0.7152, 0.0722));
+    float ceiling = mix(1.0, rgb.a, m_pma);
+    linear = clamp(mix(vec3(luma), linear, m_sdrSaturation) * m_sdrBrightness,
+                   vec3(0.0), vec3(ceiling));
+    rgb.rgb = pow(linear, vec3(1.0 / 2.2));
   }
 #endif
 

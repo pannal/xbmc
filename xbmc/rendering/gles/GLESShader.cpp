@@ -59,6 +59,8 @@ void CGLESShader::OnCompiledAndLinked()
   m_hCoordStep = glGetUniformLocation(ProgramHandle(), "m_cordStep");
   m_hDepth = glGetUniformLocation(ProgramHandle(), "m_depth");
   m_hPma = glGetUniformLocation(ProgramHandle(), "m_pma");
+  m_hSdrBrightness = glGetUniformLocation(ProgramHandle(), "m_sdrBrightness");
+  m_hSdrSaturation = glGetUniformLocation(ProgramHandle(), "m_sdrSaturation");
 
   // Vertex attributes
   m_hPos    = glGetAttribLocation(ProgramHandle(),  "m_attrpos");
@@ -177,6 +179,10 @@ bool CGLESShader::OnEnabled()
   // premultiplied-alpha textures (COverlayTextureGLES) overrides this to 1.0
   // before drawing so the limited-range conversion offset scales by alpha.
   glUniform1f(m_hPma, 0.0f);
+  // Ordinary GUI/menu consumers share this program with SDR bitmap subtitles.
+  // Every bind starts neutral, including when a cached shader variant returns.
+  glUniform1f(m_hSdrBrightness, 1.0f);
+  glUniform1f(m_hSdrSaturation, 1.0f);
 
   const float sdrPeak = CServiceBroker::GetWinSystem()->GetGuiSdrPeakLuminance();
   glUniform1f(m_sdrPeak, sdrPeak);

@@ -27622,3 +27622,27 @@ msgstr ""
 msgctxt "#69336"
 msgid "Optionally probe files during Amlogic SDR/HDR playback for stable encoded black borders. Player-added bars need no scan. Uses separate reads, seeks and software decoding and can compete with playback. Cache throttling is always applied to non-DV scans. Dark, inconsistent, variable-aspect, unsupported and unreadable sources fall back to the visible video rectangle. No live aspect tracking or Dolby metadata is produced. Changes apply on next playback."
 msgstr ""
+
+#. SDR bitmap subtitle colour
+#: system/settings/settings.xml
+msgctxt "#69337"
+msgid "SDR bitmap subtitle brightness"
+msgstr ""
+
+#. SDR bitmap subtitle colour
+#: system/settings/settings.xml
+msgctxt "#69338"
+msgid "Adjust SDR PGS and VobSub brightness before output conversion. 100% preserves the original intensity; higher values brighten up to the SDR white limit. Transparency is unchanged. Applies on SDR and HDR output. HDR-source PGS and disc menu graphics are excluded, even when HDR correction is disabled."
+msgstr ""
+
+#. SDR bitmap subtitle colour
+#: system/settings/settings.xml
+msgctxt "#69339"
+msgid "SDR bitmap subtitle saturation"
+msgstr ""
+
+#. SDR bitmap subtitle colour
+#: system/settings/settings.xml
+msgctxt "#69340"
+msgid "Adjust SDR PGS and VobSub colour saturation. 100% preserves the original colours; 0% gives grayscale. Transparency is unchanged. Text subtitles, HDR-source PGS and disc menu graphics retain their existing colour handling."
+msgstr ""

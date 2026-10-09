@@ -784,6 +784,22 @@ GLint CRenderSystemGLES::GUIShaderGetPma()
   return -1;
 }
 
+GLint CRenderSystemGLES::GUIShaderGetSdrBrightness()
+{
+  if (m_pShader[m_method])
+    return m_pShader[m_method]->GetSdrBrightnessLoc();
+
+  return -1;
+}
+
+GLint CRenderSystemGLES::GUIShaderGetSdrSaturation()
+{
+  if (m_pShader[m_method])
+    return m_pShader[m_method]->GetSdrSaturationLoc();
+
+  return -1;
+}
+
 GLint CRenderSystemGLES::GUIShaderGetUniCol()
 {
   if (m_pShader[m_method])

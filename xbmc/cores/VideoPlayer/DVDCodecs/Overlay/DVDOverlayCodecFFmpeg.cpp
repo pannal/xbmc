@@ -39,6 +39,11 @@ CDVDOverlayCodecFFmpeg::~CDVDOverlayCodecFFmpeg()
 
 bool CDVDOverlayCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 {
+  m_pgsHdrSource = hints.codec == AV_CODEC_ID_HDMV_PGS_SUBTITLE &&
+                   (hints.dovi.dv_profile != 0 ||
+                    (hints.colorPrimaries == AVCOL_PRI_BT2020 &&
+                     hints.colorTransferCharacteristic == AVCOL_TRC_SMPTE2084));
+  m_pgsIsPqAuthored = false;
 
   // decoding of this kind of subs does not work reliable
   if (hints.codec == AV_CODEC_ID_EIA_608)
@@ -115,9 +120,7 @@ bool CDVDOverlayCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &optio
     // BT.2020 PQ or DV video => PGS palettes are BT.2020 PQ; otherwise BT.709.
     m_pgsIsPqAuthored = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
                             CSettings::SETTING_SUBTITLES_PGSHDRTOSDR) &&
-                        (hints.dovi.dv_profile != 0 ||
-                         (hints.colorPrimaries == AVCOL_PRI_BT2020 &&
-                          hints.colorTransferCharacteristic == AVCOL_TRC_SMPTE2084));
+                        m_pgsHdrSource;
 
     const char* matrix = m_pgsIsPqAuthored ? "bt2020" : "auto";
     av_dict_set(&codecOpts, "pgs_matrix", matrix, 0);
@@ -321,6 +324,7 @@ std::shared_ptr<CDVDOverlay> CDVDOverlayCodecFFmpeg::GetOverlay()
       overlay->palette[i] = Endian_SwapLE32(((uint32_t *)rect.data[1])[i]);
 
     overlay->m_isHdrPq = m_pgsIsPqAuthored;
+    overlay->m_isHdrPqSource = m_pgsHdrSource;
 
     m_SubtitleIndex++;
 

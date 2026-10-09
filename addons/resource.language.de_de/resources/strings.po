@@ -20363,3 +20363,27 @@ msgstr "Aktiven Bildbereich für Untertitel ohne DV erkennen"
 msgctxt "#69336"
 msgid "Optionally probe files during Amlogic SDR/HDR playback for stable encoded black borders. Player-added bars need no scan. Uses separate reads, seeks and software decoding and can compete with playback. Cache throttling is always applied to non-DV scans. Dark, inconsistent, variable-aspect, unsupported and unreadable sources fall back to the visible video rectangle. No live aspect tracking or Dolby metadata is produced. Changes apply on next playback."
 msgstr "Dateien bei SDR-/HDR-Wiedergabe über Amlogic optional auf stabile kodierte schwarze Ränder prüfen. Vom Player hinzugefügte Ränder benötigen keine Analyse. Separate Lesezugriffe, Suchvorgänge und Software-Dekodierung können mit der Wiedergabe konkurrieren. Die Cache-Drosselung gilt bei Analysen ohne DV immer. Dunkle, uneinheitliche, variable Bildformate sowie nicht unterstützte oder nicht lesbare Quellen verwenden das sichtbare Videorechteck. Es werden weder laufende Bildformatwechsel verfolgt noch Dolby-Metadaten erzeugt. Änderungen gelten bei der nächsten Wiedergabe."
+
+#. SDR bitmap subtitle colour
+#: system/settings/settings.xml
+msgctxt "#69337"
+msgid "SDR bitmap subtitle brightness"
+msgstr "Helligkeit von SDR-Bitmap-Untertiteln"
+
+#. SDR bitmap subtitle colour
+#: system/settings/settings.xml
+msgctxt "#69338"
+msgid "Adjust SDR PGS and VobSub brightness before output conversion. 100% preserves the original intensity; higher values brighten up to the SDR white limit. Transparency is unchanged. Applies on SDR and HDR output. HDR-source PGS and disc menu graphics are excluded, even when HDR correction is disabled."
+msgstr "Die Helligkeit von SDR-PGS- und VobSub-Untertiteln vor der Ausgabekonvertierung anpassen. 100% behalten die ursprüngliche Intensität bei; höhere Werte hellen bis zum SDR-Weißwert auf. Die Transparenz bleibt unverändert. Gilt bei SDR- und HDR-Ausgabe. PGS aus HDR-Quellen und Disc-Menügrafiken sind auch bei deaktivierter HDR-Korrektur ausgeschlossen."
+
+#. SDR bitmap subtitle colour
+#: system/settings/settings.xml
+msgctxt "#69339"
+msgid "SDR bitmap subtitle saturation"
+msgstr "Farbsättigung von SDR-Bitmap-Untertiteln"
+
+#. SDR bitmap subtitle colour
+#: system/settings/settings.xml
+msgctxt "#69340"
+msgid "Adjust SDR PGS and VobSub colour saturation. 100% preserves the original colours; 0% gives grayscale. Transparency is unchanged. Text subtitles, HDR-source PGS and disc menu graphics retain their existing colour handling."
+msgstr "Die Farbsättigung von SDR-PGS- und VobSub-Untertiteln anpassen. 100% behalten die ursprünglichen Farben bei; 0% ergeben Graustufen. Die Transparenz bleibt unverändert. Textuntertitel, PGS aus HDR-Quellen und Disc-Menügrafiken behalten ihre bisherige Farbbehandlung."

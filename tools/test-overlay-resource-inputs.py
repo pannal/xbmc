@@ -120,7 +120,7 @@ struct COverlayTextureGLES:COverlay {
  COverlayTextureGLES(const CDVDOverlayImage&,CRect&,PreparedImage);
  ~COverlayTextureGLES();bool IsValid()const;
  std::shared_ptr<CGLESTextureResources> m_textureResources;
- GLuint m_texture=0;float m_u=0,m_v=0;bool m_pma=false,m_isHdrPqAuthored=false;
+ GLuint m_texture=0;float m_u=0,m_v=0;bool m_pma=false,m_isHdrPqAuthored=false,m_isSdrSubtitle=false;
 };
 struct COverlayGlyphGLES:COverlay {
  @GLYPH_TYPES@

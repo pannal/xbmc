@@ -39,4 +39,5 @@ private:
   int             m_width;
   int             m_height;
   bool            m_pgsIsPqAuthored{false};
+  bool            m_pgsHdrSource{false};
 };

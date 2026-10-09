@@ -283,6 +283,8 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o,
               image.pixels.data());
 
   m_isHdrPqAuthored = o.m_isHdrPq && !m_rawPqMenu;
+  m_isSdrSubtitle = o.m_canPosition && !o.m_isHdrPqSource && !o.m_isHdrPq &&
+                    !o.m_isPqMenuGraphics && !o.IsDiscMenuOverlay();
   m_isBitmapOverlay = true;
 
   glGenerateMipmap(GL_TEXTURE_2D);
@@ -662,6 +664,11 @@ void COverlayTextureGLES::Render(SRenderState& state)
     glUniform1f(glGetUniformLocation(prog, "m_pqSaturation"), saturation);
     glUniform1f(glGetUniformLocation(prog, "m_pqTonemap"), tonemap);
     glUniform1f(glGetUniformLocation(prog, "m_pqMode"), mode);
+  }
+  else if (m_isSdrSubtitle && !m_discMenuOverlay && !m_rawPqMenu)
+  {
+    glUniform1f(renderSystem->GUIShaderGetSdrBrightness(), state.sdrBrightness);
+    glUniform1f(renderSystem->GUIShaderGetSdrSaturation(), state.sdrSaturation);
   }
 
   GLint posLoc = renderSystem->GUIShaderGetPos();

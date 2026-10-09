@@ -27,6 +27,8 @@ public:
   GLint GetCord1Loc() { return m_hCord1; }
   GLint GetDepthLoc() { return m_hDepth; }
   GLint GetPmaLoc() { return m_hPma; }
+  GLint GetSdrBrightnessLoc() { return m_hSdrBrightness; }
+  GLint GetSdrSaturationLoc() { return m_hSdrSaturation; }
   GLint GetUniColLoc() { return m_hUniCol; }
   GLint GetCoord0MatrixLoc() { return m_hCoord0Matrix; }
   GLint GetFieldLoc() { return m_hField; }
@@ -63,6 +65,8 @@ protected:
   GLint m_hBrightness = 0;
   GLint m_hDepth = 0;
   GLint m_hPma = 0;
+  GLint m_hSdrBrightness{-1};
+  GLint m_hSdrSaturation{-1};
 
   const GLfloat *m_proj;
   const GLfloat *m_model;

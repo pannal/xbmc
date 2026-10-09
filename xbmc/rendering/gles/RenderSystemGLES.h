@@ -146,6 +146,8 @@ public:
   GLint GUIShaderGetCoordStep();
   GLint GUIShaderGetDepth();
   GLint GUIShaderGetPma();
+  GLint GUIShaderGetSdrBrightness();
+  GLint GUIShaderGetSdrSaturation();
 
 protected:
   virtual bool IsPrimaryContextCurrent() const { return true; }

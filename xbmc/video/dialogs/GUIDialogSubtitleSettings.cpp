@@ -119,7 +119,9 @@ void CGUIDialogSubtitleSettings::OnSettingChanged(const std::shared_ptr<const CS
     appPlayer->SetSubtitle(m_subtitleStream);
   }
   else if (settingId == CSettings::SETTING_SUBTITLES_BITMAPPOSITION ||
-           settingId == CSettings::SETTING_SUBTITLES_BITMAPASPECT)
+           settingId == CSettings::SETTING_SUBTITLES_BITMAPASPECT ||
+           settingId == CSettings::SETTING_SUBTITLES_BITMAPSDRBRIGHTNESS ||
+           settingId == CSettings::SETTING_SUBTITLES_BITMAPSDRSATURATION)
   {
     CServiceBroker::GetSettingsComponent()->GetSettings()->SetInt(
         settingId, std::static_pointer_cast<const CSettingInt>(setting)->GetValue());
@@ -384,6 +386,17 @@ void CGUIDialogSubtitleSettings::InitializeSettings()
       SettingLevel::Basic, static_cast<float>(settings->GetNumber(CSettings::SETTING_SUBTITLES_BITMAPMARGIN)),
       14047, 0.0f, 0.1f, 10.0f);
   margin->SetHelp(69334);
+
+#if HAS_GLES >= 2
+  auto brightness = AddSlider(groupSubtitles, CSettings::SETTING_SUBTITLES_BITMAPSDRBRIGHTNESS,
+      69337, SettingLevel::Basic, settings->GetInt(CSettings::SETTING_SUBTITLES_BITMAPSDRBRIGHTNESS),
+      14047, 0, 5, 200);
+  brightness->SetHelp(69338);
+  auto saturation = AddSlider(groupSubtitles, CSettings::SETTING_SUBTITLES_BITMAPSDRSATURATION,
+      69339, SettingLevel::Basic, settings->GetInt(CSettings::SETTING_SUBTITLES_BITMAPSDRSATURATION),
+      14047, 0, 5, 200);
+  saturation->SetHelp(69340);
+#endif
 
   // subtitle stream setting
   AddButton(groupSaveAsDefault, SETTING_MAKE_DEFAULT, 12376, SettingLevel::Basic);

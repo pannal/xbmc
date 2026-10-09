@@ -1075,6 +1075,20 @@
             <formatlabel>14047</formatlabel>
           </control>
         </setting>
+        <setting id="subtitles.bitmapsdrbrightness" type="integer" label="69337" help="69338">
+          <requirement>has_glesv2</requirement>
+          <level>1</level>
+          <default>100</default>
+          <constraints><minimum>0</minimum><step>5</step><maximum>200</maximum></constraints>
+          <control type="slider" format="percentage" />
+        </setting>
+        <setting id="subtitles.bitmapsdrsaturation" type="integer" label="69339" help="69340">
+          <requirement>has_glesv2</requirement>
+          <level>1</level>
+          <default>100</default>
+          <constraints><minimum>0</minimum><step>5</step><maximum>200</maximum></constraints>
+          <control type="slider" format="percentage" />
+        </setting>
       </group>
       <group id="4" label="39187">
         <setting id="subtitles.parsecaptions" type="boolean" label="24130" help="24131">

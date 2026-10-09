@@ -227,6 +227,12 @@ CRenderer::PreparedOverlays CRenderer::PrepareRenderItems(const OverlayBatch& ov
       position == BitmapSubtitlePosition::TOP_PICTURE) ? static_cast<float>(settings->GetInt(CSettings::SETTING_SUBTITLES_BITMAPASPECT)) / 100.0f : 0.0f;
   const float margin = hasBitmap ? static_cast<float>(settings->GetNumber(CSettings::SETTING_SUBTITLES_BITMAPMARGIN)) : 0.0f;
   const float offset = hasBitmap ? CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->GetBitmapOffset() : 0.0f;
+#if HAS_GLES >= 2
+  const float sdrBrightness = hasBitmap ? static_cast<float>(settings->GetInt(
+      CSettings::SETTING_SUBTITLES_BITMAPSDRBRIGHTNESS)) / 100.0f : 1.0f;
+  const float sdrSaturation = hasBitmap ? static_cast<float>(settings->GetInt(
+      CSettings::SETTING_SUBTITLES_BITMAPSDRSATURATION)) / 100.0f : 1.0f;
+#endif
   const CRect active = GetBitmapSubtitleArea(m_rv, m_rd, m_activePicture, aspect);
   const CRect limit = m_restrictToActivePicture ? m_activePicture : m_rv;
   const bool stereo = (!m_stereomode.empty() && m_stereomode != "mono") ||
@@ -274,6 +280,12 @@ CRenderer::PreparedOverlays CRenderer::PrepareRenderItems(const OverlayBatch& ov
     }
     else
       item.state = CalculateRenderState(geometries[i]);
+#if HAS_GLES >= 2
+    // A retained cue uses current colour settings, captured once for this batch.
+    // The texture backend independently checks source and menu eligibility.
+    item.state.sdrBrightness = sdrBrightness;
+    item.state.sdrSaturation = sdrSaturation;
+#endif
     item.bounds = bounds(*item.overlay, item.state);
   }
   return items;

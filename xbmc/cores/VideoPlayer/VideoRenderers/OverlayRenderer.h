@@ -39,6 +39,8 @@ namespace OVERLAY {
     float y;
     float width;
     float height;
+    float sdrBrightness{1.0f};
+    float sdrSaturation{1.0f};
   };
 
   class COverlay

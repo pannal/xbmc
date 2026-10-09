@@ -163,6 +163,8 @@ public:
   static constexpr auto SETTING_SUBTITLES_BITMAPOFFSET = "subtitles.bitmapoffset";
   static constexpr auto SETTING_SUBTITLES_BITMAPASPECT = "subtitles.bitmapaspect";
   static constexpr auto SETTING_SUBTITLES_BITMAPMARGIN = "subtitles.bitmapmargin";
+  static constexpr auto SETTING_SUBTITLES_BITMAPSDRBRIGHTNESS = "subtitles.bitmapsdrbrightness";
+  static constexpr auto SETTING_SUBTITLES_BITMAPSDRSATURATION = "subtitles.bitmapsdrsaturation";
   static constexpr auto SETTING_SUBTITLES_DETECTACTIVEAREA = "subtitles.detectactivearea";
   static constexpr auto SETTING_SUBTITLES_BITMAPZOOM = "subtitles.bitmapzoom";
   static constexpr auto SETTING_SUBTITLES_PARSECAPTIONS = "subtitles.parsecaptions";
