@@ -26301,13 +26301,13 @@ msgstr ""
 #. "Dolby Vision Display Led Restrict Overlays"
 #: system/settings/settings.xml
 msgctxt "#60190"
-msgid "Restrict subtitles to DV active area"
+msgid "Restrict subtitles to active picture"
 msgstr ""
 
 #. "Dolby Vision Display Led Restrict Overlays"
 #: system/settings/settings.xml
 msgctxt "#60191"
-msgid "Reposition subtitles to fit within the Level 5 active content area. Applies to both text and image-based (PGS) subtitles. Enable if your display crops letterbox bars based on Level 5 metadata, hiding subtitles outside the active area."
+msgid "Constrain bitmap subtitles horizontally and vertically and text subtitles vertically to the visible picture, refined by native Dolby Vision L5 or valid detected borders. Applies to SDR, HDR and Dolby Vision. Player-added bars need no detection. Oversized bitmap dialogue keeps its size and may extend beyond the picture. This setting does not enable scanning or change Dolby signaling."
 msgstr ""
 
 #. "Dolby Vision Display Led Restrict Overlays - User Position"
@@ -26319,19 +26319,19 @@ msgstr ""
 #. "Dolby Vision Display Led Restrict Overlays - User Position"
 #: system/settings/settings.xml
 msgctxt "#60193"
-msgid "Apply the configured vertical subtitle margin within the active area. Also honors manual subtitle positioning if set. When off, subtitles are placed directly at the active area boundary."
+msgid "Apply the configured text subtitle margin within the active picture. Also honors manual text positioning where supported. Bitmap dialogue uses its own scaled margin and keeps split regions together."
 msgstr ""
 
 #. "Dolby Vision Detect Active Area"
 #: system/settings/settings.xml
 msgctxt "#60194"
-msgid "Detect active area"
+msgid "Detect Dolby Vision active area"
 msgstr ""
 
 #. "Dolby Vision Detect Active Area Help"
 #: system/settings/settings.xml
 msgctxt "#60195"
-msgid "Detect black borders at playback start when the source provides no Level 5 active area metadata. Samples frames spread across the file in a background thread. Results are snapped to common aspect ratios and require majority consensus. Variable aspect ratio content (e.g. IMAX scenes) is detected and skipped. Pre-cropped content (non-16:9 resolution) is recognised automatically. Disc sources (bluray/dvd) and MPEG-TS (m2ts/ts) containers are skipped since their seek behaviour is unreliable. Note: opens a separate file handle for scanning — on slow network shares (SMB) this may cause playback stutters or hangs on stop. Enable 'Throttle detection I/O' if affected. Disable this setting when viewing L5 reference/test videos that intentionally vary L5 metadata across sections — pixel-based detection cannot follow such variations."
+msgid "Scan Dolby Vision files for black borders when no nonzero source Level 5 area is available. The background probe samples seven positions and accepts at least six usable frames with stable borders; it cannot follow live aspect-ratio changes. Pre-cropped video needs no scan. Disc sources, MPEG-TS, multiple video streams, unsupported pixel formats and resolution changes are skipped. A separate file handle adds I/O; cache throttling is recommended for slow storage. Disable for reference videos with intentionally varying Level 5 metadata."
 msgstr ""
 
 #. "Dolby Vision Detect Active Area Throttle Label"
@@ -26343,7 +26343,7 @@ msgstr ""
 #. "Dolby Vision Detect Active Area Throttle Help"
 #: system/settings/settings.xml
 msgctxt "#60197"
-msgid "Reduce the I/O impact of active area detection on playback. Detection waits for the player's cache to build up before each scan position so its reads don't starve playback, and skips entirely if the source is too slow to scan without stalling. Recommended; disable only to force detection to run immediately regardless of buffer state. Helps with stuttering on slow network shares (e.g. SMB) or USB storage."
+msgid "Throttle Dolby Vision border detection using the playback cache. Waits for sufficient buffered data before each scan position and skips slow sources. Recommended for slow network shares or USB storage. Disabling this setting lets the Dolby Vision probe run without cache protection. Non-Dolby-Vision subtitle detection always uses cache protection."
 msgstr ""
 
 #. "Dolby Vision Display LL Dolby VSVDB Limit"
@@ -27483,4 +27483,142 @@ msgstr ""
 
 msgctxt "#60352"
 msgid "{0} (from: {1})"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69314"
+msgid "Bitmap subtitle position"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69315"
+msgid "Position PGS and VobSub dialogue as one block after zoom. Original keeps authored placement. Picture-edge modes use the active picture; screen-edge modes use the screen. Active-area restriction takes precedence over screen modes and manual offsets. Custom positioning excludes top captions, large graphics, disc menus and stereo content. Existing confinement still applies to other bitmap overlays. Oversized dialogue keeps its size and layout and may extend beyond the active area."
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69316"
+msgid "Original position"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69317"
+msgid "Bottom of picture"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69318"
+msgid "Top of picture"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69319"
+msgid "Bottom of screen"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69320"
+msgid "Top of screen"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69321"
+msgid "Manual offset"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69322"
+msgid "Bitmap subtitle offset"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69323"
+msgid "Move bitmap dialogue by a percentage of screen height. Positive values move it up; negative values move it down. Kodi subtitle shift actions use the same offset in Manual mode. Actions are temporary unless explicitly saved; GUI changes are saved. Active-area restriction takes precedence."
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69324"
+msgid "Bitmap subtitle picture aspect"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69325"
+msgid "Refine the active picture aspect for picture-edge positioning. Auto uses the visible video rectangle, current native Dolby Vision L5 or valid detected borders. An override can narrow this area but cannot enlarge it. This affects bitmap placement only, not detection, video output or text subtitles."
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69326"
+msgid "Auto"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69327"
+msgid "1.78:1"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69328"
+msgid "1.85:1"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69329"
+msgid "2.00:1"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69330"
+msgid "2.35:1"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69331"
+msgid "2.39:1"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69332"
+msgid "2.40:1"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69333"
+msgid "Bitmap subtitle margin"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69334"
+msgid "Minimum vertical padding as a percentage of screen height for positioned or confined bitmap dialogue. Picture-edge modes also preserve scaled authoring padding where possible. Original without active-area restriction is unchanged. Oversized blocks retain their layout instead of being shrunk or clipped."
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69335"
+msgid "Detect active picture for non-DV subtitles"
+msgstr ""
+
+#. Subtitle placement
+#: system/settings/settings.xml
+msgctxt "#69336"
+msgid "Optionally probe files during Amlogic SDR/HDR playback for stable encoded black borders. Player-added bars need no scan. Uses separate reads, seeks and software decoding and can compete with playback. Cache throttling is always applied to non-DV scans. Dark, inconsistent, variable-aspect, unsupported and unreadable sources fall back to the visible video rectangle. No live aspect tracking or Dolby metadata is produced. Changes apply on next playback."
 msgstr ""

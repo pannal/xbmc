@@ -1,4 +1,5 @@
-set(SOURCES BaseRenderer.cpp
+set(SOURCES BitmapSubtitlePosition.cpp
+            BaseRenderer.cpp
             ColorManager.cpp
             OverlayRenderer.cpp
             OverlayRendererUtil.cpp
@@ -8,7 +9,8 @@ set(SOURCES BaseRenderer.cpp
             RenderManager.cpp
             DebugRenderer.cpp)
 
-set(HEADERS AMLPresenter.h
+set(HEADERS BitmapSubtitlePosition.h
+            AMLPresenter.h
             BaseRenderer.h
             ColorManager.h
             DebugInfo.h

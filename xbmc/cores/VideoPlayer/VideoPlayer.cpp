@@ -837,7 +837,7 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
     params.m_options = options;
     params.m_item.SetMimeTypeForInternetFile();
     m_messenger.Put(std::make_shared<CDVDMsgOpenFile>(params), 1);
-    aml_dv_detect_set_file(file.GetDynPath());
+    aml_subtitle_active_area_invalidate();
 
     return true;
   }
@@ -3807,6 +3807,7 @@ void CVideoPlayer::HandleMessages()
       });
 
       m_item = msg.GetItem();
+      aml_dv_detect_set_file(m_item.GetDynPath());
       m_playerOptions = msg.GetOptions();
 
       m_processInfo->SetPlayTimes(0,0,0,0);
@@ -5138,6 +5139,7 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
 
 bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
 {
+  hint.subtitleProbeSource = aml_subtitle_active_area_source();
   m_processInfo->SetVideoInterlaced((hint.codecOptions & CODEC_INTERLACED) == CODEC_INTERLACED);
   if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
   {
@@ -5442,6 +5444,9 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::function<void()> complete)
 {
+#if defined(HAS_LIBAMCODEC)
+  aml_subtitle_active_area_invalidate();
+#endif
   m_vs10Action.Suspend();
   if (m_pendingFlush)
   {
@@ -7298,6 +7303,7 @@ void CVideoPlayer::GetSubtitleStreamInfo(int index, SubtitleStreamInfo& info) co
 
   const SelectionStream& s = m_content.m_selectionStreams.Get(STREAM_SUBTITLE, index);
   info.name = s.name;
+  info.codecName = s.codec;
 
   if (s.type == STREAM_NONE)
     info.name += "(Invalid)";

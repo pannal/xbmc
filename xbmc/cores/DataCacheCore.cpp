@@ -8,6 +8,9 @@
 
 #include "DataCacheCore.h"
 
+#include <cmath>
+#include <limits>
+
 #include "DVDStreamInfo.h"
 #include "ServiceBroker.h"
 #include "cores/EdlEdit.h"
@@ -320,6 +323,23 @@ DOVIFrameMetadata CDataCacheCore::GetVideoDoViFrameMetadata()
   if (doviFrameMetadata != m_playerVideoInfo.doviFrameMetadataMap.end())
     return doviFrameMetadata->second;
   return {};
+}
+
+DOVIFrameMetadata CDataCacheCore::GetVideoDoViFrameMetadata(double pts)
+{
+  std::unique_lock<CCriticalSection> lock(m_videoPlayerSection);
+  if (pts < 0.0 || !std::isfinite(pts) ||
+      pts >= static_cast<double>(std::numeric_limits<uint64_t>::max()))
+    return {};
+  const auto metadata = m_playerVideoInfo.doviFrameMetadataMap.find(static_cast<uint64_t>(pts));
+  return metadata != m_playerVideoInfo.doviFrameMetadataMap.end() ? metadata->second
+                                                               : DOVIFrameMetadata{};
+}
+
+void CDataCacheCore::ClearVideoDoViFrameMetadata()
+{
+  std::unique_lock<CCriticalSection> lock(m_videoPlayerSection);
+  m_playerVideoInfo.doviFrameMetadataMap = {};
 }
 
 void CDataCacheCore::SetVideoDoViStreamMetadata(DOVIStreamMetadata value)

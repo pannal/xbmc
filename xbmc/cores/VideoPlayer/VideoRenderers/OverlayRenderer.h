@@ -90,6 +90,7 @@ namespace OVERLAY {
     int m_3dSubtitleDepth{0};
     bool m_pgsSubtitle{false};
     bool m_isBitmapOverlay{false};
+    bool m_canPosition{false};
     bool m_discMenuOverlay{false};
     // Built for the disc menu composite's raw PQ layer (see CWinSystemBase).
     bool m_rawPqMenu{false};
@@ -167,7 +168,17 @@ namespace OVERLAY {
     bool HasPqMenuOverlay(const OverlayBatch& overlays);
     // Only those, drawn raw, for the disc menu composite's PQ layer.
     void RenderPqMenu(const OverlayBatch& overlays);
-    bool HasImageSubOutsideActiveArea(const OverlayBatch& overlays, int l5Top, int l5Bottom);
+    struct SRenderItem
+    {
+      std::shared_ptr<COverlay> overlay;
+      SRenderState state;
+      CRect bounds;
+    };
+    using PreparedOverlays = std::vector<SRenderItem>;
+    PreparedOverlays PrepareRenderItems(const OverlayBatch& overlays);
+    void RenderPrepared(const PreparedOverlays& items, const OverlayBatch& overlays);
+    static bool HasImageSubOutsideActiveArea(const PreparedOverlays& items, const CRect& active);
+    void SetActivePicture(const CRect& area, bool restrictToArea, bool applyUserPos);
     void SetVideoRect(CRect &source, CRect &dest, CRect &view);
     void SetStereoMode(const std::string &stereomode);
     /*!
@@ -216,7 +227,7 @@ namespace OVERLAY {
       float bitmapZoom{1.0f};
     };
 
-    SRenderGeometry PrepareRenderGeometry(const COverlay& overlay) const;
+    SRenderGeometry PrepareRenderGeometry(const COverlay& overlay, float bitmapZoom = -1.0f) const;
     static SRenderState CalculateRenderState(const SRenderGeometry& geometry);
 
     // Synchronous submission only: retains the conversion until Render returns
@@ -266,6 +277,8 @@ namespace OVERLAY {
     CRect m_rs; // Source size
     CRect m_rd; // Video size, may be influenced by video settings (e.g. zoom)
     std::string m_stereomode;
+    CRect m_activePicture;
+    bool m_restrictToActivePicture{false};
     int m_activeAreaTopOffset{0};
     int m_activeAreaBottomOffset{0};
     bool m_activeAreaApplyUserPos{false};

@@ -159,6 +159,11 @@ public:
   static constexpr auto SETTING_SUBTITLES_PGSHDRTOSDR_TONEMAP = "subtitles.pgshdrtosdr.tonemap";
   static constexpr auto SETTING_SUBTITLES_PGSHDRTOSDR_MODE = "subtitles.pgshdrtosdr.mode";
   static constexpr auto SETTING_SUBTITLES_DISCMENUHDR = "subtitles.discmenuhdr";
+  static constexpr auto SETTING_SUBTITLES_BITMAPPOSITION = "subtitles.bitmapposition";
+  static constexpr auto SETTING_SUBTITLES_BITMAPOFFSET = "subtitles.bitmapoffset";
+  static constexpr auto SETTING_SUBTITLES_BITMAPASPECT = "subtitles.bitmapaspect";
+  static constexpr auto SETTING_SUBTITLES_BITMAPMARGIN = "subtitles.bitmapmargin";
+  static constexpr auto SETTING_SUBTITLES_DETECTACTIVEAREA = "subtitles.detectactivearea";
   static constexpr auto SETTING_SUBTITLES_BITMAPZOOM = "subtitles.bitmapzoom";
   static constexpr auto SETTING_SUBTITLES_PARSECAPTIONS = "subtitles.parsecaptions";
   static constexpr auto SETTING_SUBTITLES_CAPTIONSALIGN = "subtitles.captionsalign";

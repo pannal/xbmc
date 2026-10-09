@@ -17,6 +17,8 @@ extern "C"
 }
 #include "DVDClock.h"
 
+#include <memory>
+
 #define CODEC_FORCE_SOFTWARE 0x01
 #define CODEC_ALLOW_FALLBACK 0x02
 #define CODEC_INTERLACED     0x40
@@ -138,6 +140,8 @@ public:
   int orientation; // orientation of the video in degrees counter clockwise
   int bitsperpixel;
   int bitdepth;
+  // Exact source selection for optional active-picture file probing.
+  std::shared_ptr<const void> subtitleProbeSource;
   StreamHdrType hdrType;
   AVColorSpace colorSpace;
   AVColorRange colorRange;

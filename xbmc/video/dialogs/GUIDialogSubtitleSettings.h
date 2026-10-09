@@ -42,6 +42,7 @@ protected:
 
   // specialization of CGUIDialogSettingsManualBase
   void InitializeSettings() override;
+  void OnDeinitWindow(int nextWindowID) override;
 
 private:
   bool SupportsSubtitleFeature(int feature);
@@ -51,6 +52,7 @@ private:
 
   int m_subtitleStream;
   bool m_subtitleVisible;
+  bool m_bitmapSettingsChanged{false};
   std::shared_ptr<CSettingInt> m_subtitleStreamSetting;
 
   std::vector<int> m_subtitleCapabilities;

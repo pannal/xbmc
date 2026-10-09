@@ -226,6 +226,15 @@ void aml_dv_set_xbmc_osd();
 void aml_set_disc_menu_visible(bool visible);
 bool aml_dv_use_active_area();
 int aml_dv_l5_subs_signal_mode();
+// Geometry publication is separate from DV injection and bound to source lifetime.
+std::shared_ptr<const void> aml_subtitle_active_area_source();
+bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bool allowProbe,
+                                      const std::shared_ptr<const void>& expectedSource);
+void aml_subtitle_active_area_invalidate(); // CPU-only, nonblocking cancellation
+bool aml_subtitle_native_dv();
+bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
+    uint16_t& bottom, uint16_t& left, uint16_t& right);
+bool aml_dv_get_l5_override(uint16_t& top, uint16_t& bottom, uint16_t& left, uint16_t& right);
 bool aml_dv_detect_active_area_enabled();
 bool aml_dv_detect_active_area_stable();
 void aml_dv_detect_active_area_get(uint16_t& top, uint16_t& bottom, uint16_t& left, uint16_t& right);

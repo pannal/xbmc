@@ -13,6 +13,8 @@
 #include "utils/Observer.h"
 
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 
 class CSetting;
@@ -202,6 +204,13 @@ public:
    */
   float GetVerticalMarginPerc();
 
+  // GUI preferences and shift actions share this resolution-independent offset.
+  // Actions are transient unless explicitly marked save; disk I/O waits for Stop.
+  float GetBitmapOffset();
+  void SetBitmapOffset(float percent, bool save);
+  void SetBitmapPreference(float percent);
+  void EndBitmapPosition();
+
   static void SettingOptionsSubtitleFontsFiller(const std::shared_ptr<const CSetting>& setting,
                                                 std::vector<StringSettingOption>& list,
                                                 std::string& current,
@@ -211,6 +220,9 @@ private:
   CSubtitlesSettings() = delete;
 
   const std::shared_ptr<CSettings> m_settings;
+  std::mutex m_bitmapPositionMutex;
+  std::optional<float> m_bitmapOffset;
+  std::optional<float> m_bitmapSavedOffset;
 };
 
 } // namespace SUBTITLES

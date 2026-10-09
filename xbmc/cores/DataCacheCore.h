@@ -75,6 +75,9 @@ public:
   AVColorTransferCharacteristic GetVideoColorTransferCharacteristic();
   void SetVideoDoViFrameMetadata(DOVIFrameMetadata value);
   DOVIFrameMetadata GetVideoDoViFrameMetadata();
+  // Exact presented PTS only: overlay geometry must not borrow the latest decode.
+  DOVIFrameMetadata GetVideoDoViFrameMetadata(double pts);
+  void ClearVideoDoViFrameMetadata();
   void SetVideoDoViStreamMetadata(DOVIStreamMetadata value);
   DOVIStreamMetadata GetVideoDoViStreamMetadata();
   void SetVideoDoViStreamInfo(DOVIStreamInfo value);

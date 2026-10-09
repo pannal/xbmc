@@ -16,6 +16,8 @@
 #include "utils/FontUtils.h"
 #include "utils/URIUtils.h"
 
+#include <algorithm>
+
 using namespace KODI;
 using namespace SUBTITLES;
 
@@ -35,7 +37,7 @@ CSubtitlesSettings::CSubtitlesSettings(const std::shared_ptr<CSettings>& setting
        CSettings::SETTING_SUBTITLES_SHADOWOPACITY,  CSettings::SETTING_SUBTITLES_SHADOWSIZE,
        CSettings::SETTING_SUBTITLES_MARGINVERTICAL, CSettings::SETTING_SUBTITLES_CHARSET,
        CSettings::SETTING_SUBTITLES_OVERRIDEFONTS,  CSettings::SETTING_SUBTITLES_OVERRIDESTYLES,
-       CSettings::SETTING_SUBTITLES_OVERRIDEASS,
+       CSettings::SETTING_SUBTITLES_OVERRIDEASS, CSettings::SETTING_SUBTITLES_BITMAPOFFSET,
        CSettings::SETTING_SUBTITLES_LANGUAGES,      CSettings::SETTING_SUBTITLES_STORAGEMODE,
        CSettings::SETTING_SUBTITLES_CUSTOMPATH,     CSettings::SETTING_SUBTITLES_PAUSEONSEARCH,
        CSettings::SETTING_SUBTITLES_DOWNLOADFIRST,  CSettings::SETTING_SUBTITLES_TV,
@@ -52,6 +54,13 @@ void CSubtitlesSettings::OnSettingChanged(const std::shared_ptr<const CSetting>&
   if (setting == nullptr)
     return;
 
+  if (setting->GetId() == CSettings::SETTING_SUBTITLES_BITMAPOFFSET)
+  {
+    std::lock_guard<std::mutex> lock(m_bitmapPositionMutex);
+    m_bitmapOffset.reset();
+    m_bitmapSavedOffset.reset();
+    return;
+  }
   SetChanged();
   NotifyObservers(ObservableMessageSettingsChanged);
   if (setting->GetId() == CSettings::SETTING_SUBTITLES_ALIGN)
@@ -172,6 +181,51 @@ float CSubtitlesSettings::GetVerticalMarginPerc()
   // We return the vertical margin as percentage
   // to fit the current screen resolution
   return static_cast<float>(m_settings->GetNumber(CSettings::SETTING_SUBTITLES_MARGINVERTICAL));
+}
+
+float CSubtitlesSettings::GetBitmapOffset()
+{
+  // Settings callbacks run under the setting lock; never acquire it while
+  // holding the action-state mutex (the callback takes this same mutex).
+  const float saved = static_cast<float>(m_settings->GetNumber(CSettings::SETTING_SUBTITLES_BITMAPOFFSET));
+  std::lock_guard<std::mutex> lock(m_bitmapPositionMutex);
+  return m_bitmapOffset.value_or(saved);
+}
+
+void CSubtitlesSettings::SetBitmapOffset(float percent, bool save)
+{
+  std::lock_guard<std::mutex> lock(m_bitmapPositionMutex);
+  m_bitmapOffset = std::clamp(percent, -100.0f, 100.0f);
+  if (save)
+    m_bitmapSavedOffset = m_bitmapOffset;
+}
+
+void CSubtitlesSettings::SetBitmapPreference(float percent)
+{
+  {
+    std::lock_guard<std::mutex> lock(m_bitmapPositionMutex);
+    m_bitmapOffset.reset();
+    m_bitmapSavedOffset.reset();
+  }
+  // Clear transient/save state even when SetNumber sees an unchanged value and
+  // deliberately does not call observers.
+  m_settings->SetNumber(CSettings::SETTING_SUBTITLES_BITMAPOFFSET, static_cast<double>(percent));
+}
+
+void CSubtitlesSettings::EndBitmapPosition()
+{
+  std::optional<float> saved;
+  {
+    std::lock_guard<std::mutex> lock(m_bitmapPositionMutex);
+    saved = m_bitmapSavedOffset;
+    m_bitmapOffset.reset();
+    m_bitmapSavedOffset.reset();
+  }
+  if (saved)
+  {
+    m_settings->SetNumber(CSettings::SETTING_SUBTITLES_BITMAPOFFSET, static_cast<double>(*saved));
+    m_settings->Save();
+  }
 }
 
 void CSubtitlesSettings::SettingOptionsSubtitleFontsFiller(const SettingConstPtr& setting,

@@ -18,9 +18,12 @@ static void AcrossSessions(){
   CAMLSession other;OpenSession(other);CAMLCodec codec;assert(codec.OpenDecoder());codec.trace.clear();
   auto held=std::make_unique<CAMLSession::Permit>(other.AcquireDecoder());assert(*held);
   const auto epoch=codec.m_session.Epoch();
+  const int invalidations=subtitleInvalidations;
   assert(!codec.Reset());auto token=codec.m_nativeLifecycleRequest;assert(token);
+  assert(subtitleInvalidations==invalidations+1);
   for(int i=0;i<4;++i){assert(!codec.ContinueLifecycle());assert(codec.m_nativeLifecycleRequest==token);}
   assert(codec.trace.empty() && codec.m_session.Epoch()==epoch);
+  assert(subtitleInvalidations==invalidations+1);
   CAMLSession newcomer;assert(!newcomer.BeginMutation(newcomer.Fence()));
   auto display=CAMLSession::FenceDisplay();assert(!CAMLSession::TryBeginDisplay(display));
   held.reset();assert(CAMLSession::TryBeginDisplay(display));

@@ -290,6 +290,8 @@ std::shared_ptr<CDVDOverlay> CDVDOverlayCodecFFmpeg::GetOverlay()
     }
 
     auto overlay = std::make_shared<CDVDOverlayImage>();
+    overlay->m_canPosition = m_pCodecContext->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE ||
+                             m_pCodecContext->codec_id == AV_CODEC_ID_DVD_SUBTITLE;
 
     overlay->iPTSStartTime = m_StartTime;
     overlay->iPTSStopTime = m_StopTime;

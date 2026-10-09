@@ -729,10 +729,7 @@ static void set_dv_settings_visible(bool show)
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_SOURCE_LEVEL_5, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_SOURCE_LEVEL_5_OSDST, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5_SIGNAL_SUBS, show);
-  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_ACTIVE_AREA, show);
-  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_USER_POS, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA, show);
-  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_THROTTLE, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR8, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR10, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_BOOST, show);

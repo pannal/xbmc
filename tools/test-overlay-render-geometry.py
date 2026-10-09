@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 function = runpy.run_path(str(ROOT / 'tools/test-render-slot-publication.py'))['function']
 
 
-def main():
+def harness():
     path = ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers'
     header = (path / 'OverlayRenderer.h').read_text()
     renderer = (path / 'OverlayRenderer.cpp').read_text()
@@ -26,15 +26,24 @@ def main():
     source = (PRELUDE.replace('@STATE@', function(header, 'struct SRenderState') + ';')
               .replace('@FIELDS@', fields)
               .replace('@GEOMETRY@', function(header, 'struct SRenderGeometry') + ';')
+              .replace('@ITEM@', function(header, 'struct SRenderItem') + ';')
               .replace('@ELEMENT@', function(header, 'struct SElement') + ';'))
     for signature in ['bool IsPqMenuImage(',
                       'CRenderer::SRenderGeometry CRenderer::PrepareRenderGeometry(',
                       'SRenderState CRenderer::CalculateRenderState(',
                       'void CRenderer::Render(std::shared_ptr<COverlay>',
                       'void CRenderer::Render(const OverlayBatch&',
+                      'CRenderer::PreparedOverlays CRenderer::PrepareRenderItems(',
+                      'void CRenderer::RenderPrepared(',
+                      'bool CRenderer::HasImageSubOutsideActiveArea(',
                       'void CRenderer::RenderPqMenu(']:
         source += '\n' + function(renderer, signature)
-    source += TESTS
+    return source
+
+
+def main():
+    path = ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers'
+    source = harness() + TESTS
     with tempfile.TemporaryDirectory(prefix='overlay-geometry-test-') as temporary:
         out = Path(temporary)
         (out / 'PlatformDefs.h').write_text('#pragma once\n#define PIXEL_ASHIFT 24\n')
@@ -42,7 +51,7 @@ def main():
         subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++17', '-Wall', '-Wextra', '-Werror',
                         '-Wno-unused-parameter', '-fsanitize=address,undefined',
                         '-fno-omit-frame-pointer', '-I', str(out), '-I', str(ROOT / 'xbmc'),
-                        str(out / 'test.cpp'), '-o', str(out / 'test')], check=True)
+                        str(out / 'test.cpp'), str(path / 'BitmapSubtitlePosition.cpp'), '-o', str(out / 'test')], check=True)
         subprocess.run([str(out / 'test')], check=True)
     print('Overlay geometry: PASS (production capture/calculation/pass/submission; ASan/UBSan; GPU/services stubbed)')
 
@@ -58,6 +67,8 @@ PRELUDE = r'''
 #include <thread>
 #include <vector>
 #include "utils/Geometry.h"
+#include "cores/VideoPlayer/VideoRenderers/BitmapSubtitlePosition.h"
+using namespace OVERLAY;
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
 using CCriticalSection = std::recursive_mutex;
 const auto ownerThread = std::this_thread::get_id();
@@ -71,18 +82,26 @@ struct Services {
   Info GetResInfo(){++calibrationReads;return info;}
   Services& GetGfxContext(){return *this;}
   Services* GetSettings(){return this;}
-  int GetInt(int){++zoomReads;if(failZoom)throw std::runtime_error("settings");return zoom;}
+  int position=0,aspect=0;float margin=1,offset=0;
+  int GetInt(int id){if(id==2)return position;if(id==3)return aspect;
+    ++zoomReads;if(failZoom)throw std::runtime_error("settings");return zoom;}
+  double GetNumber(int){return static_cast<double>(margin);}
+  Services* GetSubtitlesSettings(){return this;}
+  float GetBitmapOffset(){return offset;}
+  int stereo=0;int GetStereoMode(){return stereo;}
   bool active=false,pending=false;
-  bool IsMenuCompositeActive(){return active;}
-  bool IsMenuCompositePending(){return pending;}
+  bool IsMenuCompositeActive()const{return active;}
+  bool IsMenuCompositePending()const{return pending;}
 } services;
 using RESOLUTION_INFO=Services::Info;
 using CWinSystemBase=Services;
+constexpr int RENDER_STEREO_MODE_OFF=0;
 struct CServiceBroker {
   static Services* GetWinSystem(){return &services;}
   static Services* GetSettingsComponent(){return &services;}
 };
-struct CSettings {static constexpr int SETTING_SUBTITLES_BITMAPZOOM=1;};
+struct CSettings {static constexpr int SETTING_SUBTITLES_BITMAPZOOM=1,
+  SETTING_SUBTITLES_BITMAPPOSITION=2,SETTING_SUBTITLES_BITMAPASPECT=3,SETTING_SUBTITLES_BITMAPMARGIN=4;};
 int GetStereoscopicDepth(bool pgs,int depth){
   ++services.depthReads;services.lastDepth=depth;services.lastPgs=pgs;return services.depth;
 }
@@ -98,19 +117,27 @@ struct COverlay {
 struct CRenderer {
 @GEOMETRY@
 @ELEMENT@
+@ITEM@
+  using PreparedOverlays=std::vector<SRenderItem>;
   using OverlayBatch=std::vector<SElement>;
   CCriticalSection m_section;
   CRect m_rs{0,0,1920,1080},m_rd{0,0,1920,1080},m_rv{0,0,1920,1080};
   int m_activeAreaTopOffset=0,m_activeAreaBottomOffset=0;
+  CRect m_activePicture{0,0,1920,1080};bool m_restrictToActivePicture=false;
+  std::string m_stereomode;
   std::shared_ptr<COverlay> converted;
   int conversions=0,releases=0;
-  std::shared_ptr<COverlay> Convert(const CDVDOverlay&,double){++conversions;return converted;}
+  std::function<std::shared_ptr<COverlay>(const CDVDOverlay&)> conversion;
+  std::shared_ptr<COverlay> Convert(const CDVDOverlay& o,double){++conversions;return conversion?conversion(o):converted;}
   void ReleaseUnused(const OverlayBatch&){++releases;}
-  SRenderGeometry PrepareRenderGeometry(const COverlay&) const;
+  SRenderGeometry PrepareRenderGeometry(const COverlay&,float=-1.0f) const;
   static SRenderState CalculateRenderState(const SRenderGeometry&);
   void Render(std::shared_ptr<COverlay> overlay);
   void Render(const OverlayBatch&);
   void RenderPqMenu(const OverlayBatch&);
+  PreparedOverlays PrepareRenderItems(const OverlayBatch&);
+  void RenderPrepared(const PreparedOverlays&,const OverlayBatch&);
+  static bool HasImageSubOutsideActiveArea(const PreparedOverlays&,const CRect&);
 };
 void expect(SRenderState s,float x,float y,float w,float h){
   assert(std::abs(s.x-x)<0.002f);assert(std::abs(s.y-y)<0.002f);

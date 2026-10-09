@@ -2341,6 +2341,11 @@ bool aml_dv_l5_override_active()
   return _l5_override_parse(t, b, l, r);
 }
 
+bool aml_dv_get_l5_override(uint16_t& top, uint16_t& bottom, uint16_t& left, uint16_t& right)
+{
+  return _l5_override_parse(top, bottom, left, right);
+}
+
 /* ---- Auto-letterbox L5 for cropped (non-16:9) content ---------------------
  * When a Dolby Vision encode has its black bars cropped off (e.g. 3840x1600),
  * the player pads it back to a 16:9 output and a DV positive-lift trim would
@@ -2699,35 +2704,105 @@ static std::atomic<uint16_t> s_detectedBottom{0};
 static std::atomic<uint16_t> s_detectedLeft{0};
 static std::atomic<uint16_t> s_detectedRight{0};
 
+static CAMLNativeWorker s_detectWorker;
+struct DetectResult
+{
+  uint16_t top, bottom, left, right;
+};
+struct DetectSource
+{
+  explicit DetectSource(std::string value, int w = 0, int h = 0,
+                        bool native = false, bool probe = false,
+                        std::shared_ptr<const void> selected = {})
+    : path(std::move(value)), width(w), height(h), nativeDV(native), allowProbe(probe),
+      selection(selected ? std::move(selected) : std::make_shared<const unsigned char>(0)) {}
+  const std::string path;
+  const int width;
+  const int height;
+  const bool nativeDV;
+  const bool allowProbe;
+  const std::shared_ptr<const void> selection;
+  const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
+  std::shared_ptr<const DetectResult> result; // protected by s_detectSourceMutex
+};
+static std::mutex s_detectSourceMutex;
+static std::shared_ptr<DetectSource> s_detectSource = std::make_shared<DetectSource>("");
+static std::atomic<bool> s_detectInjected{false};
+
+std::shared_ptr<const void> aml_subtitle_active_area_source()
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  return s_detectSource->selection;
+}
+
+bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bool allowProbe,
+                                      const std::shared_ptr<const void>& expectedSource)
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  if (!expectedSource || expectedSource != s_detectSource->selection)
+    return false;
+  s_detectSource->superseded->store(true);
+  s_detectSource = std::make_shared<DetectSource>(s_detectSource->path, width, height,
+                                                 nativeDV, allowProbe, expectedSource);
+  s_detectStable.store(false);
+  return true;
+}
+
+void aml_subtitle_active_area_invalidate()
+{
+  // No join, I/O or native admission on the seek/lifecycle request thread.
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  s_detectSource->superseded->store(true);
+  s_detectSource->result.reset();
+  s_detectStable.store(false);
+  CServiceBroker::GetDataCacheCore().ClearVideoDoViFrameMetadata();
+}
+
+bool aml_subtitle_native_dv()
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  return s_detectSource->nativeDV && s_detectSource->width > 0 && s_detectSource->height > 0;
+}
+
+bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
+    uint16_t& bottom, uint16_t& left, uint16_t& right)
+{
+  top = bottom = left = right = 0;
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  const auto& source = s_detectSource;
+  const bool enabled = source->nativeDV ? aml_dv_detect_active_area_enabled()
+      : settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA);
+  if (!enabled || source->superseded->load() || !source->result ||
+      source->width != width || source->height != height)
+    return false;
+  const auto& result = *source->result;
+  top = result.top; bottom = result.bottom; left = result.left; right = result.right;
+  return true;
+}
+
 bool aml_dv_detect_active_area_stable()
 {
-  return s_detectStable.load();
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  return s_detectSource->nativeDV && !s_detectSource->superseded->load() && s_detectStable.load();
 }
 
 int aml_dv_detect_active_area_state()
 {
-  if (!aml_dv_detect_active_area_enabled())
+  if (!aml_dv_detect_active_area_enabled() || !aml_subtitle_native_dv())
     return DV_DETECT_INACTIVE;
   return s_detectState.load();
 }
 
 void aml_dv_detect_active_area_get(uint16_t& top, uint16_t& bottom, uint16_t& left, uint16_t& right)
 {
-  top = s_detectedTop.load();
-  bottom = s_detectedBottom.load();
-  left = s_detectedLeft.load();
-  right = s_detectedRight.load();
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  top = bottom = left = right = 0;
+  if (s_detectSource->nativeDV && !s_detectSource->superseded->load() && s_detectSource->result)
+  {
+    const auto& result = *s_detectSource->result;
+    top = result.top; bottom = result.bottom; left = result.left; right = result.right;
+  }
 }
-
-static CAMLNativeWorker s_detectWorker;
-struct DetectSource
-{
-  explicit DetectSource(std::string value) : path(std::move(value)) {}
-  const std::string path;
-  const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
-};
-static std::mutex s_detectSourceMutex;
-static std::shared_ptr<DetectSource> s_detectSource = std::make_shared<DetectSource>("");
 
 /* Mid-read cache guard.  The between-seek wait (detect_wait_for_cache) can't
  * interrupt a single in-flight read: on a slow device one far-offset keyframe
@@ -2834,51 +2909,61 @@ static int detect_wait_for_cache(const CAMLNativeWorker::Run& run, int targetPct
 }
 
 static void detect_publish(const CAMLNativeWorker::Run& run,
+                           const std::shared_ptr<DetectSource>& source,
                            uint16_t detTop, uint16_t detBottom,
                            uint16_t detLeft, uint16_t detRight)
 {
+  {
+    std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+    if (run.Cancelled() || source != s_detectSource || source->superseded->load() ||
+        detTop + detBottom >= source->height || detLeft + detRight >= source->width)
+      return;
+    source->result = std::make_shared<const DetectResult>(DetectResult{detTop, detBottom, detLeft, detRight});
+    s_detectedTop.store(detTop); s_detectedBottom.store(detBottom);
+    s_detectedLeft.store(detLeft); s_detectedRight.store(detRight);
+    s_detectState.store(DV_DETECT_OK);
+    s_detectStable.store(true);
+  }
+  // Geometry-only scans never enter native admission or write Dolby state.
+  if (!source->nativeDV || !aml_dv_detect_active_area_enabled())
+    return;
   CAMLNativeTransaction native;
   if (!run.Admit(native))
     return;
-  /* Check if source already provides non-zero L5 — by now the RPU will have
-   * been parsed and DataCacheCore populated. Don't override valid source L5. */
-  {
-    auto srcMeta = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
-    if (srcMeta.has_level5_metadata &&
-        (srcMeta.level5_active_area_top_offset || srcMeta.level5_active_area_bottom_offset ||
-         srcMeta.level5_active_area_left_offset || srcMeta.level5_active_area_right_offset))
-    {
-      CLog::Log(LOGDEBUG, "DetectActiveArea: source has L5 (T={} B={}) — skipping injection",
-                srcMeta.level5_active_area_top_offset, srcMeta.level5_active_area_bottom_offset);
-      s_detectState.store(DV_DETECT_SKIPPED);
-      s_detectStable.store(true);
-      return;
-    }
-  }
-
-  /* Publish results */
-  s_detectedTop.store(detTop);
-  s_detectedBottom.store(detBottom);
-  s_detectedLeft.store(detLeft);
-  s_detectedRight.store(detRight);
-
-  /* Write to kernel for L5 injection */
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  if (run.Cancelled() || source != s_detectSource || source->superseded->load() ||
+      !aml_dv_detect_active_area_enabled())
+    return;
+  const auto metadata = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
+  if (metadata.has_level5_metadata && !metadata.level5_detected &&
+      (metadata.level5_active_area_top_offset || metadata.level5_active_area_bottom_offset ||
+       metadata.level5_active_area_left_offset || metadata.level5_active_area_right_offset))
+    return;
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_top", detTop);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_bottom", detBottom);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_left", detLeft);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_right", detRight);
-
-  s_detectState.store(DV_DETECT_OK);
-  s_detectStable.store(true);
-
-  if (detTop || detBottom || detLeft || detRight)
-    CLog::Log(LOGINFO, "DetectActiveArea: kernel L5 updated");
-  else
-    CLog::Log(LOGDEBUG, "DetectActiveArea: no borders found");
+  s_detectInjected.store(true);
 }
 
-static void DetectActiveAreaFromFile(const std::string& filePath, const CAMLNativeWorker::Run& run)
+static bool detect_samples_stable(const uint16_t* top, const uint16_t* bottom,
+                                  const uint16_t* left, const uint16_t* right, int count)
 {
+  if (count < 6 || count > 7)
+    return false;
+  for (const auto* samples : {top, bottom, left, right})
+  {
+    const auto range = std::minmax_element(samples, samples + count);
+    if (*range.second - *range.first > 5)
+      return false;
+  }
+  return true;
+}
+
+static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source,
+                                     const CAMLNativeWorker::Run& run)
+{
+  const std::string& filePath = source->path;
   AVFormatContext* fmtCtx = nullptr;
   AVCodecContext* codecCtx = nullptr;
   AVFrame* frame = nullptr;
@@ -2889,7 +2974,7 @@ static void DetectActiveAreaFromFile(const std::string& filePath, const CAMLNati
   const int bufSize = 32768;
   int videoIdx = -1;
   uint16_t detTop = 0, detBottom = 0, detLeft = 0, detRight = 0;
-  const bool throttle = detect_throttle_enabled();
+  const bool throttle = !source->nativeDV || detect_throttle_enabled();
   if (throttle)
     CLog::Log(LOGDEBUG, "DetectActiveArea: cache-aware I/O throttle enabled");
 
@@ -2993,8 +3078,13 @@ static void DetectActiveAreaFromFile(const std::string& filePath, const CAMLNati
   {
     if (fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
     {
+      // Without a selected-demux-stream identity, multi-video files are ambiguous.
+      if (videoIdx >= 0)
+      {
+        s_detectState.store(DV_DETECT_SKIPPED);
+        goto cleanup;
+      }
       videoIdx = i;
-      break;
     }
   }
   if (videoIdx < 0)
@@ -3040,24 +3130,6 @@ static void DetectActiveAreaFromFile(const std::string& filePath, const CAMLNati
     goto cleanup;
 
   av_init_packet(&pkt);
-
-  /* Pre-cropped content: if encoded resolution is significantly non-16:9,
-   * there are no bars to detect — the resolution IS the active area.
-   * Subtitle restriction uses displayLB (frame vs display difference). */
-  {
-    uint32_t refH = (uint32_t)codecCtx->width * 9 / 16;
-    uint32_t refW = (uint32_t)codecCtx->height * 16 / 9;
-    int tbGap = ((int)refH > codecCtx->height) ? ((int)refH - codecCtx->height) / 2 : 0;
-    int lrGap = ((int)refW > codecCtx->width) ? ((int)refW - codecCtx->width) / 2 : 0;
-    if (tbGap > 20 || lrGap > 20)
-    {
-      CLog::Log(LOGINFO, "DetectActiveArea: pre-cropped {}x{} (implied T/B={} L/R={}) — "
-                "no bars to scan, subtitle restriction uses display letterbox",
-                codecCtx->width, codecCtx->height, tbGap, lrGap);
-      s_detectState.store(DV_DETECT_SKIP_NON16X9);
-      goto cleanup;
-    }
-  }
 
   /* Sample at 7 spread positions for robustness against fades, title cards,
    * or dark scenes. If a frame doesn't have enough contrast for reliable
@@ -3173,15 +3245,27 @@ static void DetectActiveAreaFromFile(const std::string& filePath, const CAMLNati
         if (!gotFrame || !frame->data[0] || frame->width < 64 || frame->height < 64)
           continue;
 
+        if (frame->width != source->width || frame->height != source->height ||
+            (frame->format != AV_PIX_FMT_YUV420P && frame->format != AV_PIX_FMT_YUVJ420P &&
+             frame->format != AV_PIX_FMT_YUV422P && frame->format != AV_PIX_FMT_YUVJ422P &&
+             frame->format != AV_PIX_FMT_YUV444P && frame->format != AV_PIX_FMT_YUVJ444P &&
+             frame->format != AV_PIX_FMT_NV12 && frame->format != AV_PIX_FMT_NV21 &&
+             frame->format != AV_PIX_FMT_YUV420P10LE && frame->format != AV_PIX_FMT_P010LE))
+        {
+          s_detectState.store(DV_DETECT_SKIPPED);
+          goto cleanup;
+        }
         lastWidth = frame->width;
         lastHeight = frame->height;
         const int stride = frame->linesize[0];
         const uint8_t* yData = frame->data[0];
-        const bool isP010 = (frame->format == AV_PIX_FMT_P010LE ||
-                             frame->format == AV_PIX_FMT_P010BE);
-        const bool is10bit = isP010 ||
-                             frame->format == AV_PIX_FMT_YUV420P10LE ||
-                             frame->format == AV_PIX_FMT_YUV420P10BE;
+        const bool isP010 = frame->format == AV_PIX_FMT_P010LE;
+        const bool is10bit = isP010 || frame->format == AV_PIX_FMT_YUV420P10LE;
+        if (stride < lastWidth * (is10bit ? 2 : 1))
+        {
+          s_detectState.store(DV_DETECT_SKIPPED);
+          goto cleanup;
+        }
         const int shift = isP010 ? 8 : (is10bit ? 2 : 0);
         const int sampleW = std::min(64, lastWidth / 2);
         const int sampleStartX = lastWidth / 2 - sampleW / 2;
@@ -3251,11 +3335,8 @@ static void DetectActiveAreaFromFile(const std::string& filePath, const CAMLNati
       /* Re-derive frame accessors from the decoded frame (still valid) */
       const int stride = frame->linesize[0];
       const uint8_t* yData = frame->data[0];
-      const bool isP010 = (frame->format == AV_PIX_FMT_P010LE ||
-                           frame->format == AV_PIX_FMT_P010BE);
-      const bool is10bit = isP010 ||
-                           frame->format == AV_PIX_FMT_YUV420P10LE ||
-                           frame->format == AV_PIX_FMT_YUV420P10BE;
+      const bool isP010 = frame->format == AV_PIX_FMT_P010LE;
+      const bool is10bit = isP010 || frame->format == AV_PIX_FMT_YUV420P10LE;
       const int shift = isP010 ? 8 : (is10bit ? 2 : 0);
       const int sampleW = std::min(64, lastWidth / 2);
       const int sampleStartX = lastWidth / 2 - sampleW / 2;
@@ -3339,6 +3420,7 @@ static void DetectActiveAreaFromFile(const std::string& filePath, const CAMLNati
       /* Check if source L5 appeared during our scan — by now the RPU parser
        * has had time to process frames from the current playback (no stale
        * data risk unlike an upfront check).  Abort to avoid wasted I/O. */
+      if (source->nativeDV)
       {
         auto srcMeta = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
         if (srcMeta.has_level5_metadata &&
@@ -3386,6 +3468,11 @@ static void DetectActiveAreaFromFile(const std::string& filePath, const CAMLNati
       }
     }
 
+    if (!detect_samples_stable(samples_top, samples_bottom, samples_left, samples_right, validSamples))
+    {
+      s_detectState.store(DV_DETECT_SKIP_IMAX);
+      goto cleanup;
+    }
     detTop = pickBest(samples_top, validSamples);
     detBottom = pickBest(samples_bottom, validSamples);
 
@@ -3537,7 +3624,7 @@ static void DetectActiveAreaFromFile(const std::string& filePath, const CAMLNati
     }
   }
 
-  detect_publish(run, detTop, detBottom, detLeft, detRight);
+  detect_publish(run, source, detTop, detBottom, detLeft, detRight);
 
 cleanup:
   s_detectThrottleActive.store(false); /* disarm the mid-read guard */
@@ -3571,62 +3658,69 @@ cleanup:
 
 void aml_dv_detect_set_file(const std::string& path)
 {
-  // Selecting even the same path is a new stream intent. A pending old result
-  // keeps its original source token and can never publish into this selection.
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   s_detectSource->superseded->store(true);
   s_detectSource = std::make_shared<DetectSource>(path);
+  s_detectStable.store(false);
+  CServiceBroker::GetDataCacheCore().ClearVideoDoViFrameMetadata();
+}
+
+static void detect_clear_injection(bool nativeSource)
+{
+  // Module parameters can outlive a crashed Kodi process. A native source must
+  // clear old injection even when this process never owned a published result.
+  if (!s_detectInjected.exchange(false) && !nativeSource)
+    return;
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_top", 0);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_bottom", 0);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_left", 0);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_right", 0);
 }
 
 void aml_dv_detect_active_area_start()
 {
-  s_detectWorker.Stop(); // cancel/join before touching state used by the old scan
+  s_detectWorker.Stop(); // cancel/join before shared scanner state is reused
   if (s_detectWorker.Closed())
     return;
   std::shared_ptr<DetectSource> source;
   {
     std::lock_guard<std::mutex> lock(s_detectSourceMutex);
     source = s_detectSource;
+    source->result.reset();
   }
-  /* Reset state */
   s_detectThrottleActive.store(false);
   s_detectCacheStarved.store(false);
   s_detectStable.store(false);
   s_detectState.store(DV_DETECT_FAILED);
-  s_detectedTop.store(0);
-  s_detectedBottom.store(0);
-  s_detectedLeft.store(0);
-  s_detectedRight.store(0);
-
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_top", 0);
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_bottom", 0);
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_left", 0);
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_right", 0);
-
-  std::string filePath = source->path;
-  if (filePath.empty())
-    filePath = g_application.CurrentFile();
-  if (filePath.empty())
+  detect_clear_injection(source->nativeDV);
+  const bool enabled = source->nativeDV ? aml_dv_detect_active_area_enabled()
+      : settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA);
+  if (!enabled || !source->allowProbe || source->superseded->load() ||
+      source->width < 64 || source->height < 64 ||
+      source->width > 65535 || source->height > 65535 || source->path.empty())
+    return;
+  // Known player padding is already represented by the renderer video rectangle.
+  const int tbGap = std::max(0, (source->width * 9 / 16 - source->height) / 2);
+  const int lrGap = std::max(0, (source->height * 16 / 9 - source->width) / 2);
+  if (tbGap > 20 || lrGap > 20)
   {
-    CLog::Log(LOGWARNING, "DetectActiveArea: no file path available");
+    s_detectState.store(DV_DETECT_SKIP_NON16X9);
     return;
   }
   s_detectState.store(DV_DETECT_RUNNING);
-  s_detectWorker.Start([filePath](const CAMLNativeWorker::Run& run) {
-    DetectActiveAreaFromFile(filePath, run);
+  s_detectWorker.Start([source](const CAMLNativeWorker::Run& run) {
+    DetectActiveAreaFromFile(source, run);
   }, source->superseded);
 }
 
 void aml_dv_detect_active_area_stop()
 {
   s_detectWorker.Stop();
+  const bool nativeSource = aml_subtitle_native_dv();
+  aml_subtitle_active_area_invalidate();
   s_detectStable.store(false);
   s_detectState.store(DV_DETECT_FAILED);
-
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_top", 0);
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_bottom", 0);
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_left", 0);
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_right", 0);
+  detect_clear_injection(nativeSource);
 }
 
 bool aml_dv_retire_background_work()

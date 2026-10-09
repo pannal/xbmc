@@ -129,7 +129,7 @@ namespace OVERLAY {
 struct COverlay {
   bool valid=true;bool IsValid()const{return valid;}
   std::weak_ptr<const CLibassRenderResult> m_libassResult;
-  static int created,destroyed;uint32_t value=0;bool m_rawPqMenu=false,m_discMenuOverlay=false,m_plainPmaMenu=false;
+  static int created,destroyed;uint32_t value=0;bool m_rawPqMenu=false,m_discMenuOverlay=false,m_plainPmaMenu=false,m_canPosition=false;
   static bool PlainPremultiplyDiscMenu(const CDVDOverlayImage& o);
   ~COverlay(){assert(std::this_thread::get_id()==ownerThread);++destroyed;}
   static std::shared_ptr<COverlay> New(uint32_t value){
@@ -151,7 +151,8 @@ public:
   using OverlayBatch=std::vector<SElement>;
   @CACHE@
   TextureCache m_textureCache;CCriticalSection m_section;OverlayBatch m_buffers[NUM_BUFFERS];
-  CRect m_rs,m_rd,m_rv;std::string m_stereomode;
+  CRect m_rs,m_rd,m_rv,m_activePicture;std::string m_stereomode;
+  bool m_restrictToActivePicture=false;
   SUBTITLES::Align m_subtitleAlign=SUBTITLES::Align::BOTTOM_INSIDE;
   SUBTITLES::HorizontalAlign m_subtitleHorizontalAlign=SUBTITLES::HorizontalAlign::CENTER;
   int m_subtitlePosition=900,m_subtitlePosResInfo=1000,m_subtitleVerticalMargin=10;

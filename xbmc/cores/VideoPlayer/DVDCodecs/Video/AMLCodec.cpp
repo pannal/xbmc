@@ -2010,6 +2010,7 @@ bool CAMLCodec::BeginLifecycle(Lifecycle operation, std::function<void()> before
   }
   if (m_lifecycle != operation)
   {
+    aml_subtitle_active_area_invalidate();
     aml_dv_backend_invalidate(m_dvSession);
     if (operation == Lifecycle::CLOSE || operation == Lifecycle::REOPEN)
       aml_dv_cancel_deferred_session(m_dvSession);
@@ -2398,21 +2399,12 @@ bool CAMLCodec::OpenDecoderInternal()
     aml_dv_open(hints.hdrType, hints.bitdepth, hints.colorPrimaries, false, m_dvSession, m_originalSourceHdrType);
   }
 
-  // L5 active area detection: only for native DV content (not VS10 SDR/HDR10/HLG
-  // conversions) and not for Profile 9 (AVC-based, probe causes h264 decode errors).
-  // Also skipped when an L5 override is set — the override wins inside
-  // CalcOverlayActiveArea, so running detect would be background work for
-  // values nothing reads. (DolbyVisionAML::OnSettingChanged handles the
-  // mid-playback case where the override.ini addon writes the override at
-  // onAVStarted, after codec Open() has already passed this gate.)
-  if (hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION && hints.dovi.dv_profile != 9)
-  {
-    const auto settingsComponent = CServiceBroker::GetSettingsComponent();
-    if (settingsComponent->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) &&
-        settingsComponent->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA) &&
-        !aml_dv_l5_override_active())
-      aml_dv_detect_active_area_start();
-  }
+  const bool nativeDV = hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+                        m_originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
+  if (aml_subtitle_active_area_configure(hints.width, hints.height, nativeDV,
+                                        !nativeDV || hints.dovi.dv_profile != 9,
+                                        hints.subtitleProbeSource))
+    aml_dv_detect_active_area_start(); // separately selected DV injection / non-DV geometry
 
   // Now have the HDRType resolved, ok to set the transfer pq - so renderer can set the shaders as needed.
   aml_set_transfer_pq(hints.hdrType, hints.bitdepth);
@@ -2652,6 +2644,8 @@ void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map)
 
 void CAMLCodec::CloseDecoderInternal()
 {
+  aml_dv_detect_active_area_stop();
+  aml_subtitle_active_area_configure(0, 0, false, false, m_hints.subtitleProbeSource);
   aml_video_fps_reset();
   CLog::Log(LOGINFO, "CAMLCodec::CloseDecoder");
 
@@ -2781,6 +2775,15 @@ void CAMLCodec::ResetInternal()
   SetSpeedInternal(m_speed);
 
   SetPollDevice(am_private->vcodec.cntl_handle);
+  // A completed seek/reset gets a fresh geometry lifetime. The cancelled old
+  // probe is joined before startup and old injection is cleared under this owner.
+  const bool nativeDV = m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+                        m_originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
+  if (aml_subtitle_active_area_configure(m_hints.width, m_hints.height, nativeDV,
+                                        !nativeDV || m_hints.dovi.dv_profile != 9,
+                                        m_hints.subtitleProbeSource))
+    aml_dv_detect_active_area_start();
+
 }
 
 bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)

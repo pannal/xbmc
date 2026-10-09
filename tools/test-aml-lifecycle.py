@@ -186,6 +186,8 @@ struct Dll {
   template<class Codec> void codec_set_cntl_mode(Codec*,int mode) { modes.push_back(mode); }
 };
 std::shared_ptr<const void> s_dvPlaybackSession;
+int subtitleInvalidations=0;
+void aml_subtitle_active_area_invalidate(){++subtitleInvalidations;}
 // Cache semantics are exercised with production bodies in test-dv-backend-info.py.
 void aml_dv_backend_invalidate(const std::shared_ptr<const void>&) {}
 void aml_dv_backend_pause(const std::shared_ptr<const void>&,bool) {}

@@ -7,6 +7,7 @@
  */
 
 #include "RenderManager.h"
+#include "BitmapSubtitlePosition.h"
 #if defined(HAS_LIBAMCODEC)
 #include "HwDecRender/AMLPresenterSession.h"
 #include "HwDecRender/RendererAML.h"
@@ -44,6 +45,21 @@
 #include <utility>
 
 using namespace std::chrono_literals;
+
+namespace
+{
+bool TextSubtitleNeedsSignal(bool restricted, const CRect& active, const CRect& view,
+                             float baseline)
+{
+  if (restricted)
+    return false; // existing libass restriction policy
+  // A baseline only proves vertical clearance. Preserve visible-text signaling
+  // for a full-frame picture or horizontal-only bars.
+  const bool verticalBars = !active.IsEmpty() &&
+                            (active.y1 > view.y1 || active.y2 < view.y2);
+  return !verticalBars || baseline <= active.y1 || baseline >= active.y2;
+}
+} // namespace
 
 CRenderManager::BufferReservation::~BufferReservation()
 {
@@ -1158,94 +1174,47 @@ RESOLUTION CRenderManager::GetResolution()
   return res;
 }
 
-void CRenderManager::CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view, bool useActiveArea)
+CRect CRenderManager::CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view,
+                                             bool useActiveArea, double pts)
 {
-  // DV L5 active area: use per-frame L5 offsets to position subtitles inside
-  // the active content area. Tracks IMAX/aspect ratio changes in real time.
-  //
-  // Detection populates L5 values (kernel injection + PPI), but subtitle
-  // confinement requires the separate "Restrict subtitles" setting (useActiveArea).
-  if (!useActiveArea)
+  // One geometry consumer for every output type. Dolby signaling remains separate.
+  const CRect coded(0.0f, 0.0f, static_cast<float>(m_picture.iWidth),
+                    static_cast<float>(m_picture.iHeight));
+  CRect inFrame;
+  const bool nativeDV = m_picture.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+                        aml_subtitle_native_dv();
+  const bool stereo = (!m_picture.stereoMode.empty() && m_picture.stereoMode != "mono") ||
+      CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF;
+  uint16_t top = 0, bottom = 0, left = 0, right = 0;
+  if (nativeDV && !stereo)
   {
-    m_overlays.SetActiveAreaOffsets(0, 0, false);
-    return;
-  }
-
-  bool detectEnabled = aml_dv_detect_active_area_enabled();
-
-  if (m_picture.hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION && !detectEnabled)
-  {
-    m_overlays.SetActiveAreaOffsets(0, 0, false);
-    return;
-  }
-
-  if (src.Height() <= 0 || dst.Height() <= 0 || view.Height() <= 0)
-  {
-    m_overlays.SetActiveAreaOffsets(0, 0, false);
-    return;
-  }
-
-  // In-frame bars (L5 or detection offsets, in coded-frame pixels) scaled to
-  // display coordinates.
-  int l5Top = 0, l5Bottom = 0;
-
-  // Cropped encodes whose source L5 was authored against the uncropped frame
-  // describe the crop, not bars inside the picture — the auto-letterbox
-  // plausibility watch has dropped additive composition for exactly that case.
-  // Honouring those offsets here would shrink the overlay area by bars that
-  // aren't on screen, so ignore them and let the player-added padding (already
-  // outside dst) do the work.
-  const bool phantomSourceBars =
-      m_picture.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
-      aml_dv_auto_letterbox_active() && !aml_dv_auto_letterbox_additive();
-
-  const auto doviMeta = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
-  if (!phantomSourceBars && doviMeta.has_level5_metadata &&
-      (doviMeta.level5_active_area_top_offset > 0 ||
-       doviMeta.level5_active_area_bottom_offset > 0))
-  {
-    float scaleY = static_cast<float>(dst.Height()) / src.Height();
-    l5Top = static_cast<int>(doviMeta.level5_active_area_top_offset * scaleY);
-    l5Bottom = static_cast<int>(doviMeta.level5_active_area_bottom_offset * scaleY);
-  }
-  else if (detectEnabled && aml_dv_detect_active_area_stable())
-  {
-    uint16_t detTop, detBottom, detLeft, detRight;
-    aml_dv_detect_active_area_get(detTop, detBottom, detLeft, detRight);
-    if (detTop || detBottom)
+    const bool override = aml_dv_get_l5_override(top, bottom, left, right);
+    const bool phantom = aml_dv_auto_letterbox_active() && !aml_dv_auto_letterbox_additive();
+    const auto metadata = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata(pts);
+    if (!override && !phantom && metadata.has_level5_metadata && !metadata.level5_detected &&
+        (metadata.level5_active_area_top_offset || metadata.level5_active_area_bottom_offset ||
+         metadata.level5_active_area_left_offset || metadata.level5_active_area_right_offset))
     {
-      float scaleY = static_cast<float>(dst.Height()) / src.Height();
-      l5Top = static_cast<int>(detTop * scaleY);
-      l5Bottom = static_cast<int>(detBottom * scaleY);
+      top = metadata.level5_active_area_top_offset;
+      bottom = metadata.level5_active_area_bottom_offset;
+      left = metadata.level5_active_area_left_offset;
+      right = metadata.level5_active_area_right_offset;
     }
+    else if (!override && !phantom)
+      aml_subtitle_detect_active_area_get(m_picture.iWidth, m_picture.iHeight, top, bottom, left, right);
+    inFrame = CRect(static_cast<float>(left), static_cast<float>(top),
+                    coded.x2 - right, coded.y2 - bottom);
   }
+  else if (!stereo && aml_subtitle_detect_active_area_get(
+               m_picture.iWidth, m_picture.iHeight, top, bottom, left, right))
+    inFrame = CRect(static_cast<float>(left), static_cast<float>(top),
+                    coded.x2 - right, coded.y2 - bottom);
 
-  // Active area in screen coordinates: the video rect shrunk by the scaled
-  // in-frame bars, clamped to the visible view. Player-added bars on cropped
-  // encodes (frame smaller than the view, e.g. 3840x1600 on 2160p) lie
-  // outside dst and are excluded automatically — no L5 metadata needed.
-  float activeTop = std::max(view.y1, dst.y1 + l5Top);
-  float activeBottom = std::min(view.y2, dst.y2 - l5Bottom);
-  if (activeBottom <= activeTop)
-  {
-    m_overlays.SetActiveAreaOffsets(0, 0, false);
-    return;
-  }
-
-  // The overlay renderer consumes the active area as bar heights measured
-  // from the view edges (the libass canvas spans the view).
-  int finalTop = std::max(0, static_cast<int>(activeTop - view.y1));
-  int finalBottom = std::max(0, static_cast<int>(view.y2 - activeBottom));
-
-  if (finalTop == 0 && finalBottom == 0)
-  {
-    m_overlays.SetActiveAreaOffsets(0, 0, false);
-    return;
-  }
-
-  bool applyUserPos = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+  const CRect active = OVERLAY::GetActivePictureArea(src, dst, view, coded, inFrame);
+  const bool applyUserPos = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
       CSettings::SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_USER_POS);
-  m_overlays.SetActiveAreaOffsets(finalTop, finalBottom, applyUserPos);
+  m_overlays.SetActivePicture(active, useActiveArea && !stereo, applyUserPos);
+  return active;
 }
 
 void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
@@ -1285,121 +1254,14 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       m_pRenderer->Update();
 
     m_renderedOverlay = m_overlays.HasOverlay(frame->overlays);
-    bool restrictSubsToActiveArea = aml_dv_use_active_area();
+    const bool restrictSubsToActiveArea = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+        CSettings::SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_ACTIVE_AREA);
     CRect src, dst, view;
     m_pRenderer->GetVideoRect(src, dst, view);
 
-    // Signal subtitle presence for L5 handling based on user's signal mode:
-    // 0 (Off): never signal — L5 stays at source regardless of subtitles
-    // 1 (When enabled): handled by FrameMove, independently of overlays
-    // 2 (When visible): signal when text subs are on screen or image subs
-    //   extend outside the L5 active area
-    // When restriction is on, subs are already inside the active area so
-    // image sub checks are skipped (text subs may still need signaling).
-    bool signalSubtitles = false;
-    int subsSignalMode = aml_dv_l5_subs_signal_mode();
-    if (subsSignalMode == 2)
-    {
-      // When visible: signal for text subs on screen
-      signalSubtitles = m_overlays.HasTextOverlay(frame->overlays);
-
-      // Resolve effective L5 bars (source, falling back to detected, then
-      // auto-letterbox geometry). autoLbActive tracks the player-added
-      // padding on cropped encodes independently of the source values —
-      // both can be present at once (variable in-picture L5 on a cropped
-      // frame), and the kernel emits their sum to the sink.
-      uint16_t sigTop = 0, sigBottom = 0;
-      bool autoLbBars = false;
-      bool autoLbActive = false;
-      if (m_picture.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
-      {
-        uint16_t albTop = 0, albBottom = 0, albLeft = 0, albRight = 0;
-        autoLbActive = aml_dv_auto_letterbox_get(albTop, albBottom, albLeft, albRight) &&
-                       (albTop > 0 || albBottom > 0);
-        // Source offsets that merely restate the crop describe no bars on
-        // screen (see phantomSourceBars in CalcOverlayActiveArea) — and the
-        // kernel isn't emitting them either, so they must not drive signaling.
-        const bool phantomSourceBars = autoLbActive && !aml_dv_auto_letterbox_additive();
-        const auto doviMeta = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
-        if (!phantomSourceBars && doviMeta.has_level5_metadata)
-        {
-          sigTop = doviMeta.level5_active_area_top_offset;
-          sigBottom = doviMeta.level5_active_area_bottom_offset;
-        }
-        if (sigTop == 0 && sigBottom == 0 && aml_dv_detect_active_area_enabled() &&
-            aml_dv_detect_active_area_stable())
-        {
-          uint16_t detLeft, detRight;
-          aml_dv_detect_active_area_get(sigTop, sigBottom, detLeft, detRight);
-        }
-        if (sigTop == 0 && sigBottom == 0 && autoLbActive)
-        {
-          // Synthesized offsets for the player-added bars on cropped
-          // encodes. Same pixel pitch as the coded video, so the src->dst
-          // scale below converts them like source/detected values.
-          sigTop = albTop;
-          sigBottom = albBottom;
-          autoLbBars = true;
-        }
-      }
-
-      // Optimization: text subs are inside the active area and don't need
-      // signaling when (a) restriction is on — CalcOverlayActiveArea already
-      // placed them inside, or (b) the subtitle margin clears the L5 bar.
-      // Avoids unnecessary L5 flipping for common aspect ratios like 1.85:1
-      // and 2.00:1 where subs never overlap the small bars.
-      if (signalSubtitles && restrictSubsToActiveArea)
-      {
-        signalSubtitles = false;
-      }
-      else if (signalSubtitles && (sigTop > 0 || sigBottom > 0) && src.Height() > 0)
-      {
-        float scaleY = dst.Height() / src.Height();
-        float topBarDisp = sigTop * scaleY;
-        float botBarDisp = sigBottom * scaleY;
-        // Use the calibrated subtitle baseline, not just screen height.
-        // resInfo.iSubtitles is the baseline Y from screen top (defaults
-        // to screenHeight - guiInsets.bottom); sub renders at (iSubtitles
-        // - marginPixels) from top.  Distance from video bottom to sub
-        // baseline = dst.y2 - (iSubtitles - marginPixels).
-        const RESOLUTION_INFO resInfo =
-            CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
-        float marginPerc = CServiceBroker::GetSettingsComponent()
-            ->GetSubtitlesSettings()->GetVerticalMarginPerc();
-        float marginPixels = (marginPerc / 100.0f) * resInfo.iHeight;
-        float subBaselineFromTop = resInfo.iSubtitles - marginPixels;
-        float subClearanceBottom = dst.y2 - subBaselineFromTop;
-        float subClearanceTop = subBaselineFromTop - dst.y1;
-        // Sub clears both bars → no need to signal. Auto-letterbox bars sit
-        // outside the video rect, so clearing the video edge itself is enough.
-        float needBottom = autoLbBars ? 0.0f : botBarDisp;
-        float needTop = autoLbBars ? 0.0f : topBarDisp;
-        if (subClearanceBottom > needBottom && subClearanceTop > needTop)
-          signalSubtitles = false;
-      }
-
-      // Also signal for image subs outside the active area (only when not restricted)
-      if (!signalSubtitles && !restrictSubsToActiveArea &&
-          (sigTop > 0 || sigBottom > 0))
-      {
-        // Auto-letterbox padding lies outside the video rect, so the
-        // canvas-AR geometry test cannot see it — treat any image sub as
-        // overlapping. Applies whenever the padding exists, including when
-        // in-picture source bars are present at the same time (the sink
-        // masks their sum, so a sub in the padding is still swallowed).
-        if (autoLbActive)
-          signalSubtitles = m_overlays.HasImageOverlay(frame->overlays);
-        else
-          signalSubtitles = m_overlays.HasImageSubOutsideActiveArea(
-              frame->overlays, sigTop, sigBottom);
-      }
-    }
-    if (subsSignalMode == 2)
-      aml_dv_set_subtitles(signalSubtitles);
-
-    CalcOverlayActiveArea(src, dst, view, restrictSubsToActiveArea);
     m_overlays.SetVideoRect(src, dst, view);
-
+    const CRect active = CalcOverlayActiveArea(src, dst, view, restrictSubsToActiveArea,
+                                               frame->present.pts);
     // Disc menu composite: report PQ-authored menu graphics, and while the
     // composite is active draw them raw into its own layer (redrawn, or
     // emptied, every frame). m_overlays.Render then skips them.
@@ -1415,7 +1277,30 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       winSystem->EndMenuOverlayRender();
     }
 
-    m_overlays.Render(frame->overlays);
+
+    // Convert, zoom, group and confine once. Overlap and draw share final bounds,
+    // including Original and oversized dialogue; restriction is not proof of fit.
+    const auto prepared = m_overlays.PrepareRenderItems(frame->overlays);
+    const int subsSignalMode = aml_dv_l5_subs_signal_mode();
+    bool signalSubtitles = false;
+    if (subsSignalMode == 2)
+    {
+      signalSubtitles = m_overlays.HasTextOverlay(frame->overlays);
+      if (signalSubtitles)
+      {
+        const auto resInfo = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
+        const float margin = CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->GetVerticalMarginPerc();
+        const float baseline = static_cast<float>(resInfo.iSubtitles) -
+                               margin * static_cast<float>(resInfo.iHeight) / 100.0f;
+        signalSubtitles = TextSubtitleNeedsSignal(restrictSubsToActiveArea, active, view, baseline);
+      }
+      if (m_picture.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION && aml_subtitle_native_dv())
+        signalSubtitles |= m_overlays.HasImageSubOutsideActiveArea(prepared, active);
+    }
+    if (subsSignalMode == 2)
+      aml_dv_set_subtitles(signalSubtitles);
+
+    m_overlays.RenderPrepared(prepared, frame->overlays);
 
     if (m_renderDebug)
     {

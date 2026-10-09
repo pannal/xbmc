@@ -396,7 +396,7 @@ private:
   uint64_t m_nextReservation{0};
   uint64_t m_reservationEpoch{0};
 
-  void CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view, bool useActiveArea);
+  CRect CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view, bool useActiveArea, double pts);
 
   std::atomic_bool m_subtitleEnabled{false};
   CDataCacheCore &m_dataCacheCore;

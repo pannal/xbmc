@@ -9,6 +9,7 @@
 
 #include "OverlayRenderer.h"
 
+#include "BitmapSubtitlePosition.h"
 #include "OverlayRendererUtil.h"
 #include "ServiceBroker.h"
 #include "application/ApplicationComponents.h"
@@ -105,6 +106,7 @@ void CRenderer::UnInit()
     CServiceBroker::GetSettingsComponent()->GetSettings()->Save();
   }
 
+  CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->EndBitmapPosition();
   Flush();
 }
 
@@ -123,6 +125,8 @@ void CRenderer::Reset()
 {
   m_subtitlePosition = 0;
   m_subtitlePosResInfo = -1;
+  m_activePicture = {};
+  m_restrictToActivePicture = false;
   m_activeAreaTopOffset = 0;
   m_activeAreaBottomOffset = 0;
   m_activeAreaApplyUserPos = false;
@@ -188,28 +192,91 @@ void CRenderer::Render(int idx, float depth)
 void CRenderer::Render(const OverlayBatch& overlays)
 {
   std::unique_lock<CCriticalSection> lock(m_section);
+  RenderPrepared(PrepareRenderItems(overlays), overlays);
+}
 
-  // While the disc menu composite is active its PQ menu graphics are drawn by
-  // RenderPqMenu into their own layer; everything else renders as before.
+void CRenderer::RenderPrepared(const PreparedOverlays& items, const OverlayBatch& overlays)
+{
+  std::unique_lock<CCriticalSection> lock(m_section);
   CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
   const bool menuComposite =
       winSystem->IsMenuCompositeActive() || winSystem->IsMenuCompositePending();
-
-  for (auto it = overlays.begin(); it != overlays.end(); ++it)
+  for (const auto& item : items)
   {
-    if (it->overlay_dvd)
-    {
-      if (menuComposite && IsPqMenuImage(it->overlay_dvd))
-        continue;
-
-      std::shared_ptr<COverlay> o = Convert(*(it->overlay_dvd), it->pts);
-
-      if (o)
-        Render(o);
-    }
+    if (menuComposite && item.overlay->m_rawPqMenu)
+      continue;
+    SRenderState state = item.state;
+    item.overlay->Render(state);
   }
-
   ReleaseUnused(overlays);
+}
+
+CRenderer::PreparedOverlays CRenderer::PrepareRenderItems(const OverlayBatch& overlays)
+{
+  std::unique_lock<CCriticalSection> lock(m_section);
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  const bool hasBitmap = std::any_of(overlays.begin(), overlays.end(), [](const SElement& e) {
+    return e.overlay_dvd && !e.overlay_dvd->IsDiscMenuOverlay() && !IsPqMenuImage(e.overlay_dvd) &&
+           (e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE) ||
+            e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_SPU));
+  });
+  const auto position = static_cast<BitmapSubtitlePosition>(
+      hasBitmap ? settings->GetInt(CSettings::SETTING_SUBTITLES_BITMAPPOSITION) : 0);
+  const float zoom = hasBitmap ? static_cast<float>(settings->GetInt(CSettings::SETTING_SUBTITLES_BITMAPZOOM)) / 100.0f : 1.0f;
+  const float aspect = hasBitmap && (position == BitmapSubtitlePosition::BOTTOM_PICTURE ||
+      position == BitmapSubtitlePosition::TOP_PICTURE) ? static_cast<float>(settings->GetInt(CSettings::SETTING_SUBTITLES_BITMAPASPECT)) / 100.0f : 0.0f;
+  const float margin = hasBitmap ? static_cast<float>(settings->GetNumber(CSettings::SETTING_SUBTITLES_BITMAPMARGIN)) : 0.0f;
+  const float offset = hasBitmap ? CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->GetBitmapOffset() : 0.0f;
+  const CRect active = GetBitmapSubtitleArea(m_rv, m_rd, m_activePicture, aspect);
+  const CRect limit = m_restrictToActivePicture ? m_activePicture : m_rv;
+  const bool stereo = (!m_stereomode.empty() && m_stereomode != "mono") ||
+      CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF;
+  PreparedOverlays items;
+  std::vector<BitmapSubtitleRegion> regions;
+  std::vector<SRenderGeometry> geometries;
+  auto bounds = [](const COverlay& overlay, const SRenderState& state)
+  {
+    const bool centered = overlay.m_pos == COverlay::POSITION_RELATIVE;
+    const float left = state.x - (centered ? state.width * 0.5f : 0.0f);
+    const float top = state.y - (centered ? state.height * 0.5f : 0.0f);
+    return CRect(left, top, left + state.width, top + state.height);
+  };
+  const auto* winSystem = CServiceBroker::GetWinSystem();
+  const bool menuComposite = winSystem->IsMenuCompositeActive() || winSystem->IsMenuCompositePending();
+  for (const auto& element : overlays)
+  {
+    if (!element.overlay_dvd || (menuComposite && IsPqMenuImage(element.overlay_dvd)))
+      continue;
+    auto overlay = Convert(*element.overlay_dvd, element.pts);
+    if (!overlay)
+      continue;
+    auto geometry = PrepareRenderGeometry(*overlay, zoom);
+    geometries.push_back(geometry);
+    geometry.activeAreaTop = geometry.activeAreaBottom = 0;
+    geometry.bitmapZoom = 1.0f;
+    const CRect authored = bounds(*overlay, CalculateRenderState(geometry));
+    geometry.bitmapZoom = zoom;
+    SRenderState state = CalculateRenderState(geometry);
+    regions.push_back({authored, bounds(*overlay, state),
+        overlay->m_align == COverlay::ALIGN_SCREEN_AR ? m_rv : m_rd,
+        overlay->m_canPosition && !overlay->m_discMenuOverlay && !stereo});
+    items.push_back({std::move(overlay), state, {}});
+  }
+  const auto placements = PlaceBitmapSubtitles(regions, m_rv, active, limit, position,
+                                               offset, margin, m_restrictToActivePicture, zoom);
+  for (size_t i = 0; i < items.size(); ++i)
+  {
+    auto& item = items[i];
+    if (placements[i].selected)
+    {
+      item.state.y += placements[i].offset;
+      item.state.x += placements[i].horizontalOffset;
+    }
+    else
+      item.state = CalculateRenderState(geometries[i]);
+    item.bounds = bounds(*item.overlay, item.state);
+  }
+  return items;
 }
 
 void CRenderer::RenderPqMenu(const OverlayBatch& overlays)
@@ -239,7 +306,7 @@ bool CRenderer::HasPqMenuOverlay(const OverlayBatch& overlays)
   return false;
 }
 
-CRenderer::SRenderGeometry CRenderer::PrepareRenderGeometry(const COverlay& overlay) const
+CRenderer::SRenderGeometry CRenderer::PrepareRenderGeometry(const COverlay& overlay, float bitmapZoom) const
 {
   SRenderGeometry geometry{{overlay.m_x, overlay.m_y, overlay.m_width, overlay.m_height},
                            overlay.m_pos,
@@ -268,7 +335,7 @@ CRenderer::SRenderGeometry CRenderer::PrepareRenderGeometry(const COverlay& over
     geometry.stereoDepth = GetStereoscopicDepth(overlay.m_pgsSubtitle, overlay.m_3dSubtitleDepth);
   if (geometry.bitmap && !geometry.discMenu)
   {
-    geometry.bitmapZoom = static_cast<float>(
+    geometry.bitmapZoom = bitmapZoom >= 0.0f ? bitmapZoom : static_cast<float>(
                               CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
                                   CSettings::SETTING_SUBTITLES_BITMAPZOOM)) /
                           100.0f;
@@ -495,39 +562,28 @@ bool CRenderer::HasDiscMenuOverlay(const OverlayBatch& overlays)
   return false;
 }
 
-bool CRenderer::HasImageSubOutsideActiveArea(const OverlayBatch& overlays, int l5Top, int l5Bottom)
+bool CRenderer::HasImageSubOutsideActiveArea(const PreparedOverlays& items, const CRect& active)
 {
-  std::unique_lock<CCriticalSection> lock(m_section);
-
-  if (m_rs.Height() <= 0)
+  if (active.IsEmpty())
     return false;
-
-  float vidRatio = m_rs.Width() / m_rs.Height();
-  float activeTopFrac = static_cast<float>(l5Top) / m_rs.Height();
-  float activeBotFrac = 1.0f - static_cast<float>(l5Bottom) / m_rs.Height();
-
-  for (const auto& e : overlays)
+  for (const auto& item : items)
   {
-    if (!e.overlay_dvd || e.overlay_dvd->IsDiscMenuOverlay() ||
-        !e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
+    if (!item.overlay->m_isBitmapOverlay || item.overlay->m_discMenuOverlay)
       continue;
-
-    const auto& img = static_cast<const CDVDOverlayImage&>(*e.overlay_dvd);
-    if (img.source_width <= 0 || img.source_height <= 0)
-      continue;
-
-    // Only check ALIGN_VIDEO subs (matching aspect ratio)
-    float subRatio = static_cast<float>(img.source_width) / img.source_height;
-    if (std::fabs(subRatio - vidRatio) >= 0.001f)
-      continue;
-
-    float subTopFrac = static_cast<float>(img.y) / img.source_height;
-    float subBotFrac = static_cast<float>(img.y + img.height) / img.source_height;
-
-    if (subTopFrac < activeTopFrac || subBotFrac > activeBotFrac)
+    if (item.bounds.x1 < active.x1 || item.bounds.x2 > active.x2 ||
+        item.bounds.y1 < active.y1 || item.bounds.y2 > active.y2)
       return true;
   }
   return false;
+}
+
+void CRenderer::SetActivePicture(const CRect& area, bool restrictToArea, bool applyUserPos)
+{
+  std::unique_lock<CCriticalSection> lock(m_section);
+  m_activePicture = area;
+  m_restrictToActivePicture = restrictToArea && !area.IsEmpty();
+  SetActiveAreaOffsets(m_restrictToActivePicture ? std::max(0, static_cast<int>(area.y1 - m_rv.y1)) : 0,
+      m_restrictToActivePicture ? std::max(0, static_cast<int>(m_rv.y2 - area.y2)) : 0, applyUserPos);
 }
 
 void CRenderer::SetVideoRect(CRect &source, CRect &dest, CRect &view)
@@ -873,7 +929,12 @@ std::shared_ptr<COverlay> CRenderer::Convert(const CDVDOverlay& o, double pts)
   }
 
   if (o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
-    r = COverlay::Create(static_cast<const CDVDOverlayImage&>(o), m_rs);
+  {
+    const auto& image = static_cast<const CDVDOverlayImage&>(o);
+    r = COverlay::Create(image, m_rs);
+    if (r)
+      r->m_canPosition = image.m_canPosition;
+  }
   else if (o.IsOverlayType(DVDOVERLAY_TYPE_SPU))
     r = COverlay::Create(static_cast<const CDVDOverlaySpu&>(o));
 

@@ -61,6 +61,7 @@ void CDVDStreamInfo::Clear()
   ptsinvalid = false;
   forced_aspect = false;
   bitsperpixel = 0;
+  subtitleProbeSource.reset();
   hdrType = StreamHdrType::HDR_TYPE_NONE;
   colorSpace = AVCOL_SPC_UNSPECIFIED;
   colorRange = AVCOL_RANGE_UNSPECIFIED;
@@ -234,6 +235,7 @@ void CDVDStreamInfo::Assign(const CDVDStreamInfo& right, bool withextradata)
   vfr = right.vfr;
   fpssnapped = right.fpssnapped;
   codecOptions = right.codecOptions;
+  subtitleProbeSource = right.subtitleProbeSource;
   hdrType = right.hdrType;
   colorSpace = right.colorSpace;
   colorRange = right.colorRange;

@@ -30,8 +30,10 @@
 #include "settings/MediaSourceSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "settings/SubtitlesSettings.h"
 #include "settings/lib/Setting.h"
 #include "settings/lib/SettingDefinitions.h"
+#include "settings/lib/SettingDependency.h"
 #include "settings/lib/SettingsManager.h"
 #include "utils/FileUtils.h"
 #include "utils/LangCodeExpander.h"
@@ -115,6 +117,25 @@ void CGUIDialogSubtitleSettings::OnSettingChanged(const std::shared_ptr<const CS
   {
     m_subtitleStream = std::static_pointer_cast<const CSettingInt>(setting)->GetValue();
     appPlayer->SetSubtitle(m_subtitleStream);
+  }
+  else if (settingId == CSettings::SETTING_SUBTITLES_BITMAPPOSITION ||
+           settingId == CSettings::SETTING_SUBTITLES_BITMAPASPECT)
+  {
+    CServiceBroker::GetSettingsComponent()->GetSettings()->SetInt(
+        settingId, std::static_pointer_cast<const CSettingInt>(setting)->GetValue());
+    m_bitmapSettingsChanged = true;
+  }
+  else if (settingId == CSettings::SETTING_SUBTITLES_BITMAPOFFSET)
+  {
+    CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->SetBitmapPreference(
+        static_cast<float>(std::static_pointer_cast<const CSettingNumber>(setting)->GetValue()));
+    m_bitmapSettingsChanged = true;
+  }
+  else if (settingId == CSettings::SETTING_SUBTITLES_BITMAPMARGIN)
+  {
+    CServiceBroker::GetSettingsComponent()->GetSettings()->SetNumber(
+        settingId, std::static_pointer_cast<const CSettingNumber>(setting)->GetValue());
+    m_bitmapSettingsChanged = true;
   }
 }
 
@@ -237,6 +258,17 @@ bool CGUIDialogSubtitleSettings::Save()
   return true;
 }
 
+void CGUIDialogSubtitleSettings::OnDeinitWindow(int nextWindowID)
+{
+  if (m_bitmapSettingsChanged)
+  {
+    // Save the global bitmap preferences without invoking Make default's video DB reset.
+    CServiceBroker::GetSettingsComponent()->GetSettings()->Save();
+    m_bitmapSettingsChanged = false;
+  }
+  CGUIDialogSettingsManualBase::OnDeinitWindow(nextWindowID);
+}
+
 void CGUIDialogSubtitleSettings::SetupView()
 {
   CGUIDialogSettingsManualBase::SetupView();
@@ -312,6 +344,46 @@ void CGUIDialogSubtitleSettings::InitializeSettings()
     AddButton(groupSubtitles, SETTING_SUBTITLE_BROWSER, 13250, SettingLevel::Basic);
 
   AddButton(groupSubtitles, SETTING_SUBTITLE_SEARCH, 24134, SettingLevel::Basic);
+
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  TranslatableIntegerSettingOptions bitmapPositions;
+  for (int mode = 0; mode <= 5; ++mode)
+    bitmapPositions.emplace_back(69316 + mode, mode);
+  auto position = AddSpinner(
+      groupSubtitles, CSettings::SETTING_SUBTITLES_BITMAPPOSITION, 69314, SettingLevel::Basic,
+      settings->GetInt(CSettings::SETTING_SUBTITLES_BITMAPPOSITION), bitmapPositions);
+  position->SetHelp(69315);
+
+  CSettingDependency offsetVisible(SettingDependencyType::Visible, GetSettingsManager());
+  offsetVisible.And()->Add(std::make_shared<CSettingDependencyCondition>(
+      CSettings::SETTING_SUBTITLES_BITMAPPOSITION, "5", SettingDependencyOperator::Equals, false,
+      GetSettingsManager()));
+  auto offset = AddSlider(
+      groupSubtitles, CSettings::SETTING_SUBTITLES_BITMAPOFFSET, 69322, SettingLevel::Basic,
+      CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->GetBitmapOffset(),
+      14047, -100.0f, 0.1f, 100.0f);
+  offset->SetDependencies({offsetVisible});
+  offset->SetHelp(69323);
+
+  CSettingDependency aspectVisible(SettingDependencyType::Visible, GetSettingsManager());
+  for (const auto& mode : {"1", "2"})
+    aspectVisible.Or()->Add(std::make_shared<CSettingDependencyCondition>(
+        CSettings::SETTING_SUBTITLES_BITMAPPOSITION, mode, SettingDependencyOperator::Equals, false,
+        GetSettingsManager()));
+  TranslatableIntegerSettingOptions bitmapAspects;
+  int label = 69326;
+  for (const int aspect : {0, 178, 185, 200, 235, 239, 240})
+    bitmapAspects.emplace_back(label++, aspect);
+  auto aspect = AddSpinner(
+      groupSubtitles, CSettings::SETTING_SUBTITLES_BITMAPASPECT, 69324, SettingLevel::Basic,
+      settings->GetInt(CSettings::SETTING_SUBTITLES_BITMAPASPECT), bitmapAspects);
+  aspect->SetDependencies({aspectVisible});
+  aspect->SetHelp(69325);
+
+  auto margin = AddSlider(groupSubtitles, CSettings::SETTING_SUBTITLES_BITMAPMARGIN, 69333,
+      SettingLevel::Basic, static_cast<float>(settings->GetNumber(CSettings::SETTING_SUBTITLES_BITMAPMARGIN)),
+      14047, 0.0f, 0.1f, 10.0f);
+  margin->SetHelp(69334);
 
   // subtitle stream setting
   AddButton(groupSaveAsDefault, SETTING_MAKE_DEFAULT, 12376, SettingLevel::Basic);

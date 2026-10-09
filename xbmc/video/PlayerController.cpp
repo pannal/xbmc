@@ -35,6 +35,19 @@
 using namespace KODI;
 using namespace UTILS;
 
+namespace
+{
+bool UseBitmapManualPosition(const std::shared_ptr<CApplicationPlayer>& player)
+{
+  if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+          CSettings::SETTING_SUBTITLES_BITMAPPOSITION) != 5 || player->IsInMenu())
+    return false;
+  SubtitleStreamInfo info;
+  player->GetSubtitleStreamInfo(player->GetSubtitle(), info);
+  return info.valid && (info.codecName == "hdmv_pgs_subtitle" || info.codecName == "dvd_subtitle");
+}
+} // namespace
+
 CPlayerController::CPlayerController()
 {
   MOVING_SPEED::EventCfg eventCfg{100.0f, 300.0f, 200};
@@ -344,6 +357,18 @@ bool CPlayerController::OnAction(const CAction &action)
       case ACTION_SUBTITLE_VSHIFT_UP:
       {
         const auto settings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
+        if (UseBitmapManualPosition(appPlayer))
+        {
+          const auto resInfo = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
+          if (resInfo.iHeight <= 0)
+            return true;
+          const float delta = m_movingSpeed.GetUpdatedDistance(ACTION_SUBTITLE_VSHIFT_UP) *
+                              100.0f / static_cast<float>(resInfo.iHeight);
+          settings->SetBitmapOffset(settings->GetBitmapOffset() + delta,
+                                    action.GetText() == "save");
+          ShowSlider(action.GetID(), 69322, settings->GetBitmapOffset(), -100.0f, 0.1f, 100.0f);
+          return true;
+        }
         SUBTITLES::Align subAlign{settings->GetAlignment()};
         if (subAlign != SUBTITLES::Align::BOTTOM_OUTSIDE && subAlign != SUBTITLES::Align::MANUAL)
           return true;
@@ -374,6 +399,18 @@ bool CPlayerController::OnAction(const CAction &action)
       case ACTION_SUBTITLE_VSHIFT_DOWN:
       {
         const auto settings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
+        if (UseBitmapManualPosition(appPlayer))
+        {
+          const auto resInfo = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
+          if (resInfo.iHeight <= 0)
+            return true;
+          const float delta = m_movingSpeed.GetUpdatedDistance(ACTION_SUBTITLE_VSHIFT_DOWN) *
+                              100.0f / static_cast<float>(resInfo.iHeight);
+          settings->SetBitmapOffset(settings->GetBitmapOffset() - delta,
+                                    action.GetText() == "save");
+          ShowSlider(action.GetID(), 69322, settings->GetBitmapOffset(), -100.0f, 0.1f, 100.0f);
+          return true;
+        }
         SUBTITLES::Align subAlign{settings->GetAlignment()};
         if (subAlign != SUBTITLES::Align::BOTTOM_OUTSIDE && subAlign != SUBTITLES::Align::MANUAL)
           return true;
@@ -556,7 +593,10 @@ void CPlayerController::OnSliderChange(void *data, CGUISliderControl *slider)
   else if (m_sliderAction == ACTION_SUBTITLE_VSHIFT_UP ||
            m_sliderAction == ACTION_SUBTITLE_VSHIFT_DOWN)
   {
-    std::string strValue = StringUtils::Format("{:.0f}px", slider->GetFloatValue());
+    const bool bitmap = UseBitmapManualPosition(CServiceBroker::GetAppComponents()
+        .GetComponent<CApplicationPlayer>());
+    std::string strValue = bitmap ? StringUtils::Format("{:.1f}%", slider->GetFloatValue())
+                                 : StringUtils::Format("{:.0f}px", slider->GetFloatValue());
     slider->SetTextValue(strValue);
   }
   else if (m_sliderAction == ACTION_VOLAMP_UP ||

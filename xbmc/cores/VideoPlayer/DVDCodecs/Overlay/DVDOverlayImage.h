@@ -45,6 +45,7 @@ public:
     source_width = src.source_width;
     source_height = src.source_height;
     m_isHdrPq = src.m_isHdrPq;
+    m_canPosition = src.m_canPosition;
     m_isPqMenuGraphics = src.m_isPqMenuGraphics;
     pqMenuPalette = src.pqMenuPalette;
 
@@ -111,6 +112,8 @@ public:
   int height{0};
   int source_width{0};
   int source_height{0};
+  // Only subtitle decoders opt in; disc navigation shares this image type.
+  bool m_canPosition{false};
   bool m_isHdrPq{false};
   // Blu-ray menu graphics (HDMV IG, BD-J) of a PQ playlist. While the disc
   // menu composite is active they are drawn raw into its PQ layer; otherwise
