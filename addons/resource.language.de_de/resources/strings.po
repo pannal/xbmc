@@ -20387,3 +20387,27 @@ msgstr "Farbsättigung von SDR-Bitmap-Untertiteln"
 msgctxt "#69340"
 msgid "Adjust SDR PGS and VobSub colour saturation. 100% preserves the original colours; 0% gives grayscale. Transparency is unchanged. Text subtitles, HDR-source PGS and disc menu graphics retain their existing colour handling."
 msgstr "Die Farbsättigung von SDR-PGS- und VobSub-Untertiteln anpassen. 100% behalten die ursprünglichen Farben bei; 0% ergeben Graustufen. Die Transparenz bleibt unverändert. Textuntertitel, PGS aus HDR-Quellen und Disc-Menügrafiken behalten ihre bisherige Farbbehandlung."
+
+#. Bitmap subtitle output colour
+#: system/settings/settings.xml
+msgctxt "#69341"
+msgid "SDR bitmap subtitle output white"
+msgstr "Ausgabeweiß von SDR-Bitmap-Untertiteln"
+
+#. Bitmap subtitle output colour
+#: system/settings/settings.xml
+msgctxt "#69342"
+msgid "Set SDR PGS and VobSub output white after brightness and saturation adjustment. 100% keeps the existing output; lower values dim even highlights clipped by input brightness. Percentages are relative linear-light white, not nits. Existing GUI/HDR output scaling still applies. Transparency, text and disc menu colours are unchanged."
+msgstr "Das Ausgabeweiß von SDR-PGS- und VobSub-Untertiteln nach der Helligkeits- und Sättigungsanpassung einstellen. 100% erhalten die bisherige Ausgabe; niedrigere Werte dimmen auch durch die Eingangshelligkeit begrenzte Glanzlichter. Prozentwerte beziehen sich auf den relativen Weißwert im linearen Licht, nicht auf Nits. Die bisherige GUI-/HDR-Ausgabeskalierung gilt weiterhin. Transparenz, Text- und Disc-Menüfarben bleiben unverändert."
+
+#. Bitmap subtitle output colour
+#: system/settings/settings.xml
+msgctxt "#69343"
+msgid "Corrected HDR PGS output ceiling"
+msgstr "Ausgabegrenze für korrigierte HDR-PGS"
+
+#. Bitmap subtitle output colour
+#: system/settings/settings.xml
+msgctxt "#69344"
+msgid "Limit the brightest channel after HDR PGS correction and tone mapping, preserving colour ratios. 100% keeps the existing output; lower values cap bright colours without dimming darker pixels. Percentages are relative linear-light white, not nits. Requires HDR correction and leaves correction-disabled PGS, transparency and disc menus unchanged."
+msgstr "Den hellsten Kanal nach der HDR-PGS-Korrektur und dem Tone Mapping begrenzen; die Farbverhältnisse bleiben erhalten. 100% erhalten die bisherige Ausgabe; niedrigere Werte begrenzen helle Farben, ohne dunklere Pixel abzudunkeln. Prozentwerte beziehen sich auf den relativen Weißwert im linearen Licht, nicht auf Nits. Erfordert die HDR-Korrektur und lässt PGS bei deaktivierter Korrektur, Transparenz und Disc-Menüs unverändert."

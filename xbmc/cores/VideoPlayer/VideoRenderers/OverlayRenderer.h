@@ -41,6 +41,13 @@ namespace OVERLAY {
     float height;
     float sdrBrightness{1.0f};
     float sdrSaturation{1.0f};
+    float sdrOutputPeak{1.0f};
+    float hdrOutputPeak{1.0f};
+    bool bitmapColourPrepared{false};
+    float pqRefNits{203.0f};
+    float pqSaturation{1.0f};
+    float pqTonemap{0.0f};
+    float pqMode{0.0f};
   };
 
   class COverlay

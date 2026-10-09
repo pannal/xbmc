@@ -29,6 +29,7 @@ public:
   GLint GetPmaLoc() { return m_hPma; }
   GLint GetSdrBrightnessLoc() { return m_hSdrBrightness; }
   GLint GetSdrSaturationLoc() { return m_hSdrSaturation; }
+  GLint GetSubtitlePeakLoc() { return m_hSubtitlePeak; }
   GLint GetUniColLoc() { return m_hUniCol; }
   GLint GetCoord0MatrixLoc() { return m_hCoord0Matrix; }
   GLint GetFieldLoc() { return m_hField; }
@@ -67,6 +68,7 @@ protected:
   GLint m_hPma = 0;
   GLint m_hSdrBrightness{-1};
   GLint m_hSdrSaturation{-1};
+  GLint m_hSubtitlePeak{-1};
 
   const GLfloat *m_proj;
   const GLfloat *m_model;

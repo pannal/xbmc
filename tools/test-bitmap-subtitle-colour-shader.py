@@ -101,7 +101,9 @@ class GLES:
         self.glGetShaderiv(shader, 0x8B81, C.byref(ok))
         log = C.create_string_buffer(16384)
         self.glGetShaderInfoLog(shader, len(log), None, log)
-        assert ok.value, log.value.decode()
+        # Compilation/link failure must not count as a rejected behaviour mutant.
+        if not ok.value:
+            raise RuntimeError(log.value.decode())
         return shader
 
     def program(self, fragment, defines=''):
@@ -120,15 +122,17 @@ void main(){gl_Position=vec4(position,0.0,1.0);m_cord0=vec4(0.5,0.5,0.0,1.0);}
         self.glGetProgramiv(program, 0x8B82, C.byref(ok))
         log = C.create_string_buffer(16384)
         self.glGetProgramInfoLog(program, len(log), None, log)
-        assert ok.value, log.value.decode()
+        # Compilation/link failure must not count as a rejected behaviour mutant.
+        if not ok.value:
+            raise RuntimeError(log.value.decode())
         self.glDeleteShader(vertex); self.glDeleteShader(pixel)
         self.programs.append(program)
         return program
 
-    def pixel(self, program, rgba, brightness=1, saturation=1, pma=1, peak=1, pqmode=0, tonemap=0):
+    def pixel(self, program, rgba, brightness=1, saturation=1, pma=1, peak=1, pqmode=0, tonemap=0, subtitlepeak=1):
         self.glUseProgram(program)
         for name, value in [('m_sdrBrightness', brightness), ('m_sdrSaturation', saturation),
-                            ('m_pma', pma), ('m_sdrPeak', peak), ('m_pqRefNits', 203),
+                            ('m_subtitlePeak', subtitlepeak), ('m_pma', pma), ('m_sdrPeak', peak), ('m_pqRefNits', 203),
                             ('m_pqSaturation', 1.25), ('m_pqTonemap', tonemap), ('m_pqMode', pqmode)]:
             self.glUniform1f(self.glGetUniformLocation(program, name.encode()), value)
         self.glUniform1i(self.glGetUniformLocation(program, b'm_samp0'), 0)
@@ -206,6 +210,78 @@ def check(gl, fragment, baseline):
     return count
 
 
+
+def check_output(gl, fragment):
+    programs = [gl.program(fragment, ('#define KODI_LIMITED_RANGE 1\n' if v & 1 else '') +
+                           ('#define KODI_TRANSFER_PQ 1\n' if v & 2 else '')) for v in range(4)]
+    pq = gl.program(fragment, '#define KODI_PQ_TO_SDR 1\n')
+    count = 0
+    for alpha in [0, 1, 16, 64, 128, 192, 255]:
+        for colour in [(1, 1, 1), (0.25, 0.25, 0.25), (0.9, 0.3, 0.1), (0.05, 0.8, 0.2)]:
+            texel = encoded(colour, alpha)
+            for brightness, saturation in [(0.5, 1), (2, 1), (2, 0)]:
+                # The independent authored-linear oracle chooses output white
+                # AFTER source tuning and clipping, then premultiplies/encodes.
+                linear = [c ** 2.2 for c in colour]
+                luma = sum(x * w for x, w in zip(linear, [0.2126, 0.7152, 0.0722]))
+                adjusted = [min(1, max(0, (luma + (x - luma) * saturation) * brightness)) for x in linear]
+                for white in [0, 0.1, 0.5, 1]:
+                    for gui_peak in [0.3, 1]:
+                        for v in range(4):
+                            got = gl.pixel(programs[v], texel, brightness, saturation,
+                                           peak=gui_peak, subtitlepeak=white ** (1 / 2.2))
+                            expected = [(x * white * alpha / 255) ** (1 / 2.2) for x in adjusted]
+                            if v & 1:
+                                expected = [x * 219 / 255 + alpha / 255 * 16 / 255 for x in expected]
+                            if v & 2:
+                                expected = [x * gui_peak for x in expected]
+                            assert all(abs(got[i] - round(expected[i] * 255)) <= 2 for i in range(3)), (texel, brightness, white, v, got, expected)
+                            assert got[3] == alpha
+                            count += 1
+    # Input gain clips the source first: reducing it cannot replace a separate
+    # output white. A boosted middle tone remains at selected output white.
+    mid = encoded((0.8, 0.8, 0.8), 255)
+    output_white = gl.pixel(programs[0], mid, brightness=2, subtitlepeak=0.5 ** (1 / 2.2))
+    input_only = gl.pixel(programs[0], mid, brightness=1)
+    assert output_white[0] < input_only[0] - 8
+    # The same white scale applies before a downstream composite/global GUI
+    # stage: it remains RELATIVE to that stage, not an absolute nit override.
+    for alpha in [0, 64, 255]:
+        texel = encoded((0.9, 0.3, 0.1), alpha)
+        for global_peak in [0.3, 0.75, 1]:
+            relative = gl.pixel(programs[0], texel, subtitlepeak=0.5 ** (1 / 2.2))
+            downstream = tuple(round(x * global_peak) for x in relative[:3]) + (alpha,)
+            primitive = gl.pixel(programs[2], texel, peak=global_peak, subtitlepeak=0.5 ** (1 / 2.2))
+            assert all(abs(a - b) <= 1 for a, b in zip(downstream, primitive))
+    caps = 0
+    for alpha in [0, 16, 64, 128, 255]:
+        # PQ textures are plain-PMA. Include bright saturated and dark colours.
+        for authored in [(0.8, 0.5, 0.3), (0.45, 0.3, 0.2), (0.1, 0.1, 0.1)]:
+            texel = tuple(round(x * alpha) for x in authored) + (alpha,)
+            for mode in range(3):
+                for tonemap in [0, 1]:
+                    uncapped = gl.pixel(pq, texel, pqmode=mode, tonemap=tonemap)
+                    for white in [0, 0.1, 0.5, 1]:
+                        ceiling = alpha * white ** (1 / 2.3)
+                        got = gl.pixel(pq, texel, pqmode=mode, tonemap=tonemap,
+                                       subtitlepeak=white ** (1 / 2.3))
+                        assert got[3] == alpha
+                        assert max(got[:3]) <= ceiling + 1, (texel, white, got, ceiling)
+                        if max(uncapped[:3]) <= ceiling:
+                            assert got == uncapped  # lower colours are not dimmed
+                        elif white > 0:
+                            assert abs(max(got[:3]) - ceiling) <= 1
+                            # A hue-preserving cap scales every channel together.
+                            # Cross-products avoid unstable division at dark edges.
+                            hi = max(range(3), key=lambda i: uncapped[i])
+                            for i in range(3):
+                                assert abs(got[i] * uncapped[hi] - uncapped[i] * got[hi]) <= 2 * uncapped[hi]
+                        if white == 1:
+                            assert got == uncapped
+                        caps += 1
+    return count, caps
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--baseline', help='Compare neutral and PQ output against this Git revision')
@@ -219,8 +295,15 @@ def main():
         try:
             count = check(gl, fragment, baseline)
             print('PASS:', count, 'SDR alpha/tuning cases + four transfer variants and PQ modes;', gl.glGetString(0x1F01).decode())
+            output_count, caps = check_output(gl, fragment)
+            print('PASS:', output_count, 'SDR output-white/transfer cases and', caps, 'corrected-PGS alpha/hue ceiling cases')
             if args.negative_controls:
                 for label, old, new in [
+                    ('ceiling ignores alpha', 'rgb.a * m_subtitlePeak /', 'm_subtitlePeak /'),
+                    ('ceiling dims dark colours', 'min(1.0, rgb.a * m_subtitlePeak / max(peak, 1e-6))', 'm_subtitlePeak'),
+                    ('ceiling changes colour ratios', 'rgb.rgb *= min(1.0, rgb.a * m_subtitlePeak / max(peak, 1e-6));', 'rgb.rgb = min(rgb.rgb, vec3(rgb.a * m_subtitlePeak));'),
+                    ('output white applied twice', 'rgb.rgb *= m_subtitlePeak;', 'rgb.rgb *= m_subtitlePeak * m_subtitlePeak;'),
+                    ('output white missing', 'rgb.rgb *= m_subtitlePeak;', 'rgb.rgb *= 1.0;'),
                     ('PMA alpha clamp omitted', 'vec3(ceiling));', 'vec3(1.0));'),
                     ('gamma instead of linear', 'vec3(2.2)', 'vec3(1.0)'),
                     ('alpha modified', 'gl_FragColor = rgb;', 'rgb.a *= m_pma * 0.5 + 0.5; gl_FragColor = rgb;'),
@@ -228,11 +311,28 @@ def main():
                 ]:
                     assert old in fragment
                     try:
-                        check(gl, fragment.replace(old, new), baseline)
+                        mutant = fragment.replace(old, new)
+                        check(gl, mutant, baseline)
+                        check_output(gl, mutant)
                     except AssertionError:
                         print('REJECTED:', label)
                     else:
                         raise AssertionError('Unsafe shader accepted: ' + label)
+                # Move the intact block before input tuning: it still compiles,
+                # but changes the result when input brightness would clip.
+                cap = fragment.index('  // A corrected-PGS ceiling')
+                start = fragment.rfind('#if defined(KODI_PQ_TO_SDR)', 0, cap)
+                end = fragment.index('#if defined(KODI_LIMITED_RANGE)', cap)
+                block = fragment[start:end]
+                mutant = fragment[:start] + fragment[end:]
+                before = mutant.index('#if !defined(KODI_PQ_TO_SDR)\n  // Normal bitmap')
+                mutant = mutant[:before] + block + mutant[before:]
+                try:
+                    check_output(gl, mutant)
+                except AssertionError:
+                    print('REJECTED: output white before input clipping')
+                else:
+                    raise AssertionError('Unsafe output ordering accepted')
         finally:
             gl.close()
 

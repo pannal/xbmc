@@ -285,6 +285,8 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o,
   m_isHdrPqAuthored = o.m_isHdrPq && !m_rawPqMenu;
   m_isSdrSubtitle = o.m_canPosition && !o.m_isHdrPqSource && !o.m_isHdrPq &&
                     !o.m_isPqMenuGraphics && !o.IsDiscMenuOverlay();
+  m_isHdrSubtitle = o.m_canPosition && o.m_isHdrPqSource && m_isHdrPqAuthored &&
+                    !o.m_isPqMenuGraphics && !o.IsDiscMenuOverlay();
   m_isBitmapOverlay = true;
 
   glGenerateMipmap(GL_TEXTURE_2D);
@@ -594,7 +596,7 @@ void COverlayTextureGLES::Render(SRenderState& state)
 {
   if (!IsValid())
     return;
-  // Filters, PQ tuning and matrices remain late main-context inputs below.
+  // Filters and matrices remain late main-context inputs below.
   glEnable(GL_BLEND);
 
   glBindTexture(GL_TEXTURE_2D, m_texture);
@@ -648,15 +650,23 @@ void COverlayTextureGLES::Render(SRenderState& state)
 
   if (m_isHdrPqAuthored)
   {
-    auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-    float brightness = static_cast<float>(
-        settings->GetInt(CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_BRIGHTNESS));
-    float refNits = 20300.0f / std::max(brightness, 10.0f);
-    float saturation = static_cast<float>(
-        settings->GetInt(CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_SATURATION)) / 100.0f;
-    float tonemap = settings->GetBool(CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_TONEMAP) ? 1.0f : 0.0f;
-    float mode = static_cast<float>(
-        settings->GetInt(CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_MODE));
+    float refNits = state.pqRefNits;
+    float saturation = state.pqSaturation;
+    float tonemap = state.pqTonemap;
+    float mode = state.pqMode;
+    // Direct menu draws have no prepared colour snapshot. Retain their existing
+    // correction preferences while keeping subtitle-only output controls neutral.
+    if (!state.bitmapColourPrepared || m_discMenuOverlay)
+    {
+      auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+      float brightness = static_cast<float>(
+          settings->GetInt(CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_BRIGHTNESS));
+      refNits = 20300.0f / std::max(brightness, 10.0f);
+      saturation = static_cast<float>(
+          settings->GetInt(CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_SATURATION)) / 100.0f;
+      tonemap = settings->GetBool(CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_TONEMAP) ? 1.0f : 0.0f;
+      mode = static_cast<float>(settings->GetInt(CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_MODE));
+    }
 
     GLint prog = 0;
     glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
@@ -664,11 +674,14 @@ void COverlayTextureGLES::Render(SRenderState& state)
     glUniform1f(glGetUniformLocation(prog, "m_pqSaturation"), saturation);
     glUniform1f(glGetUniformLocation(prog, "m_pqTonemap"), tonemap);
     glUniform1f(glGetUniformLocation(prog, "m_pqMode"), mode);
+    if (m_isHdrSubtitle && !m_discMenuOverlay && !m_rawPqMenu)
+      glUniform1f(renderSystem->GUIShaderGetSubtitlePeak(), state.hdrOutputPeak);
   }
   else if (m_isSdrSubtitle && !m_discMenuOverlay && !m_rawPqMenu)
   {
     glUniform1f(renderSystem->GUIShaderGetSdrBrightness(), state.sdrBrightness);
     glUniform1f(renderSystem->GUIShaderGetSdrSaturation(), state.sdrSaturation);
+    glUniform1f(renderSystem->GUIShaderGetSubtitlePeak(), state.sdrOutputPeak);
   }
 
   GLint posLoc = renderSystem->GUIShaderGetPos();

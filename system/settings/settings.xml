@@ -940,6 +940,16 @@
           </dependencies>
           <control type="slider" format="integer" />
         </setting>
+        <setting id="subtitles.pgshdrtosdr.peak" parent="subtitles.pgshdrtosdr" type="integer" label="69343" help="69344">
+          <requirement>has_glesv2</requirement>
+          <level>2</level>
+          <default>100</default>
+          <constraints><minimum>0</minimum><step>5</step><maximum>100</maximum></constraints>
+          <dependencies>
+            <dependency type="visible" setting="subtitles.pgshdrtosdr" operator="is">true</dependency>
+          </dependencies>
+          <control type="slider" format="percentage" />
+        </setting>
         <setting id="subtitles.pgshdrtosdr.tonemap" parent="subtitles.pgshdrtosdr" type="boolean" label="69204" help="69205">
           <level>2</level>
           <default>false</default>
@@ -1080,6 +1090,13 @@
           <level>1</level>
           <default>100</default>
           <constraints><minimum>0</minimum><step>5</step><maximum>200</maximum></constraints>
+          <control type="slider" format="percentage" />
+        </setting>
+        <setting id="subtitles.bitmapsdrpeak" type="integer" label="69341" help="69342">
+          <requirement>has_glesv2</requirement>
+          <level>1</level>
+          <default>100</default>
+          <constraints><minimum>0</minimum><step>5</step><maximum>100</maximum></constraints>
           <control type="slider" format="percentage" />
         </setting>
         <setting id="subtitles.bitmapsdrsaturation" type="integer" label="69339" help="69340">

@@ -800,6 +800,14 @@ GLint CRenderSystemGLES::GUIShaderGetSdrSaturation()
   return -1;
 }
 
+GLint CRenderSystemGLES::GUIShaderGetSubtitlePeak()
+{
+  if (m_pShader[m_method])
+    return m_pShader[m_method]->GetSubtitlePeakLoc();
+
+  return -1;
+}
+
 GLint CRenderSystemGLES::GUIShaderGetUniCol()
 {
   if (m_pShader[m_method])

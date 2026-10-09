@@ -20,9 +20,10 @@ function = geometry['function']
 
 def snapshot_source():
     code = geometry['harness']()
-    code = code.replace('int position=0,aspect=0;', 'int brightness=100,saturation=100,brightnessReads=0,saturationReads=0;\n  int position=0,aspect=0;')
-    code = code.replace('int GetInt(int id){', 'int GetInt(int id){if(id==5){++brightnessReads;return brightness;}if(id==6){++saturationReads;return saturation;}')
-    code = code.replace('SETTING_SUBTITLES_BITMAPMARGIN=4;', 'SETTING_SUBTITLES_BITMAPMARGIN=4,SETTING_SUBTITLES_BITMAPSDRBRIGHTNESS=5,SETTING_SUBTITLES_BITMAPSDRSATURATION=6;')
+    code = code.replace('int position=0,aspect=0;', 'int brightness=100,saturation=100,brightnessReads=0,saturationReads=0;\n  int sdrPeak=100,hdrPeak=100,hdrBrightness=100,hdrSaturation=100,hdrMode=0;bool hdrTonemap=false,correction=true;int colourReads[6]{};\n  int position=0,aspect=0;')
+    code = code.replace('int GetInt(int id){', 'int GetInt(int id){if(id==5){++brightnessReads;return brightness;}if(id==6){++saturationReads;return saturation;}if(id>=7&&id<=12){++colourReads[id-7];switch(id){case 7:return sdrPeak;case 8:return hdrPeak;case 9:return hdrBrightness;case 10:return hdrSaturation;case 12:return hdrMode;}}')
+    code = code.replace('SETTING_SUBTITLES_BITMAPMARGIN=4;', 'SETTING_SUBTITLES_BITMAPMARGIN=4,SETTING_SUBTITLES_BITMAPSDRBRIGHTNESS=5,SETTING_SUBTITLES_BITMAPSDRSATURATION=6,SETTING_SUBTITLES_BITMAPSDRPEAK=7,SETTING_SUBTITLES_PGSHDRTOSDR_PEAK=8,SETTING_SUBTITLES_PGSHDRTOSDR_BRIGHTNESS=9,SETTING_SUBTITLES_PGSHDRTOSDR_SATURATION=10,SETTING_SUBTITLES_PGSHDRTOSDR_TONEMAP=11,SETTING_SUBTITLES_PGSHDRTOSDR_MODE=12,SETTING_SUBTITLES_PGSHDRTOSDR=13;')
+    code = code.replace('  double GetNumber(int)', '  bool GetBool(int id){if(id==13)return correction;++colourReads[4];return hdrTonemap;}\n  double GetNumber(int)')
     return code + r'''
 int main(){
  CRenderer renderer;
@@ -30,21 +31,37 @@ int main(){
  renderer.converted=std::make_shared<COverlay>();renderer.converted->m_isBitmapOverlay=true;
  renderer.converted->m_canPosition=true;
  CRenderer::OverlayBatch batch{{1,producer},{1,producer}};
- services.brightness=50;services.saturation=0;
+ services.brightness=50;services.saturation=0;services.sdrPeak=25;services.hdrPeak=50;
+ services.hdrBrightness=150;services.hdrSaturation=175;services.hdrTonemap=true;services.hdrMode=2;
  auto old=renderer.PrepareRenderItems(batch);
  assert(old.size()==2&&services.brightnessReads==1&&services.saturationReads==1);
  for(const auto& item:old)assert(item.state.sdrBrightness==0.5f&&item.state.sdrSaturation==0.0f);
+ for(int reads:services.colourReads)assert(reads==1);
+ for(const auto& item:old){const auto& c=item.state;assert(c.bitmapColourPrepared);
+  assert(std::abs(c.sdrOutputPeak-std::pow(0.25f,1.0f/2.2f))<1e-6f);
+  assert(std::abs(c.hdrOutputPeak-std::pow(0.5f,1.0f/2.3f))<1e-6f);
+  assert(c.pqRefNits==20300.0f/150.0f&&c.pqSaturation==1.75f&&c.pqTonemap==1&&c.pqMode==2);}
+ services.sdrPeak=50;services.hdrPeak=25;services.hdrBrightness=200;services.hdrSaturation=150;services.hdrTonemap=false;services.hdrMode=1;
  auto cached=old[0].overlay;services.brightness=150;services.saturation=200;
  auto fresh=renderer.PrepareRenderItems(batch);
  assert(fresh[0].overlay==cached&&fresh[1].overlay==cached);
  for(const auto& item:fresh)assert(item.state.sdrBrightness==1.5f&&item.state.sdrSaturation==2.0f);
+ for(int reads:services.colourReads)assert(reads==2);
+ for(const auto& item:fresh){const auto& c=item.state;
+  assert(std::abs(c.sdrOutputPeak-std::pow(0.5f,1.0f/2.2f))<1e-6f);
+  assert(std::abs(c.hdrOutputPeak-std::pow(0.25f,1.0f/2.3f))<1e-6f);
+  assert(c.pqRefNits==101.5f&&c.pqSaturation==1.5f&&c.pqTonemap==0&&c.pqMode==1);}
  // Previously retained states cannot acquire a later slider value.
  for(const auto& item:old)assert(item.state.sdrBrightness==0.5f&&item.state.sdrSaturation==0.0f);
  int reads=services.brightnessReads;renderer.PrepareRenderItems({});assert(services.brightnessReads==reads);
- services.brightness=services.saturation=100;
+ services.brightness=services.saturation=services.sdrPeak=services.hdrPeak=100;
  auto neutral=renderer.PrepareRenderItems(batch);
  assert(neutral[0].state.sdrBrightness==1.0f&&neutral[0].state.sdrSaturation==1.0f);
- SRenderState direct{};assert(direct.sdrBrightness==1.0f&&direct.sdrSaturation==1.0f);
+ assert(neutral[0].state.sdrOutputPeak==1&&neutral[0].state.hdrOutputPeak==1);
+ for(const auto& item:old)assert(item.state.pqRefNits==20300.0f/150.0f&&item.state.pqTonemap==1);
+ services.correction=false;services.hdrPeak=0;
+ auto disabled=renderer.PrepareRenderItems(batch);assert(disabled[0].state.hdrOutputPeak==1);
+ SRenderState direct{};assert(direct.sdrOutputPeak==1&&direct.hdrOutputPeak==1&&!direct.bitmapColourPrepared);assert(direct.sdrBrightness==1.0f&&direct.sdrSaturation==1.0f);
 }
 '''
 
@@ -105,6 +122,7 @@ void glDrawElements(int,int,int,const void*){++draws;}
  int GUIShaderGetPma(){return guiShader.m_hPma;}
  int GUIShaderGetSdrBrightness(){return guiShader.m_hSdrBrightness;}
  int GUIShaderGetSdrSaturation(){return guiShader.m_hSdrSaturation;}
+ int GUIShaderGetSubtitlePeak(){return guiShader.m_hSubtitlePeak;}
  bool current=true,ready=true;''')
     code = code.replace('static CRenderSystemBase* GetRenderSystem()', 'static Window* GetWinSystem(){return &window;}static Settings* GetSettingsComponent(){return &settings;}\n static CRenderSystemGLES* GetRenderSystem()')
     state = function((ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h').read_text(), 'struct SRenderState') + ';'
@@ -150,8 +168,9 @@ DRAW_TESTS = r'''
 float value(const char* name){return uniforms.at(locations.at(name));}
 int main(){
  guiShader.OnCompiledAndLinked();
+ uniforms[guiShader.m_hSubtitlePeak]=0.3f;
  uniforms[guiShader.m_hSdrBrightness]=0.25f;uniforms[guiShader.m_hSdrSaturation]=0.4f;
- guiShader.OnEnabled();
+ guiShader.OnEnabled();assert(value("m_subtitlePeak")==1);
  assert(value("m_sdrBrightness")==1&&value("m_sdrSaturation")==1);
  CDVDOverlayImage image;image.width=image.height=1;image.linesize=1;image.pixels={0};image.palette={0x80b45020};image.m_canPosition=true;
  CRect source(0,0,1920,1080);
@@ -162,10 +181,11 @@ int main(){
  auto sdr=make(image);assert(sdr->m_isSdrSubtitle);
  SRenderState state{0,0,1920,1080};state.sdrBrightness=0.5f;state.sdrSaturation=0;
  sdr->Render(state);assert(draws==1&&value("m_sdrBrightness")==0.5f&&value("m_sdrSaturation")==0);
+ state.sdrOutputPeak=0.65f;sdr->Render(state);assert(value("m_subtitlePeak")==0.65f);
  auto sameTexture=sdr->m_texture;state.sdrBrightness=1.5f;state.sdrSaturation=2;
  sdr->Render(state);assert(sdr->m_texture==sameTexture&&value("m_sdrBrightness")==1.5f);
  // Every normal GUI bind and each following menu draw returns to neutral.
- guiShader.OnEnabled();assert(value("m_sdrBrightness")==1&&value("m_sdrSaturation")==1);
+ guiShader.OnEnabled();assert(value("m_subtitlePeak")==1);assert(value("m_sdrBrightness")==1&&value("m_sdrSaturation")==1);
  CDVDOverlayImage menu=image;menu.SetDiscMenuOverlay(true);
  auto menuTexture=make(menu);assert(!menuTexture->m_isSdrSubtitle);
  sdr->Render(state);menuTexture->Render(state);assert(value("m_sdrBrightness")==1&&value("m_sdrSaturation")==1);
@@ -173,12 +193,20 @@ int main(){
  auto graphics=make(unrelated);assert(!graphics->m_isSdrSubtitle);
  sdr->Render(state);graphics->Render(state);assert(value("m_sdrBrightness")==1&&value("m_sdrSaturation")==1);
  auto hdr=image;hdr.m_isHdrPqSource=true;hdr.m_isHdrPq=true;
- auto hdrTexture=make(hdr);assert(!hdrTexture->m_isSdrSubtitle);
+ auto hdrTexture=make(hdr);assert(!hdrTexture->m_isSdrSubtitle&&hdrTexture->m_isHdrSubtitle);
  hdrTexture->Render(state);assert(currentShader==ShaderMethodGLES::SM_TEXTURE_NOBLEND_PQ_TO_SDR);
  assert(value("m_pqRefNits")==20300.0f/150.0f&&value("m_pqSaturation")==1.75f);
  assert(value("m_sdrBrightness")==1&&value("m_sdrSaturation")==1);
+ state.bitmapColourPrepared=true;state.pqRefNits=101.5f;state.pqSaturation=1.5f;state.pqTonemap=1;state.pqMode=2;state.hdrOutputPeak=0.7f;
+ hdrTexture->Render(state);assert(value("m_subtitlePeak")==0.7f);
+ assert(value("m_pqRefNits")==101.5f&&value("m_pqSaturation")==1.5f&&value("m_pqTonemap")==1&&value("m_pqMode")==2);
+ auto hdrMenu=hdr;hdrMenu.SetDiscMenuOverlay(true);auto correctedMenu=make(hdrMenu);correctedMenu->m_discMenuOverlay=true;
+ correctedMenu->Render(state);assert(value("m_subtitlePeak")==1&&value("m_pqRefNits")==20300.0f/150.0f&&value("m_pqSaturation")==1.75f);
+ auto hdrOther=hdr;hdrOther.m_canPosition=false;auto otherCorrected=make(hdrOther);otherCorrected->Render(state);assert(value("m_subtitlePeak")==1);
+ sdr->Render(state);menuTexture->Render(state);assert(value("m_subtitlePeak")==1);
+ sdr->Render(state);graphics->Render(state);assert(value("m_subtitlePeak")==1);
  hdr.m_isHdrPq=false;auto noConversion=make(hdr);assert(!noConversion->m_isSdrSubtitle);
- noConversion->Render(state);assert(currentShader==ShaderMethodGLES::SM_TEXTURE_NOBLEND&&value("m_sdrBrightness")==1);
+ noConversion->Render(state);assert(value("m_subtitlePeak")==1&&!noConversion->m_isHdrSubtitle);assert(currentShader==ShaderMethodGLES::SM_TEXTURE_NOBLEND&&value("m_sdrBrightness")==1);
  auto rawImage=image;rawImage.m_isPqMenuGraphics=true;
  auto raw=make(rawImage,true);assert(!raw->m_isSdrSubtitle&&raw->m_rawPqMenu);
  raw->Render(state);assert(value("m_sdrBrightness")==1);
@@ -231,6 +259,12 @@ def main():
     print('PASS: production colour batch snapshots, cached cues, source/copy/provenance, uniform resets and HDR/menu routing')
     if args.negative_controls:
         for label, code, old, new in [
+            ('disabled correction ceiling active', snapshots, 'hasBitmap && settings->GetBool(\n      CSettings::SETTING_SUBTITLES_PGSHDRTOSDR) ?', 'hasBitmap ?'),
+            ('peak reset missing', draw, 'glUniform1f(m_hSubtitlePeak, 1.0f);', ''),
+            ('SDR white snapshot discarded', snapshots, 'item.state.sdrOutputPeak = sdrOutputPeak;', 'item.state.sdrOutputPeak = 1.0f; (void)sdrOutputPeak;'),
+            ('HDR ceiling snapshot discarded', snapshots, 'item.state.hdrOutputPeak = hdrOutputPeak;', 'item.state.hdrOutputPeak = 1.0f; (void)hdrOutputPeak;'),
+            ('HDR snapshot ignored', draw, '!state.bitmapColourPrepared || m_discMenuOverlay', 'true'),
+            ('HDR ceiling applied to menu', draw, 'm_isHdrSubtitle && !m_discMenuOverlay && !m_rawPqMenu', 'true'),
             ('snapshot discarded', snapshots, 'item.state.sdrBrightness = sdrBrightness;', 'item.state.sdrBrightness = 1.0f; (void)sdrBrightness;'),
             ('HDR conversion-disabled classified SDR', draw, '!o.m_isHdrPqSource &&', ''),
             ('menu eligible', draw, '!o.IsDiscMenuOverlay()', 'true'),

@@ -27646,3 +27646,27 @@ msgstr ""
 msgctxt "#69340"
 msgid "Adjust SDR PGS and VobSub colour saturation. 100% preserves the original colours; 0% gives grayscale. Transparency is unchanged. Text subtitles, HDR-source PGS and disc menu graphics retain their existing colour handling."
 msgstr ""
+
+#. Bitmap subtitle output colour
+#: system/settings/settings.xml
+msgctxt "#69341"
+msgid "SDR bitmap subtitle output white"
+msgstr ""
+
+#. Bitmap subtitle output colour
+#: system/settings/settings.xml
+msgctxt "#69342"
+msgid "Set SDR PGS and VobSub output white after brightness and saturation adjustment. 100% keeps the existing output; lower values dim even highlights clipped by input brightness. Percentages are relative linear-light white, not nits. Existing GUI/HDR output scaling still applies. Transparency, text and disc menu colours are unchanged."
+msgstr ""
+
+#. Bitmap subtitle output colour
+#: system/settings/settings.xml
+msgctxt "#69343"
+msgid "Corrected HDR PGS output ceiling"
+msgstr ""
+
+#. Bitmap subtitle output colour
+#: system/settings/settings.xml
+msgctxt "#69344"
+msgid "Limit the brightest channel after HDR PGS correction and tone mapping, preserving colour ratios. 100% keeps the existing output; lower values cap bright colours without dimming darker pixels. Percentages are relative linear-light white, not nits. Requires HDR correction and leaves correction-disabled PGS, transparency and disc menus unchanged."
+msgstr ""

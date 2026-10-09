@@ -58,6 +58,7 @@ public:
   bool m_pma; /*< is alpha in texture premultiplied in the values */
   bool m_isHdrPqAuthored{false};
   bool m_isSdrSubtitle{false};
+  bool m_isHdrSubtitle{false};
 };
 
 class COverlayGlyphGLES : public COverlay

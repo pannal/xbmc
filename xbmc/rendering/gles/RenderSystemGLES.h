@@ -148,6 +148,7 @@ public:
   GLint GUIShaderGetPma();
   GLint GUIShaderGetSdrBrightness();
   GLint GUIShaderGetSdrSaturation();
+  GLint GUIShaderGetSubtitlePeak();
 
 protected:
   virtual bool IsPrimaryContextCurrent() const { return true; }

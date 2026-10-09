@@ -22,20 +22,28 @@ header = r'''
 #include <cassert>
 #include <map>
 #include <iostream>
+#include <vector>
 constexpr const char* SETTING_SUBTITLE_ENABLE="subtitles.enable",*SETTING_SUBTITLE_DELAY="subtitles.delay",*SETTING_SUBTITLE_STREAM="subtitles.stream";
-struct CSettings {static constexpr const char* SETTING_SUBTITLES_BITMAPPOSITION="subtitles.bitmapposition",*SETTING_SUBTITLES_BITMAPASPECT="subtitles.bitmapaspect",*SETTING_SUBTITLES_BITMAPSDRBRIGHTNESS="subtitles.bitmapsdrbrightness",*SETTING_SUBTITLES_BITMAPSDRSATURATION="subtitles.bitmapsdrsaturation",*SETTING_SUBTITLES_BITMAPOFFSET="subtitles.bitmapoffset",*SETTING_SUBTITLES_BITMAPMARGIN="subtitles.bitmapmargin";};
+struct CSettings {static constexpr const char* SETTING_SUBTITLES_BITMAPPOSITION="subtitles.bitmapposition",*SETTING_SUBTITLES_BITMAPASPECT="subtitles.bitmapaspect",*SETTING_SUBTITLES_BITMAPSDRBRIGHTNESS="subtitles.bitmapsdrbrightness",*SETTING_SUBTITLES_BITMAPSDRSATURATION="subtitles.bitmapsdrsaturation",*SETTING_SUBTITLES_BITMAPSDRPEAK="subtitles.bitmapsdrpeak",*SETTING_SUBTITLES_PGSHDRTOSDR="subtitles.pgshdrtosdr",*SETTING_SUBTITLES_PGSHDRTOSDR_PEAK="subtitles.pgshdrtosdr.peak",*SETTING_SUBTITLES_BITMAPOFFSET="subtitles.bitmapoffset",*SETTING_SUBTITLES_BITMAPMARGIN="subtitles.bitmapmargin";};
 struct CSetting {std::string id;explicit CSetting(const char*s):id(s){};const std::string& GetId()const{return id;}virtual ~CSetting()=default;};
 struct CSettingInt:CSetting {int value;CSettingInt(const char*s,int v):CSetting(s),value(v){};int GetValue()const{return value;}};
 struct CSettingNumber:CSetting {using CSetting::CSetting;double GetValue()const{return 0;}};
 struct CSettingBool:CSetting {using CSetting::CSetting;bool GetValue()const{return false;}};
 struct CApplicationPlayer {void SetSubtitle(int){}void SetSubtitleVisible(bool){}void SetSubTitleDelay(float){}};
 struct Components {template<class T>std::shared_ptr<T> GetComponent(){return std::make_shared<T>();}};
-struct Settings {std::map<std::string,int> ints;int saves=0;void SetInt(const std::string&s,int v){ints[s]=v;}void SetNumber(const std::string&,double){}void Save(){++saves;}};
+struct Settings {std::map<std::string,int> ints;int saves=0;bool correction=true;int GetInt(const std::string&s){return ints.at(s);}bool GetBool(const std::string&){return correction;}void SetInt(const std::string&s,int v){ints[s]=v;}void SetNumber(const std::string&,double){}void Save(){++saves;}};
 struct SubtitleSettings {void SetBitmapPreference(float){}};
 struct Services {Settings settings;SubtitleSettings subtitles;Settings*GetSettings(){return &settings;}SubtitleSettings*GetSubtitlesSettings(){return &subtitles;}} services;
 struct CServiceBroker {static Components&GetAppComponents(){static Components c;return c;}static Services*GetSettingsComponent(){return &services;}};
 struct CGUIDialogSettingsManualBase {void OnSettingChanged(const std::shared_ptr<const CSetting>&){}void OnDeinitWindow(int){}};
-struct CGUIDialogSubtitleSettings:CGUIDialogSettingsManualBase {bool m_bitmapSettingsChanged=false;int m_subtitleStream=0;void OnSettingChanged(const std::shared_ptr<const CSetting>&);void OnDeinitWindow(int);};
+enum class SettingLevel {Basic, Advanced};
+struct Slider {std::string id;SettingLevel level;int value,minimum,step,maximum,help=0;void SetHelp(int id){help=id;}};
+struct CGUIDialogSubtitleSettings:CGUIDialogSettingsManualBase {
+ std::vector<std::shared_ptr<Slider>> sliders;
+ std::shared_ptr<Slider> AddSlider(int,const char*id,int,SettingLevel level,int value,int,int minimum,int step,int maximum){
+  auto s=std::make_shared<Slider>(Slider{id,level,value,minimum,step,maximum,0});sliders.push_back(s);return s;}
+ void InitializeColourControls();
+ bool m_bitmapSettingsChanged=false;int m_subtitleStream=0;void OnSettingChanged(const std::shared_ptr<const CSetting>&);void OnDeinitWindow(int);};
 '''
 tests = r'''
 int main(){CGUIDialogSubtitleSettings d;
@@ -45,9 +53,21 @@ int main(){CGUIDialogSubtitleSettings d;
  assert(services.settings.ints[CSettings::SETTING_SUBTITLES_BITMAPSDRBRIGHTNESS]==150&&services.settings.saves==0);
  d.OnSettingChanged(std::make_shared<CSettingInt>(CSettings::SETTING_SUBTITLES_BITMAPSDRSATURATION,0));
  assert(services.settings.ints[CSettings::SETTING_SUBTITLES_BITMAPSDRSATURATION]==0&&services.settings.saves==0);
+ services.settings.ints[CSettings::SETTING_SUBTITLES_BITMAPSDRPEAK]=100;
+ services.settings.ints[CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_PEAK]=100;
+ d.OnSettingChanged(std::make_shared<CSettingInt>(CSettings::SETTING_SUBTITLES_BITMAPSDRPEAK,0));
+ assert(services.settings.ints[CSettings::SETTING_SUBTITLES_BITMAPSDRPEAK]==0&&services.settings.saves==0);
+ d.OnSettingChanged(std::make_shared<CSettingInt>(CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_PEAK,25));
+ assert(services.settings.ints[CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_PEAK]==25&&services.settings.saves==0);
  d.OnDeinitWindow(0);assert(services.settings.saves==1&&!d.m_bitmapSettingsChanged);
  d.OnDeinitWindow(0);assert(services.settings.saves==1);
- std::cout<<"PASS: actual dialog callbacks update both global integer preferences immediately and save once on close\n";
+ services.settings.correction=false;d.InitializeColourControls();assert(d.sliders.size()==3);
+ assert(d.sliders[2]->id==CSettings::SETTING_SUBTITLES_BITMAPSDRPEAK&&d.sliders[2]->value==0&&d.sliders[2]->help==69342);
+ d.sliders.clear();services.settings.correction=true;d.InitializeColourControls();assert(d.sliders.size()==4);
+ assert(d.sliders[3]->id==CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_PEAK&&d.sliders[3]->value==25&&d.sliders[3]->help==69344);
+ assert(d.sliders[3]->level==SettingLevel::Advanced);
+ for(int i:{2,3})assert(d.sliders[i]->minimum==0&&d.sliders[i]->step==5&&d.sliders[i]->maximum==100);
+ std::cout<<"PASS: actual dialog callbacks update all four global integer preferences immediately and save once on close; production control visibility/ranges pass\n";
 }
 '''
 def po(path):
@@ -81,7 +101,7 @@ def settings(baseline):
             assert canonical(by_id[item.get('id')]) == canonical(item), item.get('id')
     en = po(ROOT / 'addons/resource.language.en_gb/resources/strings.po')
     de = po(ROOT / 'addons/resource.language.de_de/resources/strings.po')
-    for value in range(69337, 69341):
+    for value in range(69337, 69345):
         key = f'#{value}'
         assert en[key]['msgid'] == de[key]['msgid'] and de[key]['msgstr']
     for name, label in [('brightness', 69337), ('saturation', 69339)]:
@@ -95,12 +115,26 @@ def settings(baseline):
         assert [item.findtext('constraints/' + x) for x in ['minimum', 'step', 'maximum']] == ['0', '5', '200']
         assert item.find('control').get('format') == 'percentage'
         assert root.find('.//category[@id="subtitles"]//setting[@id="' + sid + '"]') is not None
+    for sid, label in [('subtitles.bitmapsdrpeak', 69341), ('subtitles.pgshdrtosdr.peak', 69343)]:
+        item = by_id[sid]
+        assert item.get('type') == 'integer' and item.get('label') == str(label)
+        assert item.get('help') == str(label + 1) and item.findtext('default') == '100'
+        assert item.findtext('requirement') == 'has_glesv2'
+        assert [item.findtext('constraints/' + x) for x in ['minimum', 'step', 'maximum']] == ['0', '5', '100']
+        assert item.find('control').get('format') == 'percentage'
+        if sid.endswith('.peak'):
+            assert item.get('parent') == 'subtitles.pgshdrtosdr'
+            dependency = item.find('dependencies/dependency')
+            assert dependency.get('type') == 'visible' and dependency.get('setting') == 'subtitles.pgshdrtosdr' and dependency.text == 'true'
+        else:
+            assert item.find('dependencies') is None
     conditions = (ROOT / 'xbmc/settings/SettingConditions.cpp').read_text()
     assert '#if HAS_GLES >= 2\n  m_simpleConditions.emplace("has_glesv2");' in conditions
     initial = function(dialog, 'void CGUIDialogSubtitleSettings::InitializeSettings()')
     colour_sliders = initial[initial.index('#if HAS_GLES >= 2'):initial.index('#endif', initial.index('#if HAS_GLES >= 2'))]
-    for name in ['BITMAPSDRBRIGHTNESS', 'BITMAPSDRSATURATION']:
+    for name in ['BITMAPSDRBRIGHTNESS', 'BITMAPSDRSATURATION', 'BITMAPSDRPEAK', 'PGSHDRTOSDR_PEAK']:
         assert 'CSettings::SETTING_SUBTITLES_' + name in colour_sliders
+    assert 'if (settings->GetBool(CSettings::SETTING_SUBTITLES_PGSHDRTOSDR))' in colour_sliders
     print('PASS: unique settings/PO IDs, matching EN/DE, default100/ranges/GLES visibility and existing settings preservation')
 
 
@@ -124,10 +158,17 @@ def main():
     parser.add_argument('--negative-controls', action='store_true')
     args = parser.parse_args()
     settings(args.baseline)
-    code = header + function(dialog, 'void CGUIDialogSubtitleSettings::OnSettingChanged(') + function(dialog, 'void CGUIDialogSubtitleSettings::OnDeinitWindow(') + tests
+    initial = function(dialog, 'void CGUIDialogSubtitleSettings::InitializeSettings()')
+    start = initial.index('#if HAS_GLES >= 2')
+    controls = initial[start + len('#if HAS_GLES >= 2'):initial.index('#endif', start)]
+    initialization = 'void CGUIDialogSubtitleSettings::InitializeColourControls(){auto settings=&services.settings;int groupSubtitles=0;' + controls + '}\n'
+    code = header + function(dialog, 'void CGUIDialogSubtitleSettings::OnSettingChanged(') + function(dialog, 'void CGUIDialogSubtitleSettings::OnDeinitWindow(') + initialization + tests
     run(code)
     if args.negative_controls:
         for label, old, new in [
+            ('ceiling shown with correction off', 'if (settings->GetBool(CSettings::SETTING_SUBTITLES_PGSHDRTOSDR))', 'if (true)'),
+            ('output white callback missing', 'settingId == CSettings::SETTING_SUBTITLES_BITMAPSDRPEAK', 'false'),
+            ('output ceiling callback missing', 'settingId == CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_PEAK', 'false'),
             ('brightness callback missing', 'settingId == CSettings::SETTING_SUBTITLES_BITMAPSDRBRIGHTNESS', 'false'),
             ('saturation callback missing', 'settingId == CSettings::SETTING_SUBTITLES_BITMAPSDRSATURATION', 'false'),
             ('save on every change', 'm_bitmapSettingsChanged = true;', 'm_bitmapSettingsChanged = true; CServiceBroker::GetSettingsComponent()->GetSettings()->Save();'),

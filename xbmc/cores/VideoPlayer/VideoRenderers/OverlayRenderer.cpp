@@ -25,6 +25,7 @@
 #include "windowing/WinSystem.h"
 
 #include <algorithm>
+#include <cmath>
 #include <mutex>
 #include <utility>
 
@@ -232,6 +233,20 @@ CRenderer::PreparedOverlays CRenderer::PrepareRenderItems(const OverlayBatch& ov
       CSettings::SETTING_SUBTITLES_BITMAPSDRBRIGHTNESS)) / 100.0f : 1.0f;
   const float sdrSaturation = hasBitmap ? static_cast<float>(settings->GetInt(
       CSettings::SETTING_SUBTITLES_BITMAPSDRSATURATION)) / 100.0f : 1.0f;
+  // Encoded output white, relative to the existing OSD route (not physical nits).
+  const float sdrOutputPeak = hasBitmap ? std::pow(static_cast<float>(settings->GetInt(
+      CSettings::SETTING_SUBTITLES_BITMAPSDRPEAK)) / 100.0f, 1.0f / 2.2f) : 1.0f;
+  const float hdrOutputPeak = hasBitmap && settings->GetBool(
+      CSettings::SETTING_SUBTITLES_PGSHDRTOSDR) ? std::pow(static_cast<float>(settings->GetInt(
+      CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_PEAK)) / 100.0f, 1.0f / 2.3f) : 1.0f;
+  const float pqRefNits = hasBitmap ? 20300.0f / std::max(static_cast<float>(settings->GetInt(
+      CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_BRIGHTNESS)), 10.0f) : 203.0f;
+  const float pqSaturation = hasBitmap ? static_cast<float>(settings->GetInt(
+      CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_SATURATION)) / 100.0f : 1.0f;
+  const float pqTonemap = hasBitmap && settings->GetBool(
+      CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_TONEMAP) ? 1.0f : 0.0f;
+  const float pqMode = hasBitmap ? static_cast<float>(settings->GetInt(
+      CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_MODE)) : 0.0f;
 #endif
   const CRect active = GetBitmapSubtitleArea(m_rv, m_rd, m_activePicture, aspect);
   const CRect limit = m_restrictToActivePicture ? m_activePicture : m_rv;
@@ -285,6 +300,13 @@ CRenderer::PreparedOverlays CRenderer::PrepareRenderItems(const OverlayBatch& ov
     // The texture backend independently checks source and menu eligibility.
     item.state.sdrBrightness = sdrBrightness;
     item.state.sdrSaturation = sdrSaturation;
+    item.state.sdrOutputPeak = sdrOutputPeak;
+    item.state.hdrOutputPeak = hdrOutputPeak;
+    item.state.bitmapColourPrepared = hasBitmap;
+    item.state.pqRefNits = pqRefNits;
+    item.state.pqSaturation = pqSaturation;
+    item.state.pqTonemap = pqTonemap;
+    item.state.pqMode = pqMode;
 #endif
     item.bounds = bounds(*item.overlay, item.state);
   }

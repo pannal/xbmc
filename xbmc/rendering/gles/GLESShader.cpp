@@ -61,6 +61,7 @@ void CGLESShader::OnCompiledAndLinked()
   m_hPma = glGetUniformLocation(ProgramHandle(), "m_pma");
   m_hSdrBrightness = glGetUniformLocation(ProgramHandle(), "m_sdrBrightness");
   m_hSdrSaturation = glGetUniformLocation(ProgramHandle(), "m_sdrSaturation");
+  m_hSubtitlePeak = glGetUniformLocation(ProgramHandle(), "m_subtitlePeak");
 
   // Vertex attributes
   m_hPos    = glGetAttribLocation(ProgramHandle(),  "m_attrpos");
@@ -183,6 +184,7 @@ bool CGLESShader::OnEnabled()
   // Every bind starts neutral, including when a cached shader variant returns.
   glUniform1f(m_hSdrBrightness, 1.0f);
   glUniform1f(m_hSdrSaturation, 1.0f);
+  glUniform1f(m_hSubtitlePeak, 1.0f);
 
   const float sdrPeak = CServiceBroker::GetWinSystem()->GetGuiSdrPeakLuminance();
   glUniform1f(m_sdrPeak, sdrPeak);

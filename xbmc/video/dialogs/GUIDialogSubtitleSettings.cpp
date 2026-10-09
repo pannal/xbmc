@@ -121,7 +121,9 @@ void CGUIDialogSubtitleSettings::OnSettingChanged(const std::shared_ptr<const CS
   else if (settingId == CSettings::SETTING_SUBTITLES_BITMAPPOSITION ||
            settingId == CSettings::SETTING_SUBTITLES_BITMAPASPECT ||
            settingId == CSettings::SETTING_SUBTITLES_BITMAPSDRBRIGHTNESS ||
-           settingId == CSettings::SETTING_SUBTITLES_BITMAPSDRSATURATION)
+           settingId == CSettings::SETTING_SUBTITLES_BITMAPSDRSATURATION ||
+           settingId == CSettings::SETTING_SUBTITLES_BITMAPSDRPEAK ||
+           settingId == CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_PEAK)
   {
     CServiceBroker::GetSettingsComponent()->GetSettings()->SetInt(
         settingId, std::static_pointer_cast<const CSettingInt>(setting)->GetValue());
@@ -396,6 +398,17 @@ void CGUIDialogSubtitleSettings::InitializeSettings()
       69339, SettingLevel::Basic, settings->GetInt(CSettings::SETTING_SUBTITLES_BITMAPSDRSATURATION),
       14047, 0, 5, 200);
   saturation->SetHelp(69340);
+  auto sdrPeak = AddSlider(groupSubtitles, CSettings::SETTING_SUBTITLES_BITMAPSDRPEAK,
+      69341, SettingLevel::Basic, settings->GetInt(CSettings::SETTING_SUBTITLES_BITMAPSDRPEAK),
+      14047, 0, 5, 100);
+  sdrPeak->SetHelp(69342);
+  if (settings->GetBool(CSettings::SETTING_SUBTITLES_PGSHDRTOSDR))
+  {
+    auto hdrPeak = AddSlider(groupSubtitles, CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_PEAK,
+        69343, SettingLevel::Advanced, settings->GetInt(CSettings::SETTING_SUBTITLES_PGSHDRTOSDR_PEAK),
+        14047, 0, 5, 100);
+    hdrPeak->SetHelp(69344);
+  }
 #endif
 
   // subtitle stream setting

@@ -29,6 +29,7 @@ uniform sampler2D m_samp0;
 varying vec4 m_cord0;
 uniform float m_sdrPeak;
 uniform float m_pma;
+uniform float m_subtitlePeak;
 
 #if !defined(KODI_PQ_TO_SDR)
 uniform float m_sdrBrightness;
@@ -124,6 +125,21 @@ void main ()
                    vec3(0.0), vec3(ceiling));
     rgb.rgb = pow(linear, vec3(1.0 / 2.2));
   }
+#endif
+
+#if defined(KODI_PQ_TO_SDR)
+  // A corrected-PGS ceiling caps the brightest channel without changing hue.
+  // The conversion above returns plain PMA, so its ceiling scales with alpha.
+  if (m_subtitlePeak < 1.0)
+  {
+    float peak = max(max(rgb.r, rgb.g), rgb.b);
+    rgb.rgb *= min(1.0, rgb.a * m_subtitlePeak / max(peak, 1e-6));
+  }
+#else
+  // Select output white after input gain/clipping. This is encoded gamma-2.2
+  // scaling before the existing range/GUI transfer, not an absolute nit target.
+  if (m_subtitlePeak != 1.0)
+    rgb.rgb *= m_subtitlePeak;
 #endif
 
 #if defined(KODI_LIMITED_RANGE)
