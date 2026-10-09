@@ -214,6 +214,7 @@ public:
   std::vector<std::string> trace;
   std::function<void()> onClose;
   int m_pollDevice{-1},nextDescriptor{42};
+  void CheckVideoHold() {} // Restart receipts exercised by test-aml-restart-hold.py.
   int PollFrame(const CAMLSession::Permit&);
   void SetPollDevice(int);
   bool OpenDecoder(); bool CloseDecoder(std::function<void()> beforeClose = {}); bool Reset(); bool ReopenDecoder();

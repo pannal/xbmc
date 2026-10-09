@@ -37,6 +37,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <fstream>
 #include <limits>
 #include <queue>
 #include <signal.h>
@@ -2178,7 +2179,7 @@ bool CAMLCodec::OpenDecoderInternal()
   ShowMainVideo(false);
 
   // Green-flash mask also covers playback startup (same decode-restart class):
-  // assert the hold here, released on the first decoded frame.
+  // assert the hold here, released after the first applied replacement.
   if (VideoRestartHoldWanted())
     HoldVideo(true);
 
@@ -2733,7 +2734,7 @@ void CAMLCodec::ResetInternal()
   // Green-flash mask: blank the video output across this decode restart so the
   // brief window where the decoder reallocs over the keeper-pinned frame isn't
   // shown. Read live so the settings take effect on the next seek; released on
-  // the first valid frame in GetPicture (fail-safe time cap there).
+  // an applied replacement frame (with a bounded fail-safe).
   HoldVideo(VideoRestartHoldWanted());
 
   SetPollDevice(-1);
@@ -2985,7 +2986,7 @@ int CAMLCodec::PollFrame(const CAMLSession::Permit& permit)
 {
   if (permit.IsControl() || permit.IsRetirement() || !m_session.Matches(permit, permit.Epoch()))
     return 0;
-  std::lock_guard<std::mutex> lock(pollSyncMutex);
+  std::unique_lock<std::mutex> lock(pollSyncMutex);
   if (m_pollDevice < 0)
     return 0;
 
@@ -2999,6 +3000,10 @@ int CAMLCodec::PollFrame(const CAMLSession::Permit& permit)
                                 std::chrono::system_clock::time_point{};
   const auto pollStart = diagnostics ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
   const int pollResult = poll(codec_poll_fd, 1, 50);
+  lock.unlock();
+  // Poll readiness is only pacing. The separate kernel receipt acknowledges
+  // the replacement's register batch, including the paused first-frame case.
+  CheckVideoHold();
   if (diagnostics)
     m_session.RecordPoll(pollResult, (codec_poll_fd[0].revents & POLLOUT) != 0,
                          PLAYBACK_DIAGNOSTICS::NowUs() - pollStart);
@@ -3058,6 +3063,19 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, uint64_t generation, const CAM
     m_session.RecordQbuf(drop, ret, PLAYBACK_DIAGNOSTICS::NowUs() - qbufStart);
   if (ret < 0)
     CLog::Log(LOGERROR, "CAMLCodec::ReleaseFrame - VIDIOC_QBUF failed: {}", strerror(qbufError));
+  else if (!drop)
+  {
+    // Both presenters arrive here with a current session/generation permit.
+    // Associate the hold only with an actual successful non-drop submission;
+    // rejected calls above and a failed/drop QBUF cannot discharge it.
+    std::lock_guard<std::mutex> holdLock(m_videoHoldMutex);
+    if (m_videoHoldActive && m_videoHoldProviderEpoch == 0)
+    {
+      uint64_t epoch = 0, applied = 0;
+      if (ReadVideoPresentation(epoch, applied))
+        m_videoHoldProviderEpoch = epoch;
+    }
+  }
   return ret;
 }
 
@@ -3211,16 +3229,10 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     - m_tp_last_frame).count());
 
   // Fail-safe for the green-flash hold: never leave the output blanked
-  // indefinitely. If no valid frame arrives within the cap after a restart,
+  // indefinitely. If no applied replacement is acknowledged within the cap,
   // release it (decode stuck / bad seek / EOF) so the screen recovers. The cap
   // tracks the "delay after refresh-rate change" setting (floored at 3s).
-  if (m_videoHoldActive)
-  {
-    const auto held = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now() - m_videoHoldStart);
-    if (held.count() > m_videoHoldTimeoutMs)
-      HoldVideo(false);
-  }
+  CheckVideoHold();
 
   bool streambuffer(am_private->gcodec.dec_mode == STREAM_TYPE_STREAM);
 
@@ -3265,10 +3277,6 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     m_reorderQueue.pop_front();
 
     videoPicture.iFlags = 0;
-
-    // First valid frame after a (re)start — release the green-flash hold so the
-    // video plane (or HDMI output) is shown again now that there is real content.
-    HoldVideo(false);
 
     // Frame mode: disable the minimum gate after the first frame (only needed for initial fill).
     // Stream mode: keep the gate active throughout playback.
@@ -3588,18 +3596,20 @@ bool CAMLCodec::VideoRestartHoldWanted() const
 // green flash — the decoder reusing the still-displayed frame buffer — isn't
 // shown. Uses aml_video_mute(): a solid-black VENC test pattern after composition
 // (no HDMI AVMUTE, DV-tunnel safe), the only stage that reliably catches the flash
-// (a plane-disable loses the restart race). Released on the first valid frame
-// (GetPicture) or the GetPicture time cap.
+// (a plane-disable loses the restart race). Release requires a current provider's
+// applied replacement receipt; timeout and explicit cancellation remain available.
 void CAMLCodec::HoldVideo(bool hold)
 {
+  std::lock_guard<std::mutex> lock(m_videoHoldMutex);
   if (hold)
   {
     // Refresh the fail-safe window on every restart so rapid seeks keep the
-    // hold asserted; it releases once decoding settles and a frame arrives.
+    // hold asserted. Invalidate the previous submission even if already held.
     // Cap = the user's "delay after refresh-rate change" (the dominant startup
     // first-frame delay; the setting is in tenths of a second), floored at 3s so
     // it can't fire during a legitimately slow seek/FEL first frame.
-    m_videoHoldStart = std::chrono::system_clock::now();
+    m_videoHoldProviderEpoch = 0;
+    m_videoHoldStart = std::chrono::steady_clock::now();
     m_videoHoldTimeoutMs = std::max(3000,
         CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
             "videoscreen.delayrefreshchange") * 100);
@@ -3626,12 +3636,45 @@ void CAMLCodec::HoldVideo(bool hold)
     CLog::Log(LOGDEBUG, "CAMLCodec::HoldVideo - hold ({}ms settle)", settleMs);
   }
   else
+    ReleaseVideoHoldLocked();
+}
+
+bool CAMLCodec::ReadVideoPresentation(uint64_t& epoch, uint64_t& applied)
+{
+  // Do not infer completion on older kernels or a failed/malformed read.
+  unsigned int version = 0;
+  std::ifstream state("/sys/class/video/presentation_state");
+  return (state >> version >> epoch >> applied) && version == 1 && epoch != 0;
+}
+
+void CAMLCodec::ReleaseVideoHoldLocked()
+{
+  if (!m_videoHoldActive)
+    return;
+  m_videoHoldActive = false;
+  m_videoHoldProviderEpoch = 0;
+  aml_video_mute(false);
+  CLog::Log(LOGDEBUG, "CAMLCodec::HoldVideo - release");
+}
+
+void CAMLCodec::CheckVideoHold()
+{
+  std::lock_guard<std::mutex> lock(m_videoHoldMutex);
+  if (!m_videoHoldActive)
+    return;
+  const auto held = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - m_videoHoldStart);
+  if (held.count() > m_videoHoldTimeoutMs)
   {
-    if (!m_videoHoldActive)
-      return;
-    m_videoHoldActive = false;
-    aml_video_mute(false);
-    CLog::Log(LOGDEBUG, "CAMLCodec::HoldVideo - release");
+    ReleaseVideoHoldLocked();
+    return;
+  }
+  if (m_videoHoldProviderEpoch != 0)
+  {
+    uint64_t epoch = 0, applied = 0;
+    if (ReadVideoPresentation(epoch, applied) &&
+        epoch == m_videoHoldProviderEpoch && applied == epoch)
+      ReleaseVideoHoldLocked();
   }
 }
 

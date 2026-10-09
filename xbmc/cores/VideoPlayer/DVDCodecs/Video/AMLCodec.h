@@ -166,8 +166,11 @@ private:
 
   void          ShowMainVideo(const bool show);
   // Hide video output across a decode (re)start (startup / seek flush) until the
-  // first valid frame, masking the brief green flash. coreelec.amlogic.video.restart.mute.
+  // applied replacement frame, masking the brief green flash.
   void          HoldVideo(bool hold);
+  void          CheckVideoHold();
+  void          ReleaseVideoHoldLocked();
+  static bool   ReadVideoPresentation(uint64_t& epoch, uint64_t& applied);
   // Whether the hold should engage for this stream: the master toggle above,
   // optionally narrowed to Dolby Vision streams (…restart.mute.dvonly). Gating
   // the hold also gates the seek-edge settle inside HoldVideo.
@@ -219,10 +222,12 @@ private:
   StillFrameDrain m_stillFrameDrain;
   // Green-flash mask state (coreelec.amlogic.video.restart.mute): the whole video
   // output is blanked (aml_video_mute, VENC black) across a decode (re)start until
-  // the first valid frame, then released.
+  // an applied replacement frame, then released. Decoder and presenter overlap.
+  std::mutex       m_videoHoldMutex;
   bool             m_videoHoldActive = false;
+  uint64_t         m_videoHoldProviderEpoch = 0;
   int              m_videoHoldTimeoutMs = 3000;
-  std::chrono::time_point<std::chrono::system_clock> m_videoHoldStart;
+  std::chrono::steady_clock::time_point m_videoHoldStart;
   am_private_t    *am_private;
 
   std::atomic<int> m_speed; // Decoder speed writes overlap presentation rate queries.

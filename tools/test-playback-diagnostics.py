@@ -95,6 +95,10 @@ struct {void Set(){}} g_aml_sync_event;
 struct Device {int IOControl(unsigned long cmd,v4l2_buffer*){assert(cmd==VIDIOC_QBUF);errno=EIO;return nextQbuf;}};
 struct CAMLCodec {
   CAMLSession m_session;
+  std::mutex m_videoHoldMutex;
+  bool m_videoHoldActive=false; uint64_t m_videoHoldProviderEpoch=0;
+  static bool ReadVideoPresentation(uint64_t&,uint64_t&) {return false;}
+  void CheckVideoHold() {}
   std::mutex m_presentationMutex;
   bool m_presentationActive=true;
   uint64_t m_presentationGeneration=1;
@@ -138,9 +142,9 @@ int main(){
   {
     auto permit=codec.m_session.Acquire(codec.m_session.Epoch());assert(permit);
     assert(codec.PollFrame(permit)==1); // Preserve existing timeout return policy.
-    nextPoll=-1;assert(codec.PollFrame(permit)==1);
+    nextPoll=-1;assert(codec.PollFrame(permit)==0); // Errors cannot pace presentation.
     nextPoll=1;nextEvents=POLLOUT;assert(codec.PollFrame(permit)==1);
-    nextEvents=POLLERR;assert(codec.PollFrame(permit)==1);
+    nextEvents=POLLERR;assert(codec.PollFrame(permit)==0);
     assert(codec.ReleaseFrame(2,1,permit)==0);
     nextQbuf=-1;assert(codec.ReleaseFrame(3,1,permit,true)==-1);
   }

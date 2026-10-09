@@ -93,6 +93,9 @@ struct Device {
 };
 class CAMLCodec {
 public:
+  std::mutex m_videoHoldMutex;
+  bool m_videoHoldActive=false; uint64_t m_videoHoldProviderEpoch=0;
+  static bool ReadVideoPresentation(uint64_t&,uint64_t&) {return false;}
   std::mutex m_presentationMutex;
 #if SESSION
   CAMLSession m_session;
