@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <future>
+#include <memory>
 #ifdef TARGET_DARWIN
 #include <mach/mach.h>
 #endif
@@ -110,16 +111,19 @@ protected:
 
 private:
   void Action();
+  bool Join(const std::shared_ptr<std::thread>& thread,
+            const std::shared_future<bool>& completion,
+            std::chrono::milliseconds duration);
 
   bool m_bAutoDelete = false;
   CEvent m_StopEvent;
   CEvent m_StartEvent;
-  CCriticalSection m_CriticalSection;
+  mutable CCriticalSection m_CriticalSection;
   IRunnable* m_pRunnable;
 
   std::string m_ThreadName;
-  std::thread* m_thread = nullptr;
-  std::future<bool> m_future;
+  std::shared_ptr<std::thread> m_thread;
+  std::shared_future<bool> m_future;
 
   std::unique_ptr<IThreadImpl> m_impl;
 };

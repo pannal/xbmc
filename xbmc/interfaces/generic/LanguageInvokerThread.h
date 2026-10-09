@@ -44,6 +44,7 @@ protected:
   void OnException() override;
 
 private:
+  void OnLaunchFailed();
   LanguageInvokerPtr m_invoker;
   CScriptInvocationManager *m_invocationManager;
   std::string m_script;

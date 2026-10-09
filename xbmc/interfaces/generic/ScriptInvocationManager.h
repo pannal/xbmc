@@ -130,6 +130,8 @@ protected:
   void OnExecutionDone(int scriptId);
 
 private:
+  void RemoveFailedInvocation(const CLanguageInvokerThreadPtr& thread);
+  void RemoveScriptPath(const std::string& script, int id);
   CScriptInvocationManager() = default;
   CScriptInvocationManager(const CScriptInvocationManager&) = delete;
   CScriptInvocationManager const& operator=(CScriptInvocationManager const&) = delete;

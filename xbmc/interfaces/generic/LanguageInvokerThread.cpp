@@ -9,7 +9,10 @@
 #include "LanguageInvokerThread.h"
 
 #include "ScriptInvocationManager.h"
+#include "utils/log.h"
 
+#include <exception>
+#include <system_error>
 #include <utility>
 
 CLanguageInvokerThread::CLanguageInvokerThread(LanguageInvokerPtr invoker,
@@ -57,7 +60,27 @@ bool CLanguageInvokerThread::execute(const std::string &script, const std::vecto
   }
   else
   {
-    Create();
+    try
+    {
+      Create();
+    }
+    catch (const std::system_error& error)
+    {
+      CLog::Log(LOGERROR,
+                "Cannot launch script '{}' (invoker {}): thread creation failed, code={} "
+                "category={} message='{}' ({})",
+                script, GetId(), error.code().value(), error.code().category().name(),
+                error.code().message(), error.what());
+      OnLaunchFailed();
+      return false;
+    }
+    catch (const std::exception& error)
+    {
+      CLog::Log(LOGERROR, "Cannot launch script '{}' (invoker {}): {}", script, GetId(),
+                error.what());
+      OnLaunchFailed();
+      return false;
+    }
 
     /* low prio */
     SetPriority(ThreadPriority::BELOW_NORMAL);
@@ -65,6 +88,16 @@ bool CLanguageInvokerThread::execute(const std::string &script, const std::vecto
   //Todo wait until running
 
   return true;
+}
+
+void CLanguageInvokerThread::OnLaunchFailed()
+{
+  m_reusable = false;
+  m_bStop = true;
+  m_invoker->setState(InvokerStateFailed);
+  // No interpreter was started. OnException/OnExit are worker-only teardown,
+  // and assigning the inner invoker an ID would imply Python initialization.
+  m_invocationManager->OnExecutionDone(GetId());
 }
 
 bool CLanguageInvokerThread::stop(bool wait)

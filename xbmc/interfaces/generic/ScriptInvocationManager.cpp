@@ -52,7 +52,7 @@ void CScriptInvocationManager::Process()
 
   // remove the finished scripts from the script path map as well
   for (const auto& it : tempList)
-    m_scriptPaths.erase(it.script);
+    RemoveScriptPath(it.script, it.thread->GetId());
 
   // we can leave the lock now
   lock.unlock();
@@ -264,7 +264,11 @@ int CScriptInvocationManager::ExecuteAsync(
     // After we leave the lock, m_lastInvokerThread can be released -> copy!
     CLanguageInvokerThreadPtr invokerThread = m_lastInvokerThread;
     lock.unlock();
-    invokerThread->Execute(script, arguments);
+    if (!invokerThread->Execute(script, arguments))
+    {
+      RemoveFailedInvocation(invokerThread);
+      return -1;
+    }
 
     return invokerThread->GetId();
   }
@@ -285,9 +289,52 @@ int CScriptInvocationManager::ExecuteAsync(
   // After we leave the lock, m_lastInvokerThread can be released -> copy!
   CLanguageInvokerThreadPtr invokerThread = m_lastInvokerThread;
   lock.unlock();
-  invokerThread->Execute(script, arguments);
+  if (!invokerThread->Execute(script, arguments))
+  {
+    RemoveFailedInvocation(invokerThread);
+    return -1;
+  }
 
   return invokerThread->GetId();
+}
+
+void CScriptInvocationManager::RemoveFailedInvocation(const CLanguageInvokerThreadPtr& thread)
+{
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  const int id = thread->GetId();
+  const auto invocation = m_scripts.find(id);
+  if (invocation != m_scripts.end() && invocation->second.thread == thread)
+  {
+    const auto script = invocation->second.script;
+    m_scripts.erase(invocation);
+    RemoveScriptPath(script, id);
+  }
+  if (m_lastInvokerThread == thread)
+  {
+    m_lastInvokerThread.reset();
+    m_lastPluginHandle = -1;
+  }
+  // The caller retains thread until after this lock is released. Destruction
+  // must not run interpreter callbacks while holding the invocation lock.
+}
+
+void CScriptInvocationManager::RemoveScriptPath(const std::string& script, int id)
+{
+  const auto path = m_scriptPaths.find(script);
+  if (path == m_scriptPaths.end() || path->second != id)
+    return;
+
+  m_scriptPaths.erase(path);
+  // Another invocation of the same path may have started before this one
+  // retired. Keep path-based Stop/IsRunning bound to a surviving invocation.
+  for (const auto& invocation : m_scripts)
+  {
+    if (!invocation.second.done && invocation.second.script == script)
+    {
+      m_scriptPaths.emplace(script, invocation.first);
+      break;
+    }
+  }
 }
 
 int CScriptInvocationManager::ExecuteSync(

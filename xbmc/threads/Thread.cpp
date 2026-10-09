@@ -74,12 +74,13 @@ CThread::~CThread()
   if (m_thread != nullptr)
   {
     m_thread->detach();
-    delete m_thread;
+    m_thread.reset();
   }
 }
 
 void CThread::Create(bool bAutoDelete)
 {
+  std::unique_lock<CCriticalSection> createLock(m_CriticalSection);
   if (m_thread != nullptr)
   {
     // if the thread exited on it's own, without a call to StopThread, then we can get here
@@ -88,7 +89,7 @@ void CThread::Create(bool bAutoDelete)
     // a status of 'ready' means the future contains the value so the thread has exited
     // since the thread can't exit without setting the future.
     if (stat == std::future_status::ready) // this is an indication the thread has exited.
-      StopThread(true);  // so let's just clean up
+      StopThread(true); // so let's just clean up
     else
     { // otherwise we have a problem.
       CLog::Log(LOGERROR, "{} - fatal error creating thread {} - old thread id not null",
@@ -102,85 +103,90 @@ void CThread::Create(bool bAutoDelete)
   m_StopEvent.Reset();
   m_StartEvent.Reset();
 
-  // lock?
-  //std::unique_lock<CCriticalSection> l(m_CriticalSection);
-
-  std::promise<bool> prom;
-  m_future = prom.get_future();
-
+  try
   {
-    // The std::thread internals must be set prior to the lambda doing
-    //   any work. This will cause the lambda to wait until m_thread
-    //   is fully initialized. Interestingly, using a std::atomic doesn't
-    //   have the appropriate memory barrier behavior to accomplish the
-    //   same thing so a full system mutex needs to be used.
-    std::unique_lock<CCriticalSection> blockLambdaTillDone(m_CriticalSection);
-    m_thread = new std::thread([](CThread* pThread, std::promise<bool> promise)
-    {
-      try
-      {
+    std::promise<bool> prom;
+    m_future = prom.get_future().share();
 
+    m_thread = std::make_shared<std::thread>(
+        [](CThread* pThread, std::promise<bool> promise)
         {
-          // Wait for the pThread->m_thread internals to be set. Otherwise we could
-          // get to a place where we're reading, say, the thread id inside this
-          // lambda's call stack prior to the thread that kicked off this lambda
-          // having it set. Once this lock is released, the CThread::Create function
-          // that kicked this off is done so everything should be set.
-          std::unique_lock<CCriticalSection> waitForThreadInternalsToBeSet(
-              pThread->m_CriticalSection);
-        }
+          try
+          {
+            {
+              // Wait for the pThread->m_thread internals to be set. Otherwise we could
+              // get to a place where we're reading, say, the thread id inside this
+              // lambda's call stack prior to the thread that kicked off this lambda
+              // having it set. Once this lock is released, the CThread::Create function
+              // that kicked this off is done so everything should be set.
+              std::unique_lock<CCriticalSection> waitForThreadInternalsToBeSet(
+                  pThread->m_CriticalSection);
+            }
 
-        // This is used in various helper methods like GetCurrentThread so it needs
-        // to be set before anything else is done.
-        currentThread = pThread;
+            // This is used in various helper methods like GetCurrentThread so it needs
+            // to be set before anything else is done.
+            currentThread = pThread;
 
-        if (pThread == nullptr)
-        {
-          CLog::Log(LOGERROR, "{}, sanity failed. thread is NULL.", __FUNCTION__);
-          promise.set_value(false);
-          return;
-        }
+            if (pThread == nullptr)
+            {
+              CLog::Log(LOGERROR, "{}, sanity failed. thread is NULL.", __FUNCTION__);
+              promise.set_value(false);
+              return;
+            }
 
-        pThread->m_impl = IThreadImpl::CreateThreadImpl(pThread->m_thread->native_handle());
-        pThread->m_impl->SetThreadInfo(pThread->m_ThreadName);
+            pThread->m_impl = IThreadImpl::CreateThreadImpl(pThread->m_thread->native_handle());
+            pThread->m_impl->SetThreadInfo(pThread->m_ThreadName);
 
-        CLog::Log(LOGDEBUG, "Thread {} start, auto delete: {}", pThread->m_ThreadName,
-                  (pThread->m_bAutoDelete ? "true" : "false"));
+            CLog::Log(LOGDEBUG, "Thread {} start, auto delete: {}", pThread->m_ThreadName,
+                      (pThread->m_bAutoDelete ? "true" : "false"));
 
-        pThread->m_StartEvent.Set();
+            pThread->m_StartEvent.Set();
 
-        pThread->Action();
+            pThread->Action();
 
-        if (pThread->m_bAutoDelete)
-        {
-          CLog::Log(LOGDEBUG, "Thread {} {} terminating (autodelete)", pThread->m_ThreadName,
-                    std::this_thread::get_id());
-          delete pThread;
-          pThread = NULL;
-        }
-        else
-          CLog::Log(LOGDEBUG, "Thread {} {} terminating", pThread->m_ThreadName,
-                    std::this_thread::get_id());
-      }
-      catch (const std::exception& e)
-      {
-        CLog::Log(LOGDEBUG, "Thread Terminating with Exception: {}", e.what());
-      }
-      catch (...)
-      {
-        CLog::Log(LOGDEBUG,"Thread Terminating with Exception");
-      }
+            if (pThread->m_bAutoDelete)
+            {
+              CLog::Log(LOGDEBUG, "Thread {} {} terminating (autodelete)", pThread->m_ThreadName,
+                        std::this_thread::get_id());
+              delete pThread;
+              pThread = NULL;
+            }
+            else
+              CLog::Log(LOGDEBUG, "Thread {} {} terminating", pThread->m_ThreadName,
+                        std::this_thread::get_id());
+          }
+          catch (const std::exception& e)
+          {
+            CLog::Log(LOGDEBUG, "Thread Terminating with Exception: {}", e.what());
+          }
+          catch (...)
+          {
+            CLog::Log(LOGDEBUG, "Thread Terminating with Exception");
+          }
 
-      promise.set_value(true);
-    }, this, std::move(prom));
-  } // let the lambda proceed
+          promise.set_value(true);
+        },
+        this, std::move(prom));
+  }
+  catch (...)
+  {
+    // No worker exists to signal startup when construction fails. Keep callers
+    // free to stop, destroy or retry this object while preserving the exception.
+    m_bStop = true;
+    m_StopEvent.Set();
+    m_StartEvent.Set();
+    throw;
+  }
+  createLock.unlock();
 
   m_StartEvent.Wait(); // wait for the thread just spawned to set its internals
 }
 
 bool CThread::IsRunning() const
 {
-  if (m_thread != nullptr) {
+  std::unique_lock<CCriticalSection> lock(m_CriticalSection);
+  if (m_thread != nullptr)
+  {
     // it's possible that the thread exited on it's own without a call to StopThread. If so then
     // the promise should be fulfilled.
     std::future_status stat = m_future.wait_for(std::chrono::milliseconds(0));
@@ -189,7 +195,8 @@ bool CThread::IsRunning() const
     if (stat == std::future_status::ready) // this is an indication the thread has exited.
       return false;
     return true; // otherwise the thread is still active.
-  } else
+  }
+  else
     return false;
 }
 
@@ -210,13 +217,15 @@ void CThread::StopThread(bool bWait /*= true*/)
   m_bStop = true;
   m_StopEvent.Set();
   std::unique_lock<CCriticalSection> lock(m_CriticalSection);
-  std::thread* lthread = m_thread;
+  auto lthread = m_thread;
+  auto completion = m_future;
   if (lthread != nullptr && bWait && !IsCurrentThread())
   {
     lock.unlock();
-    if (!Join(std::chrono::milliseconds::max())) // eh?
-      lthread->join();
-    m_thread = nullptr;
+    Join(lthread, completion, std::chrono::milliseconds::max());
+    lock.lock();
+    if (m_thread == lthread)
+      m_thread.reset();
   }
 }
 
@@ -243,7 +252,17 @@ CThread* CThread::GetCurrentThread()
 bool CThread::Join(std::chrono::milliseconds duration)
 {
   std::unique_lock<CCriticalSection> l(m_CriticalSection);
-  std::thread* lthread = m_thread;
+  auto lthread = m_thread;
+  auto completion = m_future;
+  l.unlock();
+  return Join(lthread, completion, duration);
+}
+
+bool CThread::Join(const std::shared_ptr<std::thread>& lthread,
+                  const std::shared_future<bool>& completion,
+                  std::chrono::milliseconds duration)
+{
+  std::unique_lock<CCriticalSection> l(m_CriticalSection);
   if (lthread != nullptr)
   {
     if (IsCurrentThread())
@@ -251,14 +270,15 @@ bool CThread::Join(std::chrono::milliseconds duration)
 
     {
       CSingleExit exit(m_CriticalSection); // don't hold the thread lock while we're waiting
-      std::future_status stat = m_future.wait_for(duration);
-      if (stat != std::future_status::ready)
+      if (duration == std::chrono::milliseconds::max())
+        completion.wait();
+      else if (completion.wait_for(duration) != std::future_status::ready)
         return false;
     }
 
     // it's possible it's already joined since we released the lock above.
     if (lthread->joinable())
-      m_thread->join();
+      lthread->join();
     return true;
   }
   else
