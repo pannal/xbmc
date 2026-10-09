@@ -166,11 +166,25 @@ private:
 
   void          ShowMainVideo(const bool show);
   // Hide video output across a decode (re)start (startup / seek flush) until the
-  // applied replacement frame, masking the brief green flash.
+  // applied replacement frame, or a decoded frame on explicitly unsupported
+  // routes, masking the brief green flash.
   void          HoldVideo(bool hold);
   void          CheckVideoHold();
-  void          ReleaseVideoHoldLocked();
-  static bool   ReadVideoPresentation(uint64_t& epoch, uint64_t& applied);
+  void          VideoHoldDecoded();
+  void          ReleaseVideoHoldLocked(const char* reason = "cancel");
+  enum class VideoPresentationRoute
+  {
+    UNKNOWN,
+    SUPPORTED,
+    UNSUPPORTED,
+  };
+  struct VideoPresentation
+  {
+    uint64_t epoch = 0;
+    uint64_t applied = 0;
+    VideoPresentationRoute route = VideoPresentationRoute::UNKNOWN;
+  };
+  static bool   ReadVideoPresentation(VideoPresentation& state);
   // Whether the hold should engage for this stream: the master toggle above,
   // optionally narrowed to Dolby Vision streams (…restart.mute.dvonly). Gating
   // the hold also gates the seek-edge settle inside HoldVideo.
@@ -226,6 +240,7 @@ private:
   std::mutex       m_videoHoldMutex;
   bool             m_videoHoldActive = false;
   uint64_t         m_videoHoldProviderEpoch = 0;
+  uint64_t         m_videoHoldDecodedEpoch = 0;
   int              m_videoHoldTimeoutMs = 3000;
   std::chrono::steady_clock::time_point m_videoHoldStart;
   am_private_t    *am_private;

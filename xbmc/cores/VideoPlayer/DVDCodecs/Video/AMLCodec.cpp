@@ -41,6 +41,7 @@
 #include <limits>
 #include <queue>
 #include <signal.h>
+#include <sstream>
 #include <stdio.h>
 #include <stdlib.h>
 #include <thread>
@@ -3071,9 +3072,9 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, uint64_t generation, const CAM
     std::lock_guard<std::mutex> holdLock(m_videoHoldMutex);
     if (m_videoHoldActive && m_videoHoldProviderEpoch == 0)
     {
-      uint64_t epoch = 0, applied = 0;
-      if (ReadVideoPresentation(epoch, applied))
-        m_videoHoldProviderEpoch = epoch;
+      VideoPresentation state;
+      if (ReadVideoPresentation(state))
+        m_videoHoldProviderEpoch = state.epoch;
     }
   }
   return ret;
@@ -3277,6 +3278,10 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     m_reorderQueue.pop_front();
 
     videoPicture.iFlags = 0;
+
+    // Retain decoded-frame availability only for explicit unsupported-route
+    // compatibility. Supported routes still require accepted QBUF and apply.
+    VideoHoldDecoded();
 
     // Frame mode: disable the minimum gate after the first frame (only needed for initial fill).
     // Stream mode: keep the gate active throughout playback.
@@ -3597,7 +3602,9 @@ bool CAMLCodec::VideoRestartHoldWanted() const
 // shown. Uses aml_video_mute(): a solid-black VENC test pattern after composition
 // (no HDMI AVMUTE, DV-tunnel safe), the only stage that reliably catches the flash
 // (a plane-disable loses the restart race). Release requires a current provider's
-// applied replacement receipt; timeout and explicit cancellation remain available.
+// applied replacement receipt on supported routes. Confirmed unsupported routes
+// retain legacy decoded-frame release, without claiming display acknowledgement.
+// Timeout and explicit cancellation remain available for uncertain/failed routes.
 void CAMLCodec::HoldVideo(bool hold)
 {
   std::lock_guard<std::mutex> lock(m_videoHoldMutex);
@@ -3609,6 +3616,7 @@ void CAMLCodec::HoldVideo(bool hold)
     // first-frame delay; the setting is in tenths of a second), floored at 3s so
     // it can't fire during a legitimately slow seek/FEL first frame.
     m_videoHoldProviderEpoch = 0;
+    m_videoHoldDecodedEpoch = 0;
     m_videoHoldStart = std::chrono::steady_clock::now();
     m_videoHoldTimeoutMs = std::max(3000,
         CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
@@ -3639,22 +3647,65 @@ void CAMLCodec::HoldVideo(bool hold)
     ReleaseVideoHoldLocked();
 }
 
-bool CAMLCodec::ReadVideoPresentation(uint64_t& epoch, uint64_t& applied)
+bool CAMLCodec::ReadVideoPresentation(VideoPresentation& state)
 {
-  // Do not infer completion on older kernels or a failed/malformed read.
+  state = {};
   unsigned int version = 0;
-  std::ifstream state("/sys/class/video/presentation_state");
-  return (state >> version >> epoch >> applied) && version == 1 && epoch != 0;
+  std::ifstream route("/sys/class/video/presentation_route_state");
+  if (route.is_open())
+  {
+    unsigned int support = 0;
+    uint64_t generation = 0, applied = 0;
+    std::string values;
+    if (!std::getline(route, values) ||
+        values.find_first_not_of("0123456789 \t\r") != std::string::npos)
+      return false;
+    std::istringstream fields(values);
+    if (!(fields >> version >> state.epoch >> generation >> support >> applied) || version != 1 ||
+        state.epoch == 0 || support > 2 || (support != 0 && generation == 0))
+      return false;
+    fields >> std::ws;
+    route >> std::ws;
+    if (!fields.eof() || !route.eof())
+      return false;
+    state.route = static_cast<VideoPresentationRoute>(support);
+    if (state.route == VideoPresentationRoute::SUPPORTED && generation != 0 &&
+        applied == generation)
+      state.applied = state.epoch;
+    return true;
+  }
+
+  // Older receipt kernels remain strict. A zero, missing or malformed receipt
+  // cannot prove either completion or an unsupported route.
+  std::ifstream legacy("/sys/class/video/presentation_state");
+  return (legacy >> version >> state.epoch >> state.applied) && version == 1 && state.epoch != 0;
 }
 
-void CAMLCodec::ReleaseVideoHoldLocked()
+void CAMLCodec::VideoHoldDecoded()
+{
+  std::lock_guard<std::mutex> lock(m_videoHoldMutex);
+  if (!m_videoHoldActive)
+    return;
+  VideoPresentation state;
+  if (ReadVideoPresentation(state))
+  {
+    if (m_videoHoldDecodedEpoch == 0)
+      m_videoHoldDecodedEpoch = state.epoch;
+    if (state.epoch == m_videoHoldDecodedEpoch &&
+        state.route == VideoPresentationRoute::UNSUPPORTED)
+      ReleaseVideoHoldLocked("legacy unsupported route");
+  }
+}
+
+void CAMLCodec::ReleaseVideoHoldLocked(const char* reason)
 {
   if (!m_videoHoldActive)
     return;
   m_videoHoldActive = false;
   m_videoHoldProviderEpoch = 0;
+  m_videoHoldDecodedEpoch = 0;
   aml_video_mute(false);
-  CLog::Log(LOGDEBUG, "CAMLCodec::HoldVideo - release");
+  CLog::Log(LOGDEBUG, "CAMLCodec::HoldVideo - release ({})", reason);
 }
 
 void CAMLCodec::CheckVideoHold()
@@ -3666,15 +3717,19 @@ void CAMLCodec::CheckVideoHold()
       std::chrono::steady_clock::now() - m_videoHoldStart);
   if (held.count() > m_videoHoldTimeoutMs)
   {
-    ReleaseVideoHoldLocked();
+    ReleaseVideoHoldLocked("timeout");
     return;
   }
-  if (m_videoHoldProviderEpoch != 0)
+  if (m_videoHoldProviderEpoch != 0 || m_videoHoldDecodedEpoch != 0)
   {
-    uint64_t epoch = 0, applied = 0;
-    if (ReadVideoPresentation(epoch, applied) &&
-        epoch == m_videoHoldProviderEpoch && applied == epoch)
-      ReleaseVideoHoldLocked();
+    VideoPresentation state;
+    if (!ReadVideoPresentation(state))
+      return;
+    if (state.route == VideoPresentationRoute::UNSUPPORTED &&
+        state.epoch == m_videoHoldDecodedEpoch)
+      ReleaseVideoHoldLocked("legacy unsupported route");
+    else if (state.epoch == m_videoHoldProviderEpoch && state.applied == state.epoch)
+      ReleaseVideoHoldLocked("applied replacement");
   }
 }
 

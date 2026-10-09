@@ -95,7 +95,7 @@ class CAMLCodec {
 public:
   std::mutex m_videoHoldMutex;
   bool m_videoHoldActive=false; uint64_t m_videoHoldProviderEpoch=0;
-  static bool ReadVideoPresentation(uint64_t&,uint64_t&) {return false;}
+  @RECEIPT_ADAPTER@
   std::mutex m_presentationMutex;
 #if SESSION
   CAMLSession m_session;
@@ -284,6 +284,14 @@ int main() {
   }
 }
 '''
+    if "VideoPresentation state;" in release:
+        header = (ROOT / "xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h").read_text()
+        adapter = (function(header, "enum class VideoPresentationRoute") + ";\n" +
+                   function(header, "struct VideoPresentation\n") + ";\n" +
+                   "static bool ReadVideoPresentation(VideoPresentation&) {return false;}")
+    else:
+        adapter = "static bool ReadVideoPresentation(uint64_t&,uint64_t&) {return false;}"
+    harness = harness.replace("@RECEIPT_ADAPTER@", adapter)
     harness = harness.replace("@SESSION@", "1" if session else "0")
     for key, value in [("PUBLISH", publish), ("CLOSE", close_gate), ("RECT", rect_gate),
                        ("RELEASE", release), ("GENERATION", generation)]:
