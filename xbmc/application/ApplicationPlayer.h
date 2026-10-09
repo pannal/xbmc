@@ -68,6 +68,21 @@ public:
   void FrameMove();
   void Render(bool clear, uint32_t alpha = 255, bool gui = true);
   bool FlushRenderer();
+  struct SkinReloadState
+  {
+    SkinReloadState() = default;
+    SkinReloadState(const SkinReloadState&) = delete;
+    SkinReloadState& operator=(const SkinReloadState&) = delete;
+    std::weak_ptr<IPlayer> player;
+    uint64_t generation{0};
+    bool resumePlayback{false};
+    bool begun{false};
+    bool completed{false};
+    std::function<void()> restorePresentation;
+  };
+  bool BeginSkinReload(SkinReloadState& state);
+  bool IsSkinReloadCurrent(const SkinReloadState& state) const;
+  void FinishSkinReload(SkinReloadState& state, bool skinLoaded);
   void SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch);
   float GetRenderAspectRatio() const;
   void TriggerUpdateResolution();

@@ -328,6 +328,7 @@ bool CRenderManager::Configure()
   std::unique_lock<CCriticalSection> lock(m_statelock);
   std::unique_lock<CCriticalSection> lock2(m_presentlock);
   std::unique_lock<CCriticalSection> lock3(m_datalock);
+  ++m_flushGeneration;
   ClearFrameSelection();
   InvalidateReservations();
 
@@ -840,6 +841,7 @@ bool CRenderManager::FlushOnMain(bool saveBuffers)
   std::unique_lock<CCriticalSection> lock(m_statelock);
   std::unique_lock<CCriticalSection> lock2(m_presentlock);
   std::unique_lock<CCriticalSection> lock3(m_datalock);
+  ++m_flushGeneration;
 
   if (m_pRenderer)
   {
@@ -863,6 +865,59 @@ bool CRenderManager::FlushOnMain(bool saveBuffers)
     }
 
   }
+  return true;
+}
+
+bool CRenderManager::FlushForSkinReload(std::function<void()>& restore)
+{
+  restore = {};
+  auto completion = std::make_shared<std::function<void()>>();
+  std::shared_ptr<CRenderLifecycle::Request> request;
+  {
+    std::unique_lock<CCriticalSection> state(m_statelock);
+    const auto lifecycle = m_lifecycleGeneration;
+    request = m_lifecycle->Submit([this, lifecycle, completion] {
+      std::unique_lock<CCriticalSection> state(m_statelock);
+      std::unique_lock<CCriticalSection> present(m_presentlock);
+      std::unique_lock<CCriticalSection> data(m_datalock);
+      if (m_closing || lifecycle != m_lifecycleGeneration)
+        return false;
+#if defined(HAS_LIBAMCODEC)
+      auto* aml = dynamic_cast<CRendererAML*>(m_pRenderer);
+      const bool eligible = aml && m_amlPresenter &&
+          (m_amlPresenter->queue->State() == CAMLPresenter::Phase::RUNNING ||
+           m_amlPresenter->queue->State() == CAMLPresenter::Phase::STARTING);
+      const auto codec = eligible ? aml->PresenterCodec() : nullptr;
+      const auto epoch = codec ? codec->GetOperationEpoch() : 0;
+      // Return ownership before capturing the CPU overlay leases. Skin teardown
+      // can then release GPU resources without discarding the held frame's text.
+      StopAMLPresenter(true);
+      std::vector<OVERLAY::CRenderer::OverlayBatch> overlays;
+      for (int i = 0; i < m_QueueSize; ++i)
+        overlays.push_back(m_overlays.GetOverlays(i));
+#endif
+      CancelDeferredDV();
+      if (!FlushOnMain(true))
+        return false;
+#if defined(HAS_LIBAMCODEC)
+      for (int i = 0; i < m_QueueSize; ++i)
+        m_overlays.SetOverlays(std::move(overlays[i]), i);
+      if (codec)
+      {
+        const auto flush = m_flushGeneration;
+        *completion = [this, lifecycle, flush, codec, epoch] {
+          RestoreAMLPresenter(lifecycle, flush, codec, epoch);
+        };
+      }
+#endif
+      return true;
+    });
+  }
+  CSingleExit graphics(CServiceBroker::GetWinSystem()->GetGfxContext());
+  ProcessLifecycleRequests();
+  if (!request || !request->Wait(1000ms))
+    return false;
+  restore = std::move(*completion);
   return true;
 }
 
@@ -2222,6 +2277,96 @@ void CRenderManager::CheckEnableClockSync()
 }
 
 #if defined(HAS_LIBAMCODEC)
+void CRenderManager::RestoreAMLPresenter(uint64_t lifecycle, uint64_t flush,
+                                       const std::shared_ptr<CAMLCodec>& codec, uint64_t epoch)
+{
+  std::unique_lock<CCriticalSection> state(m_statelock);
+  std::unique_lock<CCriticalSection> present(m_presentlock);
+  std::unique_lock<CCriticalSection> data(m_datalock);
+  auto* aml = dynamic_cast<CRendererAML*>(m_pRenderer);
+  if (m_closing || lifecycle != m_lifecycleGeneration || flush != m_flushGeneration ||
+      m_renderState != STATE_CONFIGURED || m_amlPresenter || !m_amlIndependentPresenter ||
+      !aml || aml->PresenterCodec() != codec || codec->GetOperationEpoch() != epoch ||
+      codec->IsOperationInvalidated(epoch) || !m_processInfoLifetime ||
+      !(m_picture.stereoMode.empty() || m_picture.stereoMode == "mono") ||
+      CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF)
+    return;
+  const auto owner = codec->GetDiagnostics();
+  if (!owner.mainOwner || owner.transferring)
+    return;
+
+  std::shared_ptr<CAMLPresenter::Frame> current;
+  std::vector<std::shared_ptr<CAMLPresenter::Frame>> queued;
+  std::vector<int> imported;
+  auto copy = [&](int index) -> std::shared_ptr<CAMLPresenter::Frame> {
+    auto* buffer = dynamic_cast<CAMLVideoBuffer*>(aml->PresentationBuffer(index));
+    if (!buffer || buffer->Codec() != codec || buffer->OperationEpoch() != epoch)
+      return {};
+    VideoPicture picture;
+    picture.SetParams(m_picture);
+    picture.videoBuffer = buffer;
+    buffer->Acquire();
+    picture.pts = m_Queue[index].pts;
+    auto observation = std::make_shared<CAMLPresenterSession::OverlayObservation>();
+    observation->overlays = m_overlays.GetOverlays(index);
+    observation->field = m_Queue[index].presentfield;
+    observation->method = static_cast<CAMLPresenter::Method>(m_Queue[index].presentmethod);
+    imported.push_back(index);
+    return std::make_shared<CAMLPresenterSession::Frame>(picture, std::move(observation));
+  };
+  if (m_presentstarted)
+  {
+    current = copy(m_presentsource);
+    if (!current)
+      return;
+  }
+  for (int index : m_queued)
+  {
+    auto frame = copy(index);
+    if (!frame)
+      return;
+    queued.push_back(std::move(frame));
+  }
+  // Retire discarded/past slots while main still owns the native obligation.
+  // Only reference release is permitted for the imported current/FIFO slots.
+  for (int i = 0; i < m_QueueSize; ++i)
+  {
+    if (std::find(imported.begin(), imported.end(), i) == imported.end())
+      aml->ReleaseBuffer(i);
+  }
+  std::shared_ptr<CAMLPresenterSession> presenter;
+  try
+  {
+    presenter = std::make_shared<CAMLPresenterSession>(
+        codec, m_dvdClock, m_QueueSize, m_processInfoLifetime,
+        [this](bool enabled) { m_playerPort->UpdateClockSync(enabled); },
+        [this](double pts) { m_dataCacheCore.SetRenderPts(pts); },
+        std::move(current), std::move(queued), aml->PreviousPts());
+  }
+  catch (const std::exception& error)
+  {
+    CLog::Log(LOGERROR, "AML skin reload restoration failed: {}", error.what());
+    return;
+  }
+  aml->ReleasePresentationReferences();
+  ClearFrameSelection();
+  InvalidateReservations();
+  m_queued.clear();
+  m_discard.clear();
+  m_free.clear();
+  m_presentstarted = false;
+  m_presentsource = 0;
+  m_presentsourcePast = -1;
+  m_presentstep = PRESENT_IDLE;
+  for (int i = 0; i < m_QueueSize; ++i)
+    m_free.push_back(i);
+  m_amlPresenter = std::move(presenter);
+  m_amlPresenter->queue->Show(m_showVideo);
+  if (UpdateAMLPresenter())
+    LogAMLPresenter("skin-reload-restored", true);
+  m_presentevent.notifyAll();
+}
+
 bool CRenderManager::UpdateAMLPresenter()
 {
   std::unique_lock<CCriticalSection> state(m_statelock);

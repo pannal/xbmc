@@ -45,6 +45,7 @@ class CLinuxRendererGL;
 class CLinuxRendererGLES;
 class CRenderManager;
 class CAMLPresenterSession;
+class CAMLCodec;
 
 class IRenderMsg
 {
@@ -113,6 +114,7 @@ public:
   std::shared_ptr<CRenderLifecycle::Request> RequestUnInit();
   void ProcessLifecycleRequests();
   bool Flush(bool wait, bool saveBuffers);
+  bool FlushForSkinReload(std::function<void()>& restore);
   std::shared_ptr<CRenderLifecycle::Request> RequestFlush(bool saveBuffers, bool newSession = false);
   bool IsConfigured() const;
   void ToggleDebug();
@@ -198,6 +200,7 @@ protected:
   bool m_configuredFramePending{false};
   std::atomic<bool> m_closing{false};
   uint64_t m_lifecycleGeneration{0};
+  uint64_t m_flushGeneration{0};
   void CreateRenderer();
   void DeleteRenderer();
   void ManageCaptures();
@@ -374,6 +377,8 @@ private:
   std::shared_ptr<CAMLPresenterSession> m_amlPresenter;
   bool UpdateAMLPresenter();
   void StopAMLPresenter(bool migrate);
+  void RestoreAMLPresenter(uint64_t lifecycle, uint64_t flush,
+                           const std::shared_ptr<CAMLCodec>& codec, uint64_t epoch);
   void LogAMLPresenter(const char* event, bool transition = false);
 #endif
   // Called synchronously by FrameMove on the application thread.

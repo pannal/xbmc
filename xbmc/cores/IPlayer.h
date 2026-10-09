@@ -13,6 +13,7 @@
 #include "MenuType.h"
 #include "VideoSettings.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -227,6 +228,12 @@ public:
    */
   virtual void Render(bool clear, uint32_t alpha = 255, bool gui = true) {}
   virtual bool FlushRenderer() { return true; }
+  // The completion is tied to this original renderer, not the current player.
+  virtual bool FlushRendererForSkinReload(std::function<void()>& restore)
+  {
+    restore = {};
+    return FlushRenderer();
+  }
   virtual void SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch) {}
   virtual float GetRenderAspectRatio() const { return 1.0; }
   virtual void TriggerUpdateResolution() {}

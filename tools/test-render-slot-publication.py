@@ -220,6 +220,7 @@ public:
   void ClearFrameSelection();
   std::array<uint64_t,NUM_BUFFERS> m_reservations{};
   uint64_t m_nextReservation=0,m_reservationEpoch=0;
+  uint64_t m_flushGeneration=0;
   CCriticalSection m_statelock,m_presentlock,m_datalock;
   std::deque<int> m_free,m_queued,m_discard;
   Renderer renderer;Renderer* m_pRenderer=&renderer;

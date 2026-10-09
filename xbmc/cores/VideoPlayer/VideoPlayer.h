@@ -346,6 +346,7 @@ public:
   void FrameMove() override;
   void Render(bool clear, uint32_t alpha = 255, bool gui = true) override;
   bool FlushRenderer() override;
+  bool FlushRendererForSkinReload(std::function<void()>& restore) override;
   void SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch) override;
   float GetRenderAspectRatio() const override;
   void TriggerUpdateResolution() override;

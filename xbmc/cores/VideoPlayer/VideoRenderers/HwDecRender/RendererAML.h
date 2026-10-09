@@ -48,6 +48,9 @@ public:
   virtual bool Supports(ERENDERFEATURE feature) const override;
 
   std::shared_ptr<CAMLCodec> PresenterCodec() const { return m_pollCodec; }
+  CVideoBuffer* PresentationBuffer(int index) const { return m_buffers[index].videoBuffer; }
+  int PreviousPts() const { return m_prevVPts; }
+  void ReleasePresentationReferences();
   void SetPresentationEpoch(uint64_t epoch) { m_pollEpoch = epoch; }
   void ResumeIndependentPresentation(int pts)
   {

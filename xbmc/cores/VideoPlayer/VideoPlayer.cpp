@@ -6934,6 +6934,11 @@ bool CVideoPlayer::FlushRenderer()
   return m_renderManager.Flush(true, true);
 }
 
+bool CVideoPlayer::FlushRendererForSkinReload(std::function<void()>& restore)
+{
+  return m_renderManager.FlushForSkinReload(restore);
+}
+
 void CVideoPlayer::SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch)
 {
   m_processInfo->GetVideoSettingsLocked().SetViewMode(mode, zoom, par, shift, stretch);

@@ -199,9 +199,24 @@ void CRendererAML::Reset()
 
 bool CRendererAML::Flush(bool saveBuffers)
 {
-  Reset();
+  if (!saveBuffers)
+    Reset();
   return saveBuffers;
 };
+
+void CRendererAML::ReleasePresentationReferences()
+{
+  // The imported presenter frames own these references now. ReleaseBuffer
+  // would consume their outstanding native submission as a drop.
+  for (auto& buffer : m_buffers)
+  {
+    if (buffer.videoBuffer)
+    {
+      buffer.videoBuffer->Release();
+      buffer.videoBuffer = nullptr;
+    }
+  }
+}
 
 void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha)
 {

@@ -40,6 +40,7 @@
 #include "settings/SettingsComponent.h"
 #include "settings/SkinSettings.h"
 #include "settings/lib/Setting.h"
+#include "utils/ScopeGuard.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/XBMCTinyXML.h"
@@ -67,8 +68,6 @@ bool CApplicationSkinHandling::LoadSkin(const std::string& skinID)
   }
 
   // store player and rendering state
-  bool bPreviousPlayingState = false;
-
   enum class RENDERING_STATE
   {
     NONE,
@@ -78,17 +77,18 @@ bool CApplicationSkinHandling::LoadSkin(const std::string& skinID)
 
   auto& components = CServiceBroker::GetAppComponents();
   const auto appPlayer = components.GetComponent<CApplicationPlayer>();
-  if (appPlayer && appPlayer->IsPlayingVideo())
+  CApplicationPlayer::SkinReloadState reload;
+  KODI::UTILS::CScopeGuard<int, 0, void(int)> finishReload(
+      [&](int) {
+        if (appPlayer)
+          appPlayer->FinishSkinReload(reload, false);
+      },
+      1);
+  const bool reloadPlayback = appPlayer && appPlayer->IsPlayingVideo();
+  if (reloadPlayback)
   {
-    bPreviousPlayingState = !appPlayer->IsPausedPlayback();
-    if (bPreviousPlayingState)
-      appPlayer->Pause();
-    if (!appPlayer->FlushRenderer())
-    {
-      if (bPreviousPlayingState)
-        appPlayer->Pause();
+    if (!appPlayer->BeginSkinReload(reload))
       return false; // A pending/failed retirement does not authorize skin teardown.
-    }
     if (CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_VIDEO)
     {
       CServiceBroker::GetGUI()->GetWindowManager().ActivateWindow(WINDOW_HOME);
@@ -107,7 +107,8 @@ bool CApplicationSkinHandling::LoadSkin(const std::string& skinID)
   // store current active window with its focused control
   int currentWindowID = CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow();
   int currentFocusedControlID = -1;
-  if (currentWindowID != WINDOW_INVALID)
+  if (currentWindowID != WINDOW_INVALID &&
+      (!reloadPlayback || appPlayer->IsSkinReloadCurrent(reload)))
   {
     CGUIWindow* pWindow = CServiceBroker::GetGUI()->GetWindowManager().GetWindow(currentWindowID);
     if (pWindow)
@@ -187,7 +188,8 @@ bool CApplicationSkinHandling::LoadSkin(const std::string& skinID)
   lock.unlock();
 
   // restore active window
-  if (currentWindowID != WINDOW_INVALID)
+  if (currentWindowID != WINDOW_INVALID &&
+      (!reloadPlayback || appPlayer->IsSkinReloadCurrent(reload)))
   {
     CServiceBroker::GetGUI()->GetWindowManager().ActivateWindow(currentWindowID);
     if (currentFocusedControlID != -1)
@@ -202,11 +204,8 @@ bool CApplicationSkinHandling::LoadSkin(const std::string& skinID)
   }
 
   // restore player and rendering state
-  if (appPlayer && appPlayer->IsPlayingVideo())
+  if (appPlayer && appPlayer->IsSkinReloadCurrent(reload))
   {
-    if (bPreviousPlayingState)
-      appPlayer->Pause();
-
     switch (previousRenderingState)
     {
       case RENDERING_STATE::VIDEO:
@@ -219,6 +218,9 @@ bool CApplicationSkinHandling::LoadSkin(const std::string& skinID)
         break;
     }
   }
+
+  if (appPlayer)
+    appPlayer->FinishSkinReload(reload, true);
 
   return true;
 }

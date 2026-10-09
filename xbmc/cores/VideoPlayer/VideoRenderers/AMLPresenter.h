@@ -109,6 +109,25 @@ public:
   CAMLPresenter(const CAMLPresenter&) = delete;
   CAMLPresenter& operator=(const CAMLPresenter&) = delete;
 
+  // Main seeds the exact held selection and FIFO before launching the owner.
+  void Restore(std::shared_ptr<Frame> current,
+               std::vector<std::shared_ptr<Frame>> queued,
+               int previousPts)
+  {
+    if (m_thread.joinable() || m_count || queued.size() + (current ? 1 : 0) > m_capacity)
+      throw std::logic_error("invalid AML presenter restoration");
+    m_current = std::move(current);
+    for (auto& frame : queued)
+      m_queue.push_back(std::move(frame));
+    m_count = m_queue.size() + (m_current ? 1 : 0);
+    m_previousPts = previousPts;
+    if (m_current)
+    {
+      m_current->selected = true;
+      m_renderPts = m_current->pts;
+    }
+  }
+
   // The thread waits until the caller has authorized its exact thread identity.
   std::thread::id Launch()
   {
@@ -469,7 +488,7 @@ private:
         m_phase = Phase::RUNNING;
       unsigned int passes = 0;
       bool submitted = false;
-      bool advance = true;
+      bool advance = !m_current;
       std::chrono::steady_clock::time_point nextTick{}, previousIteration{};
       double scheduledRefresh = 0;
       bool firstIteration = true;

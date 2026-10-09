@@ -68,7 +68,10 @@ public:
                        size_t capacity,
                        std::shared_ptr<const void> processInfo,
                        std::function<void(bool)> reportClock = {},
-                       std::function<void(double)> reportSelection = {})
+                       std::function<void(double)> reportSelection = {},
+                       std::shared_ptr<CAMLPresenter::Frame> current = {},
+                       std::vector<std::shared_ptr<CAMLPresenter::Frame>> queued = {},
+                       int previousPts = -1)
     : m_codec(std::move(codec)), m_main(std::this_thread::get_id()), m_clock(clock)
   {
     m_codec->RetainProcessInfo(std::move(processInfo));
@@ -117,6 +120,7 @@ public:
     hooks.selected = std::move(reportSelection);
     hooks.adjustClock = [this](double value) { m_clock.SetVsyncAdjust(value); };
     queue = std::make_unique<CAMLPresenter>(capacity, std::move(hooks));
+    queue->Restore(std::move(current), std::move(queued), previousPts);
     m_toWorker = m_codec->RequestPresentationOwner(queue->Launch());
     if (!m_toWorker)
       throw std::runtime_error("AML presentation owner transfer refused");

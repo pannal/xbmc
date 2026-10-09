@@ -903,6 +903,65 @@ bool CApplicationPlayer::FlushRenderer()
   return !player || player->FlushRenderer();
 }
 
+bool CApplicationPlayer::IsSkinReloadCurrent(const SkinReloadState& state) const
+{
+  auto original = state.player.lock();
+  return original && original == GetInternal() && state.generation == m_openGeneration &&
+         !m_closingPlayer && !m_shutdown && !HasPendingOpen() && original->IsPlaying() &&
+         original->HasVideo();
+}
+
+bool CApplicationPlayer::BeginSkinReload(SkinReloadState& state)
+{
+  if (state.begun || state.completed)
+    return false;
+  state.begun = true;
+  state.player = GetInternal();
+  state.generation = m_openGeneration;
+  if (!IsSkinReloadCurrent(state))
+    return false;
+
+  auto original = state.player.lock();
+  state.resumePlayback = !IsPausedPlayback();
+  if (state.resumePlayback)
+    original->Pause();
+
+  if (!IsSkinReloadCurrent(state) ||
+      !original->FlushRendererForSkinReload(state.restorePresentation) ||
+      !IsSkinReloadCurrent(state))
+  {
+    FinishSkinReload(state, false);
+    return false;
+  }
+  return true;
+}
+
+void CApplicationPlayer::FinishSkinReload(SkinReloadState& state, bool skinLoaded)
+{
+  if (state.completed)
+    return;
+  state.completed = true;
+  auto restore = std::move(state.restorePresentation);
+  auto original = state.player.lock();
+  if (!IsSkinReloadCurrent(state))
+    return;
+
+  try
+  {
+    if (skinLoaded && restore)
+      restore();
+  }
+  catch (...)
+  {
+    if (IsSkinReloadCurrent(state) && state.resumePlayback)
+      original->Pause();
+    throw;
+  }
+  // Either callback can reenter playback management. Never pause a replacement.
+  if (IsSkinReloadCurrent(state) && state.resumePlayback)
+    original->Pause();
+}
+
 void CApplicationPlayer::SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch)
 {
   std::shared_ptr<IPlayer> player = GetInternal();
