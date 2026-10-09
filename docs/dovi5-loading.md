@@ -138,8 +138,10 @@ The loader clears stale records for absent modules and retains them if unloading
 fails. The runtime records do not replace the kernel's module-residency checks.
 
 Kodi's System Information → Video reports `dovi.ko` and `dovi5.ko` residency and
-recorded load paths independently of playback. A loaded module without a reliable
-path record displays an unknown path.
+their recorded load folders independently of playback. It omits the repeated
+module filename and abbreviates generation hashes to an ellipsis and the final
+three characters (`...def`). The runtime records retain the full paths. A loaded
+module without a reliable path record displays an unknown location.
 
 For playback, `Player.Process(amlogic.dv.backend.available)` reports registered
 newer-backend capability. `Player.Process(amlogic.dv.backend)` reports the scoped,

@@ -23,6 +23,7 @@
 #include "utils/SystemInfo.h"
 #ifdef HAS_LIBAMCODEC
 #include "filesystem/Directory.h"
+#include "utils/URIUtils.h"
 #include <fstream>
 #endif
 
@@ -202,10 +203,10 @@ void CGUIWindowSystemInfo::FrameMove()
                                  hdrTypes.empty() ? g_localizeStrings.Get(231) : hdrTypes));
 #ifdef HAS_LIBAMCODEC
     UpdateDVModuleStatus();
-    const auto moduleStatus = [](bool loaded, const std::string& path) {
+    const auto moduleStatus = [](bool loaded, const std::string& folder) {
       return loaded ? StringUtils::Format(g_localizeStrings.Get(60352),
                                           g_localizeStrings.Get(60350),
-                                          path.empty() ? g_localizeStrings.Get(13205) : path)
+                                          folder.empty() ? g_localizeStrings.Get(13205) : folder)
                     : g_localizeStrings.Get(60351);
     };
     const auto setModuleLabel = [this](int id, const std::string& text) {
@@ -213,8 +214,8 @@ void CGUIWindowSystemInfo::FrameMove()
         label->SetWidthControl(label->GetWidth(), true);
       SET_CONTROL_LABEL(id, text);
     };
-    setModuleLabel(i++, "dovi.ko: " + moduleStatus(m_doviLoaded, m_doviModulePath));
-    setModuleLabel(i++, "dovi5.ko: " + moduleStatus(m_dovi5Loaded, m_dovi5ModulePath));
+    setModuleLabel(i++, "dovi.ko: " + moduleStatus(m_doviLoaded, m_doviModuleFolder));
+    setModuleLabel(i++, "dovi5.ko: " + moduleStatus(m_dovi5Loaded, m_dovi5ModuleFolder));
 #endif
   }
 
@@ -291,7 +292,7 @@ void CGUIWindowSystemInfo::UpdateDVModuleStatus()
   // Module residency is independent of playback, registration and active routing.
   m_doviLoaded = XFILE::CDirectory::Exists("/sys/module/dovi");
   m_dovi5Loaded = XFILE::CDirectory::Exists("/sys/module/dovi5");
-  const auto loadedPath = [](bool loaded, const char* record) {
+  const auto loadedFolder = [](bool loaded, const char* record) {
     std::string path;
     if (loaded)
     {
@@ -300,10 +301,22 @@ void CGUIWindowSystemInfo::UpdateDVModuleStatus()
       if (path.empty() || path.front() != '/')
         path.clear();
     }
-    return path;
+    std::string folder = URIUtils::GetDirectory(path);
+    const std::string prefix = "/storage/.dovi5/generations/";
+    constexpr size_t hashLength = 64;
+    constexpr size_t visibleLength = 3;
+    if (folder.compare(0, prefix.size(), prefix) == 0 &&
+        folder.size() == prefix.size() + hashLength + 1)
+    {
+      const auto hash = folder.substr(prefix.size(), hashLength);
+      if (hash.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos)
+        folder.replace(prefix.size(), hashLength,
+                       "..." + hash.substr(hashLength - visibleLength));
+    }
+    return folder;
   };
-  m_doviModulePath = loadedPath(m_doviLoaded, "/run/dovi-loaded-path");
-  m_dovi5ModulePath = loadedPath(m_dovi5Loaded, "/run/dovi5-loaded-path");
+  m_doviModuleFolder = loadedFolder(m_doviLoaded, "/run/dovi-loaded-path");
+  m_dovi5ModuleFolder = loadedFolder(m_dovi5Loaded, "/run/dovi5-loaded-path");
   m_dvModuleStatusUpdated = now;
 }
 #endif

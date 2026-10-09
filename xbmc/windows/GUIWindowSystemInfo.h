@@ -35,8 +35,8 @@ private:
   std::chrono::steady_clock::time_point m_dvModuleStatusUpdated{};
   bool m_doviLoaded{false};
   bool m_dovi5Loaded{false};
-  std::string m_doviModulePath;
-  std::string m_dovi5ModulePath;
+  std::string m_doviModuleFolder;
+  std::string m_dovi5ModuleFolder;
 #endif
 };
 
