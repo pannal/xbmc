@@ -1782,6 +1782,8 @@ void CActiveAE::ApplySettingsToFormat(AEAudioFormat& format,
         case  8: stdLayout = AE_CH_LAYOUT_5_1; break;
         case  9: stdLayout = AE_CH_LAYOUT_7_0; break;
         case 10: stdLayout = AE_CH_LAYOUT_7_1; break;
+        case 11: stdLayout = AE_CH_LAYOUT_6_0; break;
+        case 12: stdLayout = AE_CH_LAYOUT_6_1; break;
       }
 
       if (m_settings.config == AE_CONFIG_FIXED || (settings.stereoupmix && format.m_channelLayout.Count() <= 2))

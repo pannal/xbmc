@@ -150,6 +150,7 @@ struct CVideoPlayerVideo {
   int GetLevel() const { return level; } bool accepts=true; int level=20;
   void Flush(bool sync);
   bool Recover(CDVDVideoCodec::VCReturn decoderState) {
+    [[maybe_unused]] double frametime=DVD_TIME_BASE/m_fFrameRate;
     if (decoderState == CDVDVideoCodec::VC_FLUSHED) { @VC_FLUSHED@ }
     if (decoderState == CDVDVideoCodec::VC_REOPEN) { @VC_REOPEN@ }
     return false;
@@ -160,8 +161,11 @@ struct CVideoPlayerVideo {
   void SendMessage(std::shared_ptr<CDVDMsg> msg,int priority) { m_messageQueue.Put(msg,priority); }
   void FlushMessages() { m_messageQueue.Flush(); }
   void ResetFrameRateCalc() { ++frameRateResets; }
+  // This fixture models non-MPEG playback; cadence has its own regression suite.
+  void ResetMPEG2Cadence() {}
   void Step() {
     [[maybe_unused]] double pts=17;
+    [[maybe_unused]] double frametime=DVD_TIME_BASE/m_fFrameRate;
     for(int once=0; once<1; ++once) {
       int iPriority=0; auto timeout=0ms; bool onlyPrioMsgs=false;
       const bool diagnostics=false; // Normal logging: lifecycle policy remains exercised.
@@ -187,6 +191,7 @@ struct CVideoPlayerVideo {
   std::list<DVDMessageListItem> m_packets; Stats m_droppingStats,m_ptsTracker;
   std::shared_ptr<CVideoFlushRequest> m_flushRequest;
   int frameRateResets=0,resyncs=0,pauses=0,synchronizes=0;
+  double m_fFrameRate=25.0;
   std::vector<int> delivered;
 };
 @FLUSH@

@@ -59,6 +59,9 @@ enum AEStdChLayout
   AE_CH_LAYOUT_5_1,
   AE_CH_LAYOUT_7_0,
   AE_CH_LAYOUT_7_1,
+  // Append new layouts to preserve the existing layout ordinals.
+  AE_CH_LAYOUT_6_0,
+  AE_CH_LAYOUT_6_1,
 
   AE_CH_LAYOUT_MAX
 };

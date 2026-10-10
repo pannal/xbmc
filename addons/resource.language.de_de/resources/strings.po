@@ -20515,3 +20515,11 @@ msgstr "Progressive MPEG-2-Bilder beibehalten"
 msgctxt "#69362"
 msgid "Keep progressive pictures in interlaced MPEG-2 sequences when using Amlogic hardware decoding. Alternating repeat-field film cadence is handled by the decoder. Disabled by default. Takes effect when playback starts. Requires a compatible media module."
 msgstr "Progressive Bilder in interlaced MPEG-2-Sequenzen bei Amlogic-Hardwaredekodierung beibehalten. Der Dekoder berücksichtigt Filmsequenzen mit abwechselnden Wiederholungsfeldern. Standardmäßig deaktiviert. Wirksam ab dem nächsten Wiedergabestart. Erfordert ein kompatibles Medienmodul."
+
+msgctxt "#69363"
+msgid "6.0"
+msgstr "6.0"
+
+msgctxt "#69364"
+msgid "6.1"
+msgstr "6.1"
