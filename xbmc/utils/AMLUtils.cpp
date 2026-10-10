@@ -4517,31 +4517,46 @@ bool aml_unset_reg_ignore_alpha()
   return false;
 }
 
-struct FpsData {
+struct FpsData
+{
   unsigned int input_fps;
   unsigned int output_fps;
   std::chrono::steady_clock::time_point timestamp;
 };
 
-struct FpsInfo {
-  unsigned int avg_input_fps;
-  unsigned int avg_output_fps;
-  unsigned int avg_drop_fps;
+struct FpsInfo
+{
+  double avg_input_fps;
+  double avg_output_fps;
+  double avg_drop_fps;
+  bool measured{true};
 };
 
-struct FormattedFpsInfo {
+struct FormattedFpsInfo
+{
   std::string basic_info;
   std::string drop_info;
+};
+
+struct FpsCounters
+{
+  uint32_t frames{0};
+  uint32_t ticks{0};
+  uint32_t hz{0};
+  uint32_t duration{0};
+  uint64_t epoch{0};
 };
 
 struct FpsSnapshot
 {
   std::mutex mutex;
   std::vector<FpsData> history;
+  std::vector<FpsCounters> counters;
   FormattedFpsInfo formatted;
   std::chrono::steady_clock::time_point lastUpdate{};
   std::chrono::steady_clock::time_point lastDrop{};
   unsigned int lowestOutput{0};
+  bool hasLowestOutput{false};
   int rotation{0};
   bool sampled{false};
 };
@@ -4557,75 +4572,159 @@ void aml_video_fps_reset()
   auto& snapshot = video_fps_snapshot();
   std::lock_guard<std::mutex> lock(snapshot.mutex);
   snapshot.history.clear();
+  snapshot.counters.clear();
   snapshot.formatted = {};
   snapshot.lastUpdate = {};
   snapshot.lastDrop = {};
   snapshot.lowestOutput = 0;
+  snapshot.hasLowestOutput = false;
   snapshot.rotation = 0;
   snapshot.sampled = false;
 }
 
-FpsInfo gather_fps_data(FpsSnapshot& snapshot, std::chrono::steady_clock::time_point now) {
+// Optional passive counters supplement the legacy destructive integer fields.
+// Reject an invalid extension instead of falling back to its possibly stale rate.
+bool parse_fps_counters(const std::string& input, FpsCounters& counters)
+{
+  std::istringstream fields(input.substr(input.find(" sample")));
+  auto field = [&fields](const char* name, uint64_t& value)
+  {
+    std::string token;
+    if (!(fields >> token))
+      return false;
+    const std::string prefix = std::string(name) + ":0x";
+    if (token.compare(0, prefix.size(), prefix) != 0)
+      return false;
+    const std::string digits = token.substr(prefix.size());
+    if (digits.empty() || digits.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+      return false;
+    std::istringstream number(digits);
+    return (number >> std::hex >> value) && number.eof();
+  };
+  uint64_t version, frames, ticks, hz, duration, epoch;
+  if (!field("sample", version) || !field("frames", frames) || !field("ticks", ticks) ||
+      !field("hz", hz) || !field("duration", duration) || !field("epoch", epoch))
+    return false;
+  fields >> std::ws;
+  if (!fields.eof() || version != 1 || frames > UINT32_MAX || ticks > UINT32_MAX || hz == 0 ||
+      hz > 1000000 || duration == 0 || duration > UINT32_MAX || epoch == 0)
+    return false;
+  counters = {static_cast<uint32_t>(frames), static_cast<uint32_t>(ticks),
+              static_cast<uint32_t>(hz), static_cast<uint32_t>(duration), epoch};
+  return true;
+}
+
+FpsInfo measure_fps_counters(FpsSnapshot& snapshot, const FpsCounters& current)
+{
+  snapshot.history.clear();
+  auto& history = snapshot.counters;
+  if (!history.empty())
+  {
+    const auto& previous = history.back();
+    const uint32_t elapsed = current.ticks - previous.ticks;
+    const uint32_t frames = current.frames - previous.frames;
+    // Modulo subtraction permits real u32 rollover. A backwards/reset counter,
+    // ambiguous elapsed time or an inactive long gap needs a new baseline.
+    if (current.epoch != previous.epoch || current.duration != previous.duration ||
+        current.hz != previous.hz || elapsed > current.hz * 30 || frames >= 0x80000000U ||
+        (elapsed == 0 && frames != 0))
+      history.clear();
+  }
+  if (history.empty() || current.ticks != history.back().ticks)
+    history.push_back(current);
+  // Keep the observation at/before the one-second boundary, not a mean of
+  // separately truncated/capped instantaneous rates. Sparse polls span longer.
+  while (history.size() > 2 && current.ticks - history[1].ticks >= current.hz)
+    history.erase(history.begin());
+  const double input = 96000.0 / current.duration;
+  const uint32_t elapsed = current.ticks - history.front().ticks;
+  if (elapsed < current.hz)
+  {
+    snapshot.lowestOutput = 0;
+    snapshot.hasLowestOutput = false;
+    snapshot.formatted.drop_info.clear();
+    return {input, 0.0, 0.0, false}; // output/deficit not yet measured
+  }
+  const uint32_t frames = current.frames - history.front().frames;
+  const double output = std::min(input, static_cast<double>(frames) * current.hz / elapsed);
+  return {input, output, std::max(0.0, input - output)};
+}
+
+FpsInfo gather_fps_data(FpsSnapshot& snapshot, std::chrono::steady_clock::time_point now)
+{
   static const std::chrono::seconds HISTORY_DURATION(1);
 
   CSysfsPath fps_info{"/sys/class/video/fps_info"};
-  if (fps_info.Exists()) {
+  if (fps_info.Exists())
+  {
 
     std::string input = fps_info.Get<std::string>().value_or("");
-    unsigned int input_fps, output_fps;
-    std::istringstream iss(input);
+    if (input.find(" sample") != std::string::npos)
+    {
+      FpsCounters counters;
+      if (parse_fps_counters(input, counters))
+        return measure_fps_counters(snapshot, counters);
+    }
+    else
+    {
+      // Older kernels provide only integer rates; their precision/read-state
+      // limitations cannot be repaired by rounding or guessing a nominal rate.
+      snapshot.counters.clear();
+      unsigned int input_fps, output_fps;
+      std::istringstream iss(input);
 
-    if ((iss.ignore(std::numeric_limits<std::streamsize>::max(), ':') && iss >> std::hex >> input_fps) &&
-        (iss.ignore(std::numeric_limits<std::streamsize>::max(), ':') && iss >> std::hex >> output_fps)) {
+      if ((iss.ignore(std::numeric_limits<std::streamsize>::max(), ':') &&
+           iss >> std::hex >> input_fps) &&
+          (iss.ignore(std::numeric_limits<std::streamsize>::max(), ':') &&
+           iss >> std::hex >> output_fps))
+      {
 
-      // Add new entry
-      snapshot.history.push_back({input_fps, output_fps, now});
+        // Add new entry
+        snapshot.history.push_back({input_fps, output_fps, now});
 
-      // Remove old entries
-      snapshot.history.erase(
-        std::remove_if(
-            snapshot.history.begin(), snapshot.history.end(),
-            [&now](const FpsData& data) {
-              return (now - data.timestamp) > HISTORY_DURATION;
-            }
-          ), snapshot.history.end()
-      );
+        // Remove old entries
+        snapshot.history.erase(std::remove_if(snapshot.history.begin(), snapshot.history.end(),
+                                              [&now](const FpsData& data) {
+                                                return (now - data.timestamp) > HISTORY_DURATION;
+                                              }),
+                               snapshot.history.end());
 
-      // Calculate averages
-      double avg_input_fps = 0;
-      double avg_output_fps = 0;
-      double avg_drop_fps = 0;
+        // Calculate averages
+        double avg_input_fps = 0;
+        double avg_output_fps = 0;
+        double avg_drop_fps = 0;
 
-      unsigned int valid_count = 0;
+        unsigned int valid_count = 0;
 
-      for (const auto& data : snapshot.history) {
-        avg_input_fps += data.input_fps;
-        avg_output_fps += data.output_fps;
-        valid_count++;
-      }
+        for (const auto& data : snapshot.history)
+        {
+          avg_input_fps += data.input_fps;
+          avg_output_fps += data.output_fps;
+          valid_count++;
+        }
 
-      if (valid_count > 0) {
-        avg_input_fps /= valid_count;
-        avg_output_fps /= valid_count;
-        avg_drop_fps = avg_input_fps - avg_output_fps;
+        if (valid_count > 0)
+        {
+          avg_input_fps /= valid_count;
+          avg_output_fps /= valid_count;
+          avg_drop_fps = avg_input_fps - avg_output_fps;
 
-        return {
-          static_cast<unsigned int>(avg_input_fps + 0.5),
-          static_cast<unsigned int>(avg_output_fps + 0.5),
-          static_cast<unsigned int>(avg_drop_fps + 0.5)
-        };
+          return {avg_input_fps, avg_output_fps, std::max(0.0, avg_drop_fps)};
+        }
       }
     }
   }
-
   // A missing/malformed read is not evidence for retaining an old drop.
   snapshot.history.clear();
+  snapshot.counters.clear();
   snapshot.lowestOutput = 0;
+  snapshot.hasLowestOutput = false;
   snapshot.formatted.drop_info.clear();
   return {0, 0, 0};
 }
 
-FormattedFpsInfo format_fps_info() {
+FormattedFpsInfo format_fps_info()
+{
 
   auto& snapshot = video_fps_snapshot();
   std::lock_guard<std::mutex> lock(snapshot.mutex);
@@ -4634,17 +4733,19 @@ FormattedFpsInfo format_fps_info() {
   if (snapshot.sampled && now - snapshot.lastUpdate < UPDATE_INTERVAL)
     return snapshot.formatted;
 
-  // Both labels share one on-demand sample; history is weighted at up to 10 Hz.
+  // Both labels share one on-demand observation, at most 10 Hz.
   const FpsInfo info = gather_fps_data(snapshot, now);
 
+  // Round only the displayed fields; the deficit was measured before rounding.
+  const auto inputFps = static_cast<unsigned int>(info.avg_input_fps + 0.5);
+  const auto outputFps = static_cast<unsigned int>(info.avg_output_fps + 0.5);
+  const auto deficitFps = static_cast<unsigned int>(info.avg_drop_fps + 0.5);
   // Format basic info
   const char rotation_chars[] = {'|', '/', '-', '\\'};
 
   std::ostringstream basic_info;
-  basic_info << std::fixed << std::setprecision(0) << std::setfill('0')
-              << std::setw(3) << info.avg_input_fps << " - "
-              << std::setw(3) << info.avg_output_fps << " - "
-              << std::setw(3) << info.avg_drop_fps;
+  basic_info << std::fixed << std::setprecision(0) << std::setfill('0') << std::setw(3) << inputFps
+             << " - " << std::setw(3) << outputFps << " - " << std::setw(3) << deficitFps;
 
   if (snapshot.sampled)
     snapshot.rotation = (snapshot.rotation + 1) % 4;
@@ -4656,31 +4757,43 @@ FormattedFpsInfo format_fps_info() {
   // Format drop info
   const std::chrono::seconds HOLD_PERIOD(3);
 
-  if (info.avg_output_fps < info.avg_input_fps) {
-      if (snapshot.lowestOutput == 0 || info.avg_output_fps < snapshot.lowestOutput) {
-          snapshot.lowestOutput = info.avg_output_fps;
-          snapshot.lastDrop = now;
-      } else if (now - snapshot.lastDrop >= HOLD_PERIOD) {
-          snapshot.lowestOutput = info.avg_output_fps;
-          snapshot.lastDrop = now;
-      }
-      snapshot.formatted.drop_info = std::to_string(snapshot.lowestOutput);
-  } else {
-      if (snapshot.lowestOutput != 0 && now - snapshot.lastDrop >= HOLD_PERIOD) {
-          snapshot.lowestOutput = 0;
-          snapshot.formatted.drop_info = "";
-      }
+  if (info.measured && outputFps < inputFps)
+  {
+    if (!snapshot.hasLowestOutput || outputFps < snapshot.lowestOutput)
+    {
+      snapshot.lowestOutput = outputFps;
+      snapshot.hasLowestOutput = true;
+      snapshot.lastDrop = now;
+    }
+    else if (now - snapshot.lastDrop >= HOLD_PERIOD)
+    {
+      snapshot.lowestOutput = outputFps;
+      snapshot.hasLowestOutput = true;
+      snapshot.lastDrop = now;
+    }
+    snapshot.formatted.drop_info = std::to_string(snapshot.lowestOutput);
+  }
+  else
+  {
+    if (snapshot.hasLowestOutput && now - snapshot.lastDrop >= HOLD_PERIOD)
+    {
+      snapshot.lowestOutput = 0;
+      snapshot.hasLowestOutput = false;
+      snapshot.formatted.drop_info = "";
+    }
   }
 
   snapshot.formatted.basic_info = basic_info.str();
   return snapshot.formatted;
 }
 
-std::string aml_video_fps_info() {
+std::string aml_video_fps_info()
+{
   return format_fps_info().basic_info;
 }
 
-std::string aml_video_fps_drop() {
+std::string aml_video_fps_drop()
+{
   return format_fps_info().drop_info;
 }
 

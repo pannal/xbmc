@@ -76,7 +76,7 @@ int main(){pair_and_deadline();history_and_drop();failures_and_replacement();con
 '''
 def harness():
     aml=(ROOT/'xbmc/utils/AMLUtils.cpp').read_text()
-    block=aml[aml.index('struct FpsData {'):aml.index('unsigned int aml_dv_video_processor_mode()')]
+    block=aml[aml.index('struct FpsData'):aml.index('unsigned int aml_dv_video_processor_mode()')]
     codec=(ROOT/'xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp').read_text()
     for signature in ('bool CAMLCodec::OpenDecoderInternal()', 'void CAMLCodec::CloseDecoderInternal()'):
         body = function(codec, signature)
@@ -101,7 +101,7 @@ def main():
     if args.negative_controls:
         controls=[('resample paired labels','snapshot.sampled && now - snapshot.lastUpdate < UPDATE_INTERVAL','false'),
                   ('retain replacement cache','snapshot.sampled = false;','/* omitted */'),
-                  ('retain failed history','  snapshot.history.clear();\n  snapshot.lowestOutput = 0;','  snapshot.lowestOutput = 0;'),
+                  ('retain failed history','  snapshot.history.clear();\n  snapshot.counters.clear();\n  snapshot.lowestOutput = 0;','  snapshot.counters.clear();\n  snapshot.lowestOutput = 0;'),
                   ('extend history','HISTORY_DURATION(1)','HISTORY_DURATION(2)'),
                   ('shorten drop hold','HOLD_PERIOD(3)','HOLD_PERIOD(1)')]
         for name,before,after in controls:
