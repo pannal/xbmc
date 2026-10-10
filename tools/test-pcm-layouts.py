@@ -286,6 +286,28 @@ int main(){
  // Fixed map in a padded container keeps its NA slot: existing PR79 matching.
  addMap({SND_CHMAP_FL,SND_CHMAP_FR,SND_CHMAP_NA,SND_CHMAP_FC,SND_CHMAP_RL,SND_CHMAP_RR,SND_CHMAP_RC});
  exact=sink.SelectALSAChannelMap(six0);assert(exact&&exact->channels==7&&sink.ALSAchmapActiveCount(*exact)==6);free(exact);closeMaps();
+ // Native G12B 6.x keeps canonical slots inside the full eight-slot transport.
+ for(bool lfe:{false,true}){
+   auto req=lfe?six1:six0;
+   addMap({SND_CHMAP_FL,SND_CHMAP_FR,lfe?SND_CHMAP_LFE:SND_CHMAP_NA,SND_CHMAP_FC,
+           SND_CHMAP_RL,SND_CHMAP_RR,SND_CHMAP_RC,SND_CHMAP_NA});
+   auto selected=sink.SelectALSAChannelMap(req);
+   assert(selected&&selected->channels==8&&sink.ALSAchmapActiveCount(*selected)==req.Count());
+   assert(selected->pos[6]==SND_CHMAP_RC&&selected->pos[7]==SND_CHMAP_NA);
+   assert(selected->pos[2]==(lfe?SND_CHMAP_LFE:SND_CHMAP_NA));
+   actualMap=copyMap(selected);
+   auto packed=sink.GetChannelLayout(fmt(req),8);
+   assert(packed.Count()==8&&packed[6]==AE_CH_BC&&packed[7]==AE_CH_UNKNOWN1);
+   assert(packed[2]==(lfe?AE_CH_LFE:AE_CH_UNKNOWN1));
+   for(unsigned source=0;source<req.Count();++source){
+     auto out=pulse(req,packed,req[source],false,0.0f,true);
+     assert(out.size()==8);
+     for(unsigned slot=0;slot<out.size();++slot)
+       near(out[slot],packed[slot]==req[source]?0.25f:0.0f);
+   }
+   // Kernel maps change only when present: pre-native-map fallback above remains.
+   free(selected);closeMaps();
+ }
  assert(sink.GetChannelLayoutLegacy(fmt(six0),2,8).Count()==5);
  assert(sink.GetChannelLayoutLegacy(fmt(six1),2,8).Count()==6);
  auto raw=fmt(six1);raw.m_dataFormat=AE_FMT_RAW;raw.m_streamInfo.m_type=CAEStreamInfo::STREAM_TYPE_TRUEHD;assert(sink.GetChannelLayoutRaw(raw).Count()==8);
