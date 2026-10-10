@@ -37,7 +37,8 @@ static void aml_dv_wait_for_pipeline(){}
 static bool aml_dv_restore_gui_ipt(const char*){return false;}
 static void aml_dv_display_trigger(){}
 static void aml_hdr10plus_vsif_hold(bool){}
-static void aml_hdmi_link_probe(const char*){}
+enum class AMLHDMILinkSample {SKIPPED,UNCHANGED,CHANGED};
+static AMLHDMILinkSample aml_hdmi_link_probe(const char*){return AMLHDMILinkSample::SKIPPED;}
 struct CSysfsPath{CSysfsPath(const char*){}template<class T>std::optional<T>Get(){return T{};}};
 using EGLNativeWindowType=uintptr_t;
 constexpr int EGL_NO_DISPLAY=0,EGL_NO_SURFACE=0,EGL_TRUE=1;
@@ -61,6 +62,9 @@ struct CServiceBroker{static inline BrokerWindow window;static BrokerWindow* Get
 struct IDispResource{int resets=0;void OnResetDisplay(){++resets;}};
 using CCriticalSection=std::mutex;
 struct CWinSystemAmlogic{
+ std::atomic<bool> m_hdrRefreshPending{false};
+ void RefreshHDRCapabilities(){}
+ void SetNativeGuiWait(bool enabled){assert(!enabled);}
  bool m_bWindowCreated=true,m_bFullScreen=true,m_force_mode_switch=false,m_delayDispReset=false;
  int m_stereo_mode=0;uintptr_t m_nativeWindow=1;
  StreamHdrType m_hdrType=StreamHdrType::HDR_TYPE_SDR;

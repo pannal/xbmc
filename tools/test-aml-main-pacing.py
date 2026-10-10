@@ -77,10 +77,13 @@ struct CApplicationPlayer {
 };
 @QUERIES@
 struct IDispResource {void OnResetDisplay(){}};
-static void aml_hdmi_link_probe(const char*){}
+enum class AMLHDMILinkSample {SKIPPED,UNCHANGED,CHANGED};
+static AMLHDMILinkSample aml_hdmi_link_probe(const char*){return AMLHDMILinkSample::SKIPPED;}
 static void aml_hdr10plus_vsif_hold(bool){}
 using CCriticalSection=std::mutex;
 struct CWinSystemAmlogicGLESContext {
+ std::atomic<bool> m_hdrRefreshPending{false};
+ void RefreshHDRCapabilities(){}
  bool m_delayDispReset=false,m_displayGeometryReady=true;
  struct Timer {bool IsTimePast(){return false;}}m_dispResetTimer;
  CCriticalSection m_resourceSection;

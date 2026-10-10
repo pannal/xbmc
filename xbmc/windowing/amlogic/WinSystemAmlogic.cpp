@@ -8,6 +8,7 @@
 
 #include "WinSystemAmlogic.h"
 #include "AMLNativeTransaction.h"
+#include "AMLHDRCapabilities.h"
 
 #include <string.h>
 #include <float.h>
@@ -43,6 +44,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 
 #include "system_egl.h"
 
@@ -79,6 +81,8 @@ bool CWinSystemAmlogic::InitWindowSystem()
 
 bool CWinSystemAmlogic::InitWindowSystem(CAMLSession::DisplayRequest display)
 {
+  RefreshHDRCapabilities();
+
   // Setup DV UI Elements etc.
   m_dolbyVisionAML = std::make_unique<CDolbyVisionAML>();
   if (!m_dolbyVisionAML->Setup(display))
@@ -241,6 +245,7 @@ bool CWinSystemAmlogic::DestroyWindow()
 
 void CWinSystemAmlogic::UpdateResolutions()
 {
+  RefreshHDRCapabilities();
   CWinSystemBase::UpdateResolutions();
 
   RESOLUTION_INFO resDesktop, curDisplay;
@@ -339,37 +344,66 @@ void CWinSystemAmlogic::UpdateResolutions()
   }
 }
 
+void CWinSystemAmlogic::RefreshHDRCapabilities()
+{
+  std::lock_guard<std::mutex> refreshLock(m_hdrRefreshMutex);
+  std::string edid;
+  const auto caps = AML::HDR::ReadStable([](const char* name) -> std::optional<std::string> {
+    std::ifstream file(std::string("/sys/class/amhdmitx/amhdmitx0/") + name);
+    if (!file.is_open())
+      return std::nullopt;
+    std::string value;
+    std::getline(file, value, '\0');
+    if (file.bad() || !file.eof() || AML::HDR::Trim(value).empty())
+      return std::nullopt;
+    return value;
+  }, &edid);
+  if (!caps.has_value())
+  {
+    // Disconnection, EDID-not-ready and failed reads are not a valid loss.
+    m_hdrLossCandidate.reset();
+    m_hdrRefreshPending.store(true);
+    return;
+  }
+  const auto previous = GetDisplayHDRCapabilities();
+  const auto mask = AML::HDR::Mask(*caps);
+  if ((AML::HDR::Mask(previous) & ~mask) != 0 || (!m_hdrCapsValid && mask == 0))
+  {
+    // Resume can expose ready EDID before RX flags are rebuilt. Confirm loss
+    // across at least one probe interval; immediate queries cannot confirm it.
+    const auto now = std::chrono::steady_clock::now();
+    if (!m_hdrLossCandidate.has_value() || AML::HDR::Mask(*m_hdrLossCandidate) != mask ||
+        m_hdrLossEDID != edid)
+    {
+      m_hdrLossCandidate = *caps;
+      m_hdrLossEDID = edid;
+      m_hdrLossSince = now;
+    }
+    if (now - m_hdrLossSince < std::chrono::seconds(1))
+    {
+      m_hdrRefreshPending.store(true);
+      return;
+    }
+  }
+  m_hdrLossCandidate.reset();
+  {
+    std::lock_guard<std::mutex> capsLock(m_hdrCapsMutex);
+    m_hdr_caps = *caps;
+  }
+  m_hdrCapsValid = true;
+  m_hdrRefreshPending.store(false);
+}
+
 bool CWinSystemAmlogic::IsHDRDisplay()
 {
-  CSysfsPath hdr_cap{"/sys/class/amhdmitx/amhdmitx0/hdr_cap"};
-  CSysfsPath dv_cap{"/sys/class/amhdmitx/amhdmitx0/dv_cap"};
-  std::string valstr;
-
-  if (hdr_cap.Exists())
-  {
-    valstr = hdr_cap.Get<std::string>().value();
-    if (valstr.find("Traditional HDR: 1") != std::string::npos)
-      m_hdr_caps.SetHDR10();
-
-    if (valstr.find("HDR10Plus Supported: 1") != std::string::npos)
-      m_hdr_caps.SetHDR10Plus();
-
-    if (valstr.find("Hybrid Log-Gamma: 1") != std::string::npos)
-      m_hdr_caps.SetHLG();
-  }
-
-  if (dv_cap.Exists())
-  {
-    valstr = dv_cap.Get<std::string>().value();
-    if (valstr.find("DolbyVision RX support list") != std::string::npos)
-      m_hdr_caps.SetDolbyVision();
-  }
-
-  return (m_hdr_caps.SupportsHDR10() | m_hdr_caps.SupportsHDR10Plus() | m_hdr_caps.SupportsHLG());
+  RefreshHDRCapabilities();
+  const auto caps = GetDisplayHDRCapabilities();
+  return caps.SupportsHDR10() || caps.SupportsHDR10Plus() || caps.SupportsHLG();
 }
 
 CHDRCapabilities CWinSystemAmlogic::GetDisplayHDRCapabilities() const
 {
+  std::lock_guard<std::mutex> capsLock(m_hdrCapsMutex);
   return m_hdr_caps;
 }
 

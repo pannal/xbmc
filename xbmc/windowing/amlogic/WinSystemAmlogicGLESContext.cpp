@@ -260,6 +260,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   CAMLNativeTransaction native(display.Request());
   if (!native.TryBegin())
     return false;
+  RefreshHDRCapabilities();
   RESOLUTION_INFO current_resolution;
   current_resolution.iWidth = current_resolution.iHeight = 0;
   RENDER_STEREO_MODE stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
@@ -509,7 +510,10 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   // GUI-path HDMI link watchdog: catches a sink dropping sync in the menus,
   // where neither the DV-transition dump nor the playback vsync-stall snapshot
   // is active. Self-throttled to ~1Hz and only logs on a state change.
-  aml_hdmi_link_probe("present");
+  const auto link = aml_hdmi_link_probe("present");
+  if (link == AMLHDMILinkSample::CHANGED ||
+      (link != AMLHDMILinkSample::SKIPPED && m_hdrRefreshPending.load()))
+    RefreshHDRCapabilities();
 
   if (m_delayDispReset && m_dispResetTimer.IsTimePast())
   {

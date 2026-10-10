@@ -1573,7 +1573,7 @@ void aml_dv_dump_state(const char* tag)
     s_dvPlaybackActive ? 1 : 0);
 }
 
-void aml_hdmi_link_probe(const char* ctx)
+AMLHDMILinkSample aml_hdmi_link_probe(const char* ctx)
 {
   // Runs from the GUI present hook (every frame, in menus and playback alike),
   // so keep it cheap: throttle to ~1Hz and bail before touching sysfs.
@@ -1584,7 +1584,7 @@ void aml_hdmi_link_probe(const char* ctx)
   auto now = std::chrono::steady_clock::now();
   if (s_lastCheck.time_since_epoch().count() != 0 &&
       now - s_lastCheck < std::chrono::seconds(1))
-    return;
+    return AMLHDMILinkSample::SKIPPED;
   s_lastCheck = now;
 
   auto rd = [](const char* path) -> std::string {
@@ -1613,7 +1613,7 @@ void aml_hdmi_link_probe(const char* ctx)
   static std::string s_lastState;
   static bool s_haveBaseline = false;
   if (s_haveBaseline && state == s_lastState)
-    return;
+    return AMLHDMILinkSample::UNCHANGED;
 
   // "Degraded" = the sink stopped asserting hot-plug / R-term, or the kernel
   // lost the active display mode: the signature of a blue/no-signal sink.
@@ -1627,6 +1627,7 @@ void aml_hdmi_link_probe(const char* ctx)
 
   s_lastState = std::move(state);
   s_haveBaseline = true;
+  return AMLHDMILinkSample::CHANGED;
 }
 
 void aml_dv_off(bool skip_hdmi_update)

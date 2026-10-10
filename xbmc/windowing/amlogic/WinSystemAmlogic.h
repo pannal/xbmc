@@ -17,6 +17,11 @@
 #include <EGL/fbdev_window.h>
 #include "DolbyVisionAML.h"
 
+#include <atomic>
+#include <chrono>
+#include <optional>
+#include <mutex>
+
 class IDispResource;
 
 class CWinSystemAmlogic : public CWinSystemBase
@@ -53,6 +58,14 @@ protected:
   std::vector<IDispResource*> m_resources;
   std::unique_ptr<CLibInputHandler> m_libinput;
   CHDRCapabilities m_hdr_caps;
+  mutable std::mutex m_hdrCapsMutex;
+  std::mutex m_hdrRefreshMutex;
+  std::atomic<bool> m_hdrRefreshPending{true};
+  bool m_hdrCapsValid{false};
+  std::optional<CHDRCapabilities> m_hdrLossCandidate;
+  std::string m_hdrLossEDID;
+  std::chrono::steady_clock::time_point m_hdrLossSince{};
+  void RefreshHDRCapabilities();
   bool m_force_mode_switch;
 
 protected:

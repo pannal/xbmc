@@ -157,7 +157,13 @@ void aml_end_display_diagnostics_pump();
 // the log. Call this from the per-frame present hook: it self-throttles to
 // ~1Hz and only logs when the link state changes (LOGWARNING on a degrade,
 // LOGINFO otherwise) — quiet when stable, loud the moment the link drops.
-void aml_hdmi_link_probe(const char* ctx);
+enum class AMLHDMILinkSample
+{
+  SKIPPED,
+  UNCHANGED,
+  CHANGED
+};
+AMLHDMILinkSample aml_hdmi_link_probe(const char* ctx);
 
 // Fresh result for one admitted native operation. Never cached or published globally:
 // a new operation must read again, including after display replacement or wake.

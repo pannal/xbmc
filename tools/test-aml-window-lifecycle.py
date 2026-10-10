@@ -165,7 +165,9 @@ void aml_dv_engage_stale_deferred_disc(){event("engage-stale");}
 void aml_dv_engage_deferred_disc(bool mode){event(mode?"engage-mode":"engage-no-mode");if(engageHook)engageHook(mode);}
 void aml_set_native_resolution(const RESOLUTION_INFO& info,const std::string&,RENDER_STEREO_MODE,bool){native("native-set:"+std::to_string(info.iWidth));currentNative=info;}
 void aml_hdr10plus_vsif_hold(bool hold){event(hold?"hdr-hold":"hdr-release");}
-void aml_hdmi_link_probe(const char*){event("link-probe");}
+enum class AMLHDMILinkSample {SKIPPED,UNCHANGED,CHANGED};
+AMLHDMILinkSample linkSample=AMLHDMILinkSample::SKIPPED;
+AMLHDMILinkSample aml_hdmi_link_probe(const char*){event("link-probe");return linkSample;}
 struct CSysfsPath{explicit CSysfsPath(const char*){}template<class T>std::optional<T> Get(){return static_cast<T>(fracValue);}};
 struct Rect{void SetRect(float,float,float,float){event("scissor");}};
 struct CSettings{static constexpr int SETTING_VIDEOPLAYER_STEREOSCOPICPLAYBACKMODE=1,SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE=2;};
@@ -236,6 +238,9 @@ struct EGL{
 };
 class CWinSystemAmlogic{
 public:
+  std::atomic<bool> m_hdrRefreshPending{false};
+  int hdrRefreshes=0;
+  void RefreshHDRCapabilities(){++hdrRefreshes;}
   virtual ~CWinSystemAmlogic(){delete m_nativeWindow;}
   bool CreateNativeWindow(const std::string&,bool,RESOLUTION_INFO&,CAMLSession::DisplayRequest);
   bool DestroyWindow(){event("base-destroy");m_bWindowCreated=false;return true;}

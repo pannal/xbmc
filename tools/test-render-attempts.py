@@ -326,13 +326,17 @@ int main()
 AML = r'''
 #include "rendering/gles/TextureResources.h"
 #include "windowing/amlogic/AMLDisplayLifecycle.h"
+#include "utils/PlaybackEndDiagnostics.h"
+namespace fmt {template<class... T>std::string format(const char*,T&&...){return {};}}
+struct CEGLContextUtils {struct SwapDiagnostics {bool attempted=false;int error=0;};};
 using CCriticalSection=std::recursive_mutex;
 constexpr int GL_SCISSOR_TEST=1;
 bool scissor{true};
 bool glIsEnabled(int) {return scissor;}
 void glEnable(int) {scissor=true;record("scissor-on");}
 void glDisable(int) {scissor=false;record("scissor-off");}
-void aml_hdmi_link_probe(const char*) {record("probe");}
+enum class AMLHDMILinkSample {SKIPPED,UNCHANGED,CHANGED};
+AMLHDMILinkSample aml_hdmi_link_probe(const char*) {record("probe");return AMLHDMILinkSample::SKIPPED;}
 void aml_hdr10plus_vsif_hold(bool) {record("hdr-release");}
 struct IDispResource
 {
@@ -349,7 +353,8 @@ struct Fbo
 struct Context
 {
   bool swap{true};
-  bool TrySwapBuffers() {record("swap");return swap;}
+  bool TrySwapBuffers(CEGLContextUtils::SwapDiagnostics* diagnostics=nullptr) {
+    record("swap");if(diagnostics){diagnostics->attempted=true;diagnostics->error=swap?0:1;}return swap;}
   void DestroySurface() {record("destroy-surface");}
 };
 class CRenderSystemGLES : public CRenderSystemBase
@@ -361,6 +366,9 @@ public:
 };
 struct CWinSystemAmlogic
 {
+  std::atomic<bool> m_hdrRefreshPending{false};
+  void RefreshHDRCapabilities() {}
+  void SetNativeGuiWait(bool enabled) {assert(!enabled);}
   bool DestroyWindow() {record("destroy-window");return true;}
 };
 class CWinSystemAmlogicGLESContext : public CRenderSystemGLES, public CWinSystemAmlogic
@@ -385,6 +393,7 @@ public:
   std::vector<std::pair<std::string,int>> writes;
   void SetKernelSwitch(const char* path,int value) {record("kernel");writes.emplace_back(path,value);}
   bool CompositeGui() {record("composite");return composite;}
+  void ObserveEndDisplay(const char*,bool=false) {}
   void PresentRenderImpl(bool rendered);
   void QueueKernelSwitch(const char* path,int value);
   void ApplyPendingKernelSwitch();
