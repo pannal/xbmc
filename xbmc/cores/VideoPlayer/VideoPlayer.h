@@ -10,9 +10,11 @@
 
 #include "DVDClock.h"
 #include "DVDMessageQueue.h"
+#include "DecoderFlushRecovery.h"
 #include "Edl.h"
 #include "FileItem.h"
 #include "IVideoPlayer.h"
+#include "PlayerNativeAction.h"
 #include "VideoPlayerAudioID3.h"
 #include "VideoPlayerRadioRDS.h"
 #include "VideoPlayerSubtitle.h"
@@ -22,16 +24,16 @@
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
 #include "guilib/DispResource.h"
-#include "PlayerNativeAction.h"
 #include "threads/SystemClock.h"
 #include "threads/Thread.h"
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <map>
-#include <optional>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -504,6 +506,8 @@ protected:
   void FinishSeek(bool trickplay);
   bool m_waitingForVideoFlush{false};
 
+  CVideoSeekQueueState GetVideoSeekQueueState();
+  CVideoRecoveryGate::Conditions GetVideoRecoveryConditions(uint64_t generation);
   void HandleMessages();
   void QueueAudioRecoverySeek();
   void HandlePlaySpeed();
@@ -688,6 +692,12 @@ protected:
   int64_t m_brokenFileStallBytes = -1;
   bool m_brokenFileNotified = false;
   bool m_brokenFileStallStarveLogged = false;
+
+  uint64_t m_videoRecoveryGeneration{0};
+  CVideoRecoveryGate m_videoRecoveryGate;
+  // Stable sync-flush target: raw demux PTS and display milliseconds before read-ahead.
+  double m_videoRecoveryStartPts{DVD_NOPTS_VALUE};
+  double m_videoRecoveryStartTime{DVD_NOPTS_VALUE};
 
   // Video feed/drain wedge recovery (see HandlePlaySpeed): the render pts last
   // seen while the video input byte-buffer was full, and when it froze.
