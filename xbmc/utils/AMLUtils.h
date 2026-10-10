@@ -299,6 +299,8 @@ enum DV_TYPE aml_dv_type();
 unsigned int aml_vs10_by_setting(const std::string setting);
 void aml_dv_send_md_levels();
 void aml_dv_send_hdr10_data();
+bool aml_hdr10_metadata_limits_supported();
+void aml_apply_hdr10_metadata_limits();
 void aml_dv_send_el_type();
 void aml_dv_send_profile(int dvprofile);
 void set_vsvdb_payload_ver(enum DV_TYPE dv_type, int max_lum_nits_value, int source_max_pq,

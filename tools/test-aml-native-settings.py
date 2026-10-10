@@ -101,6 +101,7 @@ void effect(const std::string& name,int value=0){
 }
 AMLDVCapability aml_read_dv_cap(){assert(!inCallback);assert(session&&!session->AcquireDecoder());return {};}
 void aml_set_audio_ddr_urgent(bool v){effect("ddr",v);}
+void aml_apply_hdr10_metadata_limits(){effect("limits");}
 void aml_dv_set_osd_max(int v){effect("gui",v);}
 void aml_dv_set_osd_brightness(int v){effect("osd",v);}
 void aml_dv_set_hdr10_osd_brightness(int v){effect("hdr",v);}
@@ -227,7 +228,23 @@ void policy_cases(){
   assert(snapshot()==expected);
  }
 }
-int main(){preset_callback_policy();ordered_fresh_apply();later_batch_and_retirement();cancel_pending();exception_does_not_drop_batch();policy_cases();std::cout<<"PASS: ordered native settings continuations, policy and retirement (ASan/UBSan)\n";}
+void hdr10_independent_policy(){
+ for(const auto* key:{CSettings::SETTING_COREELEC_AMLOGIC_HDR10_LIMITER,
+                     CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_LUMINANCE,
+                     CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL}){
+  CDolbyVisionAML dv;CAMLSession s;init(dv,s);enabled=false;playing=false;
+  settings()->Put(KEY(TV_PRESET),TV_PRESET_AUTO);
+  auto permit=std::make_unique<CAMLSession::Permit>(s.AcquireDecoder());assert(*permit);
+  changed(key,1);until([&]{return !s.AcquireDecoder();});assert(snapshot().empty());
+  std::promise<void> done;auto completed=done.get_future();
+  effectHook=[&](const std::string& name,int){if(name=="limits")done.set_value();};
+  permit.reset();assert(completed.wait_for(3s)==std::future_status::ready);drain(dv);
+  const std::vector<std::pair<std::string,int>> expected={{"limits",0}};
+  assert(snapshot()==expected&&!dv.m_deferredWork.Failure());
+  assert(settings()->GetInt(KEY(TV_PRESET))==TV_PRESET_AUTO);
+ }
+}
+int main(){preset_callback_policy();ordered_fresh_apply();later_batch_and_retirement();cancel_pending();exception_does_not_drop_batch();policy_cases();hdr10_independent_policy();std::cout<<"PASS: ordered native settings continuations, policy and retirement (ASan/UBSan)\n";}
 '''
 
 def source():

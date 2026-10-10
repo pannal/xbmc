@@ -493,6 +493,9 @@ public:
   static constexpr auto SETTING_MASTERLOCK_STARTUPLOCK = "masterlock.startuplock";
   static constexpr auto SETTING_MASTERLOCK_MAXRETRIES = "masterlock.maxretries";
   static constexpr auto SETTING_COREELEC_AMLOGIC_NOISEREDUCTION = "coreelec.amlogic.noisereduction";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_HDR10_LIMITER = "coreelec.amlogic.hdr10.limiter";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_HDR10_MAX_LUMINANCE = "coreelec.amlogic.hdr10.max.luminance";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL = "coreelec.amlogic.hdr10.max.cll";
   static constexpr auto SETTING_COREELEC_AMLOGIC_LIMIT_CD = "coreelec.amlogic.limitcd";
   static constexpr auto SETTING_COREELEC_AMLOGIC_FORCE_CS = "coreelec.amlogic.forcecs";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";

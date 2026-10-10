@@ -1390,6 +1390,28 @@ void aml_dv_send_md_levels()
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_md_level_6_max_fall", dovi_stream_metadata.level6_max_fall);
 }
 
+bool aml_hdr10_metadata_limits_supported()
+{
+  return CSysfsPath("/sys/module/hdmitx20/parameters/xbmc_hdr10_max_lum_override").Exists() &&
+         CSysfsPath("/sys/module/hdmitx20/parameters/xbmc_hdr10_max_cll_override").Exists();
+}
+
+void aml_apply_hdr10_metadata_limits()
+{
+  if (!aml_hdr10_metadata_limits_supported())
+    return;
+
+  // Outgoing HDMI policy only. Keep source metadata for DV/VS10 unchanged.
+  // A disabled master clears stale driver caps without changing saved values.
+  const bool enabled = settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_LIMITER);
+  const int maxLum = enabled ? std::clamp(
+      settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_LUMINANCE), 0, 10000) : 0;
+  const int maxCll = enabled ? std::clamp(
+      settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL), 0, 10000) : 0;
+  CSysfsPath("/sys/module/hdmitx20/parameters/xbmc_hdr10_max_lum_override").Set(maxLum);
+  CSysfsPath("/sys/module/hdmitx20/parameters/xbmc_hdr10_max_cll_override").Set(maxCll);
+}
+
 void aml_dv_send_hdr10_data()
 {
   HDRStaticMetadataInfo hdrStaticMetadataInfo;

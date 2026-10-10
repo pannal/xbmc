@@ -4377,6 +4377,43 @@
           <default>true</default>
           <control type="toggle" />
         </setting>
+        <setting id="coreelec.amlogic.hdr10.limiter" type="boolean" label="69345" help="69346">
+          <requirement>HAVE_AMCODEC</requirement>
+          <visible>false</visible>
+          <level>2</level>
+          <default>false</default>
+          <control type="toggle" />
+        </setting>
+        <setting id="coreelec.amlogic.hdr10.max.luminance" parent="coreelec.amlogic.hdr10.limiter" type="integer" label="69347" help="69348">
+          <requirement>HAVE_AMCODEC</requirement>
+          <visible>false</visible>
+          <level>2</level>
+          <default>0</default>
+          <constraints>
+            <minimum>0</minimum>
+            <step>100</step>
+            <maximum>10000</maximum>
+          </constraints>
+          <dependencies>
+            <dependency type="visible" setting="coreelec.amlogic.hdr10.limiter" operator="is">true</dependency>
+          </dependencies>
+          <control type="slider" format="integer" />
+        </setting>
+        <setting id="coreelec.amlogic.hdr10.max.cll" parent="coreelec.amlogic.hdr10.limiter" type="integer" label="69349" help="69350">
+          <requirement>HAVE_AMCODEC</requirement>
+          <visible>false</visible>
+          <level>2</level>
+          <default>0</default>
+          <constraints>
+            <minimum>0</minimum>
+            <step>100</step>
+            <maximum>10000</maximum>
+          </constraints>
+          <dependencies>
+            <dependency type="visible" setting="coreelec.amlogic.hdr10.limiter" operator="is">true</dependency>
+          </dependencies>
+          <control type="slider" format="integer" />
+        </setting>
       </group>
       <group id="2" label="60001">
         <setting id="coreelec.amlogic.dolbyvision.tv.preset" type="notifyint" label="60616" help="60617">

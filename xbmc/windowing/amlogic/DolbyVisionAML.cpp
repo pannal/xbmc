@@ -1023,7 +1023,17 @@ bool CDolbyVisionAML::Setup(CAMLSession::DisplayRequest display)
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_STRIP);
   settingSet.insert(CSettings::SETTING_COREELEC_AUDIO_DDR_PRIORITY);
+  settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_LIMITER);
+  settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_LUMINANCE);
+  settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL);
   settingsManager->RegisterCallback(this, settingSet);
+
+  // These controls also work with native HDR10 on devices without DV support.
+  const bool hdr10Limits = aml_hdr10_metadata_limits_supported();
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_LIMITER, hdr10Limits);
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_LUMINANCE, hdr10Limits);
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL, hdr10Limits);
+  aml_apply_hdr10_metadata_limits();
 
   // Override EDID is always visible (no DV mode dependency) so users can enable DV on non-DV displays
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_OVERRIDE_EDID, true);
@@ -1113,6 +1123,12 @@ void CDolbyVisionAML::apply_native_setting(const std::string& settingId)
   {
     aml_set_audio_ddr_urgent(settings()->GetBool(settingId));
   }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_LIMITER ||
+           settingId == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_LUMINANCE ||
+           settingId == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL)
+  {
+    aml_apply_hdr10_metadata_limits();
+  }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE_ON_LUMINANCE)
   {
     int max(settings()->GetInt(settingId));
@@ -1198,7 +1214,10 @@ void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& se
   if (!setting || m_retiring) return;
 
   // Queue independent native switches without entering DV preset policy.
-  if (setting->GetId() == CSettings::SETTING_COREELEC_AUDIO_DDR_PRIORITY)
+  if (setting->GetId() == CSettings::SETTING_COREELEC_AUDIO_DDR_PRIORITY ||
+      setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_LIMITER ||
+      setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_LUMINANCE ||
+      setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL)
   {
     schedule_native_setting_apply(setting->GetId());
     return;

@@ -27670,3 +27670,39 @@ msgstr ""
 msgctxt "#69344"
 msgid "Limit the brightest channel after HDR PGS correction and tone mapping, preserving colour ratios. 100% keeps the existing output; lower values cap bright colours without dimming darker pixels. Percentages are relative linear-light white, not nits. Requires HDR correction and leaves correction-disabled PGS, transparency and disc menus unchanged."
 msgstr ""
+
+#. HDR10 output metadata limits
+#: system/settings/settings.xml
+msgctxt "#69345"
+msgid "Limit HDR10 output metadata"
+msgstr ""
+
+#. HDR10 output metadata limits
+#: system/settings/settings.xml
+msgctxt "#69346"
+msgid "Cap mastering-display maximum luminance and MaxCLL in outgoing static HDR10 metadata. Disabled by default. Covers native HDR10, the static part of HDR10+ and VS10 HDR10 output. Source metadata used for conversion, dynamic metadata, Dolby Vision, HLG and SDR signaling are unchanged. Changes take effect when metadata is next sent; restart playback after changing limits."
+msgstr ""
+
+#. HDR10 output metadata limits
+#: system/settings/settings.xml
+msgctxt "#69347"
+msgid "HDR10 mastering luminance limit (nits)"
+msgstr ""
+
+#. HDR10 output metadata limits
+#: system/settings/settings.xml
+msgctxt "#69348"
+msgid "Upper limit for the mastering-display maximum luminance sent to the display, in nits. 0 disables this cap. Values below the cap and unknown zero values are preserved. Minimum luminance, MaxFALL and colour primaries are unchanged. Does not set display brightness or change video pixels."
+msgstr ""
+
+#. HDR10 output metadata limits
+#: system/settings/settings.xml
+msgctxt "#69349"
+msgid "HDR10 MaxCLL limit (nits)"
+msgstr ""
+
+#. HDR10 output metadata limits
+#: system/settings/settings.xml
+msgctxt "#69350"
+msgid "Upper limit for the maximum content light level (MaxCLL) sent to the display, in nits. 0 disables this cap. Lower and unknown zero values are preserved. The two caps are independent; saved limits are retained when the master switch is disabled."
+msgstr ""

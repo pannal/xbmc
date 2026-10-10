@@ -20,6 +20,7 @@ PREFIX = r'''
 #include <cassert>
 #include <future>
 #include <iostream>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -34,7 +35,8 @@ struct Settings {
   std::atomic<bool> overrideEdid{false};
   Settings* GetSettingsManager(){return this;}
   void RegisterSettingOptionsFiller(const char*,int){}
-  void RegisterCallback(void*,const std::set<std::string>&){}
+  std::set<std::string> callbacks;
+  void RegisterCallback(void*,const std::set<std::string>& ids){callbacks=ids;}
   bool GetBool(const char*){return overrideEdid;}
   int GetInt(const char* key){++reads;return std::string(key)==CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE?type.load():luminance.load();}
   void SetInt(const char*,int){}
@@ -42,9 +44,15 @@ struct Settings {
 Settings values;
 Settings* settings(){return &values;}
 @FILLERS@
-void set_visible(const char*,bool){} void set_dv_settings_visible(bool){}
+std::map<std::string,bool> visible;
+void set_visible(const char* id,bool show){visible[id]=show;} void set_dv_settings_visible(bool){}
+bool limitsSupported=true;
+int limitApplies=0;
+bool aml_hdr10_metadata_limits_supported(){return limitsSupported;}
+void aml_apply_hdr10_metadata_limits(){++limitApplies;}
 bool supported=true;
 bool aml_support_dolby_vision(){return supported;}
+void aml_dv_enable_new_backend(){}
 struct DOVIStreamMetadata {int source_max_pq;};
 struct Cache {std::atomic<int> pq{1000};DOVIStreamMetadata GetVideoDoViStreamMetadata(){return {pq};}};
 struct Announcer {void AddAnnouncer(void*){}};
@@ -174,7 +182,19 @@ void payload_freshness(){
  drain(failed.m_deferredWork);assert(failed.m_deferredWork.Failure()&&!failed.m_applying_vsvdb);
  assert(session.AcquireDecoder());
 }
-int main(){display_nesting();native_owner_and_release();deferred_cancellation();deferred_active_and_failure();payload_freshness();std::cout<<"PASS: explicit display nesting and cancellable native continuations (ASan/UBSan)\n";}
+void hdr10_setup_without_dv(){
+ ready();supported=false;values.overrideEdid=false;
+ for(bool available:{false,true}){
+  limitsSupported=available;limitApplies=0;visible.clear();CDolbyVisionAML dv;
+  assert(dv.Setup()&&limitApplies==1&&!dv.m_registered);
+  for(const auto* key:{CSettings::SETTING_COREELEC_AMLOGIC_HDR10_LIMITER,
+                      CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_LUMINANCE,
+                      CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL})
+   assert(values.callbacks.count(key)&&visible.at(key)==available);
+ }
+ supported=true;limitsSupported=true;
+}
+int main(){display_nesting();native_owner_and_release();deferred_cancellation();deferred_active_and_failure();payload_freshness();hdr10_setup_without_dv();std::cout<<"PASS: explicit display nesting and cancellable native continuations (ASan/UBSan)\n";}
 '''
 
 def source():

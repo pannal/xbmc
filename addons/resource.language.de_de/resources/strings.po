@@ -20411,3 +20411,39 @@ msgstr "Ausgabegrenze für korrigierte HDR-PGS"
 msgctxt "#69344"
 msgid "Limit the brightest channel after HDR PGS correction and tone mapping, preserving colour ratios. 100% keeps the existing output; lower values cap bright colours without dimming darker pixels. Percentages are relative linear-light white, not nits. Requires HDR correction and leaves correction-disabled PGS, transparency and disc menus unchanged."
 msgstr "Den hellsten Kanal nach der HDR-PGS-Korrektur und dem Tone Mapping begrenzen; die Farbverhältnisse bleiben erhalten. 100% erhalten die bisherige Ausgabe; niedrigere Werte begrenzen helle Farben, ohne dunklere Pixel abzudunkeln. Prozentwerte beziehen sich auf den relativen Weißwert im linearen Licht, nicht auf Nits. Erfordert die HDR-Korrektur und lässt PGS bei deaktivierter Korrektur, Transparenz und Disc-Menüs unverändert."
+
+#. HDR10 output metadata limits
+#: system/settings/settings.xml
+msgctxt "#69345"
+msgid "Limit HDR10 output metadata"
+msgstr "HDR10-Ausgabemetadaten begrenzen"
+
+#. HDR10 output metadata limits
+#: system/settings/settings.xml
+msgctxt "#69346"
+msgid "Cap mastering-display maximum luminance and MaxCLL in outgoing static HDR10 metadata. Disabled by default. Covers native HDR10, the static part of HDR10+ and VS10 HDR10 output. Source metadata used for conversion, dynamic metadata, Dolby Vision, HLG and SDR signaling are unchanged. Changes take effect when metadata is next sent; restart playback after changing limits."
+msgstr "Maximale Mastering-Display-Luminanz und MaxCLL in den ausgegebenen statischen HDR10-Metadaten begrenzen. Standardmäßig deaktiviert. Gilt für natives HDR10, den statischen Anteil von HDR10+ und die HDR10-Ausgabe von VS10. Quellmetadaten für die Konvertierung, dynamische Metadaten sowie Dolby-Vision-, HLG- und SDR-Signalisierung bleiben unverändert. Änderungen wirken beim nächsten Senden der Metadaten; Wiedergabe nach dem Ändern der Grenzen neu starten."
+
+#. HDR10 output metadata limits
+#: system/settings/settings.xml
+msgctxt "#69347"
+msgid "HDR10 mastering luminance limit (nits)"
+msgstr "HDR10-Mastering-Luminanzgrenze (Nits)"
+
+#. HDR10 output metadata limits
+#: system/settings/settings.xml
+msgctxt "#69348"
+msgid "Upper limit for the mastering-display maximum luminance sent to the display, in nits. 0 disables this cap. Values below the cap and unknown zero values are preserved. Minimum luminance, MaxFALL and colour primaries are unchanged. Does not set display brightness or change video pixels."
+msgstr "Obergrenze für die an das Display gesendete maximale Mastering-Display-Luminanz in Nits. 0 deaktiviert diese Grenze. Werte unterhalb der Grenze und unbekannte Nullwerte bleiben erhalten. Minimale Luminanz, MaxFALL und Farbprimärwerte bleiben unverändert. Legt keine Display-Helligkeit fest und verändert keine Videopixel."
+
+#. HDR10 output metadata limits
+#: system/settings/settings.xml
+msgctxt "#69349"
+msgid "HDR10 MaxCLL limit (nits)"
+msgstr "HDR10-MaxCLL-Grenze (Nits)"
+
+#. HDR10 output metadata limits
+#: system/settings/settings.xml
+msgctxt "#69350"
+msgid "Upper limit for the maximum content light level (MaxCLL) sent to the display, in nits. 0 disables this cap. Lower and unknown zero values are preserved. The two caps are independent; saved limits are retained when the master switch is disabled."
+msgstr "Obergrenze für den an das Display gesendeten maximalen Inhaltslichtpegel (MaxCLL) in Nits. 0 deaktiviert diese Grenze. Niedrigere und unbekannte Nullwerte bleiben erhalten. Die beiden Grenzen sind unabhängig; gespeicherte Werte bleiben beim Deaktivieren des Hauptschalters erhalten."
