@@ -402,6 +402,10 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     int m_videoDecoderDrainTimeout;
     float m_videoMenuDomainQueueTimeSize;
     bool m_videoBdBoundaryDrain;
+    bool m_blurayIsoCacheEnabled;
+    unsigned int m_blurayIsoCachePageSize;
+    unsigned int m_blurayIsoCacheMaxBytes;
+    unsigned int m_blurayIsoCacheForwardPrefetchPages;
     bool m_videoDecoderBypassBufferReady;
     float m_videoDecoderBuffer;
     float m_videoDecoderStreamBuffer;

@@ -188,6 +188,10 @@ void CAdvancedSettings::Initialize()
   m_videoDecoderDrainTimeout = 5;
   m_videoMenuDomainQueueTimeSize = 1.0f;
   m_videoBdBoundaryDrain = true;
+  m_blurayIsoCacheEnabled = true;
+  m_blurayIsoCachePageSize = 256 * 1024;
+  m_blurayIsoCacheMaxBytes = 64 * 1024 * 1024;
+  m_blurayIsoCacheForwardPrefetchPages = 1;
   if (aml_get_cpufamily_id() == AML_G12B)
   {
     m_videoDecoderBypassBufferReady = true;
@@ -725,6 +729,15 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
         pPassthroughAudioLatency = pPassthroughAudioLatency->NextSiblingElement("passthrough");
       }
     }
+  }
+
+  pElement = pRootElement->FirstChildElement("blurayisocache");
+  if (pElement)
+  {
+    XMLUtils::GetBoolean(pElement, "enabled", m_blurayIsoCacheEnabled);
+    XMLUtils::GetUInt(pElement, "pagesize", m_blurayIsoCachePageSize, 2048, 1024 * 1024);
+    XMLUtils::GetUInt(pElement, "maxbytes", m_blurayIsoCacheMaxBytes, 256 * 1024, 1024 * 1024 * 1024);
+    XMLUtils::GetUInt(pElement, "forwardprefetchpages", m_blurayIsoCacheForwardPrefetchPages, 0, 16);
   }
 
   pElement = pRootElement->FirstChildElement("x11");

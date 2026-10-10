@@ -58,6 +58,7 @@ extern "C"
 class CDVDOverlayImage;
 class IVideoPlayer;
 class CDVDDemux;
+class CBlurayDiscSession;
 
 class CDVDInputStreamBluray
   : public CDVDInputStream
@@ -334,12 +335,10 @@ protected:
     bool TagGraphicsAsPq() const;
     int DiscMenuHdrMode() const;
     bool IsClipCodecCompatible(const BLURAY_CLIP_INFO* a, const BLURAY_CLIP_INFO* b) const;
-    std::unique_ptr<CDVDInputStreamFile> m_pstream;
-    std::string m_rootPath;
+    // Atomically published so Abort can cancel an input still opening/waiting.
+    std::shared_ptr<CBlurayDiscSession> m_session;
 
     /*! Bluray state serializer handler */
     CBlurayStateSerializer m_blurayStateSerializer;
 
-    /* used during bd_open_stream read block*/
-    CCriticalSection m_readBlocksLock;
 };

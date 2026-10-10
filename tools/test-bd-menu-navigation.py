@@ -64,6 +64,7 @@ preamble=r'''
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "utils/Geometry.h"
+#include "cores/VideoPlayer/DVDInputStreams/BlurayIsoCache.h"
 #define HAVE_LIBBLURAY_BDJ 1
 constexpr int LOGDEBUG=0, LOGWARNING=1, BD_EVENT_MENU_OVERLAY=1000, BD_EVENT_MENU_OVERLAY_REPOST=1001;
 struct CLog {template<class...T>static void Log(T&&...) {}};
@@ -97,6 +98,15 @@ struct FakeStream {
  std::vector<int> reads;size_t pos=0;bool clamp=false;
  int64_t Seek(int64_t v,int) {return clamp ? 0:v;}
  int Read(uint8_t* p,int size){int n=pos<reads.size()?reads[pos++]:0;if(n>0&&n<=size)memset(p,7,n);return n;}
+};
+// Real session read functions below use a positioned storage substitute. Keep
+// the real cache in direct mode here; its page/prefetch cases have their own suite.
+class CBlurayDiscSession {
+public:
+ std::atomic_bool m_cancelled=false;std::mutex m_ioMutex;
+ std::unique_ptr<FakeStream> m_stream;std::shared_ptr<CBlurayIsoCache> m_cache;
+ int64_t ReadAt(int64_t,uint8_t*,size_t);
+ int ReadBlocks(uint8_t*,int,int);
 };
 class CDVDInputStreamBluray : public CDVDInputStream {
 public:
@@ -157,7 +167,7 @@ public:
  static bool AreClipPgStreamsEqual(const BLURAY_CLIP_INFO*,const BLURAY_CLIP_INFO*);
  bool IsClipCodecCompatible(const BLURAY_CLIP_INFO*,const BLURAY_CLIP_INFO*)const;
  void Reenter(uint64_t previousOut,uint64_t nextIn);
- std::atomic_bool m_aborted=false;std::mutex m_readBlocksLock;std::unique_ptr<FakeStream>m_pstream;
+ std::atomic_bool m_aborted=false;std::shared_ptr<CBlurayDiscSession> m_session;
  int ReadBlocks(uint8_t*,int,int);
 };
 '''
@@ -178,6 +188,8 @@ read=get(s,'CDVDInputStreamBluray::Read')
 repost=read[read.index('reposting retained menu overlay'):]
 assert repost.index('OverlayFlush(REPOST_PTS);')<repost.index('}'),'the repost must keep the queued composition time'
 functions=[tag,get(s,'EndOfTitleReadStalled')]+[get(s,'CDVDInputStreamBluray::'+name) for name in ['OverlayClose','OverlayInit','OverlayClear','OverlayFlush','DeliverParkedOverlayIfDue','DeliverMenuComposition','OverlayCallback','OverlayCallbackARGB','ReadBlocks','UpdateSeamTimeOffset','ResetSeamTimeOffset','AreClipVideoStreamsCompatible','AreClipPgStreamsEqual','IsClipCodecCompatible']]
+session=(root/'xbmc/cores/VideoPlayer/DVDInputStreams/BlurayDiscSession.cpp').read_text()
+functions += [get(session,'CBlurayDiscSession::'+name) for name in ['ReadAt','ReadBlocks']]
 a=s.index('if (m_atTitleEnd.exchange(false))');b=balance(s,s.index('{',a))
 functions.append('void CDVDInputStreamBluray::Reenter(uint64_t previousOut,uint64_t nextIn) {'+s[a:b]+'}')
 functions+=[get(s,'CDVDInputStreamBluray::'+name) for name in ['ReplaceTitleInfo','UpdateGraphicsRegime','FreePrevTitleInfo','StashBoundaryClip','RestoreTitleOnlyStash','RestoreTitleOnlyStashForEvent','NextStream']]
@@ -436,10 +448,14 @@ int main(){
  b.ResetSeamTimeOffset("seek");assert(b.m_seamTimeOffset==0&&b.m_seamTimeOffsetPrev==0&&b.m_seamGeneration==5);
  BLURAY_CLIP_INFO ca{},cb{};BLURAY_STREAM_INFO va{},vb{},aa{},ab{};ca.video_stream_count=cb.video_stream_count=1;ca.audio_stream_count=cb.audio_stream_count=1;ca.video_streams=&va;cb.video_streams=&vb;ca.audio_streams=&aa;cb.audio_streams=&ab;
  assert(b.IsClipCodecCompatible(&ca,&cb));vb.dynamic_range_type=1;assert(!b.IsClipCodecCompatible(&ca,&cb));vb.dynamic_range_type=0;vb.color_space=1;assert(!b.IsClipCodecCompatible(&ca,&cb));vb.color_space=0;ab.pid=2;assert(!b.IsClipCodecCompatible(&ca,&cb));ab.pid=0;cb.pg_stream_count=1;assert(!b.IsClipCodecCompatible(&ca,&cb));
- uint8_t block[4096];b.m_pstream=std::make_unique<FakeStream>();b.m_pstream->reads={100,1948,2048};assert(b.ReadBlocks(block,1,2)==2);
- b.m_pstream->pos=0;b.m_pstream->reads={-1};assert(b.ReadBlocks(block,1,1)==-1);
- b.m_pstream->pos=0;b.m_pstream->reads={100,0};assert(b.ReadBlocks(block,1,1)==0);
- b.m_pstream->clamp=true;assert(b.ReadBlocks(block,1,1)==-1);
+ uint8_t block[4096];b.m_session=std::make_shared<CBlurayDiscSession>();
+ b.m_session->m_stream=std::make_unique<FakeStream>();auto* stream=b.m_session->m_stream.get();
+ CBlurayIsoCache::Config config;config.enabled=false;
+ b.m_session->m_cache=std::make_shared<CBlurayIsoCache>(-1,[session=b.m_session.get()](int64_t at,uint8_t* out,size_t size){return session->ReadAt(at,out,size);},config);
+ stream->reads={100,1948,2048};assert(b.ReadBlocks(block,1,2)==2);
+ stream->pos=0;stream->reads={-1};assert(b.ReadBlocks(block,1,1)==-1);
+ stream->pos=0;stream->reads={100,0};assert(b.ReadBlocks(block,1,1)==0);
+ stream->clamp=true;assert(b.ReadBlocks(block,1,1)==-1);
  b.m_aborted=true;assert(b.ReadBlocks(block,1,1)==-1);
  // Title metadata lifetime (M3GAN 2.0, #118): Top Menu changes the title while playlist
  // 801 plays on. The title change holds and the player reopens through NextStream();
@@ -563,6 +579,6 @@ int main(){
 }
 '''
 source=out/'navigation-behavior.cpp';source.write_text(preamble.replace('@@REAL_PALETTE@@',real_palette)+'\n'.join(functions)+tests)
-cmd=shlex.split(os.environ.get('CXX', 'g++')) + ['-std=c++17','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer','-I'+str(out/'test-include'),'-I'+str(root/'xbmc'),'-I'+str(args.libbluray_include.resolve()),str(source),'-o',str(out/'navigation-behavior')]
+cmd=shlex.split(os.environ.get('CXX', 'g++')) + ['-std=c++17','-O1','-g','-pthread','-fsanitize=address,undefined','-fno-omit-frame-pointer','-I'+str(out/'test-include'),'-I'+str(root/'xbmc'),'-I'+str(args.libbluray_include.resolve()),str(source),str(root/'xbmc/cores/VideoPlayer/DVDInputStreams/BlurayIsoCache.cpp'),'-o',str(out/'navigation-behavior')]
 result=subprocess.run(cmd,capture_output=True,text=True);(out/'navigation-behavior-build.log').write_text(result.stdout+result.stderr);assert result.returncode==0,result.stderr
 result=subprocess.run([str(out/'navigation-behavior')],capture_output=True,text=True);(out/'navigation-behavior.log').write_text(result.stdout+result.stderr);print(result.stdout+result.stderr);assert result.returncode==0

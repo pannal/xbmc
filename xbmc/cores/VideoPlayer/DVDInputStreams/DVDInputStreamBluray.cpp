@@ -8,6 +8,8 @@
 
 #include "DVDInputStreamBluray.h"
 
+#include "BlurayDiscSession.h"
+
 #include "DVDCodecs/Overlay/DVDOverlay.h"
 #include "DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "DVDDemuxers/DemuxMVC.h"
@@ -32,6 +34,7 @@
 #include "utils/Geometry.h"
 #include "utils/LangCodeExpander.h"
 #include "utils/StringUtils.h"
+#include "utils/ScopeGuard.h"
 #include "utils/URIUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
@@ -108,21 +111,21 @@ using namespace std::chrono_literals;
 
 static int read_blocks(void* handle, void* buf, int lba, int num_blocks)
 {
-  auto blurayStream = reinterpret_cast<CDVDInputStreamBluray*>(handle);
-  if (!blurayStream)
+  auto session = static_cast<CBlurayDiscSession*>(handle);
+  if (!session)
     return -1;
-  return blurayStream->ReadBlocks(reinterpret_cast<uint8_t*>(buf), lba, num_blocks);
+  return session->ReadBlocks(static_cast<uint8_t*>(buf), lba, num_blocks);
 }
 
 static void bluray_overlay_cb(void *this_gen, const BD_OVERLAY * ov)
 {
-  static_cast<CDVDInputStreamBluray*>(this_gen)->OverlayCallback(ov);
+  static_cast<CBlurayDiscSession*>(this_gen)->Overlay(ov);
 }
 
 #ifdef HAVE_LIBBLURAY_BDJ
 void  bluray_overlay_argb_cb(void *this_gen, const struct bd_argb_overlay_s * const ov)
 {
-  static_cast<CDVDInputStreamBluray*>(this_gen)->OverlayCallbackARGB(ov);
+  static_cast<CBlurayDiscSession*>(this_gen)->OverlayARGB(ov);
 }
 #endif
 
@@ -145,6 +148,8 @@ void CDVDInputStreamBluray::Abort()
 {
   m_aborted = true;
   m_hold = HOLD_EXIT;
+  if (const auto session = std::atomic_load(&m_session))
+    session->Cancel();
 }
 
 bool CDVDInputStreamBluray::IsEOF()
@@ -200,6 +205,8 @@ BLURAY_TITLE_INFO* CDVDInputStreamBluray::GetTitleFile(const std::string& filena
 
 bool CDVDInputStreamBluray::Open()
 {
+  if (std::atomic_load(&m_session))
+    Close();
   m_diagnosticOpen = PLAYBACK_DIAGNOSTICS::NextId();
   CLog::Log(LOGINFO, "p3i-transition t_us={} disc={} open=begin",
             PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticOpen);
@@ -210,6 +217,13 @@ bool CDVDInputStreamBluray::Open()
 
   if(m_player == nullptr)
     return false;
+
+  const auto session = std::make_shared<CBlurayDiscSession>(this, m_diagnosticOpen);
+  std::atomic_store(&m_session, session);
+  if (m_aborted)
+    session->Cancel();
+  KODI::UTILS::CScopeGuard<CDVDInputStreamBluray*, nullptr, void(CDVDInputStreamBluray*)>
+      failedOpen([](CDVDInputStreamBluray* input) { input->Close(); }, this);
 
   std::string strPath(m_item.GetDynPath());
   std::string filename;
@@ -289,7 +303,7 @@ bool CDVDInputStreamBluray::Open()
   bd_set_debug_handler(CBlurayCallback::bluray_logger);
   UpdateLibblurayDebugMask();
 
-  m_bd = bd_init();
+  m_bd = session->OpenNative();
 
   if (!m_bd)
   {
@@ -303,7 +317,7 @@ bool CDVDInputStreamBluray::Open()
 
   if (openStream)
   {
-    if (!bd_open_stream(m_bd, this, read_blocks))
+    if (!bd_open_stream(m_bd, session.get(), read_blocks))
     {
       CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed to open {} in stream mode",
                 CURL::GetRedacted(root));
@@ -314,7 +328,7 @@ bool CDVDInputStreamBluray::Open()
   {
     // This special case is required for opening original AACS protected Blu-ray discs. Otherwise
     // things like Bus Encryption might not be handled properly and playback will fail.
-    m_rootPath = root;
+    session->root = root;
     if (!bd_open_disc(m_bd, root.c_str(), nullptr))
     {
       CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed to open {} in disc mode",
@@ -324,8 +338,8 @@ bool CDVDInputStreamBluray::Open()
   }
   else
   {
-    m_rootPath = root;
-    if (!bd_open_files(m_bd, &m_rootPath, CBlurayCallback::dir_open, CBlurayCallback::file_open))
+    session->root = root;
+    if (!bd_open_files(m_bd, &session->root, CBlurayCallback::dir_open, CBlurayCallback::file_open))
     {
       CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed to open {} in files mode",
                 CURL::GetRedacted(root));
@@ -333,6 +347,8 @@ bool CDVDInputStreamBluray::Open()
     }
   }
 
+  if (m_aborted)
+    return false;
   bd_get_event(m_bd, nullptr);
 
   m_root = root;
@@ -463,9 +479,9 @@ bool CDVDInputStreamBluray::Open()
   if (m_navmode)
   {
 
-    bd_register_overlay_proc (m_bd, this, bluray_overlay_cb);
+    bd_register_overlay_proc (m_bd, session.get(), bluray_overlay_cb);
 #ifdef HAVE_LIBBLURAY_BDJ
-    bd_register_argb_overlay_proc (m_bd, this, bluray_overlay_argb_cb, nullptr);
+    bd_register_argb_overlay_proc (m_bd, session.get(), bluray_overlay_argb_cb, nullptr);
 #endif
 
     CLog::Log(LOGINFO, "p3i-transition t_us={} disc={} navigation=begin bdj_detected={} bdj_handled={}",
@@ -474,6 +490,8 @@ bool CDVDInputStreamBluray::Open()
     const int playResult = bd_play(m_bd);
     CLog::Log(LOGINFO, "p3i-transition t_us={} disc={} navigation=returned result={}",
               PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticOpen, playResult);
+    if (m_aborted)
+      return false;
     if(playResult <= 0)
     {
       CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed play disk {}",
@@ -502,6 +520,9 @@ bool CDVDInputStreamBluray::Open()
     }
   }
 
+  if (m_aborted)
+    return false;
+
   // Keep DV output up across this disc's segment swaps (DV mode on demand).
   aml_dv_set_disc_hold(true);
   m_dvDiscHold = true;
@@ -511,40 +532,36 @@ bool CDVDInputStreamBluray::Open()
     ProcessEvent();
 
   OpenNextStream();
+  if (m_aborted)
+    return false;
   CLog::Log(LOGINFO, "p3i-transition t_us={} disc={} open=returned navigation={}",
             PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticOpen, m_navmode);
+  failedOpen.release();
   return true;
 }
 
 // close file and reset everything
-// Keep all read/file callback context alive until libbluray and its Java threads stop.
+// Retire the logical input now; its independent context owns native teardown.
 void CDVDInputStreamBluray::Close()
 {
   m_aborted = true;
   m_hold = HOLD_EXIT;
+  auto session = std::atomic_exchange(&m_session, std::shared_ptr<CBlurayDiscSession>{});
+  if (session)
+  {
+    session->Cancel();
+    session->DetachOwner();
+  }
   m_navmode = false;
   CloseMVCDemux();
-  if (m_bd)
-  {
-    CLog::Log(LOGINFO, "p3i-transition t_us={} disc={} close=begin",
-              PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticOpen);
-    bd_register_overlay_proc(m_bd, nullptr, nullptr);
-#ifdef HAVE_LIBBLURAY_BDJ
-    bd_register_argb_overlay_proc(m_bd, nullptr, nullptr, nullptr);
-#endif
-    bd_close(m_bd);
-    CLog::Log(LOGINFO, "p3i-transition t_us={} disc={} close=returned",
-              PLAYBACK_DIAGNOSTICS::NowUs(), m_diagnosticOpen);
-    m_bd = nullptr;
+  if (session)
     OverlayClose();
-  }
+  m_bd = nullptr; // Non-owning alias; the retired context still owns BLURAY.
   ReplaceTitleInfo(nullptr);
   FreePrevTitleInfo();
   m_crossPlaylistPending = false;
   m_videoCompatBoundary = false;
   m_naturalChainBoundary = false;
-  m_pstream.reset();
-  m_rootPath.clear();
   m_currentTitleIsBdj = false;
   m_endOfTitleSpinStart = {};
   m_atTitleEnd = false;
@@ -554,6 +571,7 @@ void CDVDInputStreamBluray::Close()
     m_dvDiscHold = false;
     aml_dv_set_disc_hold(false);
   }
+  CBlurayDiscSession::Retire(std::move(session));
 }
 
 void CDVDInputStreamBluray::ReplaceTitleInfo(BLURAY_TITLE_INFO* incoming)
@@ -1477,27 +1495,10 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
 
 int CDVDInputStreamBluray::ReadBlocks(uint8_t* buf, int lba, int num_blocks)
 {
-  if (m_aborted || !buf || lba < 0 || num_blocks <= 0 ||
-      num_blocks > std::numeric_limits<int>::max() / 2048)
+  if (m_aborted)
     return -1;
-  std::lock_guard lock(m_readBlocksLock);
-  const int64_t offset = static_cast<int64_t>(lba) * 2048;
-  if (!m_pstream || m_pstream->Seek(offset, SEEK_SET) != offset)
-    return -1;
-  const int size = num_blocks * 2048;
-  int total = 0;
-  while (total < size)
-  {
-    if (m_aborted)
-      return -1;
-    const int count = m_pstream->Read(buf + total, size - total);
-    if (count < 0 || count > size - total)
-      return -1;
-    if (count == 0)
-      break;
-    total += count;
-  }
-  return total / 2048;
+  const auto session = std::atomic_load(&m_session);
+  return session ? session->ReadBlocks(buf, lba, num_blocks) : -1;
 }
 
 static uint8_t  clamp(double v)
@@ -1994,6 +1995,9 @@ bool CDVDInputStreamBluray::PosTime(int ms)
   if (!m_bd || ms < 0 || bd_seek_time(m_bd, static_cast<uint64_t>(ms) * 90) < 0)
     return false;
 
+  if (const auto session = std::atomic_load(&m_session))
+    session->ResetAccessPattern();
+
   {
     std::lock_guard lock(m_clipTableMutex);
     EMPTY_QUEUE(m_clipQueue);
@@ -2032,6 +2036,9 @@ bool CDVDInputStreamBluray::SeekChapter(int ch)
       (m_navmode && (m_uoMask.load() & BLURAY_UO_CHAPTER_SEARCH)) ||
       bd_seek_chapter(m_bd, ch - 1) < 0)
     return false;
+
+  if (const auto session = std::atomic_load(&m_session))
+    session->ResetAccessPattern();
 
   {
     std::lock_guard lock(m_clipTableMutex);
@@ -2760,13 +2767,16 @@ void CDVDInputStreamBluray::ApplyUHDCapabilities() const
 
 bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
 {
-  m_pstream = std::make_unique<CDVDInputStreamFile>(item, READ_TRUNCATED | READ_BITRATE |
-                                                              READ_CHUNKED | READ_NO_CACHE);
-
-  if (!m_pstream->Open())
+  const auto session = std::atomic_load(&m_session);
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+  CBlurayIsoCache::Config config;
+  config.enabled = settings->m_blurayIsoCacheEnabled;
+  config.pageSize = settings->m_blurayIsoCachePageSize;
+  config.maxBytes = settings->m_blurayIsoCacheMaxBytes;
+  config.forwardPrefetchPages = settings->m_blurayIsoCacheForwardPrefetchPages;
+  if (!session || !session->OpenStream(item, config))
   {
     CLog::Log(LOGERROR, "Error opening image file {}", CURL::GetRedacted(item.GetPath()));
-    Close();
     return false;
   }
 

@@ -48,6 +48,9 @@
 #include "cores/DataCacheCore.h"
 #include "cores/FFmpeg.h"
 #include "cores/IPlayer.h"
+#ifdef HAVE_LIBBLURAY
+#include "cores/VideoPlayer/DVDInputStreams/BlurayDiscSession.h"
+#endif
 #include "cores/VideoPlayer/VideoRenderers/RenderLifecycle.h"
 #ifdef HAS_LIBAMCODEC
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
@@ -344,6 +347,10 @@ extern "C" void __stdcall cleanup_emu_environ();
 bool CApplication::Create()
 {
   m_bStop = false;
+#ifdef HAVE_LIBBLURAY
+  if (!CBlurayDiscSession::Initialize())
+    return false;
+#endif
 
   RegisterSettings();
 
@@ -2112,6 +2119,17 @@ bool CApplication::Cleanup()
     ResetCurrentItem();
     StopPlaying();
 
+#ifdef HAVE_LIBBLURAY
+    // Direct/failed-startup cleanup must retire the player before fencing BD-J
+    // admission, and keep filesystem/job/network services until native close.
+    if (!GetComponent<CApplicationPlayer>()->ClosePlayer(true))
+      return false;
+    // Cleanup has no FrameMove retry contract. In this rare direct path wait
+    // for actual native completion with services alive; normal Stop polls.
+    while (!CBlurayDiscSession::Shutdown())
+      KODI::TIME::Sleep(10ms);
+#endif
+
     if (m_ServiceManager)
       m_ServiceManager->DeinitStageThree();
 
@@ -2303,6 +2321,13 @@ bool CApplication::Stop(int exitCode)
   }
   // Shutdown supersedes window cleanup; release retired callers before services stop.
   appPlayer->CompleteCloseCompletions();
+#ifdef HAVE_LIBBLURAY
+  if (!CBlurayDiscSession::Shutdown())
+  {
+    m_pendingStop = exitCode;
+    return false; // Keep pumping callbacks/services while native/Java closes.
+  }
+#endif
   if (auto* window = CServiceBroker::GetWinSystem(); window && !window->PrepareForShutdown())
   {
     m_pendingStop = exitCode;

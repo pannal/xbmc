@@ -31,8 +31,8 @@ set(HEADERS BlurayStateSerializer.h
             InputStreamPVRRecording.h)
 
 if(BLURAY_FOUND)
-  list(APPEND SOURCES DVDInputStreamBluray.cpp)
-  list(APPEND HEADERS DVDInputStreamBluray.h)
+  list(APPEND SOURCES BlurayDiscSession.cpp BlurayIsoCache.cpp DVDInputStreamBluray.cpp)
+  list(APPEND HEADERS BlurayDiscSession.h BlurayIsoCache.h DVDInputStreamBluray.h)
 endif()
 
 core_add_library(dvdinputstreams)
