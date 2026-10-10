@@ -8,22 +8,24 @@
 
 #pragma once
 
-#include "utils/PlaybackDiagnostics.h"
-
 #include "DVDClock.h"
 #include "DVDCodecs/Video/DVDVideoCodec.h"
 #include "DVDMessageQueue.h"
 #include "DVDOverlayContainer.h"
 #include "DVDStreamInfo.h"
+#include "DecoderFlushRecovery.h"
 #include "IVideoPlayer.h"
 #include "PTSTracker.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
-#include "threads/Thread.h"
 #include "threads/SystemClock.h"
+#include "threads/Thread.h"
 #include "utils/BitstreamStats.h"
+#include "utils/PlaybackDiagnostics.h"
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <optional>
 
 #define DROP_DROPPED 1
 #define DROP_VERYLATE 2
@@ -66,6 +68,10 @@ public:
   std::shared_ptr<CVideoFlushRequest> GetFlushRequest() const override
   {
     return std::atomic_load(&m_flushRequest);
+  }
+  void SetRecoveryGeneration(uint64_t generation) override
+  {
+    m_nextRecoveryGeneration.store(generation);
   }
   bool AcceptsData() const override;
   bool HasData() const override;
@@ -124,7 +130,9 @@ protected:
 
   EOutputState OutputPicture(const VideoPicture* src);
   OVERLAY::CRenderer::OverlayBatch ProcessOverlays(const VideoPicture* pSource, double pts);
-  void OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVideoCodec> codec);
+  void OpenStream(CDVDStreamInfo& hint,
+                  std::unique_ptr<CDVDVideoCodec> codec,
+                  uint64_t recoveryGeneration);
 
   void ResetMPEG2Cadence();
   void UpdateMPEG2Cadence(double& frametime);
@@ -168,6 +176,13 @@ protected:
   // Debounce for the corrupt-splice recovery reseek (DVP_FLAG_STREAM_CORRUPTION)
   std::chrono::steady_clock::time_point m_lastCorruptionRecovery{};
   int m_corruptionRecoveryCount = 0;
+  void PublishNoOutputRecovery();
+  std::optional<uint64_t> m_pendingNoOutputRecovery;
+  uint64_t m_pendingNoOutputEpoch{0};
+  CDecoderFlushRecovery m_decoderFlushRecovery;
+  // Written by the parent; read by the video thread when it handles GENERAL_RESET.
+  std::atomic<uint64_t> m_nextRecoveryGeneration{0};
+  CVideoRecoveryGeneration m_recoveryGeneration;
 
   BitstreamStats m_videoStats;
 

@@ -1670,6 +1670,12 @@ void CVideoPlayer::Prepare()
   m_bdVideoReuse = false;
   m_bdTimedStill = false;
 
+  // Invalidate requests from the previous input even if its video queue never initialized.
+  ++m_videoRecoveryGeneration;
+  m_videoRecoveryGate.Reset();
+  m_videoRecoveryEndOfStream = false;
+  m_videoRecoveryStartPts = DVD_NOPTS_VALUE;
+  m_videoRecoveryStartTime = DVD_NOPTS_VALUE;
   CFFmpegLog::SetLogLevel(1);
   SetPlaySpeed(DVD_PLAYSPEED_NORMAL);
   m_processInfo->SetSpeed(1.0);
@@ -2064,6 +2070,10 @@ void CVideoPlayer::Process()
         continue;
       }
 
+      // End of input: a recovery requested or admitted before this point must not
+      // reseek and flush while the tail drains; admission and execution recheck it.
+      m_videoRecoveryEndOfStream = true;
+      m_videoRecoveryGate.CancelPending();
       if (m_CurrentVideo.inited)
       {
         m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN));
@@ -2829,6 +2839,8 @@ void CVideoPlayer::SynchronizeStreams(bool allowRecovery)
     {
       CLog::Log(LOGDEBUG, LOGVIDEO, "VideoPlayer::Sync - Video - Waiting, clock: {:.3f}", m_clock.GetClock());
       m_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_INSYNC;
+      m_videoRecoveryStartPts = DVD_NOPTS_VALUE;
+      m_videoRecoveryStartTime = DVD_NOPTS_VALUE;
       m_CurrentVideo.avsync = CCurrentStream::AV_SYNC_NONE;
       m_VideoPlayerVideo->SendMessage(
           std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, m_clock.GetClock()), 1);
@@ -2919,6 +2931,8 @@ void CVideoPlayer::SynchronizeStreams(bool allowRecovery)
 
       m_clock.Discontinuity(clock);
       m_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_INSYNC;
+      m_videoRecoveryStartPts = DVD_NOPTS_VALUE;
+      m_videoRecoveryStartTime = DVD_NOPTS_VALUE;
       m_CurrentVideo.avsync = CCurrentStream::AV_SYNC_NONE;
       m_VideoPlayerVideo->SendMessage(
           std::make_shared<CDVDMsgDouble>(CDVDMsg::GENERAL_RESYNC, clock), 1);
@@ -3365,6 +3379,9 @@ bool CVideoPlayer::CheckPlayerInit(CCurrentStream& current)
 
   if (current.dts != DVD_NOPTS_VALUE)
   {
+    // More input after end of stream (e.g. a growing file): the tail was not the end.
+    if (current.type == STREAM_VIDEO && !current.inited)
+      m_videoRecoveryEndOfStream = false;
     current.inited = true;
     current.startpts = current.dts;
   }
@@ -3771,6 +3788,43 @@ void CVideoPlayer::CompleteFileReplacement()
   Prepare();
 }
 
+CVideoSeekQueueState CVideoPlayer::GetVideoSeekQueueState()
+{
+  // The recovery seek has its own message type so it cannot coalesce away a user seek.
+  CVideoSeekQueueState state;
+  state.userTimeSeeks = m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK);
+  state.userChapterSeeks = m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER);
+  return state;
+}
+
+CVideoRecoveryGate::Conditions CVideoPlayer::GetVideoRecoveryConditions(uint64_t generation)
+{
+  CVideoRecoveryGate::Conditions conditions;
+  conditions.generationMatches = generation == m_videoRecoveryGeneration && !m_bAbortRequest &&
+                                 !m_bStop && !m_waitingForVideoFlush && !ParentLifecyclePending();
+  conditions.userSeekQueued = GetVideoSeekQueueState().HasQueuedUserSeek();
+  conditions.canSeek = m_State.canseek;
+  conditions.normalPlayback =
+      m_playSpeed == DVD_PLAYSPEED_NORMAL && m_processInfo->GetNewSpeed() == 1.0f;
+  conditions.streamPlaying = m_streamPlayerSpeed == DVD_PLAYSPEED_NORMAL;
+  conditions.cacheReady = m_caching == CACHESTATE_DONE;
+  CVideoRecoveryPlaybackState playback;
+  playback.normalPlayback = conditions.normalPlayback;
+  playback.streamPaused = m_streamPlayerSpeed == DVD_PLAYSPEED_PAUSE;
+  playback.buffering = m_caching == CACHESTATE_FULL || m_caching == CACHESTATE_INIT;
+  playback.streamStarting = m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_STARTING;
+  playback.videoQueueFull = !m_VideoPlayerVideo->AcceptsData();
+  conditions.decoderOutputBlocked = playback.DecoderOutputBlocked();
+  conditions.displayAvailable = !m_displayLost;
+  conditions.endOfStream = m_videoRecoveryEndOfStream;
+  const auto menus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
+  conditions.sourceEligible =
+      (!menus || menus->IsTimeSearchAllowed()) && m_pInputStream && m_pDemuxer &&
+      m_CurrentVideo.id >= 0 && !m_pInputStream->IsRealtime() && m_dvd.state == DVDSTATE_NORMAL &&
+      !IsInMenuInternal() && !(m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES);
+  return conditions;
+}
+
 void CVideoPlayer::HandleMessages()
 {
   std::shared_ptr<CDVDMsg> pMsg = nullptr;
@@ -3822,14 +3876,96 @@ void CVideoPlayer::HandleMessages()
           m_bAbortRequest = true;
       });
     }
-    else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK) &&
-        m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK) == 0 &&
-        m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER) == 0)
+    else if (pMsg->IsType(CDVDMsg::PLAYER_VIDEO_RECOVERY))
+    {
+      const auto& msg = *std::static_pointer_cast<CDVDMsgVideoRecoveryRequest>(pMsg);
+      const auto conditions = GetVideoRecoveryConditions(msg.GetGeneration());
+
+      if (!m_videoRecoveryGate.TryBegin(std::chrono::steady_clock::now(), conditions))
+      {
+        CLog::Log(LOGDEBUG,
+                  "CVideoPlayer::HandleMessages - ignored video recovery request "
+                  "(generation {}/{}, queued seek {}, can seek {}, speed {}/{}, cache ready {}, "
+                  "display {}, source {}, end of stream {})",
+                  msg.GetGeneration(), m_videoRecoveryGeneration, conditions.userSeekQueued,
+                  conditions.canSeek, m_playSpeed, m_streamPlayerSpeed, conditions.cacheReady,
+                  conditions.displayAvailable, conditions.sourceEligible, conditions.endOfStream);
+        continue;
+      }
+
+      CLog::Log(LOGWARNING,
+                "CVideoPlayer::HandleMessages - repeated Amlogic no-output timeouts in generation "
+                "{}; requesting one accurate reseek",
+                msg.GetGeneration());
+      CDVDMsgPlayerSeek::CMode mode;
+      mode.time = 0;
+      mode.relative = true;
+      // Until A/V sync re-anchors the clock (INSYNC), it still describes the previous position.
+      if (m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC &&
+          m_videoRecoveryStartPts != DVD_NOPTS_VALUE)
+      {
+        if (m_pInputStream->GetIPosTime())
+          mode.time = m_videoRecoveryStartTime;
+        else if (m_demuxSeekBasePts != DVD_NOPTS_VALUE)
+          mode.time = DVD_TIME_TO_MSEC(m_videoRecoveryStartPts - m_demuxSeekBasePts);
+        else
+          mode.time = DVD_TIME_TO_MSEC(m_videoRecoveryStartPts + m_State.time_offset);
+        mode.relative = false;
+      }
+      mode.backward = false;
+      mode.accurate = true;
+      mode.sync = true;
+      mode.restore = false;
+      mode.trickplay = true;
+      mode.recovery = true;
+      mode.videoRecovery = true;
+      mode.videoRecoveryGeneration = msg.GetGeneration();
+      m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+    }
+    else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK) ||
+             pMsg->IsType(CDVDMsg::PLAYER_VIDEO_RECOVERY_SEEK))
     {
       CDVDMsgPlayerSeek& msg(*std::static_pointer_cast<CDVDMsgPlayerSeek>(pMsg));
 
+      if (!msg.IsVideoRecovery())
+        m_videoRecoveryGate.CancelPending();
+
+      const bool seekSuperseded = GetVideoSeekQueueState().HasQueuedUserSeek();
+      if (seekSuperseded)
+      {
+        if (msg.IsVideoRecovery())
+        {
+          CLog::Log(LOGDEBUG,
+                    "CVideoPlayer::HandleMessages - user seek superseded video recovery seek "
+                    "(generation {}/{})",
+                    msg.GetVideoRecoveryGeneration(), m_videoRecoveryGeneration);
+          m_videoRecoveryGate.CancelPending();
+        }
+        continue;
+      }
+
+      if (msg.IsVideoRecovery())
+      {
+        const auto conditions = GetVideoRecoveryConditions(msg.GetVideoRecoveryGeneration());
+        if (!m_videoRecoveryGate.CanExecute(conditions))
+        {
+          CLog::Log(LOGDEBUG,
+                    "CVideoPlayer::HandleMessages - canceled ineligible video recovery seek "
+                    "(generation {}/{}, queued seek {}, can seek {}, speed {}/{}, cache ready {}, "
+                    "display {}, source {}, end of stream {})",
+                    msg.GetVideoRecoveryGeneration(), m_videoRecoveryGeneration,
+                    conditions.userSeekQueued, conditions.canSeek, m_playSpeed, m_streamPlayerSpeed,
+                    conditions.cacheReady, conditions.displayAvailable, conditions.sourceEligible,
+                    conditions.endOfStream);
+          m_videoRecoveryGate.CancelPending();
+          continue;
+        }
+      }
+
       if (!m_State.canseek)
       {
+        if (msg.IsVideoRecovery())
+          m_videoRecoveryGate.CancelPending();
         m_processInfo->SetStateSeeking(false);
         continue;
       }
@@ -3860,14 +3996,17 @@ void CVideoPlayer::HandleMessages()
           m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC)
       {
         double now = m_clock.GetAbsoluteClock();
-        if (m_playSpeed == DVD_PLAYSPEED_NORMAL &&
-            (now - m_State.lastSeek)/1000 < 2000 &&
-            msg.GetTrickPlay())
+        // A recovery reseek is trickplay only to stay silent; it is not a scan to coalesce.
+        if (m_playSpeed == DVD_PLAYSPEED_NORMAL && (now - m_State.lastSeek) / 1000 < 2000 &&
+            msg.GetTrickPlay() && !msg.IsVideoRecovery())
         {
           m_processInfo->SetStateSeeking(false);
           continue;
         }
       }
+
+      if (msg.IsVideoRecovery())
+        m_videoRecoveryGate.OnExecute();
 
       if (!msg.GetTrickPlay())
       {
@@ -3947,10 +4086,12 @@ void CVideoPlayer::HandleMessages()
       else
         FinishSeek(msg.GetTrickPlay());
     }
-    else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK_CHAPTER) &&
-             m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK) == 0 &&
-             m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER) == 0)
+    else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK_CHAPTER))
     {
+      m_videoRecoveryGate.CancelPending();
+      if (GetVideoSeekQueueState().HasQueuedUserSeek())
+        continue;
+
       m_processInfo->SeekFinished(0);
       SetCaching(CACHESTATE_FLUSH);
 
@@ -5046,7 +5187,10 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       break;
     case STREAM_VIDEO:
       m_vs10Action.EndStream();
+      m_videoRecoverySameStream =
+          current.id == iStream && current.demuxerId == demuxerId && current.source == source;
       res = OpenVideoStream(hint, reset);
+      m_videoRecoverySameStream = false;
       break;
     case STREAM_SUBTITLE:
       res = OpenSubtitleStream(hint);
@@ -5262,13 +5406,39 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     if (hint.codec == AV_CODEC_ID_MPEG2VIDEO || hint.codec == AV_CODEC_ID_H264)
       m_pCCDemuxer.reset();
 
-    if (!player->OpenStream(hint))
+    // The codec-change message carries this token into the video thread.
+    const uint64_t previousGeneration = m_videoRecoveryGeneration++;
+    auto* videoPlayer = static_cast<IDVDStreamPlayerVideo*>(player);
+    videoPlayer->SetRecoveryGeneration(m_videoRecoveryGeneration);
+    if (!videoPlayer->OpenStream(hint))
+    {
+      // Refused before any codec change was queued: the running stream keeps its identity,
+      // otherwise its recovery requests would be rejected until the next flush.
+      m_videoRecoveryGeneration = previousGeneration;
+      videoPlayer->SetRecoveryGeneration(previousGeneration);
       return false;
+    }
+
+    // A replacement stream gets its own recovery budget; seeks/flushes keep their cooldown.
+    // Changed hints on the same stream (e.g. revealed by post-seek packets) only cancel
+    // a pending request: resetting there would let recovery repeat without limit.
+    if (m_videoRecoverySameStream)
+      m_videoRecoveryGate.CancelPending();
+    else
+      m_videoRecoveryGate.Reset();
+    m_videoRecoveryEndOfStream = false;
+    // Post-seek packets may reveal new codec hints before the first frame.
+    // The startup target belongs to the seek, independently of codec replacement.
+    if (m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_STARTING)
+    {
+      m_videoRecoveryStartPts = DVD_NOPTS_VALUE;
+      m_videoRecoveryStartTime = DVD_NOPTS_VALUE;
+    }
 
     player->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, m_displayLost), 1);
 
     const std::shared_ptr<CDVDInputStream::IExtentionStream>  pExt = std::dynamic_pointer_cast<CDVDInputStream::IExtentionStream>(m_pInputStream);
-    if (pExt && !static_cast<IDVDStreamPlayerVideo*>(player)->SupportsExtention())
+    if (pExt && !videoPlayer->SupportsExtention())
       pExt->DisableExtention();
 
     // look for any EDL files
@@ -5281,12 +5451,18 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     CServiceBroker::GetDataCacheCore().SetCuts(m_Edl.GetCutMarkers());
     CServiceBroker::GetDataCacheCore().SetSceneMarkers(m_Edl.GetSceneMarkers());
 
-    static_cast<IDVDStreamPlayerVideo*>(player)->SetSpeed(m_streamPlayerSpeed);
+    videoPlayer->SetSpeed(m_streamPlayerSpeed);
     m_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_STARTING;
     m_CurrentVideo.packets = 0;
   }
   else if (reset && !reuse)
+  {
+    // A request raised before the decoder reset must not reseek after it.
+    ++m_videoRecoveryGeneration;
+    static_cast<IDVDStreamPlayerVideo*>(player)->SetRecoveryGeneration(m_videoRecoveryGeneration);
+    m_videoRecoveryGate.CancelPending();
     player->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_RESET), 0);
+  }
 
   m_HasVideo = true;
 
@@ -5415,6 +5591,8 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
   {
     m_vs10Action.EndStream();
     m_bdVideoReuse = false;
+    ++m_videoRecoveryGeneration;
+    m_videoRecoveryGate.CancelPending();
   }
   else if (current.type == STREAM_AUDIO)
     m_bdAudioReuse = false;
@@ -5462,6 +5640,16 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::funct
   m_pendingFlush.emplace();
   m_pendingFlush->complete = std::move(complete);
   CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
+
+  m_videoRecoveryGate.OnFlush();
+  // A seek leaves the drained tail; playback resumes from new input.
+  m_videoRecoveryEndOfStream = false;
+  m_videoRecoveryStartPts = sync ? pts : DVD_NOPTS_VALUE;
+  m_videoRecoveryStartTime = m_videoRecoveryStartPts != DVD_NOPTS_VALUE
+                                 ? DVD_TIME_TO_MSEC(m_videoRecoveryStartPts + m_State.time_offset)
+                                 : DVD_NOPTS_VALUE;
+  if (m_VideoPlayerVideo->IsInited())
+    ++m_videoRecoveryGeneration;
 
   double startpts;
   if (accurate)
@@ -5536,6 +5724,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::funct
   }
 
   m_VideoPlayerAudio->Flush(sync);
+  m_VideoPlayerVideo->SetRecoveryGeneration(m_videoRecoveryGeneration);
   m_VideoPlayerVideo->Flush(sync);
   m_pendingFlush->video = m_VideoPlayerVideo->GetFlushRequest();
   m_VideoPlayerSubtitle->Flush();
@@ -5557,6 +5746,8 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::funct
 void CVideoPlayer::CancelParentLifecycle()
 {
   m_audioRecoveryPending = false;
+  m_videoRecoveryGate.CancelPending();
+  ++m_videoRecoveryGeneration;
   m_pendingFlush.reset();
   m_deferredFlush.reset();
   m_rendererRetirement.reset();
