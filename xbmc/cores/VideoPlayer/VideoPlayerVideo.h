@@ -126,6 +126,13 @@ protected:
   OVERLAY::CRenderer::OverlayBatch ProcessOverlays(const VideoPicture* pSource, double pts);
   void OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVideoCodec> codec);
 
+  void ResetMPEG2Cadence();
+  void UpdateMPEG2Cadence(double& frametime);
+  CMPEG2Cadence m_mpeg2Cadence;
+  double m_mpeg2SourceRate{0.0};
+  bool m_mpeg2RateChanged{false};
+  std::weak_ptr<CDVDMsg> m_mpeg2LastPacket;
+
   void ResetFrameRateCalc();
   void CalcFrameRate();
   int CalcDropRequirement(double pts);

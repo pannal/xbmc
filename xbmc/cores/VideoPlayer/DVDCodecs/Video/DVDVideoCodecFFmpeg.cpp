@@ -934,6 +934,19 @@ bool CDVDVideoCodecFFmpeg::SetPictureParams(VideoPicture* pVideoPicture)
   if (!GetPictureCommon(pVideoPicture))
     return false;
 
+  pVideoPicture->mpeg2OutputMode = MPEG2OutputMode::UNKNOWN;
+  if (!m_pHardware && (m_hints.codec == AV_CODEC_ID_MPEG1VIDEO ||
+                      m_hints.codec == AV_CODEC_ID_MPEG2VIDEO))
+  {
+    // Use the actual opened filter, including queued/draining filter output.
+    if (m_pFilterGraph && m_filters.compare(0, 8, "bwdif=1:") == 0)
+      pVideoPicture->mpeg2OutputMode = MPEG2OutputMode::INTERLACED_FIELD;
+    else if (m_interlaced || (m_pFilterGraph && m_filters.compare(0, 6, "bwdif=") == 0))
+      pVideoPicture->mpeg2OutputMode = MPEG2OutputMode::INTERLACED_FRAME;
+    else
+      pVideoPicture->mpeg2OutputMode = MPEG2OutputMode::PROGRESSIVE;
+  }
+
   pVideoPicture->iFlags |= m_pFrame->data[0] ? 0 : DVP_FLAG_DROPPED;
 
   if (pVideoPicture->videoBuffer)

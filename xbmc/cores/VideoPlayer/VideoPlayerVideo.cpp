@@ -37,6 +37,15 @@
 
 using namespace std::chrono_literals;
 
+namespace
+{
+double MPEG2NowMs()
+{
+  return std::chrono::duration<double, std::milli>(
+             std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+} // namespace
+
 class CDVDMsgVideoCodecChange : public CDVDMsg
 {
 public:
@@ -263,6 +272,9 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
 
   m_pVideoCodec = std::move(codec);
   m_hints = hint;
+  m_mpeg2SourceRate = m_fFrameRate;
+  m_mpeg2RateChanged = false;
+  ResetMPEG2Cadence();
   m_isEOS = false;
   m_stalled = m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET) == 0;
   m_rewindStalled = false;
@@ -298,6 +310,10 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
   m_pendingResetMessage.reset();
   m_pendingRecoveryDiscard = false;
   m_pVideoCodec.reset();
+  m_mpeg2LastPacket.reset();
+  m_mpeg2Cadence.Reset(false, 0.0, false, MPEG2NowMs());
+  m_mpeg2SourceRate = 0.0;
+  m_mpeg2RateChanged = false;
 
   if (m_picture.videoBuffer)
   {
@@ -413,6 +429,8 @@ void CVideoPlayerVideo::Process()
     {
       m_renderManager.DiscardBuffer();
       m_pendingRecoveryDiscard = false;
+      ResetMPEG2Cadence();
+      frametime = DVD_TIME_BASE / m_fFrameRate;
     }
     std::shared_ptr<CDVDMsg> pMsg;
     bool continuingReset = false;
@@ -559,6 +577,8 @@ void CVideoPlayerVideo::Process()
         m_picture.videoBuffer = nullptr;
       }
       m_packets.clear();
+      ResetMPEG2Cadence();
+      frametime = DVD_TIME_BASE / m_fFrameRate;
       m_droppingStats.Reset();
       m_syncState = IDVDStreamPlayer::SYNC_STARTING;
       m_renderManager.ShowVideo(false);
@@ -585,6 +605,8 @@ void CVideoPlayerVideo::Process()
         m_picture.videoBuffer = nullptr;
       }
       m_packets.clear();
+      ResetMPEG2Cadence();
+      frametime = DVD_TIME_BASE / m_fFrameRate;
       pts = 0;
       m_rewindStalled = false;
 
@@ -618,6 +640,7 @@ void CVideoPlayerVideo::Process()
     else if (pMsg->IsType(CDVDMsg::GENERAL_STREAMCHANGE))
     {
       auto msg = std::static_pointer_cast<CDVDMsgVideoCodecChange>(pMsg);
+      m_mpeg2Cadence.Drain();
 
       while (!m_bStop && m_pVideoCodec)
       {
@@ -644,6 +667,7 @@ void CVideoPlayerVideo::Process()
     else if (pMsg->IsType(CDVDMsg::VIDEO_DRAIN))
     {
       m_isEOS = false;
+      m_mpeg2Cadence.Drain();
       while (!m_bStop && m_pVideoCodec)
       {
         m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN);
@@ -716,6 +740,13 @@ void CVideoPlayerVideo::Process()
       m_pVideoCodec->SetCodecControl(codecControl);
 
       const auto addStart = diagnostics ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
+      // Retrying the same queued message must not supply new cadence evidence.
+      if (!bPacketDrop && pPacket->pData && pPacket->iSize > 0 &&
+          m_mpeg2Cadence.Eligible() && m_mpeg2LastPacket.lock() != pMsg)
+      {
+        m_mpeg2LastPacket = pMsg;
+        m_mpeg2Cadence.Observe(pPacket->duration, DVD_TIME_BASE, MPEG2NowMs());
+      }
       const bool accepted = m_pVideoCodec->AddData(*pPacket);
       if (diagnostics)
         m_diagnostics.add.Add(PLAYBACK_DIAGNOSTICS::NowUs() - addStart);
@@ -754,7 +785,10 @@ void CVideoPlayerVideo::Process()
           if (m_vfmt.size() > 4)
           {
             bool vfmtIsInterlaced = m_vfmt.compare("progressive") != 0;
-            if (vfmtIsInterlaced || !(m_hints.codecOptions & CODEC_INTERLACED))
+            if (!m_mpeg2Cadence.Eligible() &&
+                !(m_processInfo.IsVideoHwDecoder() &&
+                  m_picture.mpeg2OutputMode != MPEG2OutputMode::UNKNOWN) &&
+                (vfmtIsInterlaced || !(m_hints.codecOptions & CODEC_INTERLACED)))
               m_processInfo.SetVideoInterlaced(vfmtIsInterlaced);
           }
           CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::DEMUXER_PACKET - checking interlace vfmt: {}", m_vfmt);
@@ -869,6 +903,8 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
       return false;
     }
     m_packets.clear();
+    ResetMPEG2Cadence();
+    frametime = DVD_TIME_BASE / m_fFrameRate;
     //picture.iFlags &= ~DVP_FLAG_ALLOCATED;
     m_renderManager.DiscardBuffer();
     return false;
@@ -890,6 +926,8 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
       return false;
     }
     m_packets.clear();
+    ResetMPEG2Cadence();
+    frametime = DVD_TIME_BASE / m_fFrameRate;
     m_renderManager.DiscardBuffer();
     return false;
   }
@@ -903,6 +941,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 
   if (decoderState == CDVDVideoCodec::VC_EOF)
   {
+    m_mpeg2Cadence.Drain();
     m_isEOS = true;
     if (m_syncState == IDVDStreamPlayer::SYNC_STARTING)
     {
@@ -962,6 +1001,8 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
         m_messageParent.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
       }
     }
+
+    UpdateMPEG2Cadence(frametime);
 
     // Detect progressive content misidentified as interlaced: if picture
     // duration consistently equals double what the fps implies, halve fps.
@@ -1047,14 +1088,10 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
       pts = m_picture.pts;
     }
 
-    double extraDelay = 0.0;
-    if (m_picture.iRepeatPicture)
-    {
-      extraDelay = m_picture.iRepeatPicture * m_picture.iDuration;
-      m_picture.iDuration += extraDelay;
-    }
-
-    m_picture.pts = pts + extraDelay;
+    const auto timing = CMPEG2Cadence::PictureTiming(
+        m_picture.iDuration, m_picture.iRepeatPicture, m_mpeg2Cadence.Film(), hasTimestamp);
+    m_picture.iDuration = timing.duration;
+    m_picture.pts = pts + timing.offset;
     // guess next frame pts. iDuration is always valid
     if (m_speed != 0)
       pts += m_picture.iDuration * m_speed / abs(m_speed);
@@ -1374,6 +1411,62 @@ int CVideoPlayerVideo::GetVideoBitrate()
   return (int)m_videoStats.GetBitrate();
 }
 
+void CVideoPlayerVideo::ResetMPEG2Cadence()
+{
+  const bool mpeg = m_hints.codec == AV_CODEC_ID_MPEG1VIDEO ||
+                    m_hints.codec == AV_CODEC_ID_MPEG2VIDEO;
+  const bool eligible = mpeg && !m_processInfo.IsVideoHwDecoder() &&
+                        (m_hints.codecOptions & CODEC_INTERLACED);
+  if (m_mpeg2RateChanged)
+  {
+    m_fFrameRate = m_mpeg2SourceRate;
+    m_processInfo.SetVideoFps(static_cast<float>(m_fFrameRate));
+    m_processInfo.SetVideoInterlaced((m_hints.codecOptions & CODEC_INTERLACED) != 0);
+    m_ptsTracker.Flush();
+    ResetFrameRateCalc();
+  }
+  m_mpeg2RateChanged = false;
+  m_mpeg2LastPacket.reset();
+  m_mpeg2Cadence.Reset(eligible, m_mpeg2SourceRate, m_hints.fpsrate_doubled, MPEG2NowMs());
+}
+
+void CVideoPlayerVideo::UpdateMPEG2Cadence(double& frametime)
+{
+  const auto mode = m_picture.mpeg2OutputMode;
+  if (mode == MPEG2OutputMode::UNKNOWN)
+    return;
+  double rate = m_mpeg2SourceRate;
+  if (m_mpeg2Cadence.Eligible())
+    rate = m_mpeg2Cadence.Update(mode, MPEG2NowMs());
+  else if (m_processInfo.IsVideoHwDecoder() && mode == MPEG2OutputMode::PROGRESSIVE &&
+           std::isfinite(m_picture.iDuration) && m_picture.iDuration > 0.0)
+  {
+    // Only the successfully applied optional AML mode publishes this evidence.
+    const double decodedRate = DVD_TIME_BASE / m_picture.iDuration;
+    if (decodedRate >= 15.0 && decodedRate <= 120.0)
+      rate = decodedRate;
+  }
+  else if (!m_processInfo.IsVideoHwDecoder())
+    return; // PAL and other rates retain the existing policy.
+
+  const bool interlaced = mode == MPEG2OutputMode::INTERLACED_FRAME ||
+                          mode == MPEG2OutputMode::INTERLACED_FIELD ||
+                          (!m_mpeg2Cadence.Film() && !m_mpeg2Cadence.FrameOutput() &&
+                           !m_processInfo.IsVideoHwDecoder() &&
+                           (m_hints.codecOptions & CODEC_INTERLACED));
+  if (std::abs(rate - m_fFrameRate) > 0.01 ||
+      interlaced != m_processInfo.GetVideoInterlaced())
+  {
+    m_fFrameRate = rate;
+    m_mpeg2RateChanged = true;
+    frametime = DVD_TIME_BASE / rate;
+    m_processInfo.SetVideoFps(static_cast<float>(rate));
+    m_processInfo.SetVideoInterlaced(interlaced);
+    m_ptsTracker.Flush();
+    ResetFrameRateCalc();
+  }
+}
+
 void CVideoPlayerVideo::ResetFrameRateCalc()
 {
   m_fStableFrameRate = 0.0;
@@ -1467,6 +1560,7 @@ void CVideoPlayerVideo::CalcFrameRate()
         // interlaced overall, and halving m_fFrameRate to 25 makes the
         // renderer and DI output path behave as if it were 25fps progressive.
         bool skipHalving = (m_hints.codecOptions & CODEC_INTERLACED) &&
+                           !m_mpeg2Cadence.FrameOutput() && !m_mpeg2Cadence.Film() &&
                            calculated > 0 &&
                            fabs(m_fFrameRate - 2.0 * calculated) < MAXFRAMERATEDIFF;
         if (skipHalving)

@@ -38,6 +38,7 @@ void VideoPicture::Reset()
   iFlags = 0;
   iRepeatPicture = 0;
   iDuration = 0;
+  mpeg2OutputMode = MPEG2OutputMode::UNKNOWN;
   iFrameType = 0;
   color_space = AVCOL_SPC_UNSPECIFIED;
   color_range = 0;

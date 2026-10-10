@@ -2133,6 +2133,29 @@ void CAMLCodec::WaitForLifecycle()
   }
 }
 
+namespace
+{
+bool SetMPEG2KeepProgressive(const char* path, bool enabled)
+{
+  unsigned long long control = 0;
+  std::ifstream input(path);
+  if (!(input >> control) || control > 0xffffffffULL)
+    return false;
+  input >> std::ws;
+  if (!input.eof())
+    return false;
+  constexpr unsigned int KEEP_PROG_FRAME = 0x0040;
+  const auto updated = enabled ? control | KEEP_PROG_FRAME : control & ~KEEP_PROG_FRAME;
+  if (updated == control)
+    return true;
+  std::ofstream output(path);
+  if (!(output << updated))
+    return false;
+  output.close();
+  return !output.fail();
+}
+} // namespace
+
 bool CAMLCodec::OpenDecoderInternal()
 {
   aml_video_fps_reset();
@@ -2538,6 +2561,18 @@ bool CAMLCodec::OpenDecoderInternal()
 
   m_dvBackendEpoch = m_dvSession ? aml_dv_backend_epoch() : 0;
   m_dvBackendSampleTime = 0;
+  m_keepMPEG2Progressive = false;
+  if (hints.codec == AV_CODEC_ID_MPEG1VIDEO || hints.codec == AV_CODEC_ID_MPEG2VIDEO)
+  {
+    const bool keep = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+        CSettings::SETTING_VIDEOPLAYER_AMLMPEG2KEEPPROG);
+    // Changing the setting takes effect at decoder open; reset retains this session policy.
+    const bool applied = SetMPEG2KeepProgressive(
+        "/sys/module/amvdec_mmpeg12/parameters/dec_control", keep);
+    m_keepMPEG2Progressive = keep && applied;
+    if (!applied && keep)
+      CLog::Log(LOGWARNING, "CAMLCodec::OpenDecoder - MPEG-2 progressive control unavailable");
+  }
   int ret = m_dll->codec_init(&am_private->vcodec);
   if (ret != CODEC_ERROR_NONE)
   {
@@ -3126,7 +3161,7 @@ int CAMLCodec::DequeueBuffer()
 
     // The pts history advances when a frame is handed over in GetPicture,
     // not here.
-    m_reorderQueue.push_back({pts, vbuf.index});
+    m_reorderQueue.push_back({pts, vbuf.index, vbuf.field == V4L2_FIELD_INTERLACED});
   }
   else if (ret != EAGAIN)
   {
@@ -3226,7 +3261,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     aml_dv_backend_sample(m_dvSession, m_dvBackendEpoch, m_dvBackendSampleTime);
   videoPicture.amlDVSession = m_dvSession;
 
-  struct vdec_info vi;
+  struct vdec_info vi = {};
   int ret = EAGAIN;
   float buffer_level = GetBufferLevel();
   std::chrono::milliseconds elapsed_since_last_frame(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()
@@ -3278,9 +3313,18 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     m_last_pts = m_cur_pts;
     m_cur_pts = m_reorderQueue.front().pts;
     m_bufferIndex = m_reorderQueue.front().index;
+    const bool interlaced = m_reorderQueue.front().interlaced;
     m_reorderQueue.pop_front();
 
     videoPicture.iFlags = 0;
+    videoPicture.mpeg2OutputMode = MPEG2OutputMode::UNKNOWN;
+    if (m_keepMPEG2Progressive)
+    {
+      videoPicture.mpeg2OutputMode = interlaced ? MPEG2OutputMode::INTERLACED_FIELD :
+                                               MPEG2OutputMode::PROGRESSIVE;
+      if (interlaced)
+        videoPicture.iFlags |= DVP_FLAG_INTERLACED;
+    }
 
     // Retain decoded-frame availability only for explicit unsupported-route
     // compatibility. Supported routes still require accepted QBUF and apply.
@@ -3429,7 +3473,15 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     videoPicture.dts = DVD_NOPTS_VALUE;
     videoPicture.pts = static_cast<double>(m_cur_pts);
 
-    m_dll->codec_get_vdec_info(&am_private->vcodec, &vi);
+    const int infoResult = m_dll->codec_get_vdec_info(&am_private->vcodec, &vi);
+    if (m_keepMPEG2Progressive && !interlaced)
+    {
+      if (infoResult == 0 && vi.frame_dur >= MIN_DECODER_VIDEO_RATE &&
+          vi.frame_dur <= MAX_DECODER_VIDEO_RATE)
+        videoPicture.iDuration = static_cast<double>(vi.frame_dur) * DVD_TIME_BASE / UNIT_FREQ;
+      else
+        videoPicture.mpeg2OutputMode = MPEG2OutputMode::UNKNOWN;
+    }
     if (vi.ratio_control) {
       m_hints.aspect = 65536.0 / vi.ratio_control;
       m_processInfo.SetVideoDAR(m_hints.aspect);

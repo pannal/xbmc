@@ -9,6 +9,7 @@
 #pragma once
 
 #include "DVDResource.h"
+#include "cores/VideoPlayer/MPEG2Cadence.h"
 #include "ServiceBroker.h"
 #include "cores/VideoPlayer/Buffers/VideoBuffer.h"
 #include "cores/VideoPlayer/Interface/DemuxPacket.h"
@@ -55,6 +56,7 @@ public:
   unsigned int iFlags;
   double iRepeatPicture;
   double iDuration;
+  MPEG2OutputMode mpeg2OutputMode{MPEG2OutputMode::UNKNOWN};
   unsigned int iFrameType         : 4;  //< see defines above // 1->I, 2->P, 3->B, 0->Undef
   AVColorSpace color_space;
   unsigned int color_range        : 1;  //< 1 indicate if we have a full range of color

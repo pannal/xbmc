@@ -256,6 +256,7 @@ private:
   {
     uint64_t pts;
     uint32_t index;
+    bool interlaced;
   };
   std::deque<DecodedFrame> m_reorderQueue;
   // Consecutive timeline-rebuild steps outside the true-reorder band; a run
@@ -265,6 +266,7 @@ private:
   // (coreelec.amlogic.vc1_repair_timestamps) - they are not trustworthy, see
   // OpenDecoder.
   bool m_repairTimestamps = false;
+  bool m_keepMPEG2Progressive = false;
   // Recently output (display-order) pts, for corrupt-splice detection: a pts
   // that steps backwards onto a value already output is a broken splice
   // (duplicate GOP / out-of-place keyframe), not a legal reorder.

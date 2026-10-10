@@ -1967,6 +1967,7 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
             pStream->avg_frame_rate.num, pStream->avg_frame_rate.den, r_frame_rate.num, r_frame_rate.den,
             pStream->time_base.den, pStream->time_base.num);
 
+        st->bFpsRateDoubled = false;
         st->bUnknownIP = false;
         st->bInterlaced = false;
         st->iFpsRate  = 0;
@@ -2001,7 +2002,10 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
             st->iFpsScale = pStream->time_base.num;
           }
           else if (fps <= 30.5f)
-            st->iFpsRate  *= 2;
+          {
+            st->iFpsRate *= 2;
+            st->bFpsRateDoubled = true;
+          }
           // else: avg_frame_rate is already the field rate (e.g. HEVC 1080i
           // reporting 50/1, some MBAFF H.264); doubling again would yield
           // 100fps for 1080i25.
@@ -2011,6 +2015,24 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
         else if (r_frame_rate.den && r_frame_rate.num && std::abs(static_cast<float>(r_frame_rate.num) / static_cast<float>(r_frame_rate.den) - 2.0f * fps) < 0.01f)
         {
           st->iFpsRate  = r_frame_rate.num;
+          st->iFpsScale = r_frame_rate.den;
+          st->bInterlaced = true;
+        }
+
+        // MPEG soft telecine may have a film average while the sequence and
+        // base rate still describe 29.97 frames / 59.94 fields. Retain that
+        // narrow source cadence for the video player's bounded duration probe.
+        else if ((pStream->codecpar->codec_id == AV_CODEC_ID_MPEG1VIDEO ||
+                  pStream->codecpar->codec_id == AV_CODEC_ID_MPEG2VIDEO) &&
+                 r_frame_rate.num > 0 && r_frame_rate.den > 0 &&
+                 pStream->codecpar->framerate.num > 0 &&
+                 pStream->codecpar->framerate.den > 0 &&
+                 static_cast<double>(r_frame_rate.num) / r_frame_rate.den > 55.0 &&
+                 static_cast<double>(r_frame_rate.num) / r_frame_rate.den < 61.0 &&
+                 static_cast<int64_t>(r_frame_rate.num) * pStream->codecpar->framerate.den ==
+                     2 * static_cast<int64_t>(pStream->codecpar->framerate.num) * r_frame_rate.den)
+        {
+          st->iFpsRate = r_frame_rate.num;
           st->iFpsScale = r_frame_rate.den;
           st->bInterlaced = true;
         }

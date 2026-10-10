@@ -20507,3 +20507,11 @@ msgstr "Dolby-Vision-GUI-Sättigung"
 msgctxt "#69360"
 msgid "Adjust only GUI colour saturation when Kodi selects Dolby Vision IPT output. 100% preserves the existing colours; 0% gives grayscale. Applies to GUI labels and artwork before existing DV processing. Video, subtitle colour controls and disc menu graphics are unchanged."
 msgstr "Nur die GUI-Farbsättigung anpassen, wenn Kodi Dolby-Vision-IPT-Ausgabe wählt. 100% erhält die bisherigen Farben; 0% ergibt Graustufen. Wirkt auf GUI-Beschriftungen und -Grafiken vor der bisherigen DV-Verarbeitung. Video, Untertitelfarbregler und Disc-Menügrafiken bleiben unverändert."
+
+msgctxt "#69361"
+msgid "Preserve progressive MPEG-2 frames"
+msgstr "Progressive MPEG-2-Bilder beibehalten"
+
+msgctxt "#69362"
+msgid "Keep progressive pictures in interlaced MPEG-2 sequences when using Amlogic hardware decoding. Alternating repeat-field film cadence is handled by the decoder. Disabled by default. Takes effect when playback starts. Requires a compatible media module."
+msgstr "Progressive Bilder in interlaced MPEG-2-Sequenzen bei Amlogic-Hardwaredekodierung beibehalten. Der Dekoder berücksichtigt Filmsequenzen mit abwechselnden Wiederholungsfeldern. Standardmäßig deaktiviert. Wirksam ab dem nächsten Wiedergabestart. Erfordert ein kompatibles Medienmodul."

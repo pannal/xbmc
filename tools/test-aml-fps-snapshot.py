@@ -79,7 +79,10 @@ def harness():
     block=aml[aml.index('struct FpsData {'):aml.index('unsigned int aml_dv_video_processor_mode()')]
     codec=(ROOT/'xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp').read_text()
     for signature in ('bool CAMLCodec::OpenDecoderInternal()', 'void CAMLCodec::CloseDecoderInternal()'):
-        assert 'aml_video_fps_reset();' in function(codec,signature).splitlines()[2]
+        body = function(codec, signature)
+        assert body.count('aml_video_fps_reset();') == 1
+        # Close stops active-area workers first; labels reset before codec teardown.
+        assert 'aml_video_fps_reset();' in body.split('CLog::Log', 1)[0]
     assert 'aml_video_fps_reset' not in function(codec,'void CAMLCodec::ResetInternal()')
     return PRELUDE+block.replace('std::chrono::steady_clock::now()', 'FakeNow()')+TESTS
 
