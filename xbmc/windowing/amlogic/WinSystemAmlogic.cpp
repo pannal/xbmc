@@ -13,6 +13,8 @@
 #include <float.h>
 
 #include "ServiceBroker.h"
+#include "application/ApplicationComponents.h"
+#include "application/ApplicationPlayer.h"
 #include "cores/RetroPlayer/process/amlogic/RPProcessInfoAmlogic.h"
 #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererOpenGLES.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
@@ -38,6 +40,9 @@
 
 #include <linux/fb.h>
 #include <linux/version.h>
+
+#include <algorithm>
+#include <cmath>
 
 #include "system_egl.h"
 
@@ -379,6 +384,53 @@ float CWinSystemAmlogic::GetGuiSdrPeakLuminance() const
   const int guiSdrPeak = settings->GetInt(CSettings::SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE);
 
   return ((0.7f * guiSdrPeak + 30.0f) / 100.0f);
+}
+
+std::pair<float, float> CWinSystemAmlogic::GetGuiColourAdjustment() const
+{
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  const int sdrSat = settings->GetInt(CSettings::SETTING_VIDEOSCREEN_GUISDRSATURATION);
+  const int hlgPeak = settings->GetInt(CSettings::SETTING_VIDEOSCREEN_GUIPEAKLUMINANCE_HLG);
+  const int hlgSat = settings->GetInt(CSettings::SETTING_VIDEOSCREEN_GUISATURATION_HLG);
+  const int dvPeak = settings->GetInt(CSettings::SETTING_VIDEOSCREEN_GUIPEAKLUMINANCE_DV);
+  const int dvSat = settings->GetInt(CSettings::SETTING_VIDEOSCREEN_GUISATURATION_DV);
+  if (sdrSat == 100 && hlgPeak == 100 && hlgSat == 100 && dvPeak == 100 && dvSat == 100)
+    return {1.0f, 1.0f};
+
+  int peak = 100;
+  int saturation = sdrSat;
+  // Applied DV output policy takes precedence over the source's HDR type.
+  switch (aml_gui_dv_output_mode())
+  {
+    case DOLBY_VISION_OUTPUT_MODE_IPT:
+    case DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL:
+      peak = dvPeak;
+      saturation = dvSat;
+      break;
+    case DOLBY_VISION_OUTPUT_MODE_HDR10:
+    case DOLBY_VISION_OUTPUT_MODE_SDR10:
+    case DOLBY_VISION_OUTPUT_MODE_SDR8:
+      break;
+    case DOLBY_VISION_OUTPUT_MODE_BYPASS:
+    {
+      const auto player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+      if (player && player->IsPlayingVideo() &&
+          GetGfxContext().GetHDRType() == StreamHdrType::HDR_TYPE_HLG &&
+          GetDisplayHDRCapabilities().SupportsHLG())
+      {
+        peak = hlgPeak;
+        saturation = hlgSat;
+      }
+      break;
+    }
+    default:
+      return {1.0f, 1.0f};
+  }
+
+  // Relative linear-light white, encoded for the existing SDR graphics path.
+  // Preserve the old GUI peak/composite/Core2 policy; these are not nits.
+  return {std::pow(static_cast<float>(std::clamp(peak, 0, 100)) / 100.0f, 1.0f / 2.2f),
+          static_cast<float>(std::clamp(saturation, 0, 200)) / 100.0f};
 }
 
 bool CWinSystemAmlogic::Hide()

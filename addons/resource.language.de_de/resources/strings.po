@@ -20447,3 +20447,63 @@ msgstr "HDR10-MaxCLL-Grenze (Nits)"
 msgctxt "#69350"
 msgid "Upper limit for the maximum content light level (MaxCLL) sent to the display, in nits. 0 disables this cap. Lower and unknown zero values are preserved. The two caps are independent; saved limits are retained when the master switch is disabled."
 msgstr "Obergrenze für den an das Display gesendeten maximalen Inhaltslichtpegel (MaxCLL) in Nits. 0 deaktiviert diese Grenze. Niedrigere und unbekannte Nullwerte bleiben erhalten. Die beiden Grenzen sind unabhängig; gespeicherte Werte bleiben beim Deaktivieren des Hauptschalters erhalten."
+
+#. Relative GUI colour controls
+#: system/settings/settings.xml
+msgctxt "#69351"
+msgid "SDR/HDR10 GUI saturation"
+msgstr "SDR-/HDR10-GUI-Sättigung"
+
+#. Relative GUI colour controls
+#: system/settings/settings.xml
+msgctxt "#69352"
+msgid "Adjust GUI artwork and labels on SDR or HDR10 output, including VS10 SDR/HDR10 output. 100% preserves the existing colours; 0% gives grayscale. HLG and Dolby Vision output use their separate GUI controls. Video, subtitle colour controls and disc menu graphics are unchanged."
+msgstr "GUI-Grafiken und Beschriftungen bei SDR- oder HDR10-Ausgabe anpassen, einschließlich der SDR-/HDR10-Ausgabe von VS10. 100% erhält die bisherigen Farben; 0% ergibt Graustufen. HLG- und Dolby-Vision-Ausgabe verwenden ihre eigenen GUI-Regler. Video, Untertitelfarbregler und Disc-Menügrafiken bleiben unverändert."
+
+#. Relative GUI colour controls
+#: system/settings/settings.xml
+msgctxt "#69353"
+msgid "HLG GUI output white"
+msgstr "HLG-GUI-Ausgabeweiß"
+
+#. Relative GUI colour controls
+#: system/settings/settings.xml
+msgctxt "#69354"
+msgid "Dim GUI artwork and labels during native HLG playback. 100% keeps the existing output. This is relative linear-light white, not nits; existing HDR GUI brightness and downstream processing still apply. Video, subtitles and disc menu graphics retain their existing colour handling. HLG converted by VS10 uses the controls for its output mode."
+msgstr "GUI-Grafiken und Beschriftungen während nativer HLG-Wiedergabe abdunkeln. 100% erhält die bisherige Ausgabe. Der Wert beschreibt relatives Weiß im linearen Licht, keine Nits; die bisherige HDR-GUI-Helligkeit und nachfolgende Verarbeitung wirken weiterhin. Video, Untertitel und Disc-Menügrafiken behalten ihre bisherige Farbverarbeitung. Von VS10 konvertiertes HLG verwendet die Regler für seinen Ausgabemodus."
+
+#. Relative GUI colour controls
+#: system/settings/settings.xml
+msgctxt "#69355"
+msgid "HLG GUI saturation"
+msgstr "HLG-GUI-Sättigung"
+
+#. Relative GUI colour controls
+#: system/settings/settings.xml
+msgctxt "#69356"
+msgid "Adjust GUI colour saturation during native HLG playback. 100% preserves the existing colours; 0% gives grayscale. Does not change video, subtitle colour settings or disc menu graphics. Applies when Kodi uses native HLG on an HLG-capable display."
+msgstr "GUI-Farbsättigung während nativer HLG-Wiedergabe anpassen. 100% erhält die bisherigen Farben; 0% ergibt Graustufen. Video, Untertitelfarbeinstellungen und Disc-Menügrafiken werden nicht verändert. Wirkt, wenn Kodi natives HLG auf einem HLG-fähigen Display verwendet."
+
+#. Relative GUI colour controls
+#: system/settings/settings.xml
+msgctxt "#69357"
+msgid "Dolby Vision GUI output white"
+msgstr "Dolby-Vision-GUI-Ausgabeweiß"
+
+#. Relative GUI colour controls
+#: system/settings/settings.xml
+msgctxt "#69358"
+msgid "Dim only GUI artwork and labels when Kodi selects Dolby Vision IPT output, including VS10 and Dolby Vision output in Kodi menus. 100% keeps the existing output. This is relative linear-light white, not nits. Existing DV OSD peak and processing still apply to the graphics plane; subtitle and disc menu colour handling is unchanged. VS10 HDR10/SDR output uses the SDR/HDR10 GUI control."
+msgstr "Nur GUI-Grafiken und Beschriftungen abdunkeln, wenn Kodi Dolby-Vision-IPT-Ausgabe wählt, einschließlich VS10 und Dolby-Vision-Ausgabe in Kodi-Menüs. 100% erhält die bisherige Ausgabe. Der Wert beschreibt relatives Weiß im linearen Licht, keine Nits. Der bisherige DV-OSD-Spitzenwert und die Verarbeitung wirken weiterhin auf die Grafikebene; Untertitel- und Disc-Menüfarben bleiben unverändert. Die HDR10-/SDR-Ausgabe von VS10 verwendet den SDR-/HDR10-GUI-Regler."
+
+#. Relative GUI colour controls
+#: system/settings/settings.xml
+msgctxt "#69359"
+msgid "Dolby Vision GUI saturation"
+msgstr "Dolby-Vision-GUI-Sättigung"
+
+#. Relative GUI colour controls
+#: system/settings/settings.xml
+msgctxt "#69360"
+msgid "Adjust only GUI colour saturation when Kodi selects Dolby Vision IPT output. 100% preserves the existing colours; 0% gives grayscale. Applies to GUI labels and artwork before existing DV processing. Video, subtitle colour controls and disc menu graphics are unchanged."
+msgstr "Nur die GUI-Farbsättigung anpassen, wenn Kodi Dolby-Vision-IPT-Ausgabe wählt. 100% erhält die bisherigen Farben; 0% ergibt Graustufen. Wirkt auf GUI-Beschriftungen und -Grafiken vor der bisherigen DV-Verarbeitung. Video, Untertitelfarbregler und Disc-Menügrafiken bleiben unverändert."

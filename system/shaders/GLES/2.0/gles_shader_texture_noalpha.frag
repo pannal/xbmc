@@ -17,6 +17,10 @@ void main ()
 {
   vec3 rgb = texture2D(m_samp0, m_cord0.xy).rgb;
 
+#if defined(KODI_GUI_COLOUR)
+  rgb = guiColour(rgb);
+#endif
+
 #if defined(KODI_LIMITED_RANGE)
   rgb *= (235.0 - 16.0) / 255.0;
   rgb += 16.0 / 255.0;

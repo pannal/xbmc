@@ -3391,6 +3391,98 @@
         <default>100</default>
         <control type="slider" format="percentage" range="0,100" />
       </setting>
+      <setting id="videoscreen.guisdrsaturation" type="integer" label="69351" help="69352">
+        <requirement>
+          <and>
+            <condition>HAVE_AMCODEC</condition>
+            <condition>HAS_GLESv2</condition>
+          </and>
+        </requirement>
+        <level>2</level>
+        <default>100</default>
+        <constraints>
+          <minimum>0</minimum>
+          <step>5</step>
+          <maximum>200</maximum>
+        </constraints>
+        <control type="slider" format="percentage" />
+      </setting>
+      <setting id="videoscreen.guipeakluminance.hlg" type="integer" label="69353" help="69354">
+        <requirement>
+          <and>
+            <condition>HAVE_AMCODEC</condition>
+            <condition>HAS_GLESv2</condition>
+          </and>
+        </requirement>
+        <dependencies>
+          <dependency type="visible" on="property" name="ishdrdisplay" />
+        </dependencies>
+        <level>2</level>
+        <default>100</default>
+        <constraints>
+          <minimum>0</minimum>
+          <step>5</step>
+          <maximum>100</maximum>
+        </constraints>
+        <control type="slider" format="percentage" />
+      </setting>
+      <setting id="videoscreen.guisaturation.hlg" type="integer" label="69355" help="69356">
+        <requirement>
+          <and>
+            <condition>HAVE_AMCODEC</condition>
+            <condition>HAS_GLESv2</condition>
+          </and>
+        </requirement>
+        <dependencies>
+          <dependency type="visible" on="property" name="ishdrdisplay" />
+        </dependencies>
+        <level>2</level>
+        <default>100</default>
+        <constraints>
+          <minimum>0</minimum>
+          <step>5</step>
+          <maximum>200</maximum>
+        </constraints>
+        <control type="slider" format="percentage" />
+      </setting>
+      <setting id="videoscreen.guipeakluminance.dolbyvision" type="integer" label="69357" help="69358">
+        <requirement>
+          <and>
+            <condition>HAVE_AMCODEC</condition>
+            <condition>HAS_GLESv2</condition>
+          </and>
+        </requirement>
+        <dependencies>
+          <dependency type="visible" on="property" name="ishdrdisplay" />
+        </dependencies>
+        <level>2</level>
+        <default>100</default>
+        <constraints>
+          <minimum>0</minimum>
+          <step>5</step>
+          <maximum>100</maximum>
+        </constraints>
+        <control type="slider" format="percentage" />
+      </setting>
+      <setting id="videoscreen.guisaturation.dolbyvision" type="integer" label="69359" help="69360">
+        <requirement>
+          <and>
+            <condition>HAVE_AMCODEC</condition>
+            <condition>HAS_GLESv2</condition>
+          </and>
+        </requirement>
+        <dependencies>
+          <dependency type="visible" on="property" name="ishdrdisplay" />
+        </dependencies>
+        <level>2</level>
+        <default>100</default>
+        <constraints>
+          <minimum>0</minimum>
+          <step>5</step>
+          <maximum>200</maximum>
+        </constraints>
+        <control type="slider" format="percentage" />
+      </setting>
       </group>
       <group id="3" label="14126">
         <setting id="videoscreen.whitelist" type="list[string]" parent="videoscreen.screen" label="14126" help="36443">

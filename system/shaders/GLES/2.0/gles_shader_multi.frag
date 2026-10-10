@@ -33,6 +33,10 @@ void main ()
 
   rgb = texture2D(m_samp0, m_cord0.xy) * texture2D(m_samp1, m_cord1.xy);
 
+#if defined(KODI_GUI_COLOUR)
+  rgb.rgb = guiColour(rgb.rgb);
+#endif
+
 #if defined(KODI_LIMITED_RANGE)
   rgb.rgb *= (235.0 - 16.0) / 255.0;
   rgb.rgb += 16.0 / 255.0;

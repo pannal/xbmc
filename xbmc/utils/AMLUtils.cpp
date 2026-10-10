@@ -82,6 +82,8 @@ static std::shared_ptr<CSettings> settings()
 
 // Cached DV mode — updated by aml_dv_on/aml_dv_off, avoids per-frame sysfs reads.
 static unsigned int s_dvModeCached = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+// Read-only GUI view of the same applied policy, without render-time sysfs I/O.
+static std::atomic<unsigned int> s_guiDvOutputMode{DOLBY_VISION_OUTPUT_MODE_BYPASS};
 
 // Tracks whether DV playback is active (between aml_dv_open/aml_dv_close).
 // Used by CreateNewWindow to avoid restoring IPT during playback-start mode switches.
@@ -1199,6 +1201,7 @@ unsigned int aml_dv_on(unsigned int mode, bool force_hdmi)
   CLog::Log(LOGDEBUG, "AMLUtils::{} - mode change [{}], existing mode [{}], this mode [{}]", __FUNCTION__, modeChange, aml_dv_output_mode_to_string(existing_mode), aml_dv_output_mode_to_string(mode));
   if (modeChange) CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_mode", mode);
   s_dvModeCached = mode;
+  s_guiDvOutputMode.store(mode, std::memory_order_relaxed);
   CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_policy", DOLBY_VISION_FORCE_OUTPUT_MODE);
   CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_enable", "Y");
 
@@ -1678,6 +1681,7 @@ void aml_dv_off(bool skip_hdmi_update)
   CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_policy", DOLBY_VISION_FORCE_OUTPUT_MODE);
   if (modeChange) CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_mode", DOLBY_VISION_OUTPUT_MODE_BYPASS);
   s_dvModeCached = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+  s_guiDvOutputMode.store(DOLBY_VISION_OUTPUT_MODE_BYPASS, std::memory_order_relaxed);
 
   aml_linux_force_422 = false;
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_aml_linux_force_422", aml_linux_force_422);
@@ -1738,6 +1742,11 @@ unsigned int aml_dv_dolby_vision_mode()
 {
   CSysfsPath dolby_vision_mode{"/sys/module/amdolby_vision/parameters/dolby_vision_mode"};
   return dolby_vision_mode.Get<unsigned int>().value();
+}
+
+unsigned int aml_gui_dv_output_mode()
+{
+  return s_guiDvOutputMode.load(std::memory_order_relaxed);
 }
 
 void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries colorPrimaries, bool swDecoded,

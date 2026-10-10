@@ -107,6 +107,10 @@ class GLES:
         return shader
 
     def program(self, fragment, defines=''):
+        # Match CGLESShader's shared-source insertion without changing old oracles.
+        if 'guiColour(' in fragment and 'vec3 guiColour(' not in fragment:
+            fragment = fragment.replace('void main',
+                (ROOT / 'system/shaders/GLES/2.0/gui_colour.frag').read_text() + '\nvoid main', 1)
         vertex = self.shader('''#version 100
 attribute vec2 position;
 varying vec4 m_cord0;

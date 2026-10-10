@@ -299,6 +299,7 @@ enum DV_TYPE aml_dv_type();
 unsigned int aml_vs10_by_setting(const std::string setting);
 void aml_dv_send_md_levels();
 void aml_dv_send_hdr10_data();
+unsigned int aml_gui_dv_output_mode();
 bool aml_hdr10_metadata_limits_supported();
 void aml_apply_hdr10_metadata_limits();
 void aml_dv_send_el_type();

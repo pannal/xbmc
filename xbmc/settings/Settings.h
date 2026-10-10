@@ -407,6 +407,11 @@ public:
   static constexpr auto SETTING_VIDEOSCREEN_USESYSTEMSDRPEAKLUMINANCE =
       "videoscreen.usesystemsdrpeakluminance";
   static constexpr auto SETTING_VIDEOSCREEN_GUISDRPEAKLUMINANCE = "videoscreen.guipeakluminance";
+  static constexpr auto SETTING_VIDEOSCREEN_GUISDRSATURATION = "videoscreen.guisdrsaturation";
+  static constexpr auto SETTING_VIDEOSCREEN_GUIPEAKLUMINANCE_HLG = "videoscreen.guipeakluminance.hlg";
+  static constexpr auto SETTING_VIDEOSCREEN_GUISATURATION_HLG = "videoscreen.guisaturation.hlg";
+  static constexpr auto SETTING_VIDEOSCREEN_GUIPEAKLUMINANCE_DV = "videoscreen.guipeakluminance.dolbyvision";
+  static constexpr auto SETTING_VIDEOSCREEN_GUISATURATION_DV = "videoscreen.guisaturation.dolbyvision";
   static constexpr auto SETTING_VIDEOSCREEN_DITHER = "videoscreen.dither";
   static constexpr auto SETTING_VIDEOSCREEN_DITHERDEPTH = "videoscreen.ditherdepth";
   static constexpr auto SETTING_AUDIOOUTPUT_AUDIODEVICE = "audiooutput.audiodevice";

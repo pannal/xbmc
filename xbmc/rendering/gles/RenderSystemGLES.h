@@ -149,6 +149,7 @@ public:
   GLint GUIShaderGetSdrBrightness();
   GLint GUIShaderGetSdrSaturation();
   GLint GUIShaderGetSubtitlePeak();
+  GLint GUIShaderGetGuiTuning();
 
 protected:
   virtual bool IsPrimaryContextCurrent() const { return true; }
@@ -168,8 +169,10 @@ protected:
   static void ReleaseShaderSet(ShaderSet& shaders, bool abandon);
 
   ShaderSet m_pShader;
+  std::pair<float, float> m_guiColour{1.0f, 1.0f};
+  bool m_guiColourEnabled{false};
   // Inactive variants share the current EGL context; surface changes retain them.
-  std::array<ShaderSet, 4> m_shaderVariants;
+  std::array<ShaderSet, 8> m_shaderVariants;
   ShaderMethodGLES m_method = ShaderMethodGLES::SM_DEFAULT;
 
   GLint      m_viewPort[4];

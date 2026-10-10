@@ -77,6 +77,8 @@ def draw_source():
     extra = r'''
 #include <map>
 #include <string>
+#include <utility>
+#include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlaySpu.h"
 struct Matrix {std::array<float,16> a{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};const float* Get(){return a.data();}};
 Matrix glMatrixProject,glMatrixModview;
 struct TransformMatrix {float m[4][4]{{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};};
@@ -101,6 +103,7 @@ void glUniformMatrix4fv(int,int,int,const float*){}
 void glUniform1f(int where,float value){uniforms[where]=value;}
 struct CGLESShader {
  @SHADER_FIELDS@
+ @GUI_SETTER@
  int ProgramHandle(){return 9;}void OnCompiledAndLinked();bool OnEnabled();
 } guiShader;
 enum class ShaderMethodGLES {SM_TEXTURE_NOBLEND,SM_TEXTURE_NOBLEND_PQ_TO_SDR};
@@ -112,10 +115,11 @@ void glEnable(int){}void glDisable(int){}void glBlendFuncSeparate(int,int,int,in
 void glVertexAttribPointer(int,int,int,int,int,const void*){}
 void glEnableVertexAttribArray(int){}void glDisableVertexAttribArray(int){}
 void glDrawElements(int,int,int,const void*){++draws;}
-'''.replace('@SHADER_FIELDS@', fields)
+'''.replace('@SHADER_FIELDS@', fields).replace('@GUI_SETTER@', function(header, 'void SetGuiColourAdjustment('))
     code = code.replace('struct CRenderSystemBase', extra + '\nstruct CRenderSystemBase', 1)
     code = code.replace(' bool current=true,ready=true;', r'''
- void EnableGUIShader(ShaderMethodGLES method){currentShader=method;assert(guiShader.OnEnabled());}
+ std::pair<float,float> guiColour{0.65f,1.4f};
+ void EnableGUIShader(ShaderMethodGLES method){currentShader=method;guiShader.SetGuiColourAdjustment(guiColour);assert(guiShader.OnEnabled());}
  void DisableGUIShader(){}
  void GetViewPort(CRect& r){r=CRect(0,0,1920,1080);}
  int GUIShaderGetPos(){return 0;}int GUIShaderGetCoord0(){return 1;}int GUIShaderGetDepth(){return 2;}
@@ -123,6 +127,7 @@ void glDrawElements(int,int,int,const void*){++draws;}
  int GUIShaderGetSdrBrightness(){return guiShader.m_hSdrBrightness;}
  int GUIShaderGetSdrSaturation(){return guiShader.m_hSdrSaturation;}
  int GUIShaderGetSubtitlePeak(){return guiShader.m_hSubtitlePeak;}
+ int GUIShaderGetGuiTuning(){return guiShader.m_hGuiTuning;}
  bool current=true,ready=true;''')
     code = code.replace('static CRenderSystemBase* GetRenderSystem()', 'static Window* GetWinSystem(){return &window;}static Settings* GetSettingsComponent(){return &settings;}\n static CRenderSystemGLES* GetRenderSystem()')
     state = function((ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/OverlayRenderer.h').read_text(), 'struct SRenderState') + ';'
@@ -132,6 +137,12 @@ void glDrawElements(int,int,int,const void*){++draws;}
         code = code.replace('namespace OVERLAY {', 'namespace OVERLAY {\n' + state, 1)
     code = code.replace('bool m_rawPqMenu=false,', 'bool m_discMenuOverlay=false;\n bool m_rawPqMenu=false,', 1)
     code = code.replace('~COverlayTextureGLES();bool IsValid()const;', '~COverlayTextureGLES();bool IsValid()const;void Render(SRenderState&);')
+    code = code.replace('~COverlayTextureGLES();', 'COverlayTextureGLES(const CDVDOverlaySpu&);\n ~COverlayTextureGLES();', 1)
+    util = (ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/OverlayRendererUtil.cpp').read_text()
+    code += '\nnamespace OVERLAY {\n#define clamp(x) (x) > 255.0 ? 255 : ((x) < 0.0 ? 0 : (int)(x + 0.5))\n'
+    code += function(util, 'static uint32_t build_rgba(const int yuv[3]') + '\n#undef clamp\n'
+    code += function(util, 'void convert_rgba(const CDVDOverlaySpu&') + '\n}\n'
+    code += function(renderer, 'COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlaySpu&')
     code += '\n' + function(shader, 'void CGLESShader::OnCompiledAndLinked()')
     code += '\n' + function(shader, 'bool CGLESShader::OnEnabled()')
     code += '\n' + function(renderer, 'void COverlayTextureGLES::Render(')
@@ -166,6 +177,21 @@ struct Classifier {
 
 DRAW_TESTS = r'''
 float value(const char* name){return uniforms.at(locations.at(name));}
+void checkGuiColour(bool bypass)
+{
+ assert(value("m_guiTuning")==(!bypass?1.0f:0.0f));
+ assert(value("m_guiPeak")==renderSystem.guiColour.first);
+ assert(value("m_guiSaturation")==renderSystem.guiColour.second);
+}
+void checkIsolatedDraw(COverlayTextureGLES& overlay,SRenderState& state)
+{
+ // First bind the same program as an ordinary GUI draw. Each overlay must
+ // explicitly close the GUI tuning gate even after a preceding warm bind.
+ renderSystem.EnableGUIShader(ShaderMethodGLES::SM_TEXTURE_NOBLEND);checkGuiColour(false);
+ overlay.Render(state);checkGuiColour(true);
+ // The next GUI draw must recover its nonneutral pair and reopen the gate.
+ renderSystem.EnableGUIShader(ShaderMethodGLES::SM_TEXTURE_NOBLEND);checkGuiColour(false);
+}
 int main(){
  guiShader.OnCompiledAndLinked();
  uniforms[guiShader.m_hSubtitlePeak]=0.3f;
@@ -210,6 +236,20 @@ int main(){
  auto rawImage=image;rawImage.m_isPqMenuGraphics=true;
  auto raw=make(rawImage,true);assert(!raw->m_isSdrSubtitle&&raw->m_rawPqMenu);
  raw->Render(state);assert(value("m_sdrBrightness")==1);
+ // Exercise the real SPU constructor and converter, not an image stand-in.
+ CDVDOverlaySpu spu;spu.width=spu.height=1;spu.alpha[1]=15;
+ spu.color[1][0]=180;spu.color[1][1]=spu.color[1][2]=128;
+ const uint16_t run=(1<<2)|1;std::memcpy(spu.result,&run,sizeof(run));
+ COverlayTextureGLES spuTexture(spu);assert(spuTexture.IsValid()&&!spuTexture.m_isSdrSubtitle);
+ auto plainPrepared=COverlayTextureGLES::PrepareImage(menu,false,renderSystem.CaptureRenderTarget(),true);
+ COverlayTextureGLES plainMenu(menu,source,std::move(plainPrepared));assert(plainMenu.m_plainPmaMenu);
+ for(const auto& pair:{std::pair<float,float>{0.65f,1.4f},std::pair<float,float>{1.6f,0.25f}})
+ {
+  renderSystem.guiColour=pair;
+  for(auto* overlay:{sdr.get(),hdrTexture.get(),menuTexture.get(),correctedMenu.get(),
+                    graphics.get(),otherCorrected.get(),noConversion.get(),raw.get(),
+                    &plainMenu,&spuTexture})checkIsolatedDraw(*overlay,state);
+ }
  // Source classification persists through immutable publication and cut-out copies.
  auto published=image.GetPublishedRenderContent();auto copy=std::static_pointer_cast<const CDVDOverlayImage>(published);
  assert(copy->m_canPosition&&!copy->m_isHdrPqSource);
@@ -256,7 +296,8 @@ def main():
     args = p.parse_args()
     snapshots, draw = snapshot_source(), draw_source()
     run(snapshots); run(draw)
-    print('PASS: production colour batch snapshots, cached cues, source/copy/provenance, uniform resets and HDR/menu routing')
+    print('PASS: production colour batch snapshots, cached cues, source/copy/provenance, '
+          'uniform resets, HDR/menu/SPU routing and nonneutral GUI isolation/restoration')
     if args.negative_controls:
         for label, code, old, new in [
             ('disabled correction ceiling active', snapshots, 'hasBitmap && settings->GetBool(\n      CSettings::SETTING_SUBTITLES_PGSHDRTOSDR) ?', 'hasBitmap ?'),
@@ -270,6 +311,10 @@ def main():
             ('menu eligible', draw, '!o.IsDiscMenuOverlay()', 'true'),
             ('brightness leaked to next GUI', draw, 'glUniform1f(m_hSdrBrightness, 1.0f);', ''),
             ('saturation leaked to next GUI', draw, 'glUniform1f(m_hSdrSaturation, 1.0f);', ''),
+            ('GUI bypass gate missing', draw, 'glUniform1f(renderSystem->GUIShaderGetGuiTuning(), 0.0f);', ''),
+            ('GUI gate reset missing', draw, 'glUniform1f(m_hGuiTuning, 1.0f);', ''),
+            ('GUI peak pair discarded', draw, 'glUniform1f(m_hGuiPeak, m_guiColour.first);', 'glUniform1f(m_hGuiPeak, 1.0f);'),
+            ('GUI saturation pair discarded', draw, 'glUniform1f(m_hGuiSaturation, m_guiColour.second);', 'glUniform1f(m_hGuiSaturation, 1.0f);'),
         ]:
             assert old in code, label
             run(code.replace(old, new, 1), True)

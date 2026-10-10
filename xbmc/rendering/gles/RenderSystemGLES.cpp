@@ -244,11 +244,14 @@ bool CRenderSystemGLES::BeginRender()
   // While the disc menu composite is active it encodes the GUI itself (PQ and
   // limited range at its output), so the per-primitive paths stand down.
   const bool menuComposite = CServiceBroker::GetWinSystem()->IsMenuCompositeActive();
+  m_guiColour = CServiceBroker::GetWinSystem()->GetGuiColourAdjustment();
+  const bool useGuiColour = m_guiColour != std::pair<float, float>{1.0f, 1.0f};
   const bool useLimited = CServiceBroker::GetWinSystem()->UseLimitedColor() && !menuComposite;
   const bool usePQ =
       CServiceBroker::GetWinSystem()->GetGfxContext().IsTransferPQ() && !menuComposite;
 
-  if (m_limitedColorRange != useLimited || m_transferPQ != usePQ)
+  if (m_limitedColorRange != useLimited || m_transferPQ != usePQ ||
+      m_guiColourEnabled != useGuiColour)
   {
     InvalidateRenderTarget();
     // Keep complete variants for the next transition. Retry a failed set only
@@ -257,7 +260,8 @@ bool CRenderSystemGLES::BeginRender()
         std::all_of(m_pShader.begin(), m_pShader.end(),
                     [](const auto& shader) { return shader.second != nullptr; }))
     {
-      const unsigned int variant = (m_limitedColorRange ? 1 : 0) | (m_transferPQ ? 2 : 0);
+      const unsigned int variant = (m_limitedColorRange ? 1 : 0) | (m_transferPQ ? 2 : 0) |
+                                   (m_guiColourEnabled ? 4 : 0);
       m_pShader.swap(m_shaderVariants[variant]);
     }
     else
@@ -265,6 +269,7 @@ bool CRenderSystemGLES::BeginRender()
 
     m_limitedColorRange = useLimited;
     m_transferPQ = usePQ;
+    m_guiColourEnabled = useGuiColour;
 
     InitialiseShaders();
   }
@@ -530,7 +535,8 @@ void CRenderSystemGLES::SetDepthCulling(DEPTH_CULLING culling)
 
 void CRenderSystemGLES::InitialiseShaders()
 {
-  const unsigned int variant = (m_limitedColorRange ? 1 : 0) | (m_transferPQ ? 2 : 0);
+  const unsigned int variant = (m_limitedColorRange ? 1 : 0) | (m_transferPQ ? 2 : 0) |
+                               (m_guiColourEnabled ? 4 : 0);
   if (!m_shaderVariants[variant].empty())
   {
     m_pShader.swap(m_shaderVariants[variant]);
@@ -547,6 +553,11 @@ void CRenderSystemGLES::InitialiseShaders()
   {
     defines += "#define KODI_TRANSFER_PQ 1\n";
   }
+
+  // Keep neutral GLSL arithmetic unchanged, including mediump rounding. Tuned
+  // variants are compiled once and reused as slider values change.
+  if (m_guiColourEnabled)
+    defines += "#define KODI_GUI_COLOUR 1\n";
 
   m_pShader[ShaderMethodGLES::SM_DEFAULT] =
       std::make_unique<CGLESShader>("gles_shader.vert", "gles_shader_default.frag", defines);
@@ -719,6 +730,7 @@ void CRenderSystemGLES::EnableGUIShader(ShaderMethodGLES method)
   m_method = method;
   if (m_pShader[m_method])
   {
+    m_pShader[m_method]->SetGuiColourAdjustment(m_guiColour);
     m_pShader[m_method]->Enable();
   }
   else
@@ -806,6 +818,11 @@ GLint CRenderSystemGLES::GUIShaderGetSubtitlePeak()
     return m_pShader[m_method]->GetSubtitlePeakLoc();
 
   return -1;
+}
+
+GLint CRenderSystemGLES::GUIShaderGetGuiTuning()
+{
+  return m_pShader[m_method] ? m_pShader[m_method]->GetGuiTuningLoc() : -1;
 }
 
 GLint CRenderSystemGLES::GUIShaderGetUniCol()

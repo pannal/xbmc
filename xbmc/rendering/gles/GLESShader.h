@@ -11,6 +11,7 @@
 #include "guilib/Shader.h"
 
 #include <string>
+#include <utility>
 
 class CGLESShader : public Shaders::CGLSLShaderProgram
 {
@@ -30,6 +31,8 @@ public:
   GLint GetSdrBrightnessLoc() { return m_hSdrBrightness; }
   GLint GetSdrSaturationLoc() { return m_hSdrSaturation; }
   GLint GetSubtitlePeakLoc() { return m_hSubtitlePeak; }
+  GLint GetGuiTuningLoc() { return m_hGuiTuning; }
+  void SetGuiColourAdjustment(std::pair<float, float> colour) { m_guiColour = colour; }
   GLint GetUniColLoc() { return m_hUniCol; }
   GLint GetCoord0MatrixLoc() { return m_hCoord0Matrix; }
   GLint GetFieldLoc() { return m_hField; }
@@ -69,6 +72,10 @@ protected:
   GLint m_hSdrBrightness{-1};
   GLint m_hSdrSaturation{-1};
   GLint m_hSubtitlePeak{-1};
+  GLint m_hGuiTuning{-1};
+  GLint m_hGuiPeak{-1};
+  GLint m_hGuiSaturation{-1};
+  std::pair<float, float> m_guiColour{1.0f, 1.0f};
 
   const GLfloat *m_proj;
   const GLfloat *m_model;

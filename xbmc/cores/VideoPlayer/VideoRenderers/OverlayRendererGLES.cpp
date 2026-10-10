@@ -647,6 +647,8 @@ void COverlayTextureGLES::Render(SRenderState& state)
   renderSystem->EnableGUIShader(m_isHdrPqAuthored
                                     ? ShaderMethodGLES::SM_TEXTURE_NOBLEND_PQ_TO_SDR
                                     : ShaderMethodGLES::SM_TEXTURE_NOBLEND);
+  // All bitmap/navigation graphics keep their own colour and transfer policy.
+  glUniform1f(renderSystem->GUIShaderGetGuiTuning(), 0.0f);
 
   if (m_isHdrPqAuthored)
   {

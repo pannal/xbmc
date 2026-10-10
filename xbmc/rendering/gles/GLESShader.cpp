@@ -24,6 +24,7 @@ CGLESShader::CGLESShader(const char* shader, const std::string& prefix)
 
   VertexShader()->LoadSource("gles_shader.vert");
   PixelShader()->LoadSource(shader, prefix);
+  PixelShader()->InsertSource("gui_colour.frag", "void main");
 }
 
 CGLESShader::CGLESShader(const char* vshader, const char* fshader, const std::string& prefix)
@@ -34,6 +35,7 @@ CGLESShader::CGLESShader(const char* vshader, const char* fshader, const std::st
 
   VertexShader()->LoadSource(vshader, prefix);
   PixelShader()->LoadSource(fshader, prefix);
+  PixelShader()->InsertSource("gui_colour.frag", "void main");
 }
 
 void CGLESShader::OnCompiledAndLinked()
@@ -62,6 +64,9 @@ void CGLESShader::OnCompiledAndLinked()
   m_hSdrBrightness = glGetUniformLocation(ProgramHandle(), "m_sdrBrightness");
   m_hSdrSaturation = glGetUniformLocation(ProgramHandle(), "m_sdrSaturation");
   m_hSubtitlePeak = glGetUniformLocation(ProgramHandle(), "m_subtitlePeak");
+  m_hGuiTuning = glGetUniformLocation(ProgramHandle(), "m_guiTuning");
+  m_hGuiPeak = glGetUniformLocation(ProgramHandle(), "m_guiPeak");
+  m_hGuiSaturation = glGetUniformLocation(ProgramHandle(), "m_guiSaturation");
 
   // Vertex attributes
   m_hPos    = glGetAttribLocation(ProgramHandle(),  "m_attrpos");
@@ -185,6 +190,9 @@ bool CGLESShader::OnEnabled()
   glUniform1f(m_hSdrBrightness, 1.0f);
   glUniform1f(m_hSdrSaturation, 1.0f);
   glUniform1f(m_hSubtitlePeak, 1.0f);
+  glUniform1f(m_hGuiTuning, 1.0f);
+  glUniform1f(m_hGuiPeak, m_guiColour.first);
+  glUniform1f(m_hGuiSaturation, m_guiColour.second);
 
   const float sdrPeak = CServiceBroker::GetWinSystem()->GetGuiSdrPeakLuminance();
   glUniform1f(m_sdrPeak, sdrPeak);

@@ -142,6 +142,10 @@ void main ()
     rgb.rgb *= m_subtitlePeak;
 #endif
 
+#if defined(KODI_GUI_COLOUR) && !defined(KODI_PQ_TO_SDR)
+  rgb.rgb = guiColour(rgb.rgb);
+#endif
+
 #if defined(KODI_LIMITED_RANGE)
   rgb.rgb *= (235.0 - 16.0) / 255.0;
   rgb.rgb += mix(1.0, rgb.a, m_pma) * 16.0 / 255.0;

@@ -20,6 +20,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct RESOLUTION_WHR
@@ -231,6 +232,8 @@ public:
   virtual CHDRCapabilities GetDisplayHDRCapabilities() const { return {}; }
   static const char* SETTING_WINSYSTEM_IS_HDR_DISPLAY;
   virtual float GetGuiSdrPeakLuminance() const { return .0f; }
+  // GUI-only encoded white scale and linear-light saturation; neutral elsewhere.
+  virtual std::pair<float, float> GetGuiColourAdjustment() const { return {1.0f, 1.0f}; }
   virtual bool HasSystemSdrPeakLuminance() { return false; }
 
   /*!

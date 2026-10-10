@@ -23,9 +23,10 @@ def main():
     enum = re.search(r'enum class ShaderMethodGLES\s*\{.*?\};', header, re.S).group()
     fields = '\n'.join(re.search(pattern, header).group() for pattern in [
         r'using ShaderSet = [^\n]+;', r'ShaderSet m_pShader;',
-        r'std::array<ShaderSet, 4> m_shaderVariants;'])
+        r'std::array<ShaderSet, 8> m_shaderVariants;'])
     methods = '\n'.join(function(gles, signature) for signature in [
         'bool CRenderSystemGLES::BeginRender()',
+        'void CRenderSystemGLES::EnableGUIShader(',
         'void CRenderSystemGLES::InitialiseShaders()',
         'void CRenderSystemGLES::ReleaseShaderSet(',
         'void CRenderSystemGLES::ReleaseShaders('])
@@ -43,16 +44,19 @@ def main():
             cpp.write_text(source + body + TESTS)
             subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++17', '-Wall', '-Wextra',
                             '-Werror', '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                            '-fno-pie', '-no-pie',
                             str(cpp), '-o', str(binary)], check=True)
-            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True,
+                                    env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'})
             if should_pass:
                 assert result.returncode == 0, result.stdout + result.stderr
             else:
                 assert result.returncode != 0 and 'Assertion' in result.stderr, result.stderr
 
         run(methods, 'production')
-        print('GLES shader cache: PASS (four-state identity/defines/reuse, stable frames, '
-              'menu suppression, failed-set retries, release/abandon; ASan/UBSan)')
+        print('GLES shader cache: PASS (four legacy/eight tuned-state identity/defines/reuse, stable frames, '
+              'menu suppression, frame colour snapshots/forwarding, failed-set retries, '
+              'release/abandon; ASan/UBSan)')
         if '--mutations' in sys.argv:
             mutations = {
                 'no-cache-hit': ('if (!m_shaderVariants[variant].empty())', 'if (false)'),
@@ -61,6 +65,11 @@ def main():
                 'no-invalidation': ('InvalidateRenderTarget();', ''),
                 'leak-inactive': ('ReleaseShaderSet(shaders, abandon);', '(void)shaders;'),
                 'delete-abandoned': ('shader.second->Abandon();', '(void)shader;'),
+                'no-colour-snapshot': ('m_guiColour = CServiceBroker::GetWinSystem()->GetGuiColourAdjustment();', ''),
+                'no-colour-forwarding': ('m_pShader[m_method]->SetGuiColourAdjustment(m_guiColour);', ''),
+                'live-colour-at-bind': ('SetGuiColourAdjustment(m_guiColour)',
+                                       'SetGuiColourAdjustment(CServiceBroker::GetWinSystem()->GetGuiColourAdjustment())'),
+                'lose-colour-key': ('(m_guiColourEnabled ? 4 : 0)', '0'),
             }
             for name, (old, new) in mutations.items():
                 assert old in methods
@@ -75,15 +84,22 @@ PRELUDE = r'''
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 @ENUM@
 constexpr int LOGERROR=1;
 struct CLog { template<class... T> static void Log(int,const char*,T&&...){} };
 int currentContext=1, nextProgram=0, compiles=0, deletions=0, abandons=0, failAt=0;
 std::map<int,int> livePrograms;
+struct Bind {int program;std::pair<float,float> colour;};
+std::vector<Bind> binds;
 struct CGLESShader
 {
   std::string prefix;
   int program=0;
+  std::pair<float,float> colour{1.0f,1.0f};
+  void SetGuiColourAdjustment(std::pair<float,float> value){colour=value;}
+  void Enable(){assert(currentContext && livePrograms.at(program)==currentContext);binds.push_back({program,colour});}
   CGLESShader(const char*,const std::string& p):prefix(p){}
   CGLESShader(const char*,const char*,const std::string& p):prefix(p){}
   ~CGLESShader(){Free();}
@@ -109,20 +125,26 @@ struct Gfx {bool pq=false;bool IsTransferPQ(){return pq;}};
 struct Win
 {
   bool menu=false,limited=false;Gfx gfx;
+  std::pair<float,float> colour{1.0f,1.0f};int colourReads=0;
   bool IsMenuCompositeActive(){return menu;}
   bool UseLimitedColor(){return limited;}
+  std::pair<float,float> GetGuiColourAdjustment(){++colourReads;return colour;}
   Gfx& GetGfxContext(){return gfx;}
 } win;
 struct CServiceBroker{static Win* GetWinSystem(){return &win;}};
 struct CRenderSystemGLES
 {
   bool m_limitedColorRange=false,m_transferPQ=false,renderable=true,oes=false;
+  std::pair<float,float> m_guiColour{1.0f,1.0f};
+  bool m_guiColourEnabled=false;
+  ShaderMethodGLES m_method=ShaderMethodGLES::SM_DEFAULT;
   int generation=1;
   bool CanRender(){return renderable && currentContext;}
   bool IsExtSupported(const char*){return oes;}
   void DrainTextureResources(){}
   void InvalidateRenderTarget(){++generation;}
   bool BeginRender();void InitialiseShaders();void ReleaseShaders(bool abandon=false);
+  void EnableGUIShader(ShaderMethodGLES);
   @FIELDS@
   static void ReleaseShaderSet(ShaderSet&,bool);
 };
@@ -137,6 +159,7 @@ Ids programs(const CRenderSystemGLES& r)
 void select(unsigned int variant)
 {
   win.menu=false;win.limited=(variant&1)!=0;win.gfx.pq=(variant&2)!=0;
+  win.colour=(variant&4)?std::pair<float,float>{0.65f,1.4f}:std::pair<float,float>{1.0f,1.0f};
 }
 void checkDefines(const CRenderSystemGLES& r,unsigned int variant)
 {
@@ -150,8 +173,50 @@ void checkDefines(const CRenderSystemGLES& r,unsigned int variant)
     {
       assert((prefix.find("KODI_LIMITED_RANGE")!=std::string::npos)==((variant&1)!=0));
       assert((prefix.find("KODI_TRANSFER_PQ")!=std::string::npos)==((variant&2)!=0));
+      assert((prefix.find("KODI_GUI_COLOUR")!=std::string::npos)==((variant&4)!=0));
     }
   }
+}
+void checkBind(CRenderSystemGLES& r,ShaderMethodGLES method,std::pair<float,float> expected)
+{
+  const auto previous=binds.size();const int reads=win.colourReads;
+  r.EnableGUIShader(method);
+  assert(r.m_method==method && binds.size()==previous+1);
+  assert(binds.back().program==r.m_pShader.at(method)->program);
+  assert(binds.back().colour==expected && win.colourReads==reads);
+}
+void checkFrameColour(bool oes)
+{
+  CRenderSystemGLES r;r.oes=oes;select(0);r.InitialiseShaders();
+  const int count=oes?15:13,start=compiles-count,deleted=deletions;
+  std::array<Ids,8> expected;
+  for(unsigned int v=0;v<8;++v)
+  {
+    select(v);const int reads=win.colourReads;assert(r.BeginRender());
+    assert(win.colourReads==reads+1);
+    expected[v]=programs(r);checkDefines(r,v);
+  }
+  assert(compiles-start==8*count);
+  // A warm shader set takes one pair per frame and forwards that immutable
+  // pair to every method, including binds after the source settings change.
+  const std::pair<float,float> first{0.65f,1.4f},second{1.6f,0.25f};
+  for(int cycle=0;cycle<20;++cycle)
+    for(unsigned int v=0;v<8;++v)
+    {
+      select(v);const auto captured=win.colour;const int reads=win.colourReads;
+      assert(r.BeginRender() && win.colourReads==reads+1);
+      assert(programs(r)==expected[v]);checkDefines(r,v);
+      for(const auto& shader:r.m_pShader)checkBind(r,shader.first,captured);
+      win.colour=(v&4)?second:first;
+      for(const auto& shader:r.m_pShader)checkBind(r,shader.first,captured);
+      assert(r.BeginRender() && win.colourReads==reads+2);
+      assert(programs(r)==expected[v|4]);checkDefines(r,v|4);
+      for(const auto& shader:r.m_pShader)checkBind(r,shader.first,win.colour);
+      assert(compiles-start==8*count && deletions==deleted);
+    }
+  r.renderable=false;const int blockedReads=win.colourReads;
+  assert(!r.BeginRender() && win.colourReads==blockedReads);r.renderable=true;
+  r.ReleaseShaders();assert(livePrograms.empty() && deletions-deleted==8*count);
 }
 '''
 
@@ -183,7 +248,8 @@ int main()
     win.menu=true;assert(r.BeginRender());assert(programs(r)==expected[0]);
     win.menu=false;assert(r.BeginRender());assert(programs(r)==expected[3]);
     currentContext=0;const int generation=r.generation;
-    assert(!r.BeginRender());assert(r.generation==generation);
+    const int lostReads=win.colourReads;
+    assert(!r.BeginRender());assert(r.generation==generation && win.colourReads==lostReads);
     currentContext=1;r.ReleaseShaders();
     assert(livePrograms.empty() && deletions-deleted==4*count);
     assert(r.m_pShader.empty());for(const auto& v:r.m_shaderVariants)assert(v.empty());
@@ -215,6 +281,7 @@ int main()
   const int beforeDelete=deletions,beforeAbandon=abandons;
   currentContext=0;r.ReleaseShaders(true);
   assert(deletions==beforeDelete && abandons-beforeAbandon==52 && livePrograms.empty());
+  currentContext=1;checkFrameColour(false);checkFrameColour(true);
 }
 '''
 
