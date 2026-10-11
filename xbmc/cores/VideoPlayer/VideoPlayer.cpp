@@ -3817,6 +3817,7 @@ CVideoRecoveryGate::Conditions CVideoPlayer::GetVideoRecoveryConditions(uint64_t
   conditions.decoderOutputBlocked = playback.DecoderOutputBlocked();
   conditions.displayAvailable = !m_displayLost;
   conditions.endOfStream = m_videoRecoveryEndOfStream;
+  conditions.position = std::chrono::milliseconds(llrint(m_State.time));
   const auto menus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
   conditions.sourceEligible =
       (!menus || menus->IsTimeSearchAllowed()) && m_pInputStream && m_pDemuxer &&
@@ -4006,7 +4007,7 @@ void CVideoPlayer::HandleMessages()
       }
 
       if (msg.IsVideoRecovery())
-        m_videoRecoveryGate.OnExecute();
+        m_videoRecoveryGate.OnExecute(std::chrono::milliseconds(llrint(m_State.time)));
 
       const ECacheState cacheStateBeforeSeek = m_caching;
       if (!msg.GetTrickPlay())

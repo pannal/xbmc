@@ -33,6 +33,13 @@ CVideoRecoveryGate::Conditions EligibleConditions()
   return conditions;
 }
 
+CVideoRecoveryGate::Conditions EligibleAt(std::chrono::milliseconds position)
+{
+  auto conditions = EligibleConditions();
+  conditions.position = position;
+  return conditions;
+}
+
 CVideoRecoveryPlaybackState BlockedStartup()
 {
   CVideoRecoveryPlaybackState state;
@@ -268,15 +275,15 @@ TEST(TestVideoRecoveryGate, CooldownSurvivesRecoveryFlush)
   EXPECT_TRUE(gate.TryBegin(START + 60s, EligibleConditions()));
 }
 
-TEST(TestVideoRecoveryGate, LimitsRecoveriesPerStream)
+TEST(TestVideoRecoveryGate, LimitsRecoveriesPerSection)
 {
   CVideoRecoveryGate gate;
 
   EXPECT_TRUE(gate.TryBegin(START, EligibleConditions()));
-  gate.OnExecute();
+  gate.OnExecute(0ms);
   gate.OnFlush();
   EXPECT_TRUE(gate.TryBegin(START + 60s, EligibleConditions()));
-  gate.OnExecute();
+  gate.OnExecute(0ms);
   gate.OnFlush();
   // Damaged input re-reached after each reseek: no third automatic recovery.
   EXPECT_FALSE(gate.TryBegin(START + 120s, EligibleConditions()));
@@ -285,6 +292,65 @@ TEST(TestVideoRecoveryGate, LimitsRecoveriesPerStream)
   // A replacement stream gets a fresh budget.
   gate.Reset();
   EXPECT_TRUE(gate.TryBegin(START + 601s, EligibleConditions()));
+}
+
+TEST(TestVideoRecoveryGate, PlaybackPastTheSectionRestoresTheBudget)
+{
+  CVideoRecoveryGate gate;
+
+  EXPECT_TRUE(gate.TryBegin(START, EligibleAt(20min)));
+  gate.OnExecute(20min);
+  gate.OnFlush();
+  EXPECT_TRUE(gate.TryBegin(START + 60s, EligibleAt(25min)));
+  gate.OnExecute(25min);
+  gate.OnFlush();
+
+  // The section is measured from the last recovery, not the first.
+  EXPECT_FALSE(gate.TryBegin(START + 120s, EligibleAt(34min)));
+  EXPECT_TRUE(gate.TryBegin(START + 180s, EligibleAt(35min)));
+  gate.OnExecute(35min);
+  gate.OnFlush();
+
+  // The new section has the full budget.
+  EXPECT_TRUE(gate.TryBegin(START + 240s, EligibleAt(36min)));
+  gate.OnExecute(36min);
+  gate.OnFlush();
+  EXPECT_FALSE(gate.TryBegin(START + 300s, EligibleAt(37min)));
+}
+
+TEST(TestVideoRecoveryGate, ReturningToTheSectionKeepsTheBudgetSpent)
+{
+  CVideoRecoveryGate gate;
+
+  EXPECT_TRUE(gate.TryBegin(START, EligibleAt(20min)));
+  gate.OnExecute(20min);
+  gate.OnFlush();
+  EXPECT_TRUE(gate.TryBegin(START + 60s, EligibleAt(20min)));
+  gate.OnExecute(20min);
+  gate.OnFlush();
+
+  // Replaying into the damaged section from just before it must not reseek again.
+  EXPECT_FALSE(gate.TryBegin(START + 120s, EligibleAt(11min)));
+  EXPECT_FALSE(gate.TryBegin(START + 180s, EligibleAt(29min)));
+  // A wedge well before it is a different section.
+  EXPECT_TRUE(gate.TryBegin(START + 240s, EligibleAt(5min)));
+}
+
+TEST(TestVideoRecoveryGate, IneligibleRequestDoesNotRestoreTheBudget)
+{
+  CVideoRecoveryGate gate;
+
+  EXPECT_TRUE(gate.TryBegin(START, EligibleAt(20min)));
+  gate.OnExecute(20min);
+  gate.OnFlush();
+  EXPECT_TRUE(gate.TryBegin(START + 60s, EligibleAt(20min)));
+  gate.OnExecute(20min);
+  gate.OnFlush();
+
+  auto paused = EligibleAt(31min);
+  paused.normalPlayback = false;
+  EXPECT_FALSE(gate.TryBegin(START + 120s, paused));
+  EXPECT_FALSE(gate.TryBegin(START + 180s, EligibleAt(20min)));
 }
 
 TEST(TestVideoRecoveryGate, CanceledRecoveriesKeepTheBudget)

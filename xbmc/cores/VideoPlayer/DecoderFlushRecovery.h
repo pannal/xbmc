@@ -94,13 +94,21 @@ public:
     // The demuxer reached the end of input and the tail is draining: a reseek
     // would cut, interrupt or replay the ending.
     bool endOfStream{false};
+    // Current playback position, for the per-section budget.
+    std::chrono::milliseconds position{0};
   };
 
   bool TryBegin(TimePoint now, const Conditions& conditions)
   {
+    // Playback is well away from the last recovery: a new wedge is not the same damaged section.
+    const bool newSection =
+        std::chrono::abs(conditions.position - m_lastRecoveryPosition) >= RECOVERY_SECTION;
     if (!ConditionsEligible(conditions) || m_recoveryPending || now < m_cooldownUntil ||
-        m_attempts >= RECOVERY_ATTEMPTS_PER_STREAM)
+        (!newSection && m_attempts >= RECOVERY_ATTEMPTS_PER_SECTION))
       return false;
+
+    if (newSection)
+      m_attempts = 0;
 
     m_recoveryPending = true;
     m_cooldownUntil = now + RECOVERY_COOLDOWN;
@@ -112,9 +120,13 @@ public:
     return m_recoveryPending && ConditionsEligible(conditions);
   }
 
-  // The recovery seek starts: only executed recoveries use up the per-stream budget,
+  // The recovery seek starts: only executed recoveries use up the budget,
   // so one superseded by a user seek or canceled at end of stream does not.
-  void OnExecute() { ++m_attempts; }
+  void OnExecute(std::chrono::milliseconds position)
+  {
+    ++m_attempts;
+    m_lastRecoveryPosition = position;
+  }
   void CancelPending() { m_recoveryPending = false; }
   void OnFlush() { CancelPending(); }
 
@@ -123,6 +135,7 @@ public:
     m_recoveryPending = false;
     m_cooldownUntil = {};
     m_attempts = 0;
+    m_lastRecoveryPosition = {};
   }
 
 private:
@@ -137,11 +150,16 @@ private:
 
   static constexpr std::chrono::seconds RECOVERY_COOLDOWN{60};
   // Repeated timeouts cannot tell a decoder wedge from damaged input: a reseek
-  // into the same broken section must not repeat for the rest of the stream.
-  // After this many, only the local reset remains (the behaviour before recovery).
-  static constexpr unsigned int RECOVERY_ATTEMPTS_PER_STREAM{2};
+  // into the same broken section must not repeat. After this many, only the
+  // local reset remains (the behaviour before recovery) until playback is
+  // RECOVERY_SECTION away from the last recovery, or a new stream starts.
+  // The position is the player clock, which keeps running on A/V content
+  // while video is stalled: such a stall gets one reseek per section.
+  static constexpr unsigned int RECOVERY_ATTEMPTS_PER_SECTION{2};
+  static constexpr std::chrono::minutes RECOVERY_SECTION{10};
 
   TimePoint m_cooldownUntil{};
   unsigned int m_attempts{0};
+  std::chrono::milliseconds m_lastRecoveryPosition{0};
   bool m_recoveryPending{false};
 };
