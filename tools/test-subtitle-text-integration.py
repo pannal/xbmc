@@ -70,6 +70,8 @@ def generate(baseline=None):
                 'SRenderState CRenderer::CalculateRenderState(', 'std::shared_ptr<COverlay> CRenderer::ConvertLibass(']:
         code += '\n' + FUNCTION(renderer, sig)
     manager = source(VIDEO + 'VideoRenderers/RenderManager.cpp', baseline)
+    if 'CRect CRenderManager::CalcPictureActiveArea(' in manager:
+        code += '\n' + FUNCTION(manager, 'CRect CRenderManager::CalcPictureActiveArea(')
     code += '\n' + FUNCTION(manager, 'CRect CRenderManager::CalcOverlayActiveArea(')
     if not baseline:
         # Real call-site contracts; execution below covers the called policies.
@@ -144,7 +146,8 @@ struct Cache {
  void ClearVideoDoViFrameMetadata(){meta={};pts=-1;++clears;}
 } cache;
 struct CSettings{static constexpr int SETTING_SUBTITLES_DETECTACTIVEAREA=1,
- SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_USER_POS=2,SETTING_SUBTITLES_BITMAPZOOM=3;};
+ SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_USER_POS=2,SETTING_SUBTITLES_BITMAPZOOM=3,
+ SETTING_COREELEC_AMLOGIC_DV_LEVEL5=4;};
 struct Settings{
  bool detect=true,applyMargin=false;int zoom=100;
  bool GetBool(int id){return id==1?detect:applyMargin;}int GetInt(int){return zoom;}
@@ -257,6 +260,7 @@ enum class StreamHdrType{HDR_TYPE_NONE,HDR_TYPE_DOLBYVISION};
 struct CRenderManager{
  struct Picture{int iWidth=3840,iHeight=2160;std::string stereoMode;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE;}m_picture;
  CRenderer m_overlays;CRect CalcOverlayActiveArea(CRect&,CRect&,CRect&,bool,double);
+ CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool);
 };
 '''
 

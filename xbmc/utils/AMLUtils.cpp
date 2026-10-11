@@ -3148,18 +3148,19 @@ static DetectEdgeMeasurement detect_refine_edge(const Luma& getY, int width, int
   const int length = vertical ? height : width;
   const int cross = vertical ? width : height;
   const int strip = std::min(64, cross / 2);
-  uint16_t earliest = original;
+  auto average = [&](int lane, int depth) -> uint32_t {
+    const int start = lane * (cross - strip) / (lanes - 1);
+    const int pos = reverse ? length - 1 - depth : depth;
+    uint32_t sum = 0;
+    for (int i = 0; i < strip; ++i)
+      sum += vertical ? getY(pos, start + i) : getY(start + i, pos);
+    return sum / strip;
+  };
+  // Classify the outer edge before an inward strip can reject refinement.
+  // Known zero from any bright outer strip must not depend on lane order.
   for (int lane = 0; lane < lanes; ++lane)
   {
-    const int start = lane * (cross - strip) / (lanes - 1);
-    auto average = [&](int depth) -> uint32_t {
-      const int pos = reverse ? length - 1 - depth : depth;
-      uint32_t sum = 0;
-      for (int i = 0; i < strip; ++i)
-        sum += vertical ? getY(pos, start + i) : getY(start + i, pos);
-      return sum / strip;
-    };
-    const uint32_t border = average(0);
+    const uint32_t border = average(lane, 0);
     result.borders[lane] = static_cast<uint16_t>(border);
     // A bright outer strip is direct full-frame/bar-intrusion evidence.
     if (border > 24)
@@ -3170,11 +3171,16 @@ static DetectEdgeMeasurement detect_refine_edge(const Luma& getY, int width, int
       result.depth = 0;
       return result;
     }
+  }
+  uint16_t earliest = original;
+  for (int lane = 0; lane < lanes; ++lane)
+  {
+    const uint32_t border = result.borders[lane];
     for (int depth = 1; depth < original; ++depth)
     {
       // Six 8-bit luma codes tolerate compressed black without making the
       // threshold depend on an unrelated bright object at the frame centre.
-      const uint32_t level = average(depth);
+      const uint32_t level = average(lane, depth);
       if (level > border + 6)
       {
         if (result.departures[lane] == UINT16_MAX)

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Production pixel extraction -> consensus/snap -> publication -> real libass bounds.
 
-Controlled images demonstrate estimator failure, not the unseen pixels in '9'.
+Synthetic controls and optional hash-pinned native frames cover measured edges.
+Two native frames do not establish seven-position film acceptance.
 Decode/VFS and GPU are boundaries, as in the retained connected fixture.
 """
 import argparse
+import hashlib
+import json
 from pathlib import Path
 import runpy
 import subprocess
@@ -14,7 +17,7 @@ DETECTOR = runpy.run_path(str(ROOT / 'tools/test-subtitle-active-area-detection.
 TEXT = runpy.run_path(str(ROOT / 'tools/test-subtitle-text-integration.py'))
 
 
-def generate(baseline=None):
+def generate(baseline=None, native_frames=None):
     aml = TEXT['source']('xbmc/utils/AMLUtils.cpp', baseline)
     pixel = DETECTOR['source'](aml)
     prefix = DETECTOR['PREFIX']
@@ -24,7 +27,10 @@ def generate(baseline=None):
     # Renderer/lifecycle code stays at the current version. Only the pixel
     # estimator changes in the original-versus-corrected comparison.
     connected = TEXT['generate']().replace('int main(int argc,char** argv)', 'void retainedMain(int argc,char** argv)', 1)
-    return connected + formats + frame + '\nstruct Result {uint16_t top,bottom,left,right;bool rejected{false};};\nconstexpr int DV_DETECT_SKIP_IMAX=6;\n' + bodies + TESTS
+    native = ''
+    if native_frames:
+        native = '#include <fstream>\n#define NATIVE_NINE_FRAMES 1\nstatic const char* nativeFramePaths[]={' + ','.join(json.dumps(str(path)) for path in native_frames) + '};\n'
+    return connected + formats + frame + '\nstruct Result {uint16_t top,bottom,left,right;bool rejected{false};};\nconstexpr int DV_DETECT_SKIP_IMAX=6;\n' + bodies + native + TESTS
 
 
 TESTS = r'''
@@ -201,9 +207,88 @@ void darkEvidence(){
 #endif
  std::cout<<"PASS: realistic dark picture may trigger return-to-black; uncertainty is separate from measured0, remains in coverage, cannot manufacture paired support or hide known framing vetoes\n";
 }
+void outerEvidence(){
+ // A known bright outer strip must not be hidden by an earlier lane's
+ // uncertain inner stripe. Keep the zero as smaller-bound veto evidence.
+ for(int brightLane=1;brightLane<9;++brightLane){
+  PixelImage image;image.fill(40,40,0,0,90,90,40,40);
+  for(int x=0;x<64;++x)image.bytes[20*1920+x]=24;
+  int start=brightLane*(1920-64)/8;
+  for(int x=start;x<start+64;++x)image.bytes[x]=200;
+  auto ordered=image.edges();assert(ordered.top==0&&!ordered.rejected);
+  std::vector<Result> scans(7,Result{20,20,0,0,false});scans[6]=ordered;DetectResult result{};
+  assert(!sampleSelect(scans,1920,1080,result));
+ }
+ std::cout<<"PASS: all8 later outer lanes establish known zero before inward uncertainty; known smaller framing still vetoes\n";
+}
+void barGraphicControls(){
+ PixelImage image;DetectResult result{};
+ // The rejected majority profile hid wider framing as a unilateral outlier.
+ for(int flash:{19,20}){
+  image.fill(40,40,0,0,90,90,40,40);
+  for(int depth=20;depth<40;++depth)for(int x=0;x<1920;++x)
+   if(x<900||x>=1020)image.bytes[(1079-depth)*1920+x]=90;
+  for(int x=928;x<992;++x)image.bytes[(1079-flash)*1920+x]=24;
+  auto edge=image.edges();assert(edge.top==40&&edge.bottom==Unobserved&&edge.rejected);
+  std::vector<Result> scans(7,Result{20,20,0,0,false});scans[6]=edge;
+  assert(!sampleSelect(scans,1920,1080,result));
+ }
+ // A narrower return-to-black threshold misreads slightly raised black in
+ // the rest of a bar as picture. Keep the observed dim-return veto intact.
+ for(int level:{16,18,20,22}){
+  image.fill(40,40,0,0,90,90,40,40);
+  for(int depth=20;depth<40;++depth)for(int x=0;x<1920;++x){
+   int value=depth<28?24:level;image.bytes[depth*1920+x]=value;image.bytes[(1079-depth)*1920+x]=value;
+  }
+  auto edge=image.edges();assert(edge.top==Unobserved&&edge.bottom==Unobserved&&edge.rejected);
+  std::vector<Result> scans(7,Result{20,20,0,0,false});scans[6]=edge;
+  assert(!sampleSelect(scans,1920,1080,result));
+ }
+ std::cout<<"PASS:2 centre-flash and4 raised-black stripe counterexamples retain whole-scan rejection\n";
+}
+#ifdef NATIVE_NINE_FRAMES
+Result readNativeFrame(const char* path){
+ std::ifstream in(path,std::ios::binary);std::string magic;int width,height,maxval;
+ in>>magic>>width>>height>>maxval;in.get();assert(magic=="P5"&&width==1920&&height==1080&&maxval==255);
+ PixelImage image;in.read(reinterpret_cast<char*>(image.bytes.data()),image.bytes.size());
+ assert(in.gcount()==static_cast<long>(image.bytes.size()));return image.edges();
+}
+DetectResult nativeFrames(){
+ auto rejected=readNativeFrame(nativeFramePaths[0]);
+ assert(rejected.top==Unobserved&&rejected.bottom==Unobserved&&rejected.rejected);
+ assert(edgeMeasurements[0].reason==DetectEdgeReason::RETURN_TO_BLACK&&edgeMeasurements[1].reason==DetectEdgeReason::RETURN_TO_BLACK);
+ assert(edgeMeasurements[0].original==123&&edgeMeasurements[0].lane==6&&edgeMeasurements[0].depth==92);
+ assert(edgeMeasurements[1].original==223&&edgeMeasurements[1].lane==4&&edgeMeasurements[1].depth==38);
+ auto corrected=readNativeFrame(nativeFramePaths[1]);
+ assert(corrected.top==20&&corrected.bottom==20&&corrected.left==0&&corrected.right==0&&!corrected.rejected);
+ assert(edgeMeasurements[3].original==594&&edgeMeasurements[3].reason==DetectEdgeReason::BRIGHT_OUTER&&edgeMeasurements[3].lane==1);
+ uint16_t t[]={20,20},b[]={20,20},z[]={0,0};DetectResult result{};
+ assert(!Select(t,b,z,z,2,1920,1080,result));
+ // HYBRID, not seven movie observations:6 varied generated frames+real30%.
+ PixelImage image;std::vector<Result> hybrid;
+ for(int i=0;i<6;++i){image.fill(20,20,0,0,26+i%3,50+i*3,123+i*9,223+i*7);hybrid.push_back(image.edges());}
+ hybrid.push_back(corrected);assert(sampleSelect(hybrid,1920,1080,result)&&result.top==21&&result.bottom==21);
+ auto accepted=result;
+ hybrid[5]=rejected;assert(!sampleSelect(hybrid,1920,1080,result));
+ image.fill(40,40,0,0);hybrid[5]=image.edges();assert(!sampleSelect(hybrid,1920,1080,result));
+ image.fill(0,0,0,0,80,90,0,0);
+ for(int x=928;x<992;++x){image.bytes[x]=120;image.bytes[1079*1920+x]=120;}
+ hybrid[5]=image.edges();assert(hybrid[5].top==0&&hybrid[5].bottom==0&&!hybrid[5].rejected);
+ assert(!sampleSelect(hybrid,1920,1080,result));
+ std::cout<<"PASS: actual30%20/20/0/0; actual45% still rejected;2samples cannot publish; explicit hybrid6synthetic+1native reaches consensus and retains conflicting-frame vetoes\n";
+ return accepted;
+}
+#endif
 int main(int argc,char** argv){
  assert(argc==2&&ass_library_version()==LIBASS_VERSION&&LIBASS_VERSION>=0x01704000);
- darkEvidence();auto result=pixels();ready();select(false,1920,1080);int before=writes.load();
+#ifdef NATIVE_NINE_FRAMES
+ auto native=nativeFrames();
+#endif
+ darkEvidence();auto result=pixels();outerEvidence();barGraphicControls();
+#ifdef NATIVE_NINE_FRAMES
+ result=native;
+#endif
+ ready();select(false,1920,1080);int before=writes.load();
  CRenderManager manager;manager.m_picture.iWidth=1920;manager.m_picture.iHeight=1080;manager.m_overlays.m_rs={0,0,1920,1080};
  auto c=cue(argv[1],"Tijd om te vertrekken.\\N- Hoezo? gypq");auto st=makeStyle();
  auto initial=draw(manager,c,st,true,true);assert(!s_detectSource->result);
@@ -223,20 +308,36 @@ def main():
     parser.add_argument('--ass-library', required=True)
     parser.add_argument('--font', type=Path, default=Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'))
     parser.add_argument('--baseline', help='Original estimator; must fail after successful strict compilation')
+    parser.add_argument('--native-nine-frames', type=Path, help='Optional directory containing the two hash-pinned original PGMs; no full-film acceptance claim')
     parser.add_argument('--negative-controls', action='store_true')
     args = parser.parse_args()
     # The surrounding renderer stays current even in the pixel-baseline replay.
     revision = args.baseline
     args.baseline = None
-    code = generate(revision)
+    native_frames = None
+    if args.native_nine_frames:
+        fixtures = [
+            ('nine-45pct-pts2144309.pgm', '23c90045e9a2665b2bfa71a4f1c8d14952d6c29ae80bfb1fbe4447b811ba222a'),
+            ('nine-30pct-pts1430095.pgm', '033c80b04558d53a4d021165c19bd6489db56a5665abe99fd5c3c1c7ba288c1b'),
+        ]
+        native_frames = []
+        for name, digest in fixtures:
+            path = args.native_nine_frames / name
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == digest, name
+            native_frames.append(path.resolve())
+    else:
+        print('Native9 fixtures not supplied; only generated pixels exercised.', flush=True)
+    code = generate(revision, native_frames)
     result = TEXT['run'](code, args, negative=bool(revision))
     if revision:
-        assert 'dark.rejected&&dark.top==Unobserved' in result.stderr, result.stderr
-        print('REJECTED original zero/uncertainty conflation after strict compilation:', revision)
+        expected = 'corrected.top==20&&corrected.bottom==20&&corrected.left==0&&corrected.right==0&&!corrected.rejected' if native_frames else 'ordered.top==0&&!ordered.rejected'
+        assert expected in result.stderr, result.stderr
+        print('REJECTED parent outer-evidence ordering after strict compilation:', revision)
     elif args.negative_controls:
         for label, old, new in [
+            ('later bright outer evidence hidden', 'const uint32_t border = average(lane, 0);', 'const uint32_t border = lane == 0 ? average(lane, 0) : 16;'),
             ('centre-only edges', '  if (original == 0)', '  return result;\n  if (original == 0)'),
-            ('bright centre still sets threshold', 'level > border + 6', 'level > 50'),
+            ('bright centre still sets threshold', 'level > border + 6', 'level > 50 + 0 * border'),
             ('earlier isolated content ignored', 'result.value = support >= 3 ? earliest : UINT16_MAX;\n  result.reason = support >= 3 ? DetectEdgeReason::REFINED : DetectEdgeReason::STRIPS_UNSUPPORTED;', 'result.value = support >= 3 ? earliest : original;\n  result.reason = support >= 3 ? DetectEdgeReason::REFINED : DetectEdgeReason::ORIGINAL;'),
             ('unobserved lanes counted', 'std::fill_n(departures, 9, UINT16_MAX);', 'std::fill_n(departures, 9, edge);'),
             ('broad transient intrusion treated as picture', 'else if (result.departures[lane] != UINT16_MAX)', 'else if (false && result.departures[lane] != UINT16_MAX)'),
