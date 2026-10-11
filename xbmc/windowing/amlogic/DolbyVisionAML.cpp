@@ -854,13 +854,8 @@ void CDolbyVisionAML::apply_tv_preset(int preset)
     settings()->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT, !preset_has_hdr10plus);
     if (picked == DV_TYPE_DISPLAY_LED)
     {
-      // 12-bit Deep Color pipeline targets the VS10 → HDMI TX path on Display-LED
-      // and CMv4.0 append is only consumed by the TV in Display-LED too.
+      // Prefer the 12-bit Deep Color pipeline on Display-LED.
       settings()->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_PREFER_12BIT, true);
-      settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND, 3); // Smart
-      // Down-convert to CMv2.9 is the opposite of append; keep it off on the
-      // Display-LED auto-default (mutually exclusive with append above).
-      settings()->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_STRIP, false);
     }
   }
   else
@@ -872,6 +867,24 @@ void CDolbyVisionAML::apply_tv_preset(int preset)
     // so no force.modes juggling needed.
     settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE, DV_TYPE_PLAYER_LED_HDR2);
     settings()->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT, false);
+  }
+
+  // Restore the CMv4 defaults only on routes that can use native DV metadata.
+  // Read back the selected type because setting callbacks can adjust it.
+  const int type = settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE);
+  const bool playerLed = type == DV_TYPE_PLAYER_LED_LLDV || type == DV_TYPE_PLAYER_LED_HDR ||
+                         type == DV_TYPE_PLAYER_LED_HDR2;
+  const int output = settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
+  const bool nativeOutput = output == DOLBY_VISION_OUTPUT_MODE_IPT ||
+                            output == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
+  const bool metadataOutput = type == DV_TYPE_DISPLAY_LED ||
+                              (playerLed && nativeOutput && aml_dv_new_backend_available());
+  if (metadataOutput &&
+      settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE) != DV_MODE_OFF &&
+      settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR) == 0)
+  {
+    settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND, 3); // Smart
+    settings()->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_STRIP, false);
   }
 }
 
