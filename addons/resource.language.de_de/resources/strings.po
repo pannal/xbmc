@@ -20077,8 +20077,8 @@ msgstr "DV-Schwarzbild beim Starten oder Stoppen der Wiedergabe deaktivieren"
 #. "Dolby Vision HDR Bypass"
 #: system/settings/settings.xml
 msgctxt "#60645"
-msgid "Skips the HDMI mode switch when entering or leaving Dolby Vision playback. Avoids black screens during transitions, but some TVs need the mode switch to pick up the Dolby Vision signalling correctly."
-msgstr "Überspringt den HDMI-Moduswechsel beim Starten oder Beenden der Dolby Vision-Wiedergabe. Verhindert schwarze Bildschirme bei Übergängen, aber einige Fernseher benötigen den Moduswechsel, um das Dolby Vision-Signal korrekt zu erkennen."
+msgid "Skips the HDMI mode switch when entering or leaving Dolby Vision playback. Only avoids the black screen if the GUI and the video use the same output: with DV mode On Demand set EVERY DV VS10 mode to SDR, with DV mode On set every one to DV. Some TVs need the mode switch to pick up the Dolby Vision signalling correctly."
+msgstr "Überspringt den HDMI-Moduswechsel beim Starten oder Beenden der Dolby Vision-Wiedergabe. Vermeidet das Schwarzbild nur, wenn Benutzeroberfläche und Video dieselbe Ausgabe verwenden: im DV-Modus On Demand ALLE DV-VS10-Modi auf SDR stellen, im DV-Modus Ein alle auf DV. Einige Fernseher benötigen den Moduswechsel, um das Dolby Vision-Signal korrekt zu erkennen."
 
 msgctxt "#69196"
 msgid "Convert DV Profile 7 FEL to MEL or to Profile 8.1"
