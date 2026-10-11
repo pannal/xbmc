@@ -30,6 +30,7 @@ set(HEADERS AudioSinkAE.h
             IVideoPlayer.h
             PTSTracker.h
             PlayerNativeAction.h
+            DecoderFlushRecovery.h
             VideoPlayer.h
             VideoPlayerAudio.h
             VideoPlayerAudioID3.h

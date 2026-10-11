@@ -13,6 +13,7 @@
 #include "cores/DataCacheCore.h"
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -97,6 +98,7 @@ public:
   virtual bool IsFlushPending() const { return false; }
   virtual bool FlushFailed() const { return false; }
   virtual std::shared_ptr<CVideoFlushRequest> GetFlushRequest() const { return {}; }
+  virtual void SetRecoveryGeneration(uint64_t generation) = 0;
   bool AcceptsData() const override = 0;
   virtual bool HasData() const = 0;
   virtual void SetMaxTimeSize(double seconds, bool timeBound = false) {}

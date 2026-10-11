@@ -20,19 +20,17 @@ queue = (ROOT / 'xbmc/cores/VideoPlayer/DVDMessageQueue.cpp').read_text()
 messages = (ROOT / 'xbmc/cores/VideoPlayer/DVDMessage.h').read_text()
 source = f.harness(ROOT).split('static std::shared_ptr<CDVDMsg> message(')[0]
 source = source.replace('using CCriticalSection = std::mutex;', 'using CCriticalSection = std::recursive_mutex;')
-source = source.replace('PLAYER_SEEK, GENERAL_EOF', 'PLAYER_SEEK, PLAYER_SEEK_CHAPTER, PLAYER_SET_AUDIOSTREAM, GENERAL_EOF')
+source = source.replace('PLAYER_SEEK, PLAYER_VIDEO_RECOVERY', 'PLAYER_SEEK, PLAYER_SEEK_CHAPTER, PLAYER_SET_AUDIOSTREAM, PLAYER_VIDEO_RECOVERY')
 source = source.replace('bool IsInited() const', '''
   bool PutIfNoMessages(const std::shared_ptr<CDVDMsg>&, std::initializer_list<CDVDMsg::Message>);
-  unsigned GetPacketCount(CDVDMsg::Message);
   bool IsInited() const''')
 source = source.replace('struct CVideoPlayerAudio {', '\n'.join((
     f.block(queue, 'bool CDVDMessageQueue::PutIfNoMessages('),
-    f.block(queue, 'unsigned CDVDMessageQueue::GetPacketCount('),
     f.block(messages, 'class CDVDMsgPlayerSeek :') + ';',
     f.block(messages, 'class CDVDMsgPlayerSeekChapter :') + ';',
     'struct CVideoPlayerAudio {')))
-source = source.replace('struct {bool streamsReady=false;} m_State;',
-                        'struct {bool streamsReady=false, canseek=true; double lastSeek=2000000;} m_State;')
+source = source.replace('struct {bool streamsReady=false; double time_offset=0;} m_State;',
+                        'struct {bool streamsReady=false, canseek=true; double lastSeek=2000000,time_offset=0;} m_State;')
 source = source.replace('double GetClock() const {return value;}',
                         'double absolute=6000000; double GetAbsoluteClock() const {return absolute;} double GetClock() const {return value;}')
 source = source.replace('struct ProcessInfo { double', 'struct ProcessInfo { void SetStateSeeking(bool) {} double')
@@ -41,6 +39,7 @@ source = source.replace('  CDVDMessageQueue queue;\n  bool m_bAbortRequest', '''
   CDVDMessageQueue& m_messenger=queue;
   bool m_waitingForVideoFlush=false;
   long GetUpdatedTime() {return -76;}
+  CVideoSeekQueueState GetVideoSeekQueueState();
   void QueueAudioRecoverySeek();
   void DrainControls();
   bool chapterWorks=true;
@@ -48,9 +47,13 @@ source = source.replace('  CDVDMessageQueue queue;\n  bool m_bAbortRequest', '''
   std::vector<int> chapters;
   int switches=0, completedSeeks=0;
   bool m_bAbortRequest''')
+source += f.block(parent, 'CVideoSeekQueueState CVideoPlayer::GetVideoSeekQueueState()').replace('CVideoPlayer::', 'Parent::')
 source += f.block(parent, 'void CVideoPlayer::QueueAudioRecoverySeek()').replace('CVideoPlayer::', 'Parent::')
 selection = re.search(r'else if \((pMsg->IsType\(CDVDMsg::PLAYER_SEEK\).*?)\)\n    \{', parent, re.S).group(1)
 chapter_selection = re.search(r'else if \((pMsg->IsType\(CDVDMsg::PLAYER_SEEK_CHAPTER\).*?)\)\n    \{', parent, re.S).group(1)
+superseded = 'const bool seekSuperseded = GetVideoSeekQueueState().HasQueuedUserSeek();\n' + f.block(parent, '      if (seekSuperseded)')
+chapter_branch = parent.split('else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK_CHAPTER))')[1]
+chapter_superseded = chapter_branch[chapter_branch.index('      m_videoRecoveryGate.CancelPending();'):chapter_branch.index('      m_processInfo->SeekFinished(0);')]
 guard = f.block(parent, '      if (m_CurrentVideo.id >= 0 &&\n          m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC)')
 # Both production audio switch paths must request recovery without appending a seek.
 audio_branch = parent.split('else if (pMsg->IsType(CDVDMsg::PLAYER_SET_AUDIOSTREAM))')[1].split('else if (pMsg->IsType(CDVDMsg::PLAYER_SET_VIDEOSTREAM))')[0]
@@ -73,6 +76,7 @@ void Parent::DrainControls() {
     }
     else if (@SELECT@) {
       auto& msg=*std::static_pointer_cast<CDVDMsgPlayerSeek>(pMsg);
+      @SUPERSEDED@
       if (!m_State.canseek) continue;
       @GUARD@
       const double time=msg.GetTime()+(msg.GetRelative()?m_clock.GetClock()/1000:0);
@@ -80,6 +84,7 @@ void Parent::DrainControls() {
       FlushBuffers(time*1000,msg.GetAccurate(),msg.GetSync(),[this]{++completedSeeks;});
     }
     else if (@CHAPTER@) {
+      @CHAPTER_SUPERSEDED@
       auto& msg=*std::static_pointer_cast<CDVDMsgPlayerSeekChapter>(pMsg);
       chapters.push_back(msg.GetChapter());
       if (chapterWorks) FlushBuffers(90000000,true,true,[this]{++completedSeeks;});
@@ -210,6 +215,7 @@ int main() {
   }
 }
 '''
+source=source.replace('@SUPERSEDED@',superseded).replace('@CHAPTER_SUPERSEDED@',chapter_superseded)
 source=source.replace('@SELECT@',selection).replace('@CHAPTER@',chapter_selection).replace('@GUARD@',guard)
 os.environ.setdefault('ASAN_OPTIONS','detect_leaks=0')
 with tempfile.TemporaryDirectory(prefix='audio-recovery-seek-') as tmp:

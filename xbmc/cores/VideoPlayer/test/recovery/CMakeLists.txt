@@ -1,0 +1,3 @@
+set(SOURCES TestDecoderFlushRecovery.cpp)
+
+core_add_test_library(videoplayer_recovery_test)

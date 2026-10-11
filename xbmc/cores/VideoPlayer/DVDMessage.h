@@ -8,12 +8,11 @@
 
 #pragma once
 
-#include <atomic>
-
 #include "FileItem.h"
 #include "cores/IPlayer.h"
 
 #include <atomic>
+#include <cstdint>
 #include <string.h>
 #include <string>
 
@@ -68,7 +67,11 @@ public:
 
     // subtitle related messages
     SUBTITLE_CLUTCHANGE,
-    SUBTITLE_ADDFILE
+    SUBTITLE_ADDFILE,
+
+    // Amlogic decoder recovery messages. Keep appended to preserve existing message values.
+    PLAYER_VIDEO_RECOVERY,          // request a generation-checked parent recovery seek
+    PLAYER_VIDEO_RECOVERY_SEEK      // execute a tagged parent recovery seek
   };
   // clang-format on
 
@@ -158,14 +161,20 @@ public:
 class CDVDMsgVideoFlush : public CDVDMsgStreamFlush
 {
 public:
-  CDVDMsgVideoFlush(bool sync, std::shared_ptr<CVideoFlushRequest> receipt, uint64_t epoch = 0)
-    : CDVDMsgStreamFlush(sync, epoch), request(std::move(receipt)) {}
+  CDVDMsgVideoFlush(bool sync,
+                    std::shared_ptr<CVideoFlushRequest> receipt,
+                    uint64_t epoch = 0,
+                    uint64_t recovery = 0)
+    : CDVDMsgStreamFlush(sync, epoch), request(std::move(receipt)), recoveryGeneration(recovery)
+  {
+  }
   ~CDVDMsgVideoFlush() override
   {
     auto pending = CVideoFlushRequest::State::PENDING;
     request->state.compare_exchange_strong(pending, CVideoFlushRequest::State::CANCELLED);
   }
   const std::shared_ptr<CVideoFlushRequest> request;
+  const uint64_t recoveryGeneration;
 };
 
 
@@ -235,10 +244,12 @@ public:
     bool restore = true;
     bool trickplay = false;
     bool recovery = false; // internal stream-recovery reseek, not a user seek
+    bool videoRecovery = false;
+    uint64_t videoRecoveryGeneration = 0;
   };
 
-  explicit CDVDMsgPlayerSeek(CDVDMsgPlayerSeek::CMode mode) : CDVDMsg(PLAYER_SEEK),
-    m_mode(mode)
+  explicit CDVDMsgPlayerSeek(CDVDMsgPlayerSeek::CMode mode)
+    : CDVDMsg(mode.videoRecovery ? PLAYER_VIDEO_RECOVERY_SEEK : PLAYER_SEEK), m_mode(mode)
   {}
   ~CDVDMsgPlayerSeek() override = default;
 
@@ -250,9 +261,25 @@ public:
   bool GetTrickPlay() { return m_mode.trickplay; }
   bool GetSync() { return m_mode.sync; }
   bool GetRecovery() { return m_mode.recovery; }
+  bool IsVideoRecovery() { return m_mode.videoRecovery; }
+  uint64_t GetVideoRecoveryGeneration() { return m_mode.videoRecoveryGeneration; }
 
 private:
   CMode m_mode;
+};
+
+class CDVDMsgVideoRecoveryRequest : public CDVDMsg
+{
+public:
+  explicit CDVDMsgVideoRecoveryRequest(uint64_t generation)
+    : CDVDMsg(PLAYER_VIDEO_RECOVERY), m_generation(generation)
+  {
+  }
+
+  uint64_t GetGeneration() const { return m_generation; }
+
+private:
+  uint64_t m_generation;
 };
 
 class CDVDMsgPlayerSeekChapter : public CDVDMsg
