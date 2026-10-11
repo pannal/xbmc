@@ -1207,6 +1207,12 @@ void CDVDVideoCodecAmlogic::SetSpeed(int iSpeed)
     m_Codec->SetSpeed(iSpeed);
 }
 
+void CDVDVideoCodecAmlogic::SetPrerollTarget(double target)
+{
+  if (m_Codec)
+    m_Codec->SetPrerollTarget(target);
+}
+
 void CDVDVideoCodecAmlogic::FrameRateTracking(uint8_t *pData, int iSize, double dts, double pts)
 {
   // mpeg2 handling

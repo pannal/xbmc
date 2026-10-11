@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <optional>
 #include <string.h>
 #include <string>
 
@@ -354,13 +355,17 @@ private:
 class CDVDMsgDemuxerPacket : public CDVDMsg
 {
 public:
-  CDVDMsgDemuxerPacket(DemuxPacket* packet, bool drop = false);
+  CDVDMsgDemuxerPacket(DemuxPacket* packet,
+                      bool drop = false,
+                      std::optional<double> prerollTarget = {});
   ~CDVDMsgDemuxerPacket() override;
   DemuxPacket* GetPacket() { return m_packet; }
   unsigned int GetPacketSize();
   bool GetPacketDrop() { return m_drop; }
   DemuxPacket* m_packet;
   bool m_drop;
+  // No value leaves the target unchanged (e.g. a separate enhancement-layer packet).
+  const std::optional<double> m_prerollTarget;
 };
 
 class CDVDMsgDemuxerReset : public CDVDMsg

@@ -3330,10 +3330,6 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
         videoPicture.iFlags |= DVP_FLAG_INTERLACED;
     }
 
-    // Retain decoded-frame availability only for explicit unsupported-route
-    // compatibility. Supported routes still require accepted QBUF and apply.
-    VideoHoldDecoded();
-
     // Frame mode: disable the minimum gate after the first frame (only needed for initial fill).
     // Stream mode: keep the gate active throughout playback.
     m_minimum_buffer_level = (streambuffer ? m_minimum_buffer_level : 0.0f);
@@ -3476,6 +3472,23 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
 
     videoPicture.dts = DVD_NOPTS_VALUE;
     videoPicture.pts = static_cast<double>(m_cur_pts);
+
+    // Input DROP describes the packet currently being fed, not this asynchronous
+    // output. Keep decoding references, but reject decoded preroll even after
+    // later input has crossed the target or an eligible frame has been returned.
+    // Reverse scanning deliberately visits pictures before the last seek marker.
+    if (m_speed >= DVD_PLAYSPEED_PAUSE && m_prerollTarget != DVD_NOPTS_VALUE &&
+        videoPicture.pts != DVD_NOPTS_VALUE &&
+        videoPicture.pts < m_prerollTarget)
+    {
+      videoPicture.iFlags |= DVP_FLAG_DROPPED;
+    }
+    else
+    {
+      // Only eligible decoded availability can release an unsupported-route hold.
+      // Supported routes still require accepted QBUF and display apply.
+      VideoHoldDecoded();
+    }
 
     const int infoResult = m_dll->codec_get_vdec_info(&am_private->vcodec, &vi);
     if (m_keepMPEG2Progressive && !interlaced)

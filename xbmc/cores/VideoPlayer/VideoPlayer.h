@@ -607,6 +607,9 @@ protected:
   } m_SpeedState;
 
   double m_offset_pts;
+  // Corrected seek timeline; later continuity corrections normalize new packets
+  // into this domain and must not move the floor beneath queued decoded frames.
+  double m_videoPrerollTarget{DVD_NOPTS_VALUE};
   double m_demuxSeekBasePts{DVD_NOPTS_VALUE};
 
   // Last chapter requested via SeekChapter(). Chapter seeks land on the

@@ -940,6 +940,7 @@ bool CVideoPlayer::IsPlaying() const
 
 void CVideoPlayer::OnStartup()
 {
+  m_videoPrerollTarget = DVD_NOPTS_VALUE;
   m_CurrentVideo.Clear();
   m_CurrentAudio.Clear();
   m_CurrentSubtitle.Clear();
@@ -2297,7 +2298,8 @@ void CVideoPlayer::ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket)
   //   pPacket->iSize, pPacket->dts/DVD_TIME_BASE, pPacket->pts/DVD_TIME_BASE, pPacket->duration/1000.0,
   //   static_cast<double>(m_clock.GetClock()/DVD_TIME_BASE), m_VideoPlayerVideo->GetLevel());
 
-  m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgDemuxerPacket>(pPacket, drop));
+  m_VideoPlayerVideo->SendMessage(
+      std::make_shared<CDVDMsgDemuxerPacket>(pPacket, drop, m_videoPrerollTarget));
 
   if (!drop)
     m_CurrentVideo.packets++;
@@ -3355,6 +3357,9 @@ bool CVideoPlayer::CheckPlayerInit(CCurrentStream& current)
     if ((current.startpts - current.dts) > DVD_SEC_TO_TIME(20))
     {
       CLog::Log(LOGDEBUG, "{} - too far to decode before finishing seek", __FUNCTION__);
+      // Keep the decoded-video floor in step when either stream relaxes preroll.
+      if (m_videoPrerollTarget != DVD_NOPTS_VALUE)
+        m_videoPrerollTarget = current.dts;
       if(m_CurrentAudio.startpts != DVD_NOPTS_VALUE)
         m_CurrentAudio.startpts = current.dts;
       if(m_CurrentVideo.startpts != DVD_NOPTS_VALUE)
@@ -4987,9 +4992,8 @@ void CVideoPlayer::SeekTime(int64_t iTime)
   // anchors at the demuxer's keyframe landing time instead of the seek
   // target, matching video. Result: clean snap to keyframe with both
   // streams in sync, at the cost of landing up to one GOP-length earlier
-  // than requested. Off restores frame-accurate seek and its fast-forward
-  // catch-up window on hardware decoders that can't fast-decode pre-target
-  // frames (AML hwdec).
+  // than requested. Off retains accurate positioning: decode the preceding
+  // reference frames while suppressing their presentation before the target.
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   const bool fastSeek =
       settings && settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_FAST_SEEK);
@@ -5668,12 +5672,6 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::funct
   if (m_VideoPlayerVideo->IsInited())
     ++m_videoRecoveryGeneration;
 
-  double startpts;
-  if (accurate)
-    startpts = pts;
-  else
-    startpts = DVD_NOPTS_VALUE;
-
   m_SpeedState.Reset(pts);
 
   if (sync)
@@ -5704,6 +5702,11 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::funct
             CSettings::SETTING_COREELEC_RESET_PTS_ON_SEEK))
       m_offset_pts = 0.0;
   }
+
+  // Packet DTS/PTS have m_offset_pts removed. Apply the same projection to
+  // accurate input targets after deciding whether external subtitles reset it.
+  const double startpts = accurate && pts != DVD_NOPTS_VALUE ? pts - m_offset_pts : DVD_NOPTS_VALUE;
+  m_videoPrerollTarget = startpts;
 
   m_CurrentAudio.dts         = DVD_NOPTS_VALUE;
   m_CurrentAudio.startpts    = startpts;
