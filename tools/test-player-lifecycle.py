@@ -46,10 +46,12 @@ PREFIX = r'''
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <utility>
 #include <string>
 #include <vector>
 std::vector<bool> subtitleInvalidations;
 void aml_subtitle_active_area_invalidate(bool preserve) { subtitleInvalidations.push_back(preserve); }
+@RECOVERY_HEADER@
 using namespace std::chrono_literals;
 using CCriticalSection = std::mutex;
 constexpr int LOGFATAL=0, LOGWARNING=1, LOGDEBUG=2, LOGERROR=3, LOGAUDIO=4, LOGVIDEO=5;
@@ -58,6 +60,7 @@ constexpr int DVD_PLAYSPEED_NORMAL=1000, DVD_PLAYSPEED_PAUSE=0;
 constexpr int SYNCSOURCE_AUDIO=1,SYNCSOURCE_VIDEO=2,CACHESTATE_FLUSH=3,CACHESTATE_DONE=4;
 constexpr int VideoPlayer_AUDIO=1, VideoPlayer_VIDEO=2, TMSG_SWITCHTOFULLSCREEN=3;
 constexpr double DVD_TIME_BASE=1000000;
+constexpr double DVD_TIME_TO_MSEC(double pts) {return pts/1000;}
 constexpr double DVD_SEC_TO_TIME(double value) { return value*DVD_TIME_BASE; }
 struct CLog { template<class... T> static void Log(T&&...) {} };
 namespace PLAYBACK_DIAGNOSTICS { inline int64_t NowUs() { return 0; } }
@@ -65,7 +68,7 @@ struct Event { void Set() {} void Reset() {} bool Wait(std::chrono::milliseconds
 struct CDVDMsg {
   enum Message { DEMUXER_PACKET, GENERAL_RESYNC, GENERAL_PAUSE, GENERAL_RESET,
     GENERAL_FLUSH, GENERAL_SYNCHRONIZE, GENERAL_STREAMCHANGE, VIDEO_DRAIN,
-    PLAYER_STARTED, PLAYER_REPORT_STATE, PLAYER_ABORT, PLAYER_SEEK, GENERAL_EOF, NONE };
+    PLAYER_STARTED, PLAYER_REPORT_STATE, PLAYER_ABORT, PLAYER_SEEK, PLAYER_VIDEO_RECOVERY, PLAYER_VIDEO_RECOVERY_SEEK, GENERAL_EOF, NONE };
   explicit CDVDMsg(Message type): type(type) {}
   virtual ~CDVDMsg()=default;
   bool IsType(Message candidate) const { return type==candidate; }
@@ -86,6 +89,7 @@ struct CDVDMsgGeneralSynchronize : CDVDMsg {
 @FLUSH_RECEIPT@
 @STREAM_FLUSH_MESSAGE@
 @FLUSH_MESSAGE@
+@RECOVERY_MESSAGE@
 struct DemuxPacket { int iSize=7; };
 struct CDVDMsgDemuxerPacket : CDVDMsg {
   explicit CDVDMsgDemuxerPacket(int id): CDVDMsg(DEMUXER_PACKET), id(id) {}
@@ -106,7 +110,9 @@ struct CDVDMessageQueue {
   void UpdateTimeBack() { ++updates; }
   void UpdateTimeFront() { ++updates; }
   bool IsInited() const { return m_bInitialized; }
+  unsigned GetPacketCount(CDVDMsg::Message);
   int GetDataSize() const { return m_iDataSize; }
+  bool IsFull() const { return full; } bool full=true;
   void Flush(CDVDMsg::Message type=CDVDMsg::DEMUXER_PACKET);
   bool m_bInitialized=true, m_bAbortRequest=false, m_drain=false;
   CCriticalSection m_section; Event m_hEvent; std::string m_owner="fixture";
@@ -116,6 +122,7 @@ struct CDVDMessageQueue {
 @PUT@
 @GET@
 @QUEUE_FLUSH@
+@PACKET_COUNT@
 struct CVideoPlayerAudio {
   CDVDMessageQueue m_messageQueue;
   bool m_eofPending=true;
@@ -125,10 +132,10 @@ struct CVideoPlayerAudio {
   @AUDIO_FLUSH_MESSAGES@
 };
 @AUDIO_FLUSH@
-struct CDVDVideoCodec { enum VCReturn { VC_FLUSHED, VC_REOPEN }; };
+struct CDVDVideoCodec { enum VCReturn { VC_FLUSHED, VC_FLUSHED_TIMEOUT, VC_REOPEN }; };
 struct FakeCodec {
-  bool pending=false, ready=false, failed=false; int resets=0, aborts=0, reopens=0;
-  void Reset() { ++resets; pending=true; ready=false; }
+  bool pending=false, ready=false, failed=false, asynchronous=true; int resets=0, aborts=0, reopens=0;
+  void Reset() { ++resets; pending=asynchronous; ready=!asynchronous; }
   void Reopen() { ++reopens; pending=true; ready=false; }
   void Abort() { ++aborts; }
   bool LifecycleFailed() const { return failed; }
@@ -148,19 +155,21 @@ struct CVideoPlayerVideo {
   std::atomic<uint64_t> m_syncRequest{0}; uint64_t m_syncEpoch=0;
   uint64_t GetSyncEpoch() const { return m_syncRequest.load(); }
   std::shared_ptr<CVideoFlushRequest> GetFlushRequest() const { return std::atomic_load(&m_flushRequest); }
+  void SetRecoveryGeneration(uint64_t generation) { m_nextRecoveryGeneration.store(generation); }
+  bool IsInited() const { return m_messageQueue.IsInited(); }
   bool AcceptsData() const { return accepts; } bool IsStalled() const { return m_stalled; }
   int GetLevel() const { return level; } bool accepts=true; int level=20;
   void Flush(bool sync);
   bool Recover(CDVDVideoCodec::VCReturn decoderState) {
     [[maybe_unused]] double frametime=DVD_TIME_BASE/m_fFrameRate;
-    if (decoderState == CDVDVideoCodec::VC_FLUSHED) { @VC_FLUSHED@ }
+    if (decoderState == CDVDVideoCodec::VC_FLUSHED || decoderState == CDVDVideoCodec::VC_FLUSHED_TIMEOUT) { @VC_FLUSHED@ }
     if (decoderState == CDVDVideoCodec::VC_REOPEN) { @VC_REOPEN@ }
     return false;
   }
   bool IsFlushPending() const { @IS_PENDING@ }
   bool FlushFailed() const { @FLUSH_FAILED@ }
   void RetireSession() { @RETIRE_SESSION@ }
-  void SendMessage(std::shared_ptr<CDVDMsg> msg,int priority) { m_messageQueue.Put(msg,priority); }
+  void SendMessage(std::shared_ptr<CDVDMsg> msg,int priority=0) { m_messageQueue.Put(msg,priority); }
   void FlushMessages() { m_messageQueue.Flush(); }
   void ResetFrameRateCalc() { ++frameRateResets; }
   // This fixture models non-MPEG playback; cadence has its own regression suite.
@@ -184,6 +193,14 @@ struct CVideoPlayerVideo {
         delivered.push_back(std::static_pointer_cast<CDVDMsgDemuxerPacket>(pMsg)->id);
     }
   }
+  CDecoderFlushRecovery m_decoderFlushRecovery;
+  CVideoRecoveryGeneration m_recoveryGeneration;
+  std::atomic<uint64_t> m_nextRecoveryGeneration{0};
+  std::optional<uint64_t> m_pendingNoOutputRecovery;
+  uint64_t m_pendingNoOutputEpoch=0; bool m_bStop=false;
+  int m_speed=DVD_PLAYSPEED_NORMAL; bool m_paused=false;
+  struct {float GetNewSpeed() const {return speed;} float speed=1;} m_processInfo;
+  void PublishNoOutputRecovery();
   std::shared_ptr<FakeCodec> m_pVideoCodec=std::make_shared<FakeCodec>();
   Renderer m_renderManager; CDVDMessageQueue m_messageQueue,m_messageParent;
   std::shared_ptr<CDVDMsg> m_pendingResetMessage;
@@ -197,6 +214,7 @@ struct CVideoPlayerVideo {
   std::vector<int> delivered;
 };
 @FLUSH@
+@PUBLISH_RECOVERY@
 @START_MSG@
 @STATE_MSG@
 struct Settings {
@@ -248,11 +266,15 @@ struct Parent {
     void Discontinuity(double v) {value=v;++anchors;}
   } m_clock;
   struct Timer {void Set(std::chrono::milliseconds) {} } m_syncTimer;
-  struct {bool streamsReady=false;} m_State;
+  struct {bool streamsReady=false; double time_offset=0;} m_State;
   struct {bool fullscreen=false;} m_playerOptions;
   IPlayerCallback m_callback; int m_item=0;
   struct Events {void Submit(std::function<void()> call) {call();} } events;
   Events* m_outboundEvents=&events;
+  CVideoRecoveryGate m_videoRecoveryGate;
+  uint64_t m_videoRecoveryGeneration=10;
+  double m_videoRecoveryStartPts=DVD_NOPTS_VALUE,m_videoRecoveryStartTime=DVD_NOPTS_VALUE;
+  bool m_videoRecoveryEndOfStream=false,m_videoRecoverySameStream=false;
   double m_offset_pts=0;
   std::chrono::steady_clock::time_point m_syncStartPtsWait{};
   int m_playSpeed=DVD_PLAYSPEED_NORMAL, cacheChanges=0,m_demuxerSpeed=0,updates=0,replacements=0;
@@ -445,6 +467,12 @@ static void failed_lifecycle() {
   assert(video.IsFlushPending() && video.m_pendingResetMessage);
   assert(receive(video.m_messageParent,0)==100+CDVDMsg::PLAYER_ABORT);
   assert(video.m_renderManager.discards==0 && video.m_pVideoCodec->resets==1);
+  CVideoPlayerVideo timeout;
+  timeout.m_recoveryGeneration.AdvanceTo(17);
+  timeout.m_decoderFlushRecovery.OnNoOutputTimeout();
+  timeout.Recover(CDVDVideoCodec::VC_FLUSHED_TIMEOUT);
+  timeout.m_pVideoCodec->failed=true;timeout.Step();
+  assert(!timeout.m_pendingNoOutputRecovery);
 }
 static void cancelled_session() {
   CVideoPlayerVideo video;
@@ -613,7 +641,54 @@ static void subtitle_geometry_intent() {
   assert(subtitleInvalidations==std::vector<bool>{false});
 }
 
-int main() { subtitle_geometry_intent(); audio_seek_eof(); queues(); continuation(); multiple_flushes(); failed_lifecycle(); cancelled_session(); parent_wait(); nested_and_renderer(); stale_and_clock_policy(); }
+
+static void timeout_recovery() {
+  for(bool async:{false,true}) {
+    CVideoPlayerVideo video; video.m_pVideoCodec->asynchronous=async;
+    video.m_recoveryGeneration.AdvanceTo(17);
+    video.Recover(CDVDVideoCodec::VC_FLUSHED_TIMEOUT);
+    if(async) {video.m_pVideoCodec->ready=true;video.Step();}
+    assert(receive(video.m_messageParent,0)==MSGQ_TIMEOUT);
+    video.Recover(CDVDVideoCodec::VC_FLUSHED_TIMEOUT);
+    if(async) {
+      assert(receive(video.m_messageParent,0)==MSGQ_TIMEOUT);
+      video.m_pVideoCodec->ready=true;video.Step();
+    }
+    std::shared_ptr<CDVDMsg> msg;int priority=0;
+    assert(video.m_messageParent.Get(msg,0ms,priority)==MSGQ_OK);
+    auto request=std::dynamic_pointer_cast<CDVDMsgVideoRecoveryRequest>(msg);
+    assert(request && request->GetGeneration()==17);
+    video.Step();assert(receive(video.m_messageParent,0)==MSGQ_TIMEOUT);
+  }
+  CVideoPlayerVideo video;
+  video.m_recoveryGeneration.AdvanceTo(17);
+  video.m_decoderFlushRecovery.OnNoOutputTimeout();
+  video.Recover(CDVDVideoCodec::VC_FLUSHED_TIMEOUT);
+  video.SetRecoveryGeneration(18);video.Flush(true);
+  video.m_pVideoCodec->ready=true;video.Step();
+  assert(receive(video.m_messageParent,0)==MSGQ_TIMEOUT);
+  // The receipt and sync epoch survive addition of the recovery token.
+  video.m_pVideoCodec->ready=true;video.Step();
+  assert(video.m_recoveryGeneration.Get()==18);
+  assert(video.m_flushRequest->state==CVideoFlushRequest::State::COMPLETED);
+  // GENERAL_RESET (demuxer reopen) adopts the generation the parent set before queueing it.
+  CVideoPlayerVideo reset; reset.m_recoveryGeneration.AdvanceTo(17);
+  reset.SetRecoveryGeneration(19);
+  reset.SendMessage(message(CDVDMsg::GENERAL_RESET),0);
+  reset.Step(); reset.m_pVideoCodec->ready=true; reset.Step();
+  assert(reset.m_recoveryGeneration.Get()==19);
+  // End of input reaches the video queue while the second timeout's reset is deferred.
+  CVideoPlayerVideo drain; drain.m_pVideoCodec->asynchronous=true;
+  drain.m_recoveryGeneration.AdvanceTo(17);
+  drain.m_decoderFlushRecovery.OnNoOutputTimeout();
+  drain.Recover(CDVDVideoCodec::VC_FLUSHED_TIMEOUT);
+  assert(drain.m_pendingNoOutputRecovery);
+  drain.SendMessage(message(CDVDMsg::VIDEO_DRAIN),0);
+  drain.m_pVideoCodec->ready=true;drain.Step();
+  assert(receive(drain.m_messageParent,0)==MSGQ_TIMEOUT && !drain.m_pendingNoOutputRecovery);
+}
+
+int main() { timeout_recovery(); subtitle_geometry_intent(); audio_seek_eof(); queues(); continuation(); multiple_flushes(); failed_lifecycle(); cancelled_session(); parent_wait(); nested_and_renderer(); stale_and_clock_policy(); }
 '''
 
 
@@ -641,9 +716,13 @@ def harness(root=ROOT):
         '@AUDIO_FLUSH@': block(audio, 'void CVideoPlayerAudio::Flush(bool sync)'),
         '@AUDIO_FLUSH_MESSAGES@': block(audio_header, 'void FlushMessages()').replace(' override', ''),
         '@PUT@': block(queue, 'MsgQueueReturnCode CDVDMessageQueue::Put(const std::shared_ptr<CDVDMsg>& pMsg,\n'),
+        '@PACKET_COUNT@': block(queue, 'unsigned CDVDMessageQueue::GetPacketCount('),
         '@QUEUE_FLUSH@': block(queue, 'void CDVDMessageQueue::Flush('),
         '@GET@': block(queue, 'MsgQueueReturnCode CDVDMessageQueue::Get('),
-        '@VC_FLUSHED@': body(video, 'if (decoderState == CDVDVideoCodec::VC_FLUSHED)'),
+        '@VC_FLUSHED@': body(video, 'if (decoderState == CDVDVideoCodec::VC_FLUSHED ||'),
+        '@RECOVERY_HEADER@': '#include "' + str(root / 'xbmc/cores/VideoPlayer/DecoderFlushRecovery.h') + '"',
+        '@RECOVERY_MESSAGE@': block(messages, 'class CDVDMsgVideoRecoveryRequest') + ';',
+        '@PUBLISH_RECOVERY@': (block(video, 'void CVideoPlayerVideo::PublishNoOutputRecovery()') if 'void CVideoPlayerVideo::PublishNoOutputRecovery()' in video else 'void CVideoPlayerVideo::PublishNoOutputRecovery() {}'),
         '@VC_REOPEN@': body(video, 'if (decoderState == CDVDVideoCodec::VC_REOPEN)'),
         '@FLUSH@': block(video, 'void CVideoPlayerVideo::Flush(bool sync)'),
         '@FLUSH_RECEIPT@': block(messages, 'struct CVideoFlushRequest') + ';',
@@ -701,6 +780,9 @@ def main():
                 'subtitle-deferred-forces-retention': ('deferred.preserveSubtitleGeometry);', 'true);'),
                 'subtitle-deferred-discards-geometry': ('deferred.preserveSubtitleGeometry);', 'false);'),
                 'subtitle-default-retains-geometry': ('bool preserveSubtitleGeometry=false);', 'bool preserveSubtitleGeometry=true);'),
+                'lose-deferred-timeout': ('frametime = DVD_TIME_BASE / m_fFrameRate;\n      PublishNoOutputRecovery();', 'frametime = DVD_TIME_BASE / m_fFrameRate;'),
+                'reset-keeps-old-generation': ('      m_recoveryGeneration.AdvanceTo(m_nextRecoveryGeneration.load());\n', ''),
+                'publish-into-drain': ('m_messageQueue.GetPacketCount(CDVDMsg::GENERAL_STREAMCHANGE) > 0 ||\n      m_messageQueue.GetPacketCount(CDVDMsg::VIDEO_DRAIN) > 0)', 'm_messageQueue.GetPacketCount(CDVDMsg::GENERAL_STREAMCHANGE) > 0)'),
                 'audio-stale-eof': ('  m_messageQueue.Flush(CDVDMsg::GENERAL_EOF);', ''),
                 'audio-loses-epoch': ('std::make_shared<CDVDMsgStreamFlush>(sync, ++m_syncRequest)', 'std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_FLUSH, sync)'),
                 'admit-replay-while-pending': ('if (lifecyclePending)', 'if (false && lifecyclePending)'),

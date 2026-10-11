@@ -2819,6 +2819,10 @@ void CAMLCodec::ResetInternal()
                                         m_hints.subtitleProbeSource))
     aml_dv_detect_active_area_start();
 
+  // The no-output watchdog measures from the completed reset: time spent in the
+  // reset itself, its fence or the probe restart above (which first joins the old
+  // probe, possibly blocked in a VFS read) must not count against the next interval.
+  m_tp_last_frame = std::chrono::system_clock::now();
 }
 
 bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
@@ -3536,13 +3540,23 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
       return CDVDVideoCodec::VC_NONE;
     return CDVDVideoCodec::VC_EOF;
   }
-  // Decoder error or no frame produced within the timeout period.
-  else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
+  // Decoder error. Keep this distinct from the no-output watchdog so the
+  // player does not mistake an isolated dequeue failure for a liveness loop.
+  else if (ret != EAGAIN)
   {
-    CLog::Log(LOGERROR, "CAMLCodec::GetPicture: time elapsed since last frame: {:d}ms ({:d}:{})",
-      elapsed_since_last_frame.count(), ret, strerror(ret));
+    CLog::Log(LOGERROR, "CAMLCodec::GetPicture: decoder dequeue failed ({:d}:{})", ret,
+              strerror(ret));
     m_tp_last_frame = std::chrono::system_clock::now();
     return CDVDVideoCodec::VC_FLUSHED;
+  }
+  // No frame produced within the timeout period. VideoPlayerVideo tracks this
+  // reason separately so a failed local reset can escalate to a parent reseek.
+  else if (elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
+  {
+    CLog::Log(LOGERROR, "CAMLCodec::GetPicture: time elapsed since last frame: {:d}ms ({:d}:{})",
+              elapsed_since_last_frame.count(), ret, strerror(ret));
+    m_tp_last_frame = std::chrono::system_clock::now();
+    return CDVDVideoCodec::VC_FLUSHED_TIMEOUT;
   }
   // No output frame available (EAGAIN): if buffer is below the minimum level
   // and we're not approaching EOF, return VC_BUFFER to trigger the buffering

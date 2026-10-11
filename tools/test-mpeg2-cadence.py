@@ -76,19 +76,27 @@ def player_source():
     observe = function(source, 'if (!bPacketDrop && pPacket->pData')
     decoder = function(source, 'bool CVideoPlayerVideo::ProcessDecoderOutput(')
     assert decoder.index('GetPicture(&m_picture)') < decoder.index('m_mpeg2Cadence')
-    recovery = '\n'.join(function(decoder, 'if (decoderState == CDVDVideoCodec::' + state + ')')
-                         for state in ['VC_FLUSHED', 'VC_REOPEN'])
+    # The flush branch also handles the Amlogic no-output timeout (VC_FLUSHED_TIMEOUT).
+    recovery = '\n'.join(function(decoder, signature) for signature in (
+        'if (decoderState == CDVDVideoCodec::VC_FLUSHED ||\n      decoderState == CDVDVideoCodec::VC_FLUSHED_TIMEOUT)',
+        'if (decoderState == CDVDVideoCodec::VC_REOPEN)'))
     completion = function(source, 'if (!lifecyclePending && m_pendingRecoveryDiscard)')
     guard_start = source.index('bool skipHalving =')
     guard = source[guard_start:source.index(';', guard_start) + 1]
+    recovery_header = (ROOT / 'xbmc/cores/VideoPlayer/DecoderFlushRecovery.h').read_text()
     return r'''
+#include <atomic>
 #include <memory>
 #include <deque>
+#include <optional>
+''' + recovery_header.replace('#pragma once', '') + r'''
 constexpr int CODEC_INTERLACED=64;
 constexpr double MAXFRAMERATEDIFF=0.01;
 constexpr double DVD_TIME_BASE=1000000;
 struct CDVDMsg{};struct CDVDMsgDemuxerPacket:CDVDMsg{};
-struct CDVDVideoCodec {enum State{VC_FLUSHED,VC_REOPEN};};
+struct CDVDVideoCodec {enum State{VC_FLUSHED,VC_REOPEN,VC_FLUSHED_TIMEOUT};};
+constexpr int DVD_PLAYSPEED_NORMAL=1000,DVD_PLAYSPEED_PAUSE=0;
+struct IDVDStreamPlayer {enum ESyncState {SYNC_STARTING,SYNC_WAITSYNC,SYNC_INSYNC};};
 constexpr int LOGDEBUG=0;
 struct CLog {template<class... Args> static void Log(Args...){}};
 struct DemuxPacket {const void* pData=(void*)1;int iSize=10;double duration=2*field;};
@@ -99,7 +107,15 @@ struct CVideoPlayerVideo {
  struct Info {bool hw=false,interlaced=true;float fps=0;int changes=0;
   bool IsVideoHwDecoder(){return hw;}bool GetVideoInterlaced(){return interlaced;}
   void SetVideoFps(float f){fps=f;++changes;}void SetVideoInterlaced(bool i){interlaced=i;}
+  float GetNewSpeed() const {return 1.0f;}
  }m_processInfo;
+ // No-output recovery state (decoder flush branch); cadence is the subject here.
+ CDecoderFlushRecovery m_decoderFlushRecovery;CVideoRecoveryGeneration m_recoveryGeneration;
+ std::optional<uint64_t> m_pendingNoOutputRecovery;uint64_t m_pendingNoOutputEpoch=0;
+ std::atomic<uint64_t> m_syncRequest{0};int m_speed=DVD_PLAYSPEED_NORMAL;
+ int m_syncState=IDVDStreamPlayer::SYNC_INSYNC;bool m_paused=false,m_stalled=false;
+ struct {bool IsFull() const {return false;}} m_messageQueue;int published=0;
+ void PublishNoOutputRecovery(){++published;}
  struct Tracker {int flushes=0;void Flush(){++flushes;}}m_ptsTracker;
  struct Picture {Mode mpeg2OutputMode=Mode::UNKNOWN;double iDuration=0;}m_picture;
  CMPEG2Cadence m_mpeg2Cadence;double m_mpeg2SourceRate=rate,m_fFrameRate=rate;

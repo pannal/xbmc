@@ -30,13 +30,14 @@
 
 #include "platform/linux/SysfsPath.h"
 
+#include <chrono>
 #include <iomanip>
 #include <iterator>
 #include <memory>
 #include <mutex>
 #include <numeric>
 #include <sstream>
-#include <chrono>
+#include <utility>
 
 using namespace std::chrono_literals;
 
@@ -52,13 +53,19 @@ double MPEG2NowMs()
 class CDVDMsgVideoCodecChange : public CDVDMsg
 {
 public:
-  CDVDMsgVideoCodecChange(const CDVDStreamInfo& hints, std::unique_ptr<CDVDVideoCodec> codec)
-    : CDVDMsg(GENERAL_STREAMCHANGE), m_codec(std::move(codec)), m_hints(hints)
+  CDVDMsgVideoCodecChange(const CDVDStreamInfo& hints,
+                          std::unique_ptr<CDVDVideoCodec> codec,
+                          uint64_t recoveryGeneration)
+    : CDVDMsg(GENERAL_STREAMCHANGE),
+      m_codec(std::move(codec)),
+      m_hints(hints),
+      m_recoveryGeneration(recoveryGeneration)
   {}
   ~CDVDMsgVideoCodecChange() override = default;
 
   std::unique_ptr<CDVDVideoCodec> m_codec;
-  CDVDStreamInfo  m_hints;
+  CDVDStreamInfo m_hints;
+  uint64_t m_recoveryGeneration;
 };
 
 
@@ -163,7 +170,9 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
       CLog::Log(LOGINFO, "CVideoPlayerVideo::OpenStream - could not open video codec");
     }
 
-    SendMessage(std::make_shared<CDVDMsgVideoCodecChange>(hint, std::move(codec)), 0);
+    SendMessage(std::make_shared<CDVDMsgVideoCodecChange>(hint, std::move(codec),
+                                                          m_nextRecoveryGeneration.load()),
+                0);
   }
   else
   {
@@ -178,7 +187,7 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
     }
 
     m_syncEpoch = ++m_syncRequest;
-    OpenStream(hint, std::move(codec));
+    OpenStream(hint, std::move(codec), m_nextRecoveryGeneration.load());
     CLog::Log(LOGINFO, "Creating video thread");
     m_messageQueue.Init();
     Create();
@@ -186,7 +195,9 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
   return true;
 }
 
-void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVideoCodec> codec)
+void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint,
+                                   std::unique_ptr<CDVDVideoCodec> codec,
+                                   uint64_t recoveryGeneration)
 {
   CLog::Log(LOGDEBUG, "CVideoPlayerVideo::OpenStream - open stream with codec id: {:d} fps:{:d}/{:d} options:{:02x}",
     hint.codec, hint.fpsrate, hint.fpsscale, hint.codecOptions);
@@ -274,6 +285,7 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
     if (!codec)
     {
       CLog::Log(LOGERROR, "CVideoPlayerVideo::OpenStream - could not open video codec");
+      m_pendingNoOutputRecovery.reset();
       m_messageParent.Put(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_ABORT));
       StopThread();
     }
@@ -285,9 +297,12 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
   m_mpeg2RateChanged = false;
   ResetMPEG2Cadence();
   m_isEOS = false;
+  m_recoveryGeneration.AdvanceTo(recoveryGeneration);
   m_stalled = m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET) == 0;
   m_rewindStalled = false;
   m_packets.clear();
+  m_decoderFlushRecovery.Reset();
+  m_pendingNoOutputRecovery.reset();
   m_syncState = IDVDStreamPlayer::SYNC_STARTING;
   m_renderManager.ShowVideo(false);
 }
@@ -318,6 +333,7 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
     request->state = CVideoFlushRequest::State::CANCELLED;
   m_pendingResetMessage.reset();
   m_pendingRecoveryDiscard = false;
+  m_pendingNoOutputRecovery.reset();
 #if defined(HAS_LIBAMCODEC)
   StopSubtitleProbe(); // video thread has retired; no new software startup can race this join
 #endif
@@ -434,6 +450,7 @@ void CVideoPlayerVideo::Process()
       m_diagnostics.modes |= uint64_t{1} << 5;
     if (m_pVideoCodec && m_pVideoCodec->LifecycleFailed())
     {
+      m_pendingNoOutputRecovery.reset();
       m_messageParent.Put(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_ABORT));
       break;
     }
@@ -443,6 +460,7 @@ void CVideoPlayerVideo::Process()
       m_pendingRecoveryDiscard = false;
       ResetMPEG2Cadence();
       frametime = DVD_TIME_BASE / m_fFrameRate;
+      PublishNoOutputRecovery();
     }
     std::shared_ptr<CDVDMsg> pMsg;
     bool continuingReset = false;
@@ -574,6 +592,10 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))
     {
+      m_decoderFlushRecovery.OnStreamFlush();
+      m_pendingNoOutputRecovery.reset();
+      // The parent advanced the generation before queueing the reset.
+      m_recoveryGeneration.AdvanceTo(m_nextRecoveryGeneration.load());
       m_isEOS = false;
       if (m_pVideoCodec && !continuingReset)
       {
@@ -604,6 +626,10 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH)) // private message sent by (CVideoPlayerVideo::Flush())
     {
+      m_decoderFlushRecovery.OnStreamFlush();
+      m_pendingNoOutputRecovery.reset();
+      m_recoveryGeneration.AdvanceTo(
+          std::static_pointer_cast<CDVDMsgVideoFlush>(pMsg)->recoveryGeneration);
       m_isEOS = false;
       m_messageQueue.Flush(CDVDMsg::VIDEO_DRAIN);
       m_syncEpoch = std::static_pointer_cast<CDVDMsgStreamFlush>(pMsg)->epoch;
@@ -653,6 +679,8 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
+      m_decoderFlushRecovery.OnStreamFlush();
+      m_pendingNoOutputRecovery.reset();
       m_speed = std::static_pointer_cast<CDVDMsgInt>(pMsg)->m_value;
       if (m_pVideoCodec)
         m_pVideoCodec->SetSpeed(m_speed);
@@ -678,7 +706,7 @@ void CVideoPlayerVideo::Process()
         m_pendingResetMessage = pMsg;
         continue;
       }
-      OpenStream(msg->m_hints, std::move(msg->m_codec));
+      OpenStream(msg->m_hints, std::move(msg->m_codec), msg->m_recoveryGeneration);
       msg->m_codec = NULL;
       if (m_picture.videoBuffer)
       {
@@ -688,6 +716,9 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::VIDEO_DRAIN))
     {
+      // The tail is decoded as is; the parent also rejects recovery at end of stream.
+      m_decoderFlushRecovery.OnStreamFlush();
+      m_pendingNoOutputRecovery.reset();
       m_isEOS = false;
       m_mpeg2Cadence.Drain();
       while (!m_bStop && m_pVideoCodec)
@@ -699,6 +730,8 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
+      m_decoderFlushRecovery.OnStreamFlush();
+      m_pendingNoOutputRecovery.reset();
       m_paused = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_PAUSE: {}", m_paused);
     }
@@ -878,6 +911,23 @@ void CVideoPlayerVideo::LogDiagnostics(bool final)
   m_diagnostics.sinceUs = m_diagnostics.loopUs = now;
 }
 
+void CVideoPlayerVideo::PublishNoOutputRecovery()
+{
+  const auto generation = std::exchange(m_pendingNoOutputRecovery, std::nullopt);
+  if (!generation || m_pendingNoOutputEpoch != m_syncRequest.load() || m_bStop ||
+      m_messageQueue.GetPacketCount(CDVDMsg::GENERAL_RESET) > 0 ||
+      m_messageQueue.GetPacketCount(CDVDMsg::GENERAL_FLUSH) > 0 ||
+      m_messageQueue.GetPacketCount(CDVDMsg::GENERAL_STREAMCHANGE) > 0 ||
+      m_messageQueue.GetPacketCount(CDVDMsg::VIDEO_DRAIN) > 0)
+    return;
+
+  // The parent logs a warning only when it accepts the request.
+  CLog::Log(LOGDEBUG,
+            "CVideoPlayerVideo - Amlogic decoder produced no frame after its flush/reset; "
+            "requesting generation-checked parent recovery");
+  m_messageParent.Put(std::make_shared<CDVDMsgVideoRecoveryRequest>(*generation));
+}
+
 bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 {
   const bool diagnostics = PLAYBACK_DIAGNOSTICS::Enabled();
@@ -907,9 +957,36 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   }
 
   // if decoder was flushed, we need to seek back again to resume rendering
-  if (decoderState == CDVDVideoCodec::VC_FLUSHED)
+  if (decoderState == CDVDVideoCodec::VC_FLUSHED ||
+      decoderState == CDVDVideoCodec::VC_FLUSHED_TIMEOUT)
   {
     CLog::Log(LOGDEBUG, "CVideoPlayerVideo - video decoder was flushed");
+    bool requestRecovery = false;
+    CVideoRecoveryPlaybackState playback;
+    playback.normalPlayback = m_processInfo.GetNewSpeed() == 1.0f;
+    playback.streamPaused = m_speed == DVD_PLAYSPEED_PAUSE;
+    // Startup decoding continues with paused stream speed while SetCaching waits for a frame.
+    // A full video queue proves this is decoder backpressure, rather than missing source input.
+    playback.buffering = playback.streamPaused;
+    playback.streamStarting = m_syncState == IDVDStreamPlayer::SYNC_STARTING;
+    playback.videoQueueFull = m_messageQueue.IsFull();
+    // No output is no evidence of a wedge while input is starved (stalled) or while
+    // WAITSYNC holds packet intake for A/V sync after the first post-seek frame.
+    if (decoderState == CDVDVideoCodec::VC_FLUSHED_TIMEOUT && playback.normalPlayback &&
+        (m_speed == DVD_PLAYSPEED_NORMAL || playback.DecoderOutputBlocked()) && !m_paused &&
+        !m_stalled && m_syncState != IDVDStreamPlayer::SYNC_WAITSYNC)
+    {
+      requestRecovery = m_decoderFlushRecovery.OnNoOutputTimeout();
+    }
+    else
+    {
+      m_decoderFlushRecovery.OnStreamFlush();
+      m_pendingNoOutputRecovery.reset();
+    }
+    // Retain the detecting identity until an asynchronous local reset completes.
+    m_pendingNoOutputRecovery =
+        requestRecovery ? std::optional<uint64_t>{m_recoveryGeneration.Get()} : std::nullopt;
+    m_pendingNoOutputEpoch = m_syncRequest.load();
     while (!m_packets.empty())
     {
       auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.front().message);
@@ -932,11 +1009,15 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
     frametime = DVD_TIME_BASE / m_fFrameRate;
     //picture.iFlags &= ~DVP_FLAG_ALLOCATED;
     m_renderManager.DiscardBuffer();
+
+    PublishNoOutputRecovery();
     return false;
   }
 
   if (decoderState == CDVDVideoCodec::VC_REOPEN)
   {
+    m_decoderFlushRecovery.OnStreamFlush();
+    m_pendingNoOutputRecovery.reset();
     while (!m_packets.empty())
     {
       auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.front().message);
@@ -987,6 +1068,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   // check for a new picture
   if (decoderState == CDVDVideoCodec::VC_PICTURE)
   {
+    m_decoderFlushRecovery.OnDecoderOutput();
     bool hasTimestamp = true;
 
     // Corrupt-splice recovery: the decoder flagged a frame whose pts stepped
@@ -1238,7 +1320,9 @@ void CVideoPlayerVideo::Flush(bool sync)
   {
     auto request = std::make_shared<CVideoFlushRequest>();
     std::atomic_store(&m_flushRequest, request);
-    SendMessage(std::make_shared<CDVDMsgVideoFlush>(sync, request, ++m_syncRequest), 1);
+    SendMessage(std::make_shared<CDVDMsgVideoFlush>(sync, request, ++m_syncRequest,
+                                                    m_nextRecoveryGeneration.load()),
+                1);
   }
   else
   {

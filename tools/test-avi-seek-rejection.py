@@ -164,8 +164,10 @@ struct Fixture{
    ioSeeks=frameReads=ffFlushes=unrefs=0;defaultStream=0;rejectIO=repairIndex=false;}
 };
 struct IDVDStreamPlayer{enum{SYNC_INSYNC=2};};
+@RECOVERY_HEADER@
 struct Msg{
  double target=50;bool backwards=true,trick=false,accurate=true,sync=true,relative=false,recovery=false,restore=false;
+ bool videoRecovery=false;bool IsVideoRecovery()const{return videoRecovery;}
  double GetTime()const{return target;}bool GetBackward()const{return backwards;}
  bool GetTrickPlay()const{return trick;}bool GetAccurate()const{return accurate;}
  bool GetSync()const{return sync;}bool GetRelative()const{return relative;}
@@ -193,6 +195,7 @@ struct CVideoPlayer{
  double m_demuxSeekBasePts=DVD_NOPTS_VALUE;struct{double GetTimeAfterRestoringCuts(double t){return t;}}m_Edl;
  struct{int state=0;}m_dvd;bool m_subtitleSeekNewRun=false;
  std::vector<double> queued{17000,40000,80000,120000};
+ CVideoRecoveryGate m_videoRecoveryGate;
  int flushes=0,recalls=0,speedChanges=0;bool flushAccurate=false,flushSync=false;
  double flushStart=DVD_NOPTS_VALUE;std::function<void()> complete;
  CacheInfo GetCachingTimes(){return {cacheValid};}bool IsInMenuInternal(){return false;}
@@ -323,14 +326,41 @@ void adjacent(){
   CVideoPlayer p;p.m_pDemuxer=&f.demux;p.m_pInputStream=f.input;p.Handle({});
   assert(p.flushes==1&&p.m_dvd.state==0);p.Complete();assert(p.m_dvd.state==DVDSTATE_SEEK);}
 }
+static CVideoRecoveryGate::Conditions eligible(){
+ CVideoRecoveryGate::Conditions c;
+ c.generationMatches=c.canSeek=c.normalPlayback=c.streamPlaying=c.cacheReady=c.displayAvailable=c.sourceEligible=true;
+ return c;
+}
+void unchangedRecovery(){
+ // Same message the parent builds for a recovery: silent (trickplay), accurate and synchronized.
+ Fixture f;CVideoPlayer p;p.m_pDemuxer=&f.demux;p.m_pInputStream=f.input;
+ const auto now=std::chrono::steady_clock::now();
+ assert(p.m_videoRecoveryGate.TryBegin(now,eligible()));
+ Msg msg;msg.trick=true;msg.recovery=true;msg.videoRecovery=true;
+ auto before=p.queued;p.process.seeking=true;p.Handle(msg);
+ assert(f.demux.WasSeekRejectedWithoutChange());
+ assert(p.flushes==0&&p.queued==before&&p.m_State.dts==17000&&p.m_State.lastSeek==2000000);
+ assert(p.m_clock.value==17000&&p.m_caching==CVideoPlayer::CACHESTATE_DONE&&p.recalls==0);
+ assert(!p.m_subtitleSeekNewRun&&p.m_chapterSeekTarget==3&&!p.complete&&!p.process.seeking);
+ assert(!p.m_videoRecoveryGate.CanExecute(eligible()) && "rejected recovery must end its pending attempt");
+ // The attempt counts: one more executed recovery exhausts the per-stream budget.
+ assert(p.m_videoRecoveryGate.TryBegin(now+std::chrono::seconds(60),eligible()));
+ p.m_videoRecoveryGate.OnExecute();p.m_videoRecoveryGate.CancelPending();
+ assert(!p.m_videoRecoveryGate.TryBegin(now+std::chrono::seconds(600),eligible()) &&
+        "rejected recovery counts against the budget");
+}
 int main(int argc,char** argv){
  const std::string which=argc>1?argv[1]:"all";
  if(which=="all"||which=="demux")unchangedDemux();
  if(which=="all"||which=="player")unchangedPlayer();
  if(which=="all")adjacent();
+ if(which=="all"||which=="recovery")unchangedRecovery();
  std::cout<<"AVI seek rejection "<<which<<": PASS\n";
 }
 '''
+
+
+RECOVERY_HEADER = (ROOT / 'xbmc/cores/VideoPlayer/DecoderFlushRecovery.h').read_text().replace('#pragma once', '')
 
 
 def harness(root, ffmpeg):
@@ -362,9 +392,12 @@ def harness(root, ffmpeg):
     source = source.replace('@CACHE_ENUM@', f.block((root / 'xbmc/cores/VideoPlayer/VideoPlayer.h').read_text(), 'enum ECacheState') + ';')
     source = source.replace('@SET_CACHING@', f.block(player, 'void CVideoPlayer::SetCaching('))
     source = source.replace('@FINISH_SEEK@', f.block(player, 'void CVideoPlayer::FinishSeek('))
-    branch = f.body(player, 'else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK) &&')
+    marker = next(m for m in ('else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK) ||',
+                              'else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK) &&') if m in player)
+    branch = f.body(player, marker)
     branch = branch[branch.index('      if (!m_State.canseek)'):]
     source = source.replace('@PLAYER_SEEK@', branch)
+    source = source.replace('@RECOVERY_HEADER@', RECOVERY_HEADER)
     return source + TESTS
 
 
@@ -403,6 +436,14 @@ def main():
         assert raw_failure in source
         run(source.replace(raw_failure, '  if (ret < 0) m_seekRejectedWithoutChange = true;\n' + raw_failure),
             tmp, 'unsafe-negative', expected='!f.demux.WasSeekRejectedWithoutChange()&&f.ast.frame_offset==0')
+        cancel = 'if (msg.IsVideoRecovery())\n          m_videoRecoveryGate.CancelPending();\n        int expectedChapterTarget = 0;'
+        assert cancel in source
+        run(source.replace(cancel, 'int expectedChapterTarget = 0;', 1),
+            tmp, 'rejected-recovery-stays-pending', 'recovery', 'rejected recovery must end its pending attempt')
+        execute = 'if (msg.IsVideoRecovery())\n        m_videoRecoveryGate.OnExecute();'
+        assert execute in source
+        run(source.replace(execute, '', 1), tmp, 'rejected-recovery-not-counted', 'recovery',
+            'rejected recovery counts against the budget')
         if args.original_root:
             old = harness(args.original_root, args.ffmpeg_source)
             run(old, tmp, 'original-demux', 'demux', 'early indexed-key gap must be rejected unchanged')
