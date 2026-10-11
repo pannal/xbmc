@@ -224,6 +224,16 @@ public:
   CPoint StereoCorrection(const CPoint &point) const;
 
   CRect GenerateAABB(const CRect &rect) const;
+  // Main/render thread only. Bounds describe complete draw geometry, never
+  // the temporary dirty-region repaint scissor.
+  void BeginControlBounds(CRect* bounds) { m_controlBounds = bounds; }
+  void EndControlBounds() { m_controlBounds = nullptr; }
+  bool IsCapturingControlBounds() const { return m_controlBounds != nullptr; }
+  void CaptureControlQuad(const float* x, const float* y, const float* z);
+  void CaptureControlRect(const CRect& rect);
+  void CaptureControlText(const CRect& glyphs, float x, float y, float dx, float dy);
+  void NextControlBoundsFrame() { ++m_controlBoundsFrame; }
+  uint64_t GetControlBoundsFrame() const { return m_controlBoundsFrame; }
 
   //@todo move those somewhere else
   const std::string& GetMediaDir() const;
@@ -259,6 +269,8 @@ protected:
   std::stack<CPoint> m_cameras;
   std::stack<CPoint> m_origins;
   std::stack<CRect> m_clipRegions;
+  CRect* m_controlBounds{nullptr};
+  uint64_t m_controlBoundsFrame{0};
   std::stack<float> m_stereoFactors;
   std::stack<CRect> m_viewStack;
   CRect m_scissors;

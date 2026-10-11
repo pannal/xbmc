@@ -182,6 +182,31 @@ void CDataCacheCore::SetVideoDimensions(int width, int height)
   m_playerVideoInfo.height = height;
 }
 
+void CDataCacheCore::SetGUIRenderBounds(GUIRenderBoundsMap bounds)
+{
+  std::unique_lock<CCriticalSection> lock(m_guiSection);
+  m_guiRenderBounds = std::move(bounds);
+}
+
+CDataCacheCore::GUIRenderBounds CDataCacheCore::GetGUIRenderBounds(int windowID, int controlID)
+{
+  std::unique_lock<CCriticalSection> lock(m_guiSection);
+  const auto it = m_guiRenderBounds.find({windowID, controlID});
+  return it == m_guiRenderBounds.end() ? GUIRenderBounds{} : it->second;
+}
+
+void CDataCacheCore::InvalidateGUIRenderBounds(uint64_t instance)
+{
+  std::unique_lock<CCriticalSection> lock(m_guiSection);
+  for (auto it = m_guiRenderBounds.begin(); it != m_guiRenderBounds.end();)
+  {
+    if (it->second.instance == instance)
+      it = m_guiRenderBounds.erase(it);
+    else
+      ++it;
+  }
+}
+
 void CDataCacheCore::SetVideoActivePicture(VideoActivePicture picture)
 {
   std::unique_lock<CCriticalSection> lock(m_videoPlayerSection);

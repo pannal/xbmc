@@ -228,13 +228,14 @@ struct CVertexBuffer
 #endif
   BufferHandleType bufferHandle = BUFFER_HANDLE_INIT; // this is really a GLuint
   size_t size = 0;
+  CRect bounds; // GL/GLES glyph quad envelope in cached vertex coordinates
   CVertexBuffer() : m_font(nullptr) {}
   CVertexBuffer(BufferHandleType bufferHandle, size_t size, const CGUIFontTTF* font)
     : bufferHandle(bufferHandle), size(size), m_font(font)
   {
   }
   CVertexBuffer(const CVertexBuffer& other)
-    : bufferHandle(other.bufferHandle), size(other.size), m_font(other.m_font)
+    : bufferHandle(other.bufferHandle), size(other.size), bounds(other.bounds), m_font(other.m_font)
   {
     /* In practice, the copy constructor is only called before a vertex buffer
      * has been attached. If this should ever change, we'll need another support
@@ -248,6 +249,7 @@ struct CVertexBuffer
     bufferHandle = other.bufferHandle;
     other.bufferHandle = 0;
     size = other.size;
+    bounds = other.bounds;
     m_font = other.m_font;
     return *this;
   }

@@ -11,6 +11,7 @@
 #include "DVDStreamInfo.h"
 #include "EdlEdit.h"
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
+#include "guilib/GUIRenderBounds.h"
 #include "threads/CriticalSection.h"
 #include "utils/AgedMap.h"
 #include "utils/BitstreamConverter.h"
@@ -24,6 +25,12 @@
 class CDataCacheCore
 {
 public:
+  using GUIRenderBounds = CGUIRenderBounds;
+  using GUIRenderBoundsMap = ::GUIRenderBoundsMap;
+  void SetGUIRenderBounds(GUIRenderBoundsMap bounds);
+  GUIRenderBounds GetGUIRenderBounds(int windowID, int controlID);
+  void InvalidateGUIRenderBounds(uint64_t instance);
+
   struct VideoActivePicture
   {
     // Fixed 1920x1080 GUI coordinates, before temporary OSD suppression.
@@ -339,6 +346,8 @@ public:
   int64_t GetMaxTime();
 
 protected:
+  CCriticalSection m_guiSection;
+  GUIRenderBoundsMap m_guiRenderBounds;
   std::atomic_bool m_AVChange = false;
   std::atomic_bool m_AVChangeExtended = false;
   std::atomic_bool m_hasAVInfoChanges = false;

@@ -11,6 +11,7 @@
 #include "FileItem.h"
 #include "ServiceBroker.h"
 #include "URL.h"
+#include "cores/DataCacheCore.h"
 #include "dialogs/GUIDialogKeyboardGeneric.h"
 #include "dialogs/GUIDialogNumeric.h"
 #include "dialogs/GUIDialogProgress.h"
@@ -268,6 +269,25 @@ bool CGUIControlsGUIInfo::GetLabel(std::string& value, const CFileItem *item, in
     ///////////////////////////////////////////////////////////////////////////////////////////////
     // CONTROL_*
     ///////////////////////////////////////////////////////////////////////////////////////////////
+    case CONTROL_GET_RENDER_BOUNDS:
+    {
+      const auto bounds = CServiceBroker::IsAddonInterfaceUp()
+                              ? CServiceBroker::GetDataCacheCore().GetGUIRenderBounds(
+                                    info.GetData2(), info.GetData1())
+                              : CDataCacheCore::GUIRenderBounds{};
+      const std::string prefix = StringUtils::Format(
+          "{{\"version\":1,\"coordinate_system\":\"gui-1080\",\"width\":1920,\"height\":1080,"
+          "\"window_id\":{},\"control_id\":{},\"instance\":{},\"visible\":{},\"valid\":{},",
+          info.GetData2(), info.GetData1(), bounds.instance, bounds.visible ? "true" : "false",
+          bounds.valid ? "true" : "false");
+      value =
+          prefix + (bounds.valid
+                        ? StringUtils::Format("\"left\":{},\"top\":{},\"right\":{},\"bottom\":{}}}",
+                                              bounds.bounds.x1, bounds.bounds.y1, bounds.bounds.x2,
+                                              bounds.bounds.y2)
+                        : "\"left\":null,\"top\":null,\"right\":null,\"bottom\":null}");
+      return true;
+    }
     case CONTROL_GET_LABEL:
     {
       CGUIWindow *window = GUIINFO::GetWindow(contextWindow);

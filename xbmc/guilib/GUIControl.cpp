@@ -16,12 +16,16 @@
 #include "GUITexture.h"
 #include "GUIWindowManager.h"
 #include "ServiceBroker.h"
+#include "cores/DataCacheCore.h"
 #include "input/InputManager.h"
 #include "input/actions/Action.h"
 #include "input/actions/ActionIDs.h"
 #include "input/mouse/MouseEvent.h"
 #include "input/mouse/MouseStat.h"
 #include "utils/log.h"
+
+#include <atomic>
+#include <cmath>
 
 using namespace KODI;
 using namespace GUILIB;
@@ -82,10 +86,56 @@ CGUIControl::CGUIControl(int parentID, int controlID, float posX, float posY, fl
 
 CGUIControl::CGUIControl(const CGUIControl &) = default;
 
-CGUIControl::~CGUIControl(void) = default;
+CGUIControl::~CGUIControl(void)
+{
+  InvalidateRenderedBounds();
+}
+
+void CGUIControl::InvalidateRenderedBounds()
+{
+  m_renderedBounds.valid = false;
+  // GUI controls outlive StageTwo's player cache at shutdown and also exist in
+  // unit tests that initialize only StageOne.
+  if (CServiceBroker::IsAddonInterfaceUp())
+    CServiceBroker::GetDataCacheCore().InvalidateGUIRenderBounds(m_renderedBounds.instance);
+}
+
+uint64_t CGUIControl::NextBoundsInstance()
+{
+  static std::atomic<uint64_t> instance{0};
+  return ++instance;
+}
+
+CGUIRenderBounds CGUIControl::GetRenderedBounds() const
+{
+  CGUIRenderBounds result;
+  result.instance = m_renderedBounds.instance;
+  result.visible = true;
+  for (const CGUIControl* control = this; control; control = control->m_parentControl)
+    result.visible &= control->IsVisible() && !control->m_isCulled && control->m_hasProcessed;
+  result.valid = result.visible && m_renderedBounds.valid;
+  if (result.valid)
+  {
+    auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+    RESOLUTION_INFO reference;
+    reference.iWidth = 1920;
+    reference.iHeight = 1080;
+    float sx, sy;
+    TransformMatrix matrix;
+    gfx.GetGUIScaling(reference, sx, sy, &matrix);
+    result.valid = gfx.GetStereoMode() == RENDER_STEREO_MODE_OFF &&
+                   matrix == m_renderedBounds.reference &&
+                   gfx.GetWidth() == m_renderedBounds.screenWidth &&
+                   gfx.GetHeight() == m_renderedBounds.screenHeight;
+  }
+  if (result.valid)
+    result.bounds = m_renderedBounds.bounds;
+  return result;
+}
 
 void CGUIControl::AllocResources()
 {
+  InvalidateRenderedBounds();
   m_hasProcessed = false;
   m_bInvalidated = true;
   m_bAllocated=true;
@@ -93,6 +143,7 @@ void CGUIControl::AllocResources()
 
 void CGUIControl::FreeResources(bool immediately)
 {
+  InvalidateRenderedBounds();
   if (m_bAllocated)
   {
     // Reset our animation states - not conditional anims though.
@@ -163,6 +214,7 @@ void CGUIControl::DoProcess(unsigned int currentTime, CDirtyRegionList &dirtyreg
 
   if (changed)
   {
+    m_renderedBounds.valid = false;
     dirtyregions.emplace_back(dirtyRegion);
   }
 }
@@ -204,10 +256,58 @@ void CGUIControl::DoRender()
     {
       UTILS::COLOR::Color color =
           CServiceBroker::GetWinSystem()->GetGfxContext().MergeAlpha(m_hitColor);
-      CGUITexture::DrawQuad(CServiceBroker::GetWinSystem()->GetGfxContext().GenerateAABB(m_hitRect), color);
+      CGUITexture::DrawQuad(CServiceBroker::GetWinSystem()->GetGfxContext().GenerateAABB(m_hitRect),
+                            color);
     }
 
+    auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+#if defined(HAS_GL) || defined(HAS_GLES)
+    const bool capture =
+        ControlType == GUICONTROL_BUTTON && m_hitColor == 0xffffffff &&
+        gfx.GetStereoMode() == RENDER_STEREO_MODE_OFF;
+#else
+    const bool capture = false;
+#endif
+    CRect drawn;
+    if (!capture)
+      m_renderedBounds.valid = false;
+    if (capture)
+      gfx.BeginControlBounds(&drawn);
     Render();
+    if (capture)
+    {
+      gfx.EndControlBounds();
+      // Accumulate both render passes and whole draw envelopes across dirty
+      // repaint tiles. The repaint scissor is deliberately excluded.
+      if (m_renderedBounds.frame != gfx.GetControlBoundsFrame())
+      {
+        m_renderedBounds.bounds = {};
+        m_renderedBounds.valid = false;
+        m_renderedBounds.frame = gfx.GetControlBoundsFrame();
+      }
+      drawn.Intersect(
+          CRect(0, 0, static_cast<float>(gfx.GetWidth()), static_cast<float>(gfx.GetHeight())));
+      RESOLUTION_INFO reference;
+      reference.iWidth = 1920;
+      reference.iHeight = 1080;
+      float sx, sy;
+      TransformMatrix matrix;
+      gfx.GetGUIScaling(reference, sx, sy, &matrix);
+      m_renderedBounds.reference = matrix;
+      m_renderedBounds.screenWidth = gfx.GetWidth();
+      m_renderedBounds.screenHeight = gfx.GetHeight();
+      if (!drawn.IsEmpty() && std::isfinite(sx) && sx > 0.0f && std::isfinite(sy) && sy > 0.0f)
+      {
+        matrix.InverseTransformPosition(drawn.x1, drawn.y1);
+        matrix.InverseTransformPosition(drawn.x2, drawn.y2);
+        if (std::isfinite(drawn.x1) && std::isfinite(drawn.y1) && std::isfinite(drawn.x2) &&
+            std::isfinite(drawn.y2))
+        {
+          m_renderedBounds.bounds.Union(drawn);
+          m_renderedBounds.valid = !m_renderedBounds.bounds.IsEmpty();
+        }
+      }
+    }
 
     GUIPROFILER_RENDER_END(this);
 

@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "GUIRenderBounds.h"
+
 /*!
 \file GUIControl.h
 \brief
@@ -165,6 +167,8 @@ public:
   virtual int GetID(void) const;
   virtual void SetID(int id) { m_controlID = id; }
   int GetParentID() const;
+  CGUIRenderBounds GetRenderedBounds() const;
+  void InvalidateRenderedBounds();
   virtual bool HasFocus() const;
   virtual void AllocResources();
   virtual void FreeResources(bool immediately = false);
@@ -320,6 +324,20 @@ public:
   virtual void DumpTextureUse() {}
 #endif
 protected:
+  static uint64_t NextBoundsInstance();
+  struct RenderedBoundsState
+  {
+    RenderedBoundsState() = default;
+    RenderedBoundsState(const RenderedBoundsState&) {} // fresh state for clones
+    uint64_t instance{NextBoundsInstance()};
+    uint64_t frame{0};
+    CRect bounds;
+    TransformMatrix reference;
+    int screenWidth{0};
+    int screenHeight{0};
+    bool valid{false};
+  };
+  RenderedBoundsState m_renderedBounds;
   /*!
    \brief Return the coordinates of the top left of the control, in the control's parent coordinates
    \return The top left coordinates of the control

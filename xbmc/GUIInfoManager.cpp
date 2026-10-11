@@ -10789,6 +10789,21 @@ int CGUIInfoManager::TranslateSingleString(const std::string &strCondition, bool
     }
     else if (cat.name == "control")
     {
+      if (prop.name == "getrenderbounds")
+      {
+        if (prop.num_params() != 2)
+          return 0;
+        int windowID = 0, controlID = 0;
+        const auto parse = [](const std::string& text, int& result)
+        {
+          const auto value = std::from_chars(text.data(), text.data() + text.size(), result);
+          return value.ec == std::errc{} && value.ptr == text.data() + text.size() && result > 0;
+        };
+        if (!parse(prop.param(0), windowID) || !parse(prop.param(1), controlID) ||
+            controlID > 0x00ffffff)
+          return 0;
+        return AddMultiInfo(CGUIInfo(CONTROL_GET_RENDER_BOUNDS, controlID, windowID));
+      }
       for (const infomap& control_label : control_labels)
       {
         if (prop.name == control_label.str)

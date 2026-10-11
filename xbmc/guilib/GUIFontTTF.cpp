@@ -709,6 +709,21 @@ void CGUIFontTTF::DrawTextInternal(CGraphicContext& context,
           m_dynamicCache.Lookup(context, dynamicPos, colors, text, rawAlignment, maxPixelWidth,
                                 scrolling, std::chrono::steady_clock::now(), dirtyCache);
       CVertexBuffer newVertexBuffer = CreateVertexBuffer(*tempVertices);
+#if !defined(HAS_DX)
+      if (!tempVertices->empty())
+      {
+        float left = tempVertices->front().x, right = left;
+        float top = tempVertices->front().y, bottom = top;
+        for (const auto& vertex : *tempVertices)
+        {
+          left = std::min(left, vertex.x);
+          right = std::max(right, vertex.x);
+          top = std::min(top, vertex.y);
+          bottom = std::max(bottom, vertex.y);
+        }
+        newVertexBuffer.bounds = CRect(left, top, right, bottom);
+      }
+#endif
       vertexBuffer = newVertexBuffer;
 #if not defined(HAS_DX)
       m_vertexTrans.emplace_back(x, y, 0.0f, &vertexBuffer, context.GetClipRegion(), dx, dy);
@@ -739,9 +754,22 @@ void CGUIFontTTF::DrawTextInternal(CGraphicContext& context,
       m_vertex.insert(m_vertex.end(), vertices->begin(), vertices->end());
   }
 
+#if !defined(HAS_DX)
+  if (context.IsCapturingControlBounds())
+  {
+    // Match the font shader's scroll, translation, GUI-scale correction and
+    // raster alignment. Cached quads include glyph overhang; shadow draws
+    // are captured separately.
+    bool unusedDirty = false;
+    const auto& buffer =
+        m_dynamicCache.Lookup(context, dynamicPos, colors, text, rawAlignment, maxPixelWidth,
+                              scrolling, std::chrono::steady_clock::now(), unusedDirty);
+    if (buffer.bufferHandle != 0 && buffer.size != 0)
+      context.CaptureControlText(buffer.bounds, x, y, dx, dy);
+  }
+#endif
   End();
 }
-
 
 float CGUIFontTTF::GetTextWidthInternal(const vecText& text)
 {

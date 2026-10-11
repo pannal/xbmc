@@ -233,6 +233,7 @@ public:
   void DumpTextureUse();
 #endif
 private:
+  void PublishRenderBounds();
   void RenderPass() const;
   /*! \brief Render in one back to front pass.
    */
