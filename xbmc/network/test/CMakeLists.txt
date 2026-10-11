@@ -1,4 +1,5 @@
-set(SOURCES TestNetwork.cpp)
+set(SOURCES TestNetwork.cpp
+            TestTCPServer.cpp)
 
 if(MICROHTTPD_FOUND)
   list(APPEND SOURCES TestWebServer.cpp)
