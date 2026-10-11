@@ -590,6 +590,13 @@ bool CPlayerGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
     case PLAYER_PROCESS_AUDIODECODER:
       value = CServiceBroker::GetDataCacheCore().GetAudioDecoderName();
       return true;
+    case PLAYER_PROCESS_AUDIO_DIALNORM:
+    case PLAYER_PROCESS_AUDIO_DIALNORM_PLAIN:
+    {
+      value = CServiceBroker::GetDataCacheCore().GetAudioDialNorm(
+          info.m_info == PLAYER_PROCESS_AUDIO_DIALNORM);
+      return !value.empty();
+    }
     case PLAYER_PROCESS_AUDIOCHANNELS:
       value = CServiceBroker::GetDataCacheCore().GetAudioChannels();
       return true;

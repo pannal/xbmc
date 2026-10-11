@@ -215,6 +215,8 @@ public:
   void SetAudioQueueDataLevel(int level);
   int GetAudioQueueDataLevel();
   void SetAudioPts(double pts);
+  void SetAudioDialNorm(bool available = false, int original = 0, int applied = 0);
+  std::string GetAudioDialNorm(bool colored = true);
 
   // content info
 
@@ -406,6 +408,9 @@ protected:
     int elementCount = -1;
     std::string objectFormat;
     std::string objectLayout;
+    bool hasDialNorm = false;
+    int dialNormOriginal = 0;
+    int dialNormApplied = 0;
   } m_playerAudioInfo;
 
   mutable CCriticalSection m_contentSection;
