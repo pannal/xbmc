@@ -45,10 +45,15 @@ def generate(baseline=None):
     code = code.replace('@VERTEX@', FUNCTION(gles_header, 'struct VERTEX') + ';')
     code = code.replace('@PAGE@', FUNCTION(gles_header, 'struct Page') + ';')
     code += '\nvoid aml_subtitle_active_area_invalidate(' + ('' if baseline else 'bool preserveGeometry=false') + ');\n'
+    if 'bool allowSubtitleEstimate' in aml:
+        declaration = source('xbmc/utils/AMLUtils.h', baseline).split('bool aml_subtitle_detect_active_area_get(', 1)[1].split(';', 1)[0]
+        code += '\nbool aml_subtitle_detect_active_area_get(' + declaration + ';\n'
     code += '\n' + aml[aml.index('static CAMLNativeWorker s_detectWorker;'):aml.index('/* Mid-read cache guard.')]
     for sig in ['static void detect_publish(', 'void aml_dv_detect_set_file(', 'static void detect_clear_injection(',
                 'void aml_dv_detect_active_area_start()', 'void aml_dv_detect_active_area_stop()']:
         code += '\n' + FUNCTION(aml, sig)
+        if sig == 'static void detect_publish(' and 'static void detect_publish_subtitle(' in aml:
+            code += '\n' + FUNCTION(aml, 'static void detect_publish_subtitle(')
     code += '\nvoid Invalidate(bool keep=false){aml_subtitle_active_area_invalidate(' + ('' if baseline else 'keep') + ');' + ('(void)keep;' if baseline else '') + '}\n'
     for sig in ['bool RenderOptsEqual(', 'CLibassRenderResult::CLibassRenderResult(',
                 'std::shared_ptr<const CLibassRenderResult> CDVDSubtitlesLibass::RenderImage(',
@@ -260,7 +265,7 @@ enum class StreamHdrType{HDR_TYPE_NONE,HDR_TYPE_DOLBYVISION};
 struct CRenderManager{
  struct Picture{int iWidth=3840,iHeight=2160;std::string stereoMode;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE;}m_picture;
  CRenderer m_overlays;CRect CalcOverlayActiveArea(CRect&,CRect&,CRect&,bool,double);
- CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool);
+ CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool,bool=false);
 };
 '''
 
@@ -586,7 +591,7 @@ def main():
             ('owned image translation dropped', 'image.dst_y += verticalOffset;', '(void)verticalOffset;'),
             ('fractional active edge truncated', 'std::ceil(area.y1 - m_rv.y1)', '(area.y1 - m_rv.y1)'),
             ('handler retained stale style', 'm_lastStyle != subStyle || !RenderOptsEqual(opts, m_lastOpts)', 'false'),
-            ('destructive lifecycle retains cache', 'else\n    s_detectSource->retained.reset();', 'else\n    (void)preserveGeometry;'),
+            ('destructive lifecycle retains cache', 's_detectSource->retained.reset();', '(void)preserveGeometry;'),
             ('seek retained cache destroyed', 's_detectSource->retained = s_detectSource->result;', 's_detectSource->retained.reset();'),
             ('geometry identity ignored', 'previous->width == width && previous->height == height &&', 'true &&'),
             ('original native identity ignored', 'previous->nativeDV == nativeDV &&', 'true &&'),

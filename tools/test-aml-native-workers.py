@@ -198,6 +198,9 @@ def source():
     aml=(ROOT/'xbmc/utils/AMLUtils.cpp').read_text()
     globals=aml[aml.index('static CAMLNativeWorker s_autoLbWorker;'):aml.index('void aml_dv_set_active_area_geometry(')]
     detector=aml[aml.index('static CAMLNativeWorker s_detectWorker;'):aml.index('/* Mid-read cache guard.')]
+    declaration=(ROOT/'xbmc/utils/AMLUtils.h').read_text().split('bool aml_subtitle_detect_active_area_get(',1)[1].split(';',1)[0]
+    detector='bool aml_subtitle_detect_active_area_get('+declaration+';\n'+detector
+    detector+=function(aml,'static void detect_publish_subtitle(')
     methods='\n'.join(function(aml,sig) for sig in (
       'void aml_dv_set_active_area_geometry(', 'static void _auto_letterbox_watch_run(',
       'void aml_dv_auto_letterbox_watch_start()', 'void aml_dv_auto_letterbox_watch_stop()',

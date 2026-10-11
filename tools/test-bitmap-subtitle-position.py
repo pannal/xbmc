@@ -44,14 +44,15 @@ bool aml_subtitle_native_dv(){return nativeDV;}
 bool aml_dv_auto_letterbox_active(){return phantom;}
 bool aml_dv_auto_letterbox_additive(){return !phantom;}
 bool aml_dv_get_l5_override(uint16_t&,uint16_t&,uint16_t&,uint16_t&){return overrideActive;}
-bool aml_subtitle_detect_active_area_get(int,int,uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r){
+bool aml_subtitle_detect_active_area_get(int,int,uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r,bool allowSubtitleEstimate=false){
+  assert(allowSubtitleEstimate);
   if(!detected)return false;t=detectedTop;b=detectedBottom;l=detectedLeft;r=detectedRight;return true;
 }
 struct CRenderManager {
   struct Picture {int iWidth=1920,iHeight=1080;std::string stereoMode;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;} m_picture;
   CRenderer m_overlays;
   CRect CalcOverlayActiveArea(CRect&,CRect&,CRect&,bool,double);
-  CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool);
+  CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool,bool=false);
 };
 '''
     manager = (ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp').read_text()
@@ -78,11 +79,12 @@ int main(){
   rect(GetBitmapSubtitleArea(screen,screen,screen,2.4f),0,140,1920,940);
 
   // Native visible-text policy cannot infer horizontal clearance from a baseline.
-  assert(TextSubtitleNeedsSignal(false,screen,screen,900));
-  assert(TextSubtitleNeedsSignal(false,{240,0,1680,1080},screen,900));
-  assert(!TextSubtitleNeedsSignal(false,active,screen,900));
-  assert(TextSubtitleNeedsSignal(false,active,screen,950));
-  assert(!TextSubtitleNeedsSignal(true,screen,screen,900));
+  assert(TextSubtitleNeedsSignal(false,screen,screen,screen,900));
+  assert(TextSubtitleNeedsSignal(false,{240,0,1680,1080},{240,0,1680,1080},screen,900));
+  assert(!TextSubtitleNeedsSignal(false,active,active,screen,900));
+  assert(TextSubtitleNeedsSignal(false,active,active,screen,950));
+  assert(!TextSubtitleNeedsSignal(true,screen,screen,screen,900));
+  assert(TextSubtitleNeedsSignal(true,active,screen,screen,900));
 
   // Shared metadata/detection policy executes the actual manager resolver.
   CRenderManager manager;CRect src=screen,dst=screen,view=screen;

@@ -151,7 +151,7 @@ bool aml_subtitle_native_dv(){return native;}
 bool aml_dv_get_l5_override(uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r){if(!manual)return false;t=mt;b=mb;l=ml;r=mr;return true;}
 bool aml_dv_auto_letterbox_active(){return autoLb;}
 bool aml_dv_auto_letterbox_additive(){return additive;}
-bool aml_subtitle_detect_active_area_get(int,int,uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r){if(!detected)return false;t=dt;b=db;l=dl;r=dr;return true;}
+bool aml_subtitle_detect_active_area_get(int,int,uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r,bool allowSubtitleEstimate=false){assert(!allowSubtitleEstimate);if(!detected)return false;t=dt;b=db;l=dl;r=dr;return true;}
 struct MathUtils {static int round_int(double value){return std::lround(value);}};
 struct CBaseRenderer {
   unsigned int m_renderOrientation=0;
@@ -178,7 +178,7 @@ struct CRenderManager {
   std::shared_ptr<Frame> m_frameSelection=std::make_shared<Frame>();
   CBaseRenderer renderer;CBaseRenderer* m_pRenderer=&renderer;
   std::shared_ptr<CRenderLifecycle> m_lifecycle=std::make_shared<CRenderLifecycle>();
-  CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool);
+  CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool,bool=false);
   void UpdateActivePicture();
   std::shared_ptr<CRenderLifecycle::Request> RequestUnInit();
   std::shared_ptr<CRenderLifecycle::Request> RequestFlush(bool,bool);
