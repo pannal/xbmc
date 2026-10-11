@@ -396,6 +396,20 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 
       int configured_mode = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
 
+      // Guard: never put the GUI itself into a Dolby Vision output mode here.
+      // "DV VS10 for DV video" defaults to IPT, and engaging that at startup
+      // brings the GUI up in DV (washed-out on Player-LED, and on Display-LED
+      // the TV latches DV and shows the next SDR output purple/green). A GUI in
+      // DV is what DV mode "On" is for; under On Demand only a VS10 conversion
+      // (SDR10 / HDR10) makes sense, with every VS10 mode set to that same
+      // output so play/stop never changes it.
+      const bool dv_output_mode =
+          configured_mode == static_cast<int>(DOLBY_VISION_OUTPUT_MODE_IPT) ||
+          configured_mode == static_cast<int>(DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL);
+      if (dv_output_mode)
+        CLog::Log(LOGINFO, "CWinSystemAmlogicGLESContext::{}: engage at startup skipped: \"DV VS10 for DV video\" is [{}], a DV output mode -- set every VS10 mode to SDR (or HDR10) to use it",
+                  __FUNCTION__, configured_mode);
+
       CSysfsPath dolby_vision_mode{"/sys/module/amdolby_vision/parameters/dolby_vision_mode"};
       std::optional<unsigned int> existing_mode = dolby_vision_mode.Get<unsigned int>();
 
@@ -403,7 +417,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
       // core to set a mode on -- skip rather than falling back to a sentinel that
       // would never match configured_mode and fire aml_dv_on() on every boot on
       // hardware that has no DV support at all.
-      if (existing_mode && *existing_mode != static_cast<unsigned int>(configured_mode))
+      if (!dv_output_mode && existing_mode && *existing_mode != static_cast<unsigned int>(configured_mode))
       {
         aml_dv_on(configured_mode);
 
