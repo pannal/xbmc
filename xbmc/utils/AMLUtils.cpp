@@ -5670,6 +5670,31 @@ bool aml_set_display_resolution(const RESOLUTION_INFO &res, std::string framebuf
 // free_scale axes and passes the size on to the DV driver, so switch to it
 // for a native GUI above 1080p and restore the boot values otherwise. The
 // mode switch resets these, hence this runs on every resolution change.
+//
+// The DV core2 vertical porch the 4.9 driver picks above 1080p (0x20) makes a
+// native 2160p60 GUI through the DV core jump for a frame every ~15 s; 0x10,
+// the value kernel 5.15 programs, is clean. g_vtiming overrides the driver's
+// core2 vertical timing (vtotal<<24 | vsize<<16 | vwidth<<8 | vpotch, 0 =
+// driver default per field), so it is set alongside the native GUI only.
+static constexpr int NATIVE_GUI_CORE2_VTIMING = (0x18 << 8) | 0x10;
+
+static void aml_apply_native_gui_osd(const std::string& fb0, int width, int height)
+{
+  const std::string axis = StringUtils::Format("0 0 {} {}", width - 1, height - 1);
+  CSysfsPath(fb0 + "free_scale", 0);
+  CSysfsPath(fb0 + "free_scale_axis", axis);
+  CSysfsPath(fb0 + "window_axis", axis);
+  CSysfsPath(fb0 + "free_scale", 0x10001);
+  CSysfsPath(fb0 + "osd_background_size",
+             StringUtils::Format("{0} {1} {0} {1} 0 0 {0} {1}", width, height));
+  CSysfsPath(fb0 + "fix_target_size", StringUtils::Format("{} {}", width, height));
+  CSysfsPath(fb0 + "osd_display_fb", 1);
+  CSysfsPath(fb0 + "osd_hwc_enable", 1);
+  // the blend and DV sizes are only recomputed when the OSD is (re)enabled
+  CSysfsPath(fb0 + "blank", 1);
+  CSysfsPath(fb0 + "blank", 0);
+}
+
 static void aml_handle_native_gui_osd(const RESOLUTION_INFO &res)
 {
   if (((LINUX_VERSION_CODE >> 16) & 0xFF) >= 5)
@@ -5678,7 +5703,9 @@ static void aml_handle_native_gui_osd(const RESOLUTION_INFO &res)
   static const char* const nodes[] = {"osd_background_size", "fix_target_size",
                                       "osd_display_fb", "osd_hwc_enable"};
   static std::vector<std::string> bootValues;
+  static std::string bootVtiming;
   const std::string fb0 = "/sys/class/graphics/fb0/";
+  CSysfsPath vtiming{"/sys/module/amdolby_vision/parameters/g_vtiming"};
   const bool native4k = res.iWidth == res.iScreenWidth && res.iWidth > 1920;
 
   if (!native4k)
@@ -5688,6 +5715,9 @@ static void aml_handle_native_gui_osd(const RESOLUTION_INFO &res)
     for (size_t i = 0; i < bootValues.size(); i++)
       CSysfsPath(fb0 + nodes[i], bootValues[i]);
     bootValues.clear();
+    if (vtiming.Exists() && !bootVtiming.empty())
+      vtiming.Set(bootVtiming);
+    bootVtiming.clear();
     CSysfsPath(fb0 + "blank", 1);
     CSysfsPath(fb0 + "blank", 0);
     CLog::Log(LOGDEBUG, "AMLUtils::{}: OSD back to its boot configuration", __FUNCTION__);
@@ -5709,21 +5739,37 @@ static void aml_handle_native_gui_osd(const RESOLUTION_INFO &res)
       bootValues.clear();
       return;
     }
+    if (vtiming.Exists())
+    {
+      bootVtiming = vtiming.Get<std::string>().value_or("");
+      StringUtils::Trim(bootVtiming);
+    }
   }
 
+  if (vtiming.Exists())
+    vtiming.Set(NATIVE_GUI_CORE2_VTIMING);
+
+  aml_apply_native_gui_osd(fb0, res.iWidth, res.iHeight);
+
+  // The display mode change completes asynchronously: once it is done the OSD
+  // driver resets osd0 to its 1920x1080 axes, which can land after the writes
+  // above (seen at boot straight into 2160p60). Watch for it briefly and apply
+  // again if it happens.
   const std::string axis = StringUtils::Format("0 0 {} {}", res.iWidth - 1, res.iHeight - 1);
-  CSysfsPath(fb0 + "free_scale", 0);
-  CSysfsPath(fb0 + "free_scale_axis", axis);
-  CSysfsPath(fb0 + "window_axis", axis);
-  CSysfsPath(fb0 + "free_scale", 0x10001);
-  CSysfsPath(fb0 + "osd_background_size",
-             StringUtils::Format("{0} {1} {0} {1} 0 0 {0} {1}", res.iWidth, res.iHeight));
-  CSysfsPath(fb0 + "fix_target_size", StringUtils::Format("{} {}", res.iWidth, res.iHeight));
-  CSysfsPath(fb0 + "osd_display_fb", 1);
-  CSysfsPath(fb0 + "osd_hwc_enable", 1);
-  // the blend and DV sizes are only recomputed when the OSD is (re)enabled
-  CSysfsPath(fb0 + "blank", 1);
-  CSysfsPath(fb0 + "blank", 0);
+  CSysfsPath freeScaleAxis{fb0 + "free_scale_axis"};
+  for (int i = 0; i < 20 && freeScaleAxis.Exists(); i++)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::string current = freeScaleAxis.Get<std::string>().value_or("");
+    if (StringUtils::Trim(current) != axis)
+    {
+      aml_apply_native_gui_osd(fb0, res.iWidth, res.iHeight);
+      CLog::Log(LOGDEBUG, "AMLUtils::{}: OSD reset by the mode change after {} ms, set up again",
+                __FUNCTION__, (i + 1) * 50);
+      break;
+    }
+  }
+
   CLog::Log(LOGDEBUG, "AMLUtils::{}: OSD set up for a native {}x{} GUI", __FUNCTION__,
             res.iWidth, res.iHeight);
 }
