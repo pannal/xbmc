@@ -3264,10 +3264,11 @@ static DetectEdgeMeasurement detect_refine_edge(const Luma& getY, int width, int
 
 // Placement-only photometry, never native L5 evidence. Strong departures use
 // the conservative six-code threshold; dim picture may subsequently fall below
-// it without returning to the observed black distribution. A lane must remain
-// above that distribution after departing, and every inward row must retain
-// some strong picture evidence. Inspect through the midpoint, including beyond
-// the legacy edge, so a bright stripe cannot terminate its own validation.
+// it without returning to the observed black distribution. Individual peripheral
+// strips can cross black objects inside the picture. Keep centre evidence and
+// at least three departed strips above calibrated black when any strip returns;
+// every inward row must also retain strong picture evidence. Inspect through
+// the midpoint, beyond the legacy edge, so a stripe cannot end its validation.
 // Graphics can still imitate picture: this estimates where to place subtitles,
 // not an authored crop. It never exceeds the original/earliest observed edge.
 template<typename Luma>
@@ -3328,6 +3329,8 @@ static DetectEdgeMeasurement detect_subtitle_edge(const Luma& getY, int width, i
       result.depth = depth;
       return result;
     }
+    int pictureSupport = 0;
+    int returnedLane = -1;
     for (int lane = 0; lane < lanes; ++lane)
     {
       // Preserve fractional strip means. One normalized code above the maximum
@@ -3335,12 +3338,20 @@ static DetectEdgeMeasurement detect_subtitle_edge(const Luma& getY, int width, i
       // wider departure threshold as the definition of a black return.
       if (depth > result.departures[lane] && levels[lane] <= blackMax[lane] + strip)
       {
-        result.reason = DetectEdgeReason::RETURN_TO_BLACK;
-        result.lane = lane;
-        result.depth = depth;
-        result.returnLevel = static_cast<uint16_t>(levels[lane] / strip);
-        return result;
+        if (returnedLane < 0 || lane == lanes / 2)
+          returnedLane = lane;
       }
+      if (result.departures[lane] <= depth && levels[lane] > blackMax[lane] + strip)
+        ++pictureSupport;
+    }
+    if (returnedLane >= 0 &&
+        (levels[lanes / 2] <= blackMax[lanes / 2] + strip || pictureSupport < 3))
+    {
+      result.reason = DetectEdgeReason::RETURN_TO_BLACK;
+      result.lane = returnedLane;
+      result.depth = depth;
+      result.returnLevel = static_cast<uint16_t>(levels[returnedLane] / strip);
+      return result;
     }
   }
   result.support = 0;
