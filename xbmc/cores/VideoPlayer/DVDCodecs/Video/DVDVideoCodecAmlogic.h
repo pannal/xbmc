@@ -146,6 +146,7 @@ private:
   void FinishReset();
   bool m_resetCleanupPending{false};
   void UpdateAppendCMv40SettingCache();
+  int GetCMv40DisplayPeakNits() const;
   void UpdateStripCMv40SettingCache();
   void UpdateLevel5OverrideSettingCache();
   void ApplyDynamicDoViSettings();
@@ -165,6 +166,7 @@ private:
   // decode thread. Display peak serves Smart and source Auto; headroom
   // serves Smart and trigger selects source Auto's display/fixed threshold.
   std::atomic<int> m_smartDisplayNits{0};
+  std::atomic<bool> m_smartUseConfiguredPeak{false};
   std::atomic<int> m_smartThresholdPct{20};
   std::atomic<int> m_cmv40AutoTriggerSetting{0};
   // L5 active-area override. Active is tracked separately from values so

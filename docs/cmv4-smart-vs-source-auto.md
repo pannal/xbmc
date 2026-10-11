@@ -34,6 +34,24 @@ does not select the loaded module, set the output to player-led/display-led, or
 change Kodi's presentation clock. The original/newer backend routing is separate;
 see [dovi5 loading and routing](dovi5-loading.md).
 
+## Display peak used by Smart
+
+Smart now uses the current display's reported Dolby Vision peak, falling back to
+its HDR static-metadata peak and then 1000 nits when no usable value is available.
+The HDR byte is decoded to nits; it is not a literal brightness value. This is an
+advertised capability, not a measurement of the panel.
+
+Custom VSVDB injection or an explicit EDID override keeps the configured VSVDB
+maximum luminance as Smart's target. Turning either override on or off updates
+that choice during playback. Auto (source peak) continues to use its configured
+VSVDB target.
+
+The automatic value is separate from VSVDB generation: it does not write the
+maximum-luminance setting, regenerate a payload, or change HDMI signalling.
+It comes from the same stable HDMI capability snapshot as the format flags,
+and is refreshed when the display changes. An unavailable or mixed snapshot
+clears the automatic value instead of retaining another display's peak.
+
 ## Decision rules in p3i
 
 Assume a valid, editable CMv2.9 RPU with L2 trims and usable peak information.
@@ -57,7 +75,7 @@ modes.
 | p3i setting value | 3; current default | 4 |
 | Content input | `dm_data.level1->max_pq` | `source_max_pq` |
 | Interpretation | Dynamic Level 1 peak for the current RPU | Source-peak metadata, usually stable across the title |
-| Threshold | Configured display peak plus percentage headroom | Display peak or the selected fixed value |
+| Threshold | Reported display peak (or explicit override) plus percentage headroom | Configured display peak or the selected fixed value |
 | Decision timing | Each changed RPU; identical input can reuse cached output | Each changed RPU; usually the same decision if source peak/L2 state stays unchanged |
 | No L2 trims | Attempt append regardless of peak comparison | Same |
 | Missing input | Missing L1 or nonpositive display input: attempt append | Missing/invalid source PQ or nonpositive selected threshold: attempt append |
@@ -72,10 +90,10 @@ Neither mode reads Level 6 mastering-display maximum or MaxCLL for this decision
 The source-peak field is not a fresh pixel measurement and must not be described
 as guaranteed actual content peak. Level 1 also relies on the authored metadata.
 
-The display input is Kodi's configured Dolby/VSVDB maximum-luminance value. It
-can be populated from the display capability or changed through configuration;
-it is not a live measurement of panel brightness or the final downstream
-tone-mapping target.
+Smart's automatic display input follows the capability/override rules above.
+Auto (source peak) still uses Kodi's configured Dolby/VSVDB maximum-luminance
+value. Neither input is a live measurement of panel brightness or the final
+downstream tone-mapping target.
 
 ## An example where they differ
 

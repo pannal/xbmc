@@ -19485,8 +19485,8 @@ msgid "CMv4.0 smart bypass threshold (%)"
 msgstr "CMv4.0-Smart-Bypass-Schwelle (%)"
 
 msgctxt "#60333"
-msgid "Only applies to Smart. Bypass CMv4.0 append when a frame's Level 1 peak exceeds the display's peak brightness plus this percentage. At 20%, a frame above 1200 nits bypasses append on a 1000-nit display. Metadata without L2 trims or usable peak information is still upgraded. Existing CMv4.0 metadata is preserved."
-msgstr "Gilt nur für Smart. CMv4.0 wird nicht angehängt, wenn die Level-1-Spitzenhelligkeit eines Frames die Display-Spitzenhelligkeit zuzüglich dieses Prozentsatzes überschreitet. Bei 20 % wird das Anhängen auf einem 1000-Nits-Display bei Frames über 1200 Nits übersprungen. Metadaten ohne L2-Trims oder nutzbare Spitzenhelligkeit werden weiterhin erweitert. Vorhandene CMv4.0-Metadaten bleiben erhalten."
+msgid "Only applies to Smart. Bypass CMv4.0 append when a frame's Level 1 peak exceeds the display's peak brightness plus this percentage. The display peak uses reported Dolby Vision luminance, then HDR luminance, or 1000 nits if neither is available. Custom VSVDB injection or EDID override uses the configured peak instead. This does not change the VSVDB payload. At 20%, a frame above 1200 nits bypasses append on a 1000-nit display. Metadata without L2 trims or usable peak information is still upgraded. Existing CMv4.0 metadata is preserved."
+msgstr "Gilt nur für Smart. CMv4.0 wird nicht angehängt, wenn die Level-1-Spitzenhelligkeit eines Frames die Display-Spitzenhelligkeit zuzüglich dieses Prozentsatzes überschreitet. Als Display-Spitzenhelligkeit dient der gemeldete Dolby-Vision-Wert, ersatzweise der HDR-Wert oder 1000 Nits, falls beide fehlen. Bei benutzerdefinierter VSVDB-Injektion oder EDID-Überschreibung gilt stattdessen die konfigurierte Spitzenhelligkeit. Die VSVDB-Nutzdaten bleiben unverändert. Bei 20 % wird das Anhängen auf einem 1000-Nits-Display bei Frames über 1200 Nits übersprungen. Metadaten ohne L2-Trims oder nutzbare Spitzenhelligkeit werden weiterhin erweitert. Vorhandene CMv4.0-Metadaten bleiben erhalten."
 
 msgctxt "#60334"
 msgid "Auto (source peak)"

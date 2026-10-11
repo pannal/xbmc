@@ -19,6 +19,7 @@
 #include "DVDStreamInfo.h"
 #include "AMLCodec.h"
 #include "ServiceBroker.h"
+#include "utils/AMLDisplayPeak.h"
 #include "utils/AMLUtils.h"
 #include "utils/log.h"
 #include "settings/AdvancedSettings.h"
@@ -268,7 +269,9 @@ CDVDVideoCodecAmlogic::CDVDVideoCodecAmlogic(CProcessInfo &processInfo)
         CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_STRIP,
         CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5_OVERRIDE,
         CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE,
-        CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM
+        CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM,
+        CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_INJECT,
+        CSettings::SETTING_COREELEC_AMLOGIC_DV_OVERRIDE_EDID
       });
       m_settingsCallbackRegistered = true;
     }
@@ -321,6 +324,9 @@ void CDVDVideoCodecAmlogic::UpdateAppendCMv40SettingCache()
           settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR) != 0)
         cmv40 = 0;
       m_smartDisplayNits.store(settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM));
+      m_smartUseConfiguredPeak.store(
+          settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_INJECT) ||
+          settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_OVERRIDE_EDID));
       m_smartThresholdPct.store(settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD));
       m_cmv40AutoTriggerSetting.store(settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER));
       m_appendCMv40ModeSetting.store(cmv40);
@@ -398,7 +404,9 @@ void CDVDVideoCodecAmlogic::OnSettingChanged(const std::shared_ptr<const CSettin
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE ||
-      id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM)
+      id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM ||
+      id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_INJECT ||
+      id == CSettings::SETTING_COREELEC_AMLOGIC_DV_OVERRIDE_EDID)
     UpdateAppendCMv40SettingCache();
   if (id == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_STRIP ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR ||
@@ -410,13 +418,23 @@ void CDVDVideoCodecAmlogic::OnSettingChanged(const std::shared_ptr<const CSettin
     UpdateLevel5OverrideSettingCache();
 }
 
+int CDVDVideoCodecAmlogic::GetCMv40DisplayPeakNits() const
+{
+  // Auto (source peak) retains its configured VSVDB target. Only Smart uses
+  // current sink capabilities, unless the user explicitly overrides the target.
+  const int configuredNits = m_smartDisplayNits.load();
+  if (m_appendCMv40ModeSetting.load() == CMV40_SMART)
+    return AML::DisplayPeak::Resolve(m_smartUseConfiguredPeak.load(), configuredNits);
+  return configuredNits;
+}
+
 void CDVDVideoCodecAmlogic::ApplyDynamicDoViSettings()
 {
   if (!m_bitstream) return;
   const auto mode = static_cast<DOVICMv40Mode>(m_appendCMv40ModeSetting.load());
   // Inputs can change while the mode stays the same. The setters invalidate
   // the identical-RPU cache only on changes, without steady-state logging.
-  m_bitstream->SetSmartBypassDisplayNits(m_smartDisplayNits.load());
+  m_bitstream->SetSmartBypassDisplayNits(GetCMv40DisplayPeakNits());
   m_bitstream->SetSmartBypassThresholdPct(m_smartThresholdPct.load());
   m_bitstream->SetCMv40AutoTrigger(m_cmv40AutoTriggerSetting.load());
   if (mode != m_appendCMv40ModeApplied)
@@ -694,7 +712,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           {
             CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - CMv4.0 append mode: {}",
                       __MODULE_NAME__, __FUNCTION__, static_cast<int>(cmv40Mode));
-            m_bitstream->SetSmartBypassDisplayNits(m_smartDisplayNits.load());
+            m_bitstream->SetSmartBypassDisplayNits(GetCMv40DisplayPeakNits());
             m_bitstream->SetSmartBypassThresholdPct(m_smartThresholdPct.load());
             m_bitstream->SetCMv40AutoTrigger(m_cmv40AutoTriggerSetting.load());
             m_bitstream->SetAppendCMv40(cmv40Mode);
