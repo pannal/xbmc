@@ -616,8 +616,9 @@ protected:
   // Last chapter requested via SeekChapter(). Chapter seeks land on the
   // keyframe before the chapter mark, so the clock-derived m_State.chapter
   // stays one behind until playback crosses the mark; stepping from it would
-  // re-seek the same chapter on every rapid press. 0 = none pending; cleared
-  // by time seeks.
+  // re-seek the same chapter on every rapid press. Backward/mixed requests
+  // also step from this intent while the clock still shows the old chapter.
+  // 0 = none pending; cleared by time seeks or when playback catches up.
   std::atomic<int> m_chapterSeekTarget{0};
 
   CDVDMessageQueue m_messenger;

@@ -4147,10 +4147,12 @@ void CVideoPlayer::HandleMessages()
       CDVDMsgPlayerSeekChapter& msg(*std::static_pointer_cast<CDVDMsgPlayerSeekChapter>(pMsg));
       double start = DVD_NOPTS_VALUE;
       int offset = 0;
+      bool chapterSeekAccepted = false;
 
       // This should always be the case.
       if(m_pDemuxer && m_pDemuxer->SeekChapter(msg.GetChapter(), &start))
       {
+        chapterSeekAccepted = true;
         FlushBuffers(start, true, true, [this, start, chapter = msg.GetChapter()] {
           const int64_t beforeSeek = GetTime();
           const int offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
@@ -4163,6 +4165,7 @@ void CVideoPlayer::HandleMessages()
         CDVDInputStream::IChapter* pChapter = m_pInputStream->GetIChapter();
         if (pChapter && pChapter->SeekChapter(msg.GetChapter()))
         {
+          chapterSeekAccepted = true;
           FlushBuffers(start, true, true, [this, start, chapter = msg.GetChapter()] {
             const int64_t beforeSeek = GetTime();
             const int offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
@@ -4170,6 +4173,15 @@ void CVideoPlayer::HandleMessages()
             m_processInfo->SeekFinished(offset);
           }, true);
         }
+      }
+      if (!chapterSeekAccepted)
+      {
+        // A rejected request cannot be the base for the next chapter action.
+        // Keep any newer queued intent, including another request for this chapter.
+        std::unique_lock<CCriticalSection> lock(m_StateSection);
+        int failedChapter = std::max(msg.GetChapter(), 1);
+        if (m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER) == 0)
+          m_chapterSeekTarget.compare_exchange_strong(failedChapter, 0);
       }
       if (!ParentLifecyclePending())
         m_processInfo->SeekFinished(offset);
@@ -4662,7 +4674,7 @@ void CVideoPlayer::Seek(bool bPlus, bool bLargeStep, bool bChapterOverride)
     const int pending = m_chapterSeekTarget;
     if (!bPlus)
     {
-      if (pending > GetChapter())
+      if (pending > 0)
         SeekChapter(pending - 1);
       else
         SeekChapter(GetPreviousChapter());
@@ -4670,7 +4682,7 @@ void CVideoPlayer::Seek(bool bPlus, bool bLargeStep, bool bChapterOverride)
     }
     else
     {
-      const int chapter = std::max(GetChapter(), pending);
+      const int chapter = pending > 0 ? pending : GetChapter();
       if (chapter < GetChapterCount())
       {
         SeekChapter(chapter + 1);
@@ -6756,11 +6768,14 @@ int CVideoPlayer::SeekChapter(int iChapter)
     if (iChapter > GetChapterCount())
       return 0;
 
-    // Remember the target: the demuxer clamps requests below 1 to chapter 1.
-    m_chapterSeekTarget = std::max(iChapter, 1);
-
-    // Seek to the chapter.
-    m_messenger.Put(std::make_shared<CDVDMsgPlayerSeekChapter>(iChapter));
+    {
+      // Publish the intent and its message together with respect to playback
+      // state publication, which retires completed chapter targets.
+      std::unique_lock<CCriticalSection> lock(m_StateSection);
+      // The demuxer clamps requests below 1 to chapter 1.
+      if (m_messenger.Put(std::make_shared<CDVDMsgPlayerSeekChapter>(iChapter)) == MSGQ_OK)
+        m_chapterSeekTarget = std::max(iChapter, 1);
+    }
     SynchronizeDemuxer();
   }
 
@@ -7134,6 +7149,17 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
   std::unique_lock<CCriticalSection> lock(m_StateSection);
   m_State = state;
+
+  // Retain intent until the sought streams have resynchronized and the clock
+  // reaches the marker. Pause/speed changes can end caching before that point.
+  // Ordinary chapter stepping then uses the current chapter's five-second grace.
+  int pendingChapter = m_chapterSeekTarget;
+  if (IsCurrentThread() && pendingChapter > 0 && state.chapter >= pendingChapter &&
+      m_caching == CACHESTATE_DONE &&
+      (m_CurrentVideo.id < 0 || m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC) &&
+      (m_CurrentAudio.id < 0 || m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC) &&
+      !ParentLifecyclePending() && m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER) == 0)
+    m_chapterSeekTarget.compare_exchange_strong(pendingChapter, 0);
 }
 
 int64_t CVideoPlayer::GetUpdatedTime()
