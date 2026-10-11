@@ -57,6 +57,7 @@
 #include "utils/JobManager.h"
 #include "utils/LangCodeExpander.h"
 #include "utils/MathUtils.h"
+#include "utils/ScopeGuard.h"
 #include "utils/StreamDetails.h"
 #include "utils/StreamUtils.h"
 #include "utils/StringUtils.h"
@@ -1294,7 +1295,16 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
 
   // read a data frame from stream.
   if (m_pDemuxer)
+  {
+    // The callback belongs only to this foreground read. In particular, it
+    // must not survive into demux probing, seeking or a replacement input.
+    const auto input = m_pInputStream;
+    KODI::UTILS::CScopeGuard<CDVDInputStream*, nullptr, void(CDVDInputStream*)> readWaitGuard(
+        [](CDVDInputStream* stream) { stream->SetReadWaitCallback({}); }, input.get());
+    if (input)
+      input->SetReadWaitCallback([this] { CheckCacheReadStall(); });
     packet = m_pDemuxer->Read();
+  }
 
   if (packet)
   {
@@ -2985,6 +2995,24 @@ void CVideoPlayer::SynchronizeStreams(bool allowRecovery)
       }
     }
   }
+}
+
+void CVideoPlayer::CheckCacheReadStall()
+{
+  // This runs on the player thread with a demux read on the stack. Only pause
+  // for the existing non-realtime starvation policy; completion and recovery
+  // stay in HandlePlaySpeed after the read returns. Never flush or seek here.
+  if (m_bAbortRequest || m_bStop || m_displayLost || ParentLifecyclePending() ||
+      m_caching != CACHESTATE_DONE || m_playSpeed != DVD_PLAYSPEED_NORMAL || !m_pInputStream ||
+      m_pInputStream->IsRealtime() || IsInMenuInternal() ||
+      (m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES))
+    return;
+
+  if (((m_VideoPlayerAudio->IsStalled() && m_CurrentAudio.inited) ||
+       (m_VideoPlayerVideo->IsStalled() && m_CurrentVideo.inited)) &&
+      m_syncTimer.IsTimePast() &&
+      (m_VideoPlayerAudio->GetLevel() <= 20 || m_VideoPlayerVideo->GetLevel() <= 20))
+    SetCaching(CACHESTATE_FULL);
 }
 
 void CVideoPlayer::HandlePlaySpeed()

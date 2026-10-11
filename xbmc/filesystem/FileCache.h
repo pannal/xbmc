@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
 
 using namespace std::chrono_literals;
@@ -78,6 +79,7 @@ namespace XFILE
     std::atomic<int64_t> m_fileSize;
     unsigned int m_flags;
     CCriticalSection m_sync;
+    std::function<void()> m_readWaitCallback;
     std::chrono::milliseconds m_processWait{100ms};
   };
 

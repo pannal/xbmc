@@ -513,6 +513,7 @@ protected:
   void HandleMessages();
   void QueueAudioRecoverySeek();
   void HandlePlaySpeed();
+  void CheckCacheReadStall();
   bool IsInMenuInternal() const;
   void SynchronizeDemuxer();
   void CheckAutoSceneSkip();
