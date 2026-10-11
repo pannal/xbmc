@@ -1338,6 +1338,7 @@ const infomap player_process[] = {{"videodecoder", PLAYER_PROCESS_VIDEODECODER},
                                   
                                   {"video.width.raw", PLAYER_PROCESS_VIDEO_WIDTH_RAW},
                                   {"video.height.raw", PLAYER_PROCESS_VIDEO_HEIGHT_RAW},
+                                  {"video.active.picture", PLAYER_PROCESS_VIDEO_ACTIVE_PICTURE},
                                   {"video.color.space", PLAYER_PROCESS_VIDEO_COLOR_SPACE },
                                   {"video.color.range", PLAYER_PROCESS_VIDEO_COLOR_RANGE },
                                   {"video.color.primaries", PLAYER_PROCESS_VIDEO_COLOR_PRIMARIES },

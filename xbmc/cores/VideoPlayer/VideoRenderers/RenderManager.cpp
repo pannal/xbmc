@@ -27,6 +27,7 @@
 #include "guilib/StereoscopicsManager.h"
 #include "messaging/ApplicationMessenger.h"
 #include "settings/AdvancedSettings.h"
+#include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "settings/SubtitlesSettings.h"
@@ -40,6 +41,7 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -323,6 +325,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
       return false;
     m_configRequest = request;
     m_renderState = STATE_CONFIGURING;
+    m_dataCacheCore.SetVideoActivePicture({});
     std::unique_lock<CCriticalSection> present(m_presentlock);
     InvalidateReservations();
     m_presentstep = PRESENT_READY;
@@ -561,6 +564,7 @@ void CRenderManager::FrameMove()
 #endif
     ProcessPresentationQueue();
   UpdateGuiPresentationState(firstFrame);
+  UpdateActivePicture();
 
 #if defined(HAS_LIBAMCODEC)
   if (m_amlPresenter && m_amlPresenter->queue->PendingControl().frame)
@@ -664,6 +668,7 @@ void CRenderManager::UpdateGuiPresentationState(bool firstFrame)
 
 void CRenderManager::PreInitOnMain()
 {
+  m_dataCacheCore.SetVideoActivePicture({});
   m_appliedResolution.reset();
 #if defined(HAS_LIBAMCODEC)
   PLAYBACK_DIAGNOSTICS::endDisplay.Record(PLAYBACK_DIAGNOSTICS::NowUs(), "renderer-preinit", [&] {
@@ -705,6 +710,7 @@ void CRenderManager::PreInitOnMain()
 
 void CRenderManager::UnInitOnMain()
 {
+  m_dataCacheCore.SetVideoActivePicture({});
   m_appliedResolution.reset();
 #if defined(HAS_LIBAMCODEC)
   PLAYBACK_DIAGNOSTICS::endDisplay.Record(PLAYBACK_DIAGNOSTICS::NowUs(), "renderer-retire", [&] {
@@ -775,6 +781,7 @@ std::shared_ptr<CRenderLifecycle::Request> CRenderManager::RequestUnInit()
   {
     std::unique_lock<CCriticalSection> lock(m_statelock);
     m_closing = true;
+    m_dataCacheCore.SetVideoActivePicture({});
     const auto generation = ++m_lifecycleGeneration;
     request = m_lifecycle->Submit([this, generation,
                                    native = std::shared_ptr<CAMLNativeTransaction>{}]() mutable
@@ -812,7 +819,10 @@ std::shared_ptr<CRenderLifecycle::Request> CRenderManager::RequestFlush(bool sav
   std::unique_lock<CCriticalSection> state(m_statelock);
   const auto generation = m_lifecycleGeneration;
   if (newSession)
+  {
     m_closing = true;
+    m_dataCacheCore.SetVideoActivePicture({});
+  }
   return m_lifecycle->Submit([this, saveBuffers, newSession, generation] {
     {
       std::unique_lock<CCriticalSection> state(m_statelock);
@@ -858,6 +868,7 @@ bool CRenderManager::FlushOnMain(bool saveBuffers)
   std::unique_lock<CCriticalSection> lock2(m_presentlock);
   std::unique_lock<CCriticalSection> lock3(m_datalock);
   ++m_flushGeneration;
+  m_dataCacheCore.SetVideoActivePicture({});
 
   if (m_pRenderer)
   {
@@ -1174,10 +1185,12 @@ RESOLUTION CRenderManager::GetResolution()
   return res;
 }
 
-CRect CRenderManager::CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view,
-                                             bool useActiveArea, double pts)
+CRect CRenderManager::CalcPictureActiveArea(const CRect& src, const CRect& dst, const CRect& view,
+                                           double pts, bool canvasOverride)
 {
-  // One geometry consumer for every output type. Dolby signaling remains separate.
+  // Source/detector geometry is shared with subtitle placement. The public
+  // snapshot additionally maps applicable absolute overrides from the final
+  // padded L5 canvas, preserving the existing subtitle placement policy.
   const CRect coded(0.0f, 0.0f, static_cast<float>(m_picture.iWidth),
                     static_cast<float>(m_picture.iHeight));
   CRect inFrame;
@@ -1188,7 +1201,13 @@ CRect CRenderManager::CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view,
   uint16_t top = 0, bottom = 0, left = 0, right = 0;
   if (nativeDV && !stereo)
   {
-    const bool override = aml_dv_get_l5_override(top, bottom, left, right);
+    const bool override = (!canvasOverride ||
+        CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+            CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5)) &&
+        aml_dv_get_l5_override(top, bottom, left, right);
+    if (override && canvasOverride)
+      return OVERLAY::GetActivePictureAreaWithCanvasOverride(
+          src, dst, view, m_picture.iWidth, m_picture.iHeight, top, bottom, left, right);
     const bool phantom = aml_dv_auto_letterbox_active() && !aml_dv_auto_letterbox_additive();
     const auto metadata = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata(pts);
     if (!override && !phantom && metadata.has_level5_metadata && !metadata.level5_detected &&
@@ -1210,11 +1229,61 @@ CRect CRenderManager::CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view,
     inFrame = CRect(static_cast<float>(left), static_cast<float>(top),
                     coded.x2 - right, coded.y2 - bottom);
 
-  const CRect active = OVERLAY::GetActivePictureArea(src, dst, view, coded, inFrame);
+  return OVERLAY::GetActivePictureArea(src, dst, view, coded, inFrame, !canvasOverride);
+}
+
+CRect CRenderManager::CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view,
+                                          bool useActiveArea, double pts)
+{
+  const CRect active = CalcPictureActiveArea(src, dst, view, pts, false);
+  const bool stereo = (!m_picture.stereoMode.empty() && m_picture.stereoMode != "mono") ||
+      CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF;
   const bool applyUserPos = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
       CSettings::SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_USER_POS);
   m_overlays.SetActivePicture(active, useActiveArea && !stereo, applyUserPos);
   return active;
+}
+
+void CRenderManager::UpdateActivePicture()
+{
+  // Publication and close/replacement invalidation share the state lock. A
+  // queued teardown cannot be followed by an in-flight stale publication.
+  std::unique_lock<CCriticalSection> lock(m_statelock);
+  CDataCacheCore::VideoActivePicture picture;
+  auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  if (!m_closing && m_renderState == STATE_CONFIGURED && m_presentstarted && m_showVideo &&
+      m_pRenderer && m_frameSelection && m_orientation % 360 == 0 &&
+      (m_picture.stereoMode.empty() || m_picture.stereoMode == "mono") &&
+      gfx.GetStereoMode() == RENDER_STEREO_MODE_OFF &&
+      gfx.GetVideoResolution() != RES_INVALID &&
+      !CDisplaySettings::GetInstance().IsNonLinearStretched())
+  {
+    // Do not depend on Render(gui=true): native video with no subtitles or
+    // dialogs can skip that pass, including during paused playback.
+    m_pRenderer->UpdateVideoRect();
+    CRect src, dst, view;
+    m_pRenderer->GetVideoRect(src, dst, view);
+    picture.bounds = CalcPictureActiveArea(src, dst, view, m_frameSelection->present.pts, true);
+
+    // Use a fresh reference transform rather than the current window/group's
+    // final matrix. Include overscan, GUI insets, skin zoom and pixel ratio.
+    RESOLUTION_INFO reference;
+    reference.iWidth = 1920;
+    reference.iHeight = 1080;
+    float scaleX, scaleY;
+    TransformMatrix matrix;
+    gfx.GetGUIScaling(reference, scaleX, scaleY, &matrix);
+    if (!picture.bounds.IsEmpty() && std::isfinite(scaleX) && scaleX > 0.0f &&
+        std::isfinite(scaleY) && scaleY > 0.0f)
+    {
+      matrix.InverseTransformPosition(picture.bounds.x1, picture.bounds.y1);
+      matrix.InverseTransformPosition(picture.bounds.x2, picture.bounds.y2);
+      picture.valid = std::isfinite(picture.bounds.x1) && std::isfinite(picture.bounds.y1) &&
+                      std::isfinite(picture.bounds.x2) && std::isfinite(picture.bounds.y2) &&
+                      picture.bounds.Width() > 0.0f && picture.bounds.Height() > 0.0f;
+    }
+  }
+  m_dataCacheCore.SetVideoActivePicture(picture.valid ? picture : CDataCacheCore::VideoActivePicture{});
 }
 
 void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)

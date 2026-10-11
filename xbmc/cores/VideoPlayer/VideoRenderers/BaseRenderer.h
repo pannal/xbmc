@@ -93,6 +93,8 @@ public:
   \param view is the entire target rendering area for the video (including black bars)
   */
   void GetVideoRect(CRect& source, CRect& dest, CRect& view) const;
+  // Geometry only: also needed when hardware playback skips the GUI render pass.
+  void UpdateVideoRect() { ManageRenderArea(); }
   float GetAspectRatio() const;
 
   static void SettingOptionsRenderMethodsFiller(const std::shared_ptr<const CSetting>& setting,

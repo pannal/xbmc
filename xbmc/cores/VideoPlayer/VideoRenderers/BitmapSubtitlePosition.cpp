@@ -31,7 +31,8 @@ CRect OVERLAY::GetActivePictureArea(const CRect& source,
                                     const CRect& destination,
                                     const CRect& view,
                                     const CRect& codedFrame,
-                                    const CRect& inFrameArea)
+                                    const CRect& inFrameArea,
+                                    bool fallbackOnEmpty)
 {
   if (!Valid(source) || !Valid(destination) || !Valid(view))
     return {};
@@ -44,7 +45,7 @@ CRect OVERLAY::GetActivePictureArea(const CRect& source,
   CRect crop = inFrameArea;
   crop.Intersect(source);
   if (!Valid(crop))
-    return visible;
+    return fallbackOnEmpty ? visible : CRect{};
   const float scaleX = destination.Width() / source.Width();
   const float scaleY = destination.Height() / source.Height();
   CRect area(destination.x1 + (crop.x1 - source.x1) * scaleX,
@@ -52,7 +53,37 @@ CRect OVERLAY::GetActivePictureArea(const CRect& source,
              destination.x1 + (crop.x2 - source.x1) * scaleX,
              destination.y1 + (crop.y2 - source.y1) * scaleY);
   area.Intersect(visible);
-  return Valid(area) ? area : visible;
+  return Valid(area) ? area : (fallbackOnEmpty ? visible : CRect{});
+}
+
+CRect OVERLAY::GetActivePictureAreaWithCanvasOverride(const CRect& source,
+                                                     const CRect& destination,
+                                                     const CRect& view,
+                                                     int width,
+                                                     int height,
+                                                     unsigned int top,
+                                                     unsigned int bottom,
+                                                     unsigned int left,
+                                                     unsigned int right)
+{
+  if (!Valid(source) || !Valid(destination) || !Valid(view) || width <= 0 || height <= 0)
+    return {};
+  // Match AML's integer padding calculation, independent of auto-letterbox's
+  // enable: a manual override is absolute and takes precedence over auto L5.
+  const float padY = static_cast<float>(std::max(0, (width * 9 / 16 - height) / 2));
+  const float padX = static_cast<float>(std::max(0, (height * 16 / 9 - width) / 2));
+  const CRect canvas(-padX, -padY, static_cast<float>(width) + padX,
+                     static_cast<float>(height) + padY);
+  const CRect active(canvas.x1 + left, canvas.y1 + top, canvas.x2 - right, canvas.y2 - bottom);
+  if (!Valid(active))
+    return {};
+  const float scaleX = destination.Width() / source.Width();
+  const float scaleY = destination.Height() / source.Height();
+  const CRect projected(destination.x1 + (canvas.x1 - source.x1) * scaleX,
+                        destination.y1 + (canvas.y1 - source.y1) * scaleY,
+                        destination.x1 + (canvas.x2 - source.x1) * scaleX,
+                        destination.y1 + (canvas.y2 - source.y1) * scaleY);
+  return GetActivePictureArea(canvas, projected, view, canvas, active, false);
 }
 
 CRect OVERLAY::GetBitmapSubtitleArea(const CRect& view,

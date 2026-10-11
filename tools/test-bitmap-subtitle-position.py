@@ -20,7 +20,7 @@ function = fixture['function']
 def source():
     code = '#include <iostream>\n' + fixture['harness']()
     code = code.replace('  double GetNumber(int)', '  bool GetBool(int){return false;}\n  double GetNumber(int)')
-    code = code.replace('SETTING_SUBTITLES_BITMAPMARGIN=4;', 'SETTING_SUBTITLES_BITMAPMARGIN=4,SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_USER_POS=5;')
+    code = code.replace('SETTING_SUBTITLES_BITMAPMARGIN=4;', 'SETTING_SUBTITLES_BITMAPMARGIN=4,SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_USER_POS=5,SETTING_COREELEC_AMLOGIC_DV_LEVEL5=6;')
     code = code.replace('struct CServiceBroker {', '''struct Metadata {
   bool has_level5_metadata=false,level5_detected=false;
   uint16_t level5_active_area_top_offset=0,level5_active_area_bottom_offset=0,
@@ -51,10 +51,12 @@ struct CRenderManager {
   struct Picture {int iWidth=1920,iHeight=1080;std::string stereoMode;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;} m_picture;
   CRenderer m_overlays;
   CRect CalcOverlayActiveArea(CRect&,CRect&,CRect&,bool,double);
+  CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool);
 };
 '''
     manager = (ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp').read_text()
     code += function(manager, 'bool TextSubtitleNeedsSignal(') + '\n'
+    code += function(manager, 'CRect CRenderManager::CalcPictureActiveArea(') + '\n'
     code += function(manager, 'CRect CRenderManager::CalcOverlayActiveArea(')
     return code + TESTS
 

@@ -11,6 +11,18 @@
 
 namespace OVERLAY
 {
+// Absolute native L5 overrides refer to the padded 16:9 canvas. Unlike source
+// L5, a zero override can include player-added bars outside the coded picture.
+CRect GetActivePictureAreaWithCanvasOverride(const CRect& source,
+                                            const CRect& destination,
+                                            const CRect& view,
+                                            int width,
+                                            int height,
+                                            unsigned int top,
+                                            unsigned int bottom,
+                                            unsigned int left,
+                                            unsigned int right);
+
 enum class BitmapSubtitlePosition
 {
   ORIGINAL = 0,
@@ -38,11 +50,14 @@ struct BitmapSubtitlePlacement
 
 // Map a valid coded-frame active rectangle through crop, scale and view clipping.
 // Missing/invalid refinements fall back to the visible renderer video rectangle.
+// With fallbackOnEmpty=false, valid picture geometry cropped entirely out of
+// view returns empty instead of treating the remaining bars as active picture.
 CRect GetActivePictureArea(const CRect& source,
                            const CRect& destination,
                            const CRect& view,
                            const CRect& codedFrame,
-                           const CRect& inFrameArea);
+                           const CRect& inFrameArea,
+                           bool fallbackOnEmpty = true);
 
 // An aspect override only refines the known picture; it never enlarges it.
 CRect GetBitmapSubtitleArea(const CRect& view,

@@ -873,6 +873,9 @@ static constexpr unsigned int SYSTEM_LOCALE = 1012;
 // room beside them.
 #define PLAYER_PROCESS_AUDIO_OBJECT_LAYOUT (PLAYER_PROCESS + 170)
 
+// One coherent, versioned JSON snapshot for Python addon geometry comparisons.
+#define PLAYER_PROCESS_VIDEO_ACTIVE_PICTURE (PLAYER_PROCESS + 180)
+
 #define ADDON_INFOS                 1700
 #define ADDON_SETTING_STRING        (ADDON_INFOS)
 #define ADDON_SETTING_BOOL          (ADDON_INFOS + 1)

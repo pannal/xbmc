@@ -14,6 +14,7 @@
 #include "threads/CriticalSection.h"
 #include "utils/AgedMap.h"
 #include "utils/BitstreamConverter.h"
+#include "utils/Geometry.h"
 
 #include <atomic>
 #include <chrono>
@@ -23,6 +24,13 @@
 class CDataCacheCore
 {
 public:
+  struct VideoActivePicture
+  {
+    // Fixed 1920x1080 GUI coordinates, before temporary OSD suppression.
+    CRect bounds;
+    bool valid{false};
+  };
+
   CDataCacheCore();
   virtual ~CDataCacheCore();
   static CDataCacheCore& GetInstance();
@@ -51,6 +59,8 @@ public:
   void SetVideoDimensions(int width, int height);
   int GetVideoWidth();
   int GetVideoHeight();
+  void SetVideoActivePicture(VideoActivePicture picture);
+  VideoActivePicture GetVideoActivePicture();
   void SetVideoFps(float fps);
   float GetVideoFps();
   void SetVideoDAR(float dar);
@@ -343,6 +353,7 @@ protected:
     std::string stereoMode;
     int width;
     int height;
+    VideoActivePicture activePicture;
     float fps;
     float dar;
     bool m_isInterlaced;

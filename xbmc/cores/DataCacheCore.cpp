@@ -182,6 +182,18 @@ void CDataCacheCore::SetVideoDimensions(int width, int height)
   m_playerVideoInfo.height = height;
 }
 
+void CDataCacheCore::SetVideoActivePicture(VideoActivePicture picture)
+{
+  std::unique_lock<CCriticalSection> lock(m_videoPlayerSection);
+  m_playerVideoInfo.activePicture = picture;
+}
+
+CDataCacheCore::VideoActivePicture CDataCacheCore::GetVideoActivePicture()
+{
+  std::unique_lock<CCriticalSection> lock(m_videoPlayerSection);
+  return m_playerVideoInfo.activePicture;
+}
+
 int CDataCacheCore::GetVideoWidth()
 {
   std::unique_lock<CCriticalSection> lock(m_videoPlayerSection);

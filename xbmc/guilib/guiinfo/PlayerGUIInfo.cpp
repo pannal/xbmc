@@ -823,6 +823,20 @@ bool CPlayerGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
       value = std::to_string(static_cast<int>(pq_to_nits(CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata().level1_avg_pq)));
       return true;
 
+    case PLAYER_PROCESS_VIDEO_ACTIVE_PICTURE:
+    {
+      const auto picture = CServiceBroker::GetDataCacheCore().GetVideoActivePicture();
+      // A single label read copies all fields under one cache lock. Separate
+      // coordinate labels would let Python combine different rendered frames.
+      if (!picture.valid || !m_appPlayer->IsPlayingVideo())
+        value = R"({"version":1,"valid":false,"coordinate_system":"gui-1080","width":1920,"height":1080,"left":null,"top":null,"right":null,"bottom":null})";
+      else
+        value = StringUtils::Format(
+            R"({{"version":1,"valid":true,"coordinate_system":"gui-1080","width":1920,"height":1080,"left":{},"top":{},"right":{},"bottom":{}}})",
+            picture.bounds.x1, picture.bounds.y1, picture.bounds.x2, picture.bounds.y2);
+      return true;
+    }
+
     case PLAYER_PROCESS_VIDEO_DOVI_HAS_L5:
     case PLAYER_PROCESS_VIDEO_DOVI_L5_LEFT_OFFSET:
     case PLAYER_PROCESS_VIDEO_DOVI_L5_RIGHT_OFFSET:
