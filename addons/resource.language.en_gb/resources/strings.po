@@ -27284,7 +27284,7 @@ msgstr ""
 #. "Keep SDR output state on playback stop"
 #: system/settings/settings.xml
 msgctxt "#60647"
-msgid "Prevents shutting down the Dolby Vision pipeline on playback stop when outputting SDR under On Demand mode, avoiding screen blinks when returning to the GUI."
+msgid "Under On Demand, keeps the SDR output on playback stop instead of shutting down the Dolby Vision pipeline, avoiding a blink when returning to the GUI. Only effective when EVERY DV VS10 mode is set to SDR, so the GUI and the video share the same output."
 msgstr ""
 
 #. Title of Dolby Vision RPU conversion setting

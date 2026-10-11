@@ -20077,8 +20077,8 @@ msgstr "SDR-Ausgabeformat beim Stoppen der Wiedergabe beibehalten"
 #. "Keep SDR output state on playback stop"
 #: system/settings/settings.xml
 msgctxt "#60647"
-msgid "Prevents shutting down the Dolby Vision pipeline on playback stop when outputting SDR under On Demand mode, avoiding screen blinks when returning to the GUI."
-msgstr "Verhindert das Herunterfahren der Dolby Vision-Pipeline beim Stoppen der Wiedergabe im On-Demand-Modus, wenn SDR ausgegeben wird, und vermeidet so Bildschirmflackern bei der Rückkehr zur Benutzeroberfläche."
+msgid "Under On Demand, keeps the SDR output on playback stop instead of shutting down the Dolby Vision pipeline, avoiding a blink when returning to the GUI. Only effective when EVERY DV VS10 mode is set to SDR, so the GUI and the video share the same output."
+msgstr "Behält im On-Demand-Modus beim Stoppen der Wiedergabe die SDR-Ausgabe bei, statt die Dolby Vision-Pipeline herunterzufahren, und vermeidet so ein Flackern bei der Rückkehr zur Benutzeroberfläche. Nur wirksam, wenn ALLE DV-VS10-Modi auf SDR stehen, sodass Benutzeroberfläche und Video dieselbe Ausgabe verwenden."
 
 msgctxt "#69196"
 msgid "Convert DV Profile 7 FEL to MEL or to Profile 8.1"
