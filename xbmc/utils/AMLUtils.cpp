@@ -19,6 +19,7 @@
 #include <numeric>
 #include <cmath>
 #include <algorithm>
+#include <linux/version.h>
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -5662,12 +5663,79 @@ bool aml_set_display_resolution(const RESOLUTION_INFO &res, std::string framebuf
   return true;
 }
 
+// Kernel 4.9 OSD driver, non-hwc path: the OSD blend, the OSD scaler input
+// and the DV core2 graphic size stay at their 1920x1080 boot values when the
+// framebuffer grows to a native GUI size, so the TV shows a cropped or
+// shrunken GUI. Its "fb display" hwc mode sizes all of them from the
+// free_scale axes and passes the size on to the DV driver, so switch to it
+// for a native GUI above 1080p and restore the boot values otherwise. The
+// mode switch resets these, hence this runs on every resolution change.
+static void aml_handle_native_gui_osd(const RESOLUTION_INFO &res)
+{
+  if (((LINUX_VERSION_CODE >> 16) & 0xFF) >= 5)
+    return;
+
+  static const char* const nodes[] = {"osd_background_size", "fix_target_size",
+                                      "osd_display_fb", "osd_hwc_enable"};
+  static std::vector<std::string> bootValues;
+  const std::string fb0 = "/sys/class/graphics/fb0/";
+  const bool native4k = res.iWidth == res.iScreenWidth && res.iWidth > 1920;
+
+  if (!native4k)
+  {
+    if (bootValues.empty())
+      return;
+    for (size_t i = 0; i < bootValues.size(); i++)
+      CSysfsPath(fb0 + nodes[i], bootValues[i]);
+    bootValues.clear();
+    CSysfsPath(fb0 + "blank", 1);
+    CSysfsPath(fb0 + "blank", 0);
+    CLog::Log(LOGDEBUG, "AMLUtils::{}: OSD back to its boot configuration", __FUNCTION__);
+    return;
+  }
+
+  if (bootValues.empty())
+  {
+    for (const char* node : nodes)
+    {
+      CSysfsPath path{fb0 + node};
+      std::string value = path.Exists() ? path.Get<std::string>().value_or("") : "";
+      bootValues.push_back(StringUtils::Trim(value));
+    }
+    // reject a partial read rather than restore garbage later
+    if (std::any_of(bootValues.begin(), bootValues.end(), [](const std::string& v) { return v.empty(); }))
+    {
+      CLog::Log(LOGWARNING, "AMLUtils::{}: OSD sysfs nodes missing, native GUI left as is", __FUNCTION__);
+      bootValues.clear();
+      return;
+    }
+  }
+
+  const std::string axis = StringUtils::Format("0 0 {} {}", res.iWidth - 1, res.iHeight - 1);
+  CSysfsPath(fb0 + "free_scale", 0);
+  CSysfsPath(fb0 + "free_scale_axis", axis);
+  CSysfsPath(fb0 + "window_axis", axis);
+  CSysfsPath(fb0 + "free_scale", 0x10001);
+  CSysfsPath(fb0 + "osd_background_size",
+             StringUtils::Format("{0} {1} {0} {1} 0 0 {0} {1}", res.iWidth, res.iHeight));
+  CSysfsPath(fb0 + "fix_target_size", StringUtils::Format("{} {}", res.iWidth, res.iHeight));
+  CSysfsPath(fb0 + "osd_display_fb", 1);
+  CSysfsPath(fb0 + "osd_hwc_enable", 1);
+  // the blend and DV sizes are only recomputed when the OSD is (re)enabled
+  CSysfsPath(fb0 + "blank", 1);
+  CSysfsPath(fb0 + "blank", 0);
+  CLog::Log(LOGDEBUG, "AMLUtils::{}: OSD set up for a native {}x{} GUI", __FUNCTION__,
+            res.iWidth, res.iHeight);
+}
+
 void aml_handle_scale(const RESOLUTION_INFO &res)
 {
   if (res.iScreenWidth > res.iWidth && res.iScreenHeight > res.iHeight)
     aml_enable_freeScale(res);
   else
     aml_disable_freeScale();
+
+  aml_handle_native_gui_osd(res);
 }
 
 void aml_handle_display_stereo_mode(const int stereo_mode)

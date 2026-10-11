@@ -32,6 +32,7 @@
 #include "windowing/WinSystem.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <float.h>
 #include <fstream>
@@ -616,13 +617,38 @@ void CDisplaySettings::ApplyCalibrations()
 {
   std::unique_lock<CCriticalSection> lock(m_critical);
   // apply all calibrations to the resolutions
-  for (ResolutionInfos::const_iterator itCal = m_calibrations.begin(); itCal != m_calibrations.end(); ++itCal)
+  for (ResolutionInfos::iterator itCal = m_calibrations.begin(); itCal != m_calibrations.end(); ++itCal)
   {
     // find resolutions
     for (size_t res = RES_DESKTOP; res < m_resolutions.size(); ++res)
     {
       if (StringUtils::EqualsNoCase(itCal->strMode, m_resolutions[res].strMode))
       {
+#if defined(HAS_LIBAMCODEC)
+        // "Disable GUI scaling" changes the GUI size of a 2160p mode (1920x1080
+        // upscaled <-> native 3840x2160) while calibrations stay keyed by mode,
+        // so one saved for the other GUI size would clip or shrink the GUI.
+        // Rescale it to the current GUI size (the next settings save keeps it).
+        {
+          const RESOLUTION_INFO& cur = m_resolutions[res];
+          const int otherW = cur.iWidth == cur.iScreenWidth ? std::min(cur.iScreenWidth, 1920) : cur.iScreenWidth;
+          const int otherH = cur.iHeight == cur.iScreenHeight ? std::min(cur.iScreenHeight, 1080) : cur.iScreenHeight;
+          if (otherW != cur.iWidth && otherH != cur.iHeight &&
+              std::abs(itCal->Overscan.right - otherW) < std::abs(itCal->Overscan.right - cur.iWidth) &&
+              std::abs(itCal->Overscan.bottom - otherH) < std::abs(itCal->Overscan.bottom - cur.iHeight))
+          {
+            const float sx = static_cast<float>(cur.iWidth) / otherW;
+            const float sy = static_cast<float>(cur.iHeight) / otherH;
+            itCal->Overscan.left = std::lround(itCal->Overscan.left * sx);
+            itCal->Overscan.right = std::lround(itCal->Overscan.right * sx);
+            itCal->Overscan.top = std::lround(itCal->Overscan.top * sy);
+            itCal->Overscan.bottom = std::lround(itCal->Overscan.bottom * sy);
+            itCal->iSubtitles = std::lround(itCal->iSubtitles * sy);
+            CLog::Log(LOGINFO, "CDisplaySettings: calibration of {} rescaled from a {}x{} to a {}x{} GUI",
+                      itCal->strMode, otherW, otherH, cur.iWidth, cur.iHeight);
+          }
+        }
+#endif
         // overscan
         m_resolutions[res].Overscan.left = itCal->Overscan.left;
         if (m_resolutions[res].Overscan.left < -m_resolutions[res].iWidth/4)
