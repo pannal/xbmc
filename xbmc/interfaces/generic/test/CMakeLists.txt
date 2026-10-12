@@ -1,0 +1,3 @@
+set(SOURCES TestScriptInvocationManager.cpp)
+
+core_add_test_library(interfaces_generic_test)
