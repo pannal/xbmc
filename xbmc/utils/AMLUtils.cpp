@@ -44,6 +44,8 @@
 #include "filesystem/SpecialProtocol.h"
 #include "rendering/RenderSystem.h"
 #include "settings/DisplaySettings.h"
+#include "messaging/ApplicationMessenger.h"
+#include "windowing/WinSystem.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "guilib/GUIComponent.h"
@@ -5786,6 +5788,118 @@ void aml_handle_scale(const RESOLUTION_INFO &res)
     aml_disable_freeScale();
 
   aml_handle_native_gui_osd(res);
+}
+
+// Kernel 4.9: a DV FEL stream (dual-layer decode through the DV core) with a
+// native 2160p GUI scanned out above 30 Hz runs short of memory bandwidth and
+// the OSD glitches, mostly while it is redrawn; a 1920x1080 GUI scaled to the
+// output is clean. While such a stream plays, the native GUI is suspended: the
+// GUI size of the 2160p entries of the resolution list drops to 1920x1080
+// (their calibration with it) and the resolution is set again. The display
+// mode stays, so aml_set_display_resolution() writes no display/mode and only
+// the framebuffer and the OSD scaling change: no HDMI handshake.
+static std::atomic<bool> s_felPlaying{false};
+static std::atomic<bool> s_nativeGuiSuspended{false}; // written on the main thread only
+
+struct NativeGuiCalibration
+{
+  size_t index;
+  std::string strMode;
+  OVERSCAN overscan;
+  EdgeInsets guiInsets;
+  int subtitles;
+};
+static std::vector<NativeGuiCalibration> s_nativeGuiCalibrations;
+
+void aml_native_gui_set_fel_playing(bool playing)
+{
+  s_felPlaying = playing;
+}
+
+static bool aml_native_gui_suspend_wanted(RESOLUTION res)
+{
+  if (((LINUX_VERSION_CODE >> 16) & 0xFF) >= 5 || !s_felPlaying || res < RES_DESKTOP ||
+      !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+          CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING))
+    return false;
+  const RESOLUTION_INFO& info = CDisplaySettings::GetInstance().GetResolutionInfo(res);
+  return info.iScreenWidth > 1920 && info.iScreenHeight > 1080 && info.fRefreshRate > 30.0f;
+}
+
+bool aml_native_gui_needs_update(RESOLUTION res)
+{
+  return aml_native_gui_suspend_wanted(res) != s_nativeGuiSuspended;
+}
+
+void aml_native_gui_prepare(RESOLUTION res)
+{
+  const bool suspend = aml_native_gui_suspend_wanted(res);
+  if (!suspend && !s_nativeGuiSuspended)
+    return;
+
+  // idempotent: entries rebuilt by UpdateResolutions() meanwhile are resized too
+  CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
+  const bool nativeGui = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+      CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING);
+  if (suspend && !s_nativeGuiSuspended)
+    s_nativeGuiCalibrations.clear();
+  for (size_t i = RES_DESKTOP; i < displaySettings.ResolutionInfoSize(); i++)
+  {
+    RESOLUTION_INFO& info = displaySettings.GetResolutionInfo(i);
+    if (info.iScreenWidth <= 1920 || info.iScreenHeight <= 1080)
+      continue;
+    const int width = suspend || !nativeGui ? 1920 : info.iScreenWidth;
+    const int height = suspend || !nativeGui ? 1080 : info.iScreenHeight;
+    if (info.iWidth == width && info.iHeight == height)
+      continue;
+
+    auto saved = std::find_if(s_nativeGuiCalibrations.begin(), s_nativeGuiCalibrations.end(),
+                              [&](const NativeGuiCalibration& c)
+                              { return c.index == i && c.strMode == info.strMode; });
+    if (suspend)
+    {
+      if (saved == s_nativeGuiCalibrations.end() && info.iWidth == info.iScreenWidth)
+        s_nativeGuiCalibrations.push_back({i, info.strMode, info.Overscan, info.guiInsets, info.iSubtitles});
+    }
+    else if (saved != s_nativeGuiCalibrations.end())
+    {
+      info.iWidth = width;
+      info.iHeight = height;
+      info.Overscan = saved->overscan;
+      info.guiInsets = saved->guiInsets;
+      info.iSubtitles = saved->subtitles;
+      continue;
+    }
+
+    const float sx = static_cast<float>(width) / info.iWidth;
+    const float sy = static_cast<float>(height) / info.iHeight;
+    info.Overscan.left = std::lround(info.Overscan.left * sx);
+    info.Overscan.right = std::lround(info.Overscan.right * sx);
+    info.Overscan.top = std::lround(info.Overscan.top * sy);
+    info.Overscan.bottom = std::lround(info.Overscan.bottom * sy);
+    info.guiInsets = EdgeInsets(info.guiInsets.left * sx, info.guiInsets.top * sy,
+                                info.guiInsets.right * sx, info.guiInsets.bottom * sy);
+    info.iSubtitles = std::lround(info.iSubtitles * sy);
+    info.iWidth = width;
+    info.iHeight = height;
+  }
+  if (!suspend)
+    s_nativeGuiCalibrations.clear();
+
+  if (suspend != s_nativeGuiSuspended)
+    CLog::Log(LOGINFO, "AMLUtils::{}: native GUI {} (DV FEL above 30 Hz)", __FUNCTION__,
+              suspend ? "suspended, GUI at 1920x1080" : "resumed");
+  s_nativeGuiSuspended = suspend;
+}
+
+void aml_native_gui_playback_stopped()
+{
+  // the decoder is closed by now; also covers a stop with the GUI shown
+  s_felPlaying = false;
+  if (s_nativeGuiSuspended)
+    CServiceBroker::GetAppMessenger()->PostMsg(
+        TMSG_SETVIDEORESOLUTION,
+        CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution(), 1);
 }
 
 void aml_handle_display_stereo_mode(const int stereo_mode)

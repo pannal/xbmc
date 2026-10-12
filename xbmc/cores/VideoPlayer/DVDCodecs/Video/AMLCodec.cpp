@@ -2449,6 +2449,7 @@ bool CAMLCodec::OpenDecoderInternal()
     if (((hints.dovi.dv_profile == 4) || (hints.dovi.dv_profile == 7)) && (hints.dovi_el_type != DOVIELType::TYPE_MEL))
     {
       aml_dv_enable_fel();                              // Make sure enable fel is set.
+      aml_native_gui_set_fel_playing(true);
       am_private->gcodec.dec_mode = STREAM_TYPE_STREAM; // Use stream path if FEL
     }
   }
@@ -2734,6 +2735,7 @@ void CAMLCodec::CloseDecoderInternal()
   if (m_dvOpened)
     aml_dv_close();
   m_dvOpened = false;
+  aml_native_gui_set_fel_playing(false);
   m_dvSession.reset();
   m_decoderNeedsClose = false;
 }

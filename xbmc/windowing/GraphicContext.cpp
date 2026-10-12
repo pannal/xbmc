@@ -25,6 +25,9 @@
 #include "settings/SettingsComponent.h"
 #include "settings/lib/Setting.h"
 #include "utils/log.h"
+#if defined(HAS_LIBAMCODEC)
+#include "utils/AMLUtils.h"
+#endif
 
 #include <cassert>
 #include <mutex>
@@ -471,6 +474,9 @@ bool CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   int origScreenHeight = m_iScreenHeight;
   float origFPSOverride = m_fFPSOverride;
 
+#if defined(HAS_LIBAMCODEC)
+  aml_native_gui_prepare(res);
+#endif
   UpdateInternalStateWithResolution(res);
   RESOLUTION_INFO info_org  = CDisplaySettings::GetInstance().GetResolutionInfo(res);
   RENDER_STEREO_MODE stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();

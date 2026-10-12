@@ -369,6 +369,11 @@ bool aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolutions);
 bool aml_set_display_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name, bool force_mode_switch);
 bool aml_display_mode_changing(const RESOLUTION_INFO &res);
 void aml_handle_scale(const RESOLUTION_INFO &res);
+// native GUI suspended while a DV FEL stream plays above 30 Hz (kernel 4.9)
+void aml_native_gui_set_fel_playing(bool playing);
+bool aml_native_gui_needs_update(RESOLUTION res);
+void aml_native_gui_prepare(RESOLUTION res);
+void aml_native_gui_playback_stopped();
 void aml_handle_display_stereo_mode(const int stereo_mode);
 void aml_enable_freeScale(const RESOLUTION_INFO &res);
 void aml_disable_freeScale();
