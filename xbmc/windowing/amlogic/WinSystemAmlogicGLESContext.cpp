@@ -29,14 +29,28 @@
 #include "settings/Settings.h"
 #include "windowing/WinSystem.h"
 
+#include "application/ApplicationComponents.h"
+#include "application/ApplicationPowerHandling.h"
+#include "cores/DataCacheCore.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h"
+#include "filesystem/File.h"
+#include "guilib/GUIWindow.h"
+#include "utils/DVBackendState.h"
+#include "utils/JSONVariantWriter.h"
+
 extern "C"
 {
 #include <libavutil/pixfmt.h>
 }
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 
 using namespace KODI;
@@ -44,6 +58,23 @@ using namespace KODI::WINDOWING::AML;
 
 namespace
 {
+bool GuiABRead(const std::string& path, std::string& text)
+{
+  std::ifstream input(path);
+  char buffer[512]{};
+  if (!input.getline(buffer, sizeof(buffer)) || (!input.eof() && input.peek() != EOF))
+    return false;
+  text = buffer;
+  while (!text.empty() && (text.back() == '\r' || text.back() == ' '))
+    text.pop_back();
+  return !text.empty();
+}
+bool GuiABUint(const std::string& text, uint64_t& value)
+{
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+  return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
+}
+
 // Kernel switches that let the OSD plane carry BT.2020 PQ (pannal kernel):
 // amvecm skips its OSD SDR->HDR encode, amdolby_vision tells core2 the
 // graphics are HDR RGB.
@@ -138,6 +169,7 @@ bool CWinSystemAmlogicGLESContext::IsPrimaryContextCurrent() const
 
 void CWinSystemAmlogicGLESContext::ReleaseCompositeResources()
 {
+  GuiABFinish("release_composite");
   InvalidateRenderTarget();
   if (IsPrimaryContextCurrent())
   {
@@ -158,6 +190,7 @@ void CWinSystemAmlogicGLESContext::ReleaseCompositeResources()
 
 bool CWinSystemAmlogicGLESContext::DestroyRenderSystem()
 {
+  GuiABFinish("destroy_render_system");
   CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
   if (!display)
     return false;
@@ -214,6 +247,7 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 
 bool CWinSystemAmlogicGLESContext::PrepareForShutdown()
 {
+  GuiABFinish("shutdown");
   m_shutdownRequested = true;
   SetNativeGuiWait(false);
   // Drain settings/deferred users before taking display admission: a completing
@@ -288,6 +322,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
                                                bool fullScreen,
                                                RESOLUTION_INFO& res)
 {
+  GuiABFinish("create_window");
   if (m_shutdownRequested)
     return false;
   CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
@@ -459,6 +494,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 
 bool CWinSystemAmlogicGLESContext::DestroyWindow()
 {
+  GuiABFinish("destroy_window");
   CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
   if (!display)
     return false;
@@ -477,6 +513,7 @@ bool CWinSystemAmlogicGLESContext::ResizeWindow(int newWidth, int newHeight, int
 
 bool CWinSystemAmlogicGLESContext::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays)
 {
+  GuiABFinish("fullscreen_change");
   CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
   if (!display || !CreateNewWindow("", fullScreen, res) ||
       !ResetRenderSystem(res.iWidth, res.iHeight))
@@ -488,6 +525,7 @@ bool CWinSystemAmlogicGLESContext::SetFullScreen(bool fullScreen, RESOLUTION_INF
 
 bool CWinSystemAmlogicGLESContext::ResetRenderSystem(int width, int height)
 {
+  GuiABFinish("reset_render_system");
   if (m_shutdownRequested)
     return false;
   CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
@@ -596,12 +634,14 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   m_presentResult = PresentResult::SKIPPED;
   if (!rendered)
   {
+    GuiABPresented(false);
     observe();
     return;
   }
   if (!IsRenderTargetCurrent(target))
   {
     m_presentResult = PresentResult::TARGET_INVALID;
+    GuiABFinish("render_target_invalid");
     observe();
     return;
   }
@@ -615,6 +655,7 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   auto* diagnostics = PLAYBACK_DIAGNOSTICS::Enabled() &&
                               PLAYBACK_DIAGNOSTICS::endDisplay.Active(PLAYBACK_DIAGNOSTICS::NowUs())
                           ? &swap : nullptr;
+  GuiABDraw(); // Opt-in only; retain the sole normal swap even if the trial aborts.
   if (m_pGLContext.TrySwapBuffers(diagnostics))
   {
     m_presentResult = PresentResult::SWAP_ACCEPTED;
@@ -622,6 +663,7 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   }
   else
     m_presentResult = PresentResult::SWAP_FAILED;
+  GuiABPresented(m_presentResult == PresentResult::SWAP_ACCEPTED);
   observe();
 }
 
@@ -938,7 +980,12 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
 
   // Shader regime (per-primitive PQ scale, limited range) follows
   // IsMenuCompositeActive() in CRenderSystemGLES::BeginRender.
-  return CRenderSystemGLES::BeginRender();
+  const bool begun = CRenderSystemGLES::BeginRender();
+  if (begun)
+    GuiABBegin();
+  else
+    GuiABFinish("begin_render_failed");
+  return begun;
 }
 
 bool CWinSystemAmlogicGLESContext::EnsureFbo(CFrameBufferObject& fbo, int& width, int& height)
@@ -1042,6 +1089,7 @@ void CWinSystemAmlogicGLESContext::EndMenuOverlayRender()
 
 void CWinSystemAmlogicGLESContext::CancelGuiComposite()
 {
+  GuiABFinish("render_cancelled");
   // A route/target change cancels the draw, but the same context still owns
   // its bindings. Never restore those bindings in a replacement namespace.
   if (m_guiFboBound && IsTextureContextCurrent(m_guiResources))
@@ -1156,4 +1204,641 @@ bool CWinSystemAmlogicGLESContext::SupportsStereo(RENDER_STEREO_MODE mode) const
   }
 
   return CRenderSystemGLES::SupportsStereo(mode);
+}
+
+bool CWinSystemAmlogicGLESContext::GuiABIdentity(std::vector<std::string>& identity)
+{
+  if (m_shutdownRequested)
+    return false;
+  std::shared_ptr<CApplicationPowerHandling> power;
+  try
+  {
+    power = CServiceBroker::GetAppComponents().GetComponent<CApplicationPowerHandling>();
+  }
+  catch (const std::logic_error&)
+  {
+    return false; // Application component teardown is not an eligible trial.
+  }
+  if (!power || !power->GetRenderGUI() || !IsDisplayReadyForVideo() ||
+      !IsFullscreenVideoActive() || m_menuRoute != MenuRoute::NONE || m_menuShown ||
+      m_guiFboBound || m_pendingSwitches[0].path || m_pendingSwitches[1].path ||
+      GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF)
+    return false;
+  const auto source = CAMLCodec::GetCaptureSource();
+  if (!source.codec || !source.epoch)
+    return false;
+  const auto session = source.codec->GetDiagnostics();
+  if (session.epoch != source.epoch || session.fenced || session.displayFenced ||
+      session.nativeFenced || session.transferring || session.controlPending ||
+      session.controlActive)
+    return false;
+  auto& cache = CServiceBroker::GetDataCacheCore();
+  const double pts = cache.GetRenderPts();
+  const auto metadata = cache.GetVideoDoViFrameMetadata(pts);
+  if (!std::isfinite(pts) || pts < 0.0 || !metadata.has_level5_metadata || metadata.level5_detected)
+    return false; // Missing exact metadata is not authored zero L5.
+  const int sourceWidth = cache.GetVideoWidth(), sourceHeight = cache.GetVideoHeight();
+  if (sourceWidth <= 0 || sourceHeight <= 0 ||
+      metadata.level5_active_area_top_offset >= sourceHeight / 2 ||
+      metadata.level5_active_area_bottom_offset >= sourceHeight / 2 ||
+      metadata.level5_active_area_left_offset >= sourceWidth / 2 ||
+      metadata.level5_active_area_right_offset >= sourceWidth / 2)
+    return false; // Require source active picture to include its centre.
+  identity = {std::to_string(session.id),
+              std::to_string(session.epoch),
+              std::to_string(sourceWidth),
+              std::to_string(sourceHeight),
+              std::to_string(metadata.level5_active_area_top_offset),
+              std::to_string(metadata.level5_active_area_bottom_offset),
+              std::to_string(metadata.level5_active_area_left_offset),
+              std::to_string(metadata.level5_active_area_right_offset),
+              std::to_string(UseLimitedColor()),
+              std::to_string(GetGfxContext().IsTransferPQ())};
+  const auto active = cache.GetVideoActivePicture();
+  if (!active.valid)
+    return false;
+  RESOLUTION_INFO reference;
+  reference.iWidth = 1920;
+  reference.iHeight = 1080;
+  float scaleX, scaleY;
+  TransformMatrix matrix;
+  GetGfxContext().GetGUIScaling(reference, scaleX, scaleY, &matrix);
+  CRect picture = active.bounds;
+  float z = 0.0f;
+  matrix.TransformPosition(picture.x1, picture.y1, z);
+  z = 0.0f;
+  matrix.TransformPosition(picture.x2, picture.y2, z);
+  if (!std::isfinite(scaleX) || scaleX <= 0.0f || !std::isfinite(scaleY) || scaleY <= 0.0f ||
+      !std::isfinite(picture.x1) || !std::isfinite(picture.y1) || !std::isfinite(picture.x2) ||
+      !std::isfinite(picture.y2) || picture.IsEmpty())
+    return false;
+  for (float value : {picture.x1, picture.y1, picture.x2, picture.y2})
+    identity.push_back(std::to_string(value));
+  m_guiAB.activePicture = picture; // Logical geometry only, never a hardware receipt.
+  static constexpr const char* names[] = {"dolby_vision_mode",
+                                          "dolby_vision_target_mode",
+                                          "dolby_vision_status",
+                                          "dolby_vision_mask",
+                                          "dolby_vision_flags",
+                                          "dolby_vision_ll_policy",
+                                          "xbmc_dv_vp",
+                                          "dolby_vision_xbmc_osd",
+                                          "dolby_vision_policy",
+                                          "dolby_vision_hdr10_policy",
+                                          "dolby_vision_subtitles",
+                                          "dolby_vision_enable",
+                                          "xbmc_meta_level_5",
+                                          "xbmc_meta_level_5_osdst",
+                                          "xbmc_meta_level_5_subt",
+                                          "dolby_vision_graphic_pq",
+                                          "xbmc_force_l5_override",
+                                          "xbmc_override_l5_top",
+                                          "xbmc_override_l5_bottom",
+                                          "xbmc_override_l5_left",
+                                          "xbmc_override_l5_right",
+                                          "xbmc_l5_override_additive"};
+  uint64_t values[std::size(names)]{};
+  CVariant raw(CVariant::VariantTypeObject);
+  for (size_t i = 0; i < std::size(names); ++i)
+  {
+    std::string text;
+    if (!GuiABRead(std::string("/sys/module/amdolby_vision/parameters/") + names[i], text))
+      return false;
+    raw[names[i]] = text;
+    const bool boolean = (i >= 11 && i <= 16) || i == 21;
+    if (boolean && (text == "Y" || text == "N"))
+      values[i] = text == "Y";
+    else if (!GuiABUint(text, values[i]))
+      return false;
+    if (boolean && values[i] > 1)
+      return false;
+    identity.push_back(std::to_string(i == 4 ? values[i] & ~uint64_t{0x80000000} : values[i]));
+  }
+  if (values[0] != 1 || values[1] != 1 || values[2] != 3 || (values[3] & 7) != 7 ||
+      (values[4] & 0xc800) || values[4] > UINT32_MAX || values[5] || values[6] || values[7] ||
+      values[10] || values[11] != 1)
+    return false;
+  std::string backend, provider, video;
+  if (!GuiABRead("/sys/class/amdolby_vision/backend_state", backend) ||
+      !GuiABRead("/sys/class/video/presentation_state", provider) ||
+      !GuiABRead("/sys/class/amdolby_vision/dv_video_on", video) || video != "1")
+    return false;
+  const auto parsed = DVBackendState::Parse(backend);
+  uint64_t enabled = 0, epoch = 0, receipt = 0;
+  std::string enabledText, epochText, receiptText;
+  std::istringstream stream(provider);
+  if (!parsed || parsed->backend < 0 || parsed->newUsable != 1 ||
+      !(stream >> enabledText >> epochText >> receiptText) || !GuiABUint(enabledText, enabled) ||
+      !GuiABUint(epochText, epoch) || !GuiABUint(receiptText, receipt) || enabled != 1 || !epoch ||
+      !(stream >> std::ws).eof())
+    return false;
+  identity.push_back(backend);
+  identity.push_back(std::to_string(epoch)); // The applied receipt is progress only.
+  for (const char* path :
+       {"/sys/class/display/mode", "/sys/class/amhdmitx/amhdmitx0/attr",
+        "/sys/class/graphics/fb0/free_scale", "/sys/class/graphics/fb0/window_axis"})
+  {
+    std::string text;
+    if (!GuiABRead(path, text))
+      return false;
+    identity.push_back(text);
+  }
+  raw["provider_raw"] = provider;
+  raw["render_pts"] = pts;
+  raw["source_width"] = sourceWidth;
+  raw["source_height"] = sourceHeight;
+  raw["authored_l5_cpu_only"] =
+      std::vector<std::string>{identity[4], identity[5], identity[6], identity[7]};
+  const auto currentSource = CAMLCodec::GetCaptureSource();
+  if (currentSource.codec != source.codec || currentSource.epoch != source.epoch)
+    return false;
+  const auto currentSession = source.codec->GetDiagnostics();
+  if (currentSession.epoch != source.epoch || currentSession.fenced ||
+      currentSession.displayFenced || currentSession.nativeFenced || currentSession.transferring ||
+      currentSession.controlPending || currentSession.controlActive)
+    return false;
+  const int phase = m_guiAB.phase == GuiAB::Phase::B ? 1 : 0;
+  m_guiAB.report[phase ? "B_guard_last" : "A_guard_last"] = raw;
+  // These are sequential CPU/source observations, not an applied metadata receipt.
+  return true;
+}
+bool CWinSystemAmlogicGLESContext::GuiABCurrent()
+{
+  std::vector<std::string> identity;
+  auto* gui = CServiceBroker::GetGUI();
+  auto* home = gui ? gui->GetWindowManager().GetWindow(WINDOW_HOME) : nullptr;
+  const bool valid = home && home->GetProperty("enky.gui_ab").asString() == "running" &&
+                     IsRenderTargetCurrent(m_guiAB.target) &&
+                     m_displayLifecycle.Serial() == m_guiAB.display && GuiABIdentity(identity) &&
+                     identity == m_guiAB.identity &&
+                     home->GetProperty("enky.gui_ab").asString() == "running" &&
+                     IsRenderTargetCurrent(m_guiAB.target) &&
+                     m_displayLifecycle.Serial() == m_guiAB.display && IsDisplayReadyForVideo() &&
+                     !m_shutdownRequested && IsFullscreenVideoActive();
+  if (!valid)
+    m_guiAB.report["rejected_identity"] = identity;
+  return valid;
+}
+
+void CWinSystemAmlogicGLESContext::GuiABFinish(const char* reason)
+{
+  try
+  {
+    if (m_guiAB.phase != GuiAB::Phase::A && m_guiAB.phase != GuiAB::Phase::B)
+      return;
+    m_guiAB.report["reason"] = reason;
+    m_guiAB.report["ended_us"] = PLAYBACK_DIAGNOSTICS::NowUs();
+    m_guiAB.report["A_accepted"] = m_guiAB.accepted[0];
+    m_guiAB.report["B_accepted"] = m_guiAB.accepted[1];
+    m_guiAB.report["gl_error"] = m_guiAB.glError;
+    m_guiAB.report["completed"] = std::strcmp(reason, "completed") == 0;
+    m_guiAB.restore = m_guiAB.touched ? 3 : 0;
+    m_guiAB.report["software_restoration_pending"] = m_guiAB.restore != 0;
+    m_guiAB.phase = m_guiAB.restore ? GuiAB::Phase::RESTORE : GuiAB::Phase::IDLE;
+    m_guiAB.ticket = false;
+    m_guiAB.publish = true;
+    if (m_guiAB.pixelPhase < 0)
+      std::vector<uint8_t>().swap(m_guiAB.pixels);
+  }
+  catch (const std::bad_alloc&)
+  {
+    GuiABMemoryFailure();
+  }
+}
+bool CWinSystemAmlogicGLESContext::MessagePump()
+{
+  const bool handled = CWinSystemAmlogic::MessagePump();
+  try
+  {
+    if (m_guiAB.memoryFailure)
+    {
+      CLog::Log(LOGERROR, "p3i-gui-ab id={} allocation_failed; result unavailable",
+                m_guiAB.started);
+      m_guiAB.memoryFailure = false;
+    }
+    auto* gui = CServiceBroker::GetGUI();
+    auto* home = gui ? gui->GetWindowManager().GetWindow(WINDOW_HOME) : nullptr;
+    if (!home)
+      return handled;
+    const std::string request = home->GetProperty("enky.gui_ab").asString();
+    if (request == "start" && m_guiAB.phase == GuiAB::Phase::IDLE)
+    {
+      m_guiAB = {};
+      m_guiAB.phase = GuiAB::Phase::A;
+      m_guiAB.started = PLAYBACK_DIAGNOSTICS::NowUs();
+      m_guiAB.report["started_us"] = m_guiAB.started;
+      m_guiAB.report["boundary"] = "current_render_candidate_only";
+      m_guiAB.report["status"] = "INCONCLUSIVE_A_APPEARANCE_UNKNOWN";
+      home->SetProperty("enky.gui_ab", "running");
+      home->SetProperty("enky.gui_ab.a", "");
+      home->SetProperty("enky.gui_ab.b", "");
+      m_guiAB.target = CaptureRenderTarget();
+      m_guiAB.display = m_displayLifecycle.Serial();
+      if (!GuiABIdentity(m_guiAB.identity))
+        GuiABFinish("NO_TEST_identity_unavailable_or_ineligible");
+      else
+      {
+        m_guiAB.report["identity"] = m_guiAB.identity;
+        m_guiAB.publish = true;
+      }
+    }
+    else if (m_guiAB.phase == GuiAB::Phase::A || m_guiAB.phase == GuiAB::Phase::B)
+    {
+      if (request != "running")
+        GuiABFinish("cancelled");
+      else if (PLAYBACK_DIAGNOSTICS::NowUs() - m_guiAB.started >= 10000000)
+        GuiABFinish("expired");
+      else if (m_guiAB.ticket)
+        GuiABFinish("incomplete_render_attempt");
+      else if (!GuiABCurrent())
+        GuiABFinish("identity_changed_or_unavailable");
+    }
+    if (!m_guiAB.report.isNull())
+    {
+      for (const char* name : {"a", "b"})
+      {
+        const std::string observation =
+            home->GetProperty(std::string("enky.gui_ab.") + name).asString();
+        const std::string normalized =
+            observation == "bar_cue" || observation == "clear_cue" || observation == "no_cue"
+                ? observation
+                : "unknown";
+        if (m_guiAB.report[name].asString() != normalized)
+        {
+          m_guiAB.report[name] = normalized;
+          m_guiAB.publish = true;
+        }
+      }
+      const std::string a = m_guiAB.report["a"].asString();
+      if (a != "unknown" && a != "bar_cue")
+        GuiABFinish("A_validity_control_failed");
+    }
+    GuiABDrain(); // Called by DriveRenderLoop before Render, outside GL/native callbacks.
+    if (m_guiAB.phase == GuiAB::Phase::IDLE || m_guiAB.phase == GuiAB::Phase::RESTORE)
+      home->SetProperty("enky.gui_ab", "");
+    return handled;
+  }
+  catch (const std::bad_alloc&)
+  {
+    GuiABMemoryFailure();
+    return handled;
+  }
+}
+
+void CWinSystemAmlogicGLESContext::GuiABBegin()
+{
+  try
+  {
+    if (m_guiAB.phase == GuiAB::Phase::IDLE)
+      return;
+    if (m_guiAB.phase == GuiAB::Phase::RESTORE)
+    {
+      // Keep pending restoration explicit if the ordinary swap path fails. Do
+      // not turn a broken display into an unbounded diagnostic redraw loop.
+      if (m_guiAB.restoreAttempts < 6)
+      {
+        ++m_guiAB.restoreAttempts;
+        MarkGuiDirty();
+        m_guiAB.ticket = true;
+      }
+      else if (!m_guiAB.report["software_restore_attempts_exhausted"].asBoolean())
+      {
+        m_guiAB.report["software_restore_attempts_exhausted"] = true;
+        m_guiAB.publish = true;
+      }
+      return;
+    }
+    if (m_guiAB.ticket || !GuiABCurrent())
+    {
+      GuiABFinish("incomplete_attempt_or_identity_changed");
+      return;
+    }
+    if (PLAYBACK_DIAGNOSTICS::NowUs() - m_guiAB.started >= 10000000)
+    {
+      GuiABFinish("expired_before_render");
+      return;
+    }
+    MarkGuiDirty(); // Before GUIWindowManager::Render, never fake hasRendered.
+    m_guiAB.ticket = true;
+  }
+  catch (const std::bad_alloc&)
+  {
+    GuiABMemoryFailure();
+  }
+}
+bool CWinSystemAmlogicGLESContext::GuiABDraw()
+{
+  try
+  {
+    if (m_guiAB.phase != GuiAB::Phase::A && m_guiAB.phase != GuiAB::Phase::B)
+      return true;
+    if (!m_guiAB.ticket || !GuiABCurrent() || !IsPrimaryContextCurrent() ||
+        eglGetCurrentSurface(EGL_READ) != m_pGLContext.GetEGLSurface())
+    {
+      GuiABFinish("read_target_changed");
+      return false;
+    }
+    auto fail = [&](const char* reason)
+    {
+      GuiABFinish(reason);
+      return false;
+    };
+    m_guiAB.glError = glGetError();
+    if (m_guiAB.glError != GL_NO_ERROR)
+      return fail("preexisting_GL_error_consumed_and_recorded");
+    const auto* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    const auto* extensions = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+    if (!version || std::strncmp(version, "OpenGL ES 2.", 12) != 0 || !extensions ||
+        std::strstr(extensions, "pixel_buffer_object") || std::strstr(extensions, "_pack_subimage") ||
+        std::strstr(extensions, "pack_reverse_row_order") ||
+        std::strstr(extensions, "pack_invert"))
+      return fail("NO_TEST_unsupported_context_or_pack_extensions");
+    GLint framebuffer = -1, alpha = 0, red = 0, green = 0, blue = 0, pack = 0;
+    GLint viewport[4]{};
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
+    glGetIntegerv(GL_ALPHA_BITS, &alpha);
+    glGetIntegerv(GL_RED_BITS, &red);
+    glGetIntegerv(GL_GREEN_BITS, &green);
+    glGetIntegerv(GL_BLUE_BITS, &blue);
+    glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    EGLint width = 0, height = 0;
+    const bool dimensions = eglQuerySurface(GetEGLDisplay(), GetEGLSurface(), EGL_WIDTH, &width) &&
+                            eglQuerySurface(GetEGLDisplay(), GetEGLSurface(), EGL_HEIGHT, &height);
+    m_guiAB.glError = glGetError();
+    if (!dimensions || m_guiAB.glError || framebuffer || alpha != 8 || red != 8 || green != 8 ||
+        blue != 8 || (pack != 1 && pack != 2 && pack != 4 && pack != 8) || width < 128 ||
+        height < 128 || width > 4096 || height > 4096 || viewport[0] || viewport[1] ||
+        viewport[2] != width || viewport[3] != height)
+      return fail("NO_TEST_default_target_format_dimensions_or_GL_error");
+    // Both cue boxes must fit in the published active picture, transformed back
+    // from its fixed GUI coordinates. Physical cue visibility remains mandatory.
+    const auto& picture = m_guiAB.activePicture;
+    if (picture.x1 > width / 2 - 36 || picture.x2 < width / 2 + 36 ||
+        picture.y1 > height - (height / 2 + 8) || picture.y2 < height - (height / 2 - 8))
+      return fail("NO_TEST_cue_outside_active_picture");
+    const size_t stride = (static_cast<size_t>(width) * 4 + pack - 1) / pack * pack;
+    if (stride > GuiAB::MAX_BYTES / static_cast<size_t>(height))
+      return fail("NO_TEST_readback_cap");
+    if (m_guiAB.width && (width != m_guiAB.width || height != m_guiAB.height ||
+                          stride != static_cast<size_t>(m_guiAB.stride)))
+      return fail("read_layout_changed");
+    m_guiAB.width = width;
+    m_guiAB.height = height;
+    m_guiAB.stride = static_cast<int>(stride);
+    const int phase = m_guiAB.phase == GuiAB::Phase::B ? 1 : 0;
+    if (!m_guiAB.read[phase])
+    {
+      try
+      {
+        m_guiAB.pixels.resize(stride * height);
+      }
+      catch (const std::exception&)
+      {
+        return fail("readback_allocation_failed");
+      }
+    }
+    GLfloat clear[4]{};
+    GLboolean mask[4]{};
+    GLint scissor[4]{};
+    const GLboolean enabled = glIsEnabled(GL_SCISSOR_TEST);
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
+    glGetBooleanv(GL_COLOR_WRITEMASK, mask);
+    glGetIntegerv(GL_SCISSOR_BOX, scissor);
+    m_guiAB.glError = glGetError();
+    if (m_guiAB.glError)
+      return fail("GL_state_query_failed");
+    m_guiAB.touched = true;
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    if (phase)
+    {
+      glDisable(GL_SCISSOR_TEST);
+      glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+      glClear(GL_COLOR_BUFFER_BIT);
+    }
+    glEnable(GL_SCISSOR_TEST);
+    for (int block = 0; block <= phase; ++block)
+    {
+      const int x = width / 2 - 36 + block * 40;
+      const int y = height / 2 - 8;
+      glScissor(x, y, 32, 16);
+      glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glScissor(x, y, 16, 16);
+      glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+      glClear(GL_COLOR_BUFFER_BIT);
+    }
+    glClearColor(clear[0], clear[1], clear[2], clear[3]);
+    glColorMask(mask[0], mask[1], mask[2], mask[3]);
+    glScissor(scissor[0], scissor[1], scissor[2], scissor[3]);
+    if (!enabled)
+      glDisable(GL_SCISSOR_TEST);
+    m_guiAB.glError = glGetError();
+    if (m_guiAB.glError)
+      return fail("GL_draw_or_restoration_failed");
+    if (!m_guiAB.read[phase])
+    {
+      m_guiAB.readEnter = PLAYBACK_DIAGNOSTICS::NowUs();
+      CLog::Log(LOGINFO, "p3i-gui-ab id={} phase={} read_enter_us={} bytes={}", m_guiAB.started,
+                phase ? "B" : "A", m_guiAB.readEnter, m_guiAB.pixels.size());
+      glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, m_guiAB.pixels.data());
+      m_guiAB.readReturn = PLAYBACK_DIAGNOSTICS::NowUs();
+      m_guiAB.glError = glGetError();
+      m_guiAB.pixelPhase = phase;
+      if (m_guiAB.glError)
+        return fail("GL_read_failed");
+      m_guiAB.read[phase] = true;
+    }
+    if (!GuiABCurrent() || !IsPrimaryContextCurrent() ||
+        eglGetCurrentSurface(EGL_READ) != GetEGLSurface())
+      return fail("identity_changed_after_draw_or_read");
+    if (PLAYBACK_DIAGNOSTICS::NowUs() - m_guiAB.started >= 10000000)
+      return fail("expired_after_draw_or_read");
+    return true;
+  }
+  catch (const std::bad_alloc&)
+  {
+    GuiABMemoryFailure();
+    return false;
+  }
+}
+
+void CWinSystemAmlogicGLESContext::GuiABPresented(bool accepted)
+{
+  try
+  {
+    if (m_guiAB.phase == GuiAB::Phase::IDLE)
+      return;
+    if (m_guiAB.phase == GuiAB::Phase::RESTORE)
+    {
+      if (m_guiAB.ticket && accepted)
+      {
+        m_guiAB.ticket = false;
+        if (--m_guiAB.restore == 0)
+        {
+          m_guiAB.phase = GuiAB::Phase::IDLE;
+          m_guiAB.report["software_redraws_accepted"] = 3;
+          m_guiAB.report["software_restoration_pending"] = false;
+          m_guiAB.publish = true;
+        }
+      }
+      else
+        m_guiAB.ticket = false;
+      if (m_guiAB.restoreAttempts == 6 && m_guiAB.restore &&
+          !m_guiAB.report["software_restore_attempts_exhausted"].asBoolean())
+      {
+        m_guiAB.report["software_restoration_pending"] = true;
+        m_guiAB.report["software_restore_attempts_exhausted"] = true;
+        m_guiAB.publish = true;
+        // Pending full-invalidation intent remains; recover the normal display
+        // before running another trial. No subsequent diagnostic dirty marks.
+      }
+      return;
+    }
+    if (!m_guiAB.ticket || !accepted)
+    {
+      GuiABFinish("skipped_or_failed_swap");
+      return;
+    }
+    if (!GuiABCurrent())
+    {
+      GuiABFinish("identity_or_request_changed_during_swap");
+      return;
+    }
+    if (PLAYBACK_DIAGNOSTICS::NowUs() - m_guiAB.started >= 10000000)
+    {
+      GuiABFinish("expired_after_swap");
+      return;
+    }
+    m_guiAB.ticket = false;
+    const int phase = m_guiAB.phase == GuiAB::Phase::B ? 1 : 0;
+    const auto now = PLAYBACK_DIAGNOSTICS::NowUs();
+    if (!m_guiAB.accepted[phase])
+      m_guiAB.report[phase ? "B_first_accepted_us" : "A_first_accepted_us"] = now;
+    m_guiAB.report[phase ? "B_last_accepted_us" : "A_last_accepted_us"] = now;
+    if (++m_guiAB.accepted[phase] == GuiAB::BUDGET)
+    {
+      if (phase)
+        GuiABFinish("completed");
+      else
+        m_guiAB.phase = GuiAB::Phase::B;
+    }
+  }
+  catch (const std::bad_alloc&)
+  {
+    GuiABMemoryFailure();
+  }
+}
+
+void CWinSystemAmlogicGLESContext::GuiABDrain()
+{
+  if (m_guiAB.pixelPhase >= 0)
+  {
+    const int phase = m_guiAB.pixelPhase;
+    CVariant sample(CVariant::VariantTypeObject), rows(CVariant::VariantTypeArray);
+    uint32_t hash = 2166136261U;
+    bool cueValid = true, zeroOutsideCue = true;
+    const int w = m_guiAB.width, h = m_guiAB.height;
+    std::string top, cue;
+    static constexpr char hex[] = "0123456789abcdef";
+    const int topRows = std::min(32, 65536 / (w * 4));
+    for (int y = 0; y < h; ++y)
+    {
+      uint64_t coverage = 0, alphaSum = 0, rgbSum = 0;
+      for (int x = 0; x < w; ++x)
+      {
+        const auto* pixel = &m_guiAB.pixels[static_cast<size_t>(y) * m_guiAB.stride + x * 4];
+        int block = -1;
+        for (int b = 0; b <= phase; ++b)
+          if (y >= h / 2 - 8 && y < h / 2 + 8 && x >= w / 2 - 36 + b * 40 && x < w / 2 - 4 + b * 40)
+            block = b;
+        if (block >= 0)
+        {
+          const int colour = x < w / 2 - 20 + block * 40 ? 255 : 0;
+          cueValid &=
+              pixel[0] == colour && pixel[1] == colour && pixel[2] == colour && pixel[3] == 255;
+        }
+        else
+          zeroOutsideCue &= !pixel[0] && !pixel[1] && !pixel[2] && !pixel[3];
+        if (block < 0)
+        {
+          coverage += pixel[3] != 0;
+          alphaSum += pixel[3];
+          rgbSum += static_cast<uint64_t>(pixel[0]) + pixel[1] + pixel[2];
+        }
+        for (int c = 0; c < 4; ++c)
+        {
+          hash = (hash ^ pixel[c]) * 16777619U;
+          if (y >= h - topRows || block >= 0)
+          {
+            std::string& destination = block >= 0 ? cue : top;
+            destination += hex[pixel[c] >> 4];
+            destination += hex[pixel[c] & 15];
+          }
+        }
+      }
+      CVariant row(CVariant::VariantTypeArray);
+      row.push_back(coverage);
+      row.push_back(alphaSum);
+      row.push_back(rgbSum);
+      rows.push_back(std::move(row));
+    }
+    sample["width"] = w;
+    sample["height"] = h;
+    sample["stride"] = m_guiAB.stride;
+    sample["row_origin"] = "GL_bottom_left; top band starts at height-top_rows";
+    sample["rows_excluding_cue_coverage_alphaSum_rgbSum"] = std::move(rows);
+    sample["top_rows"] = topRows;
+    sample["top_rgba_hex"] = std::move(top);
+    sample["cue_rgba_hex"] = std::move(cue);
+    sample["fnv1a32_rgba"] = hash;
+    sample["cue_pixels_valid"] = cueValid;
+    sample["zero_rgba_outside_cue"] = zeroOutsideCue;
+    sample["read_enter_us"] = m_guiAB.readEnter;
+    sample["read_return_us"] = m_guiAB.readReturn;
+    sample["read_valid"] = m_guiAB.read[phase];
+    m_guiAB.report[phase ? "B" : "A"] = std::move(sample);
+    m_guiAB.pixelPhase = -1;
+    std::vector<uint8_t>().swap(m_guiAB.pixels);
+    m_guiAB.publish = true;
+    if (!cueValid || (phase && !zeroOutsideCue))
+      GuiABFinish("readback_cue_or_transparent_substitute_invalid");
+  }
+  if (!m_guiAB.publish)
+    return;
+  const bool interpretable = m_guiAB.report["completed"].asBoolean() &&
+                             m_guiAB.report["a"].asString() == "bar_cue" &&
+                             (m_guiAB.report["b"].asString() == "bar_cue" ||
+                              m_guiAB.report["b"].asString() == "clear_cue") &&
+                             m_guiAB.report["A"]["read_valid"].asBoolean() &&
+                             m_guiAB.report["B"]["read_valid"].asBoolean() &&
+                             m_guiAB.report["A"]["cue_pixels_valid"].asBoolean() &&
+                             m_guiAB.report["B"]["cue_pixels_valid"].asBoolean() &&
+                             m_guiAB.report["B"]["zero_rgba_outside_cue"].asBoolean();
+  m_guiAB.report["b_interpretable"] = interpretable;
+  m_guiAB.report["status"] =
+      interpretable ? "READY_FOR_COORDINATOR_INTERPRETATION" : "INCONCLUSIVE";
+  m_guiAB.report["physical_page_or_completion_observed"] = false;
+  std::string json;
+  XFILE::CFile file;
+  const bool saved = CJSONVariantWriter::Write(m_guiAB.report, json, false) &&
+                     file.OpenForWrite("special://temp/enky-gui-ab.json", true) &&
+                     file.Write(json.data(), json.size()) == static_cast<ssize_t>(json.size());
+  CLog::Log(saved ? LOGINFO : LOGERROR,
+            "p3i-gui-ab id={} A={} B={} reason={} GL_error={} result_saved={} status={}",
+            m_guiAB.started, m_guiAB.accepted[0], m_guiAB.accepted[1],
+            m_guiAB.report["reason"].asString(), m_guiAB.glError, saved,
+            m_guiAB.report["status"].asString());
+  m_guiAB.publish = false; // One write attempt per result/observation; no retry loop.
+}
+
+void CWinSystemAmlogicGLESContext::GuiABMemoryFailure() noexcept
+{
+  m_guiAB.memoryFailure = true;
+  m_guiAB.restore = m_guiAB.touched ? 3 : 0;
+  m_guiAB.phase = m_guiAB.restore ? GuiAB::Phase::RESTORE : GuiAB::Phase::IDLE;
+  m_guiAB.ticket = m_guiAB.publish = false;
+  m_guiAB.pixelPhase = -1;
+  m_guiAB.report = CVariant{};
+  std::vector<uint8_t>().swap(m_guiAB.pixels);
 }

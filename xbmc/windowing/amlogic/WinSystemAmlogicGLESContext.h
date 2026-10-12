@@ -16,10 +16,13 @@
 #include "rendering/gles/RenderSystemGLES.h"
 #include "utils/GlobalsHandling.h"
 #include "utils/StreamDetails.h"
+#include "utils/Variant.h"
 #include "WinSystemAmlogic.h"
 
+#include <array>
 #include <chrono>
 #include <memory>
+#include <vector>
 
 namespace KODI
 {
@@ -41,6 +44,7 @@ public:
   // Implementation of CWinSystemBase via CWinSystemAmlogic
   CRenderSystemBase *GetRenderSystem() override { return this; }
   bool InitWindowSystem() override;
+  bool MessagePump() override;
   bool DestroyWindowSystem() override;
   bool PrepareForShutdown() override;
   NativeGuiWaitResult SetNativeGuiWait(bool enabled) override;
@@ -93,6 +97,40 @@ protected:
   void PresentRenderImpl(bool rendered) override;
 
 private:
+  struct GuiAB
+  {
+    static constexpr unsigned int BUDGET = 72;
+    static constexpr size_t MAX_BYTES = 16 * 1024 * 1024;
+    enum class Phase
+    {
+      IDLE,
+      A,
+      B,
+      RESTORE
+    } phase{Phase::IDLE};
+    RenderTargetToken target;
+    uint64_t display{0}, started{0};
+    std::vector<std::string> identity;
+    std::array<unsigned int, 2> accepted{};
+    unsigned int restore{0}, restoreAttempts{0};
+    CRect activePicture;
+    bool ticket{false}, touched{false}, publish{false}, memoryFailure{false};
+    int width{0}, height{0}, stride{0};
+    std::array<bool, 2> read{};
+    std::vector<uint8_t> pixels;
+    int pixelPhase{-1};
+    uint64_t readEnter{0}, readReturn{0};
+    unsigned int glError{0};
+    CVariant report;
+  } m_guiAB;
+  bool GuiABIdentity(std::vector<std::string>&);
+  bool GuiABCurrent();
+  void GuiABFinish(const char* reason);
+  void GuiABBegin();
+  bool GuiABDraw();
+  void GuiABPresented(bool accepted);
+  void GuiABDrain();
+  void GuiABMemoryFailure() noexcept;
   void EngageDolbyVisionAtStartup();
   NativeGuiWait<> m_nativeGuiWait;
   int m_nativeGuiWaitReportedError{0};

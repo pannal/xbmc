@@ -170,10 +170,11 @@ AMLHDMILinkSample linkSample=AMLHDMILinkSample::SKIPPED;
 AMLHDMILinkSample aml_hdmi_link_probe(const char*){event("link-probe");return linkSample;}
 struct CSysfsPath{explicit CSysfsPath(const char*){}template<class T>std::optional<T> Get(){return static_cast<T>(fracValue);}};
 struct Rect{void SetRect(float,float,float,float){event("scissor");}};
-struct CSettings{static constexpr int SETTING_VIDEOPLAYER_STEREOSCOPICPLAYBACKMODE=1,SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE=2;};
+struct CSettings{static constexpr int SETTING_VIDEOPLAYER_STEREOSCOPICPLAYBACKMODE=1,SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE=2,SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS=3;};
 struct Settings{
   bool m_fullScreen=true;int delay=0,adjust=1,stereo=0;
   Settings* GetAdvancedSettings(){return this;}Settings* GetSettings(){return this;}
+  bool GetBool(int){return false;} // Normal DV handshake; preserve existing fixture behavior.
   int GetInt(const char*){return delay;}
   int GetInt(int setting){return setting==CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE?adjust:stereo;}
 };
@@ -258,6 +259,11 @@ public:
 };
 class CWinSystemAmlogicGLESContext:public CWinSystemAmlogic,public CRenderSystemGLES{
 public:
+  // Unarmed GUI A/B diagnostics are inert; the dedicated fixture exercises them.
+  void GuiABFinish(const char*){}
+  bool GuiABDraw(){return true;}
+  void GuiABPresented(bool){}
+  void EngageDolbyVisionAtStartup(){} // Startup policy is outside this window fixture.
   CAMLDisplayLifecycle m_displayLifecycle;bool m_displayGeometryReady{true};bool m_shutdownRequested=false;
   bool m_vsyncFailureReported=false;
   @NATIVE_WAIT_RESULT@

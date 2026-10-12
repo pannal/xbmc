@@ -225,6 +225,9 @@ public:
 class CWinSystemAmlogicGLESContext:public CWinSystemAmlogic,public CRenderSystemGLES
 {
 public:
+  // Unarmed GUI A/B diagnostics are inert; the dedicated fixture exercises them.
+  void GuiABFinish(const char*) {}
+  void GuiABBegin() {}
   enum class MenuRoute{NONE,OSD_VPP,DV_CORE2};
   struct RouteInputs{bool dvEnable=false;unsigned int dvVideoProcessor=0,dvOutputMode=0;
     bool dvSwitch=false,osdSwitch=false;};

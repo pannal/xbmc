@@ -82,6 +82,10 @@ static AMLHDMILinkSample aml_hdmi_link_probe(const char*){return AMLHDMILinkSamp
 static void aml_hdr10plus_vsif_hold(bool){}
 using CCriticalSection=std::mutex;
 struct CWinSystemAmlogicGLESContext {
+ // Unarmed GUI A/B diagnostics are inert; the dedicated fixture exercises them.
+ void GuiABFinish(const char*){}
+ bool GuiABDraw(){return true;}
+ void GuiABPresented(bool){}
  std::atomic<bool> m_hdrRefreshPending{false};
  void RefreshHDRCapabilities(){}
  bool m_delayDispReset=false,m_displayGeometryReady=true;

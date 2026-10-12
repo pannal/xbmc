@@ -374,6 +374,10 @@ struct CWinSystemAmlogic
 class CWinSystemAmlogicGLESContext : public CRenderSystemGLES, public CWinSystemAmlogic
 {
 public:
+  // Unarmed GUI A/B diagnostics are inert; the dedicated fixture exercises them.
+  void GuiABFinish(const char*) {}
+  bool GuiABDraw() {return true;}
+  void GuiABPresented(bool) {}
   enum class MenuRoute {NONE,ACTIVE};
   struct PendingSwitch {const char* path{nullptr};int value{0};};
   std::array<PendingSwitch,2> m_pendingSwitches;

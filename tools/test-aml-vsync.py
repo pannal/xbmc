@@ -58,7 +58,14 @@ struct CEGLContextUtils{
 };
 struct Gfx{StreamHdrType hdr=StreamHdrType::HDR_TYPE_SDR;int GetStereoMode(){return 0;}StreamHdrType GetHDRType(){return hdr;}};
 struct BrokerWindow{Gfx gfx;Gfx& GetGfxContext(){return gfx;}};
-struct CServiceBroker{static inline BrokerWindow window;static BrokerWindow* GetWinSystem(){return &window;}};
+// Keep the existing fixture on the normal DV handshake path.
+struct CSettings{static constexpr int SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS=1;};
+struct Settings{Settings* GetSettings(){return this;}bool GetBool(int){return false;}};
+struct CServiceBroker{
+ static inline BrokerWindow window;static inline Settings settings;
+ static BrokerWindow* GetWinSystem(){return &window;}
+ static Settings* GetSettingsComponent(){return &settings;}
+};
 struct IDispResource{int resets=0;void OnResetDisplay(){++resets;}};
 using CCriticalSection=std::mutex;
 struct CWinSystemAmlogic{
@@ -89,6 +96,11 @@ struct CRenderSystemGLES{
  void InvalidateRenderTarget(){++generation;}
 };
 struct CWinSystemAmlogicGLESContext:CWinSystemAmlogic,CRenderSystemGLES{
+ // Unarmed GUI A/B diagnostics are inert; the dedicated fixture exercises them.
+ void GuiABFinish(const char*){}
+ bool GuiABDraw(){return true;}
+ void GuiABPresented(bool){}
+ void EngageDolbyVisionAtStartup(){} // Startup policy is outside this VSync fixture.
  CAMLDisplayLifecycle m_displayLifecycle;CEGLContextUtils m_pGLContext;
  bool m_displayGeometryReady=true,m_shutdownRequested=false,m_vsyncFailureReported=false;
  int kernelSwitches=0;
