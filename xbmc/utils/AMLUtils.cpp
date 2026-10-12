@@ -2100,6 +2100,8 @@ bool aml_is_dv_enable()
 // Recover via s_lastDisplayMode (the last canonical target we wrote)
 // instead. If we have nothing to recover to (first call before any
 // target was ever written), skip the write entirely.
+static void aml_reapply_native_gui_osd(const char* fn);
+
 static void aml_display_mode_round_trip(const char* fn)
 {
   CSysfsPath display_mode{"/sys/class/display/mode"};
@@ -2108,6 +2110,7 @@ static void aml_display_mode_round_trip(const char* fn)
   if (cur != "null" && !cur.empty())
   {
     display_mode.Set(cur);
+    aml_reapply_native_gui_osd(fn);
     return;
   }
   std::lock_guard<std::mutex> lk(s_lastDisplayModeMutex);
@@ -2118,6 +2121,7 @@ static void aml_display_mode_round_trip(const char* fn)
               "recovering to last-known [{}] instead of re-asserting null",
               fn, cur.empty() ? "(empty)" : cur, s_lastDisplayMode);
     display_mode.Set(s_lastDisplayMode);
+    aml_reapply_native_gui_osd(fn);
   }
   else
   {
@@ -5670,6 +5674,11 @@ bool aml_set_display_resolution(const RESOLUTION_INFO &res, std::string framebuf
 // free_scale axes and passes the size on to the DV driver, so switch to it
 // for a native GUI above 1080p and restore the boot values otherwise. The
 // mode switch resets these, hence this runs on every resolution change.
+
+// native GUI size currently set up by aml_handle_native_gui_osd, 0 when none
+static int s_nativeGuiWidth = 0;
+static int s_nativeGuiHeight = 0;
+
 static void aml_apply_native_gui_osd(const std::string& fb0, int width, int height)
 {
   const std::string axis = StringUtils::Format("0 0 {} {}", width - 1, height - 1);
@@ -5705,6 +5714,7 @@ static void aml_handle_native_gui_osd(const RESOLUTION_INFO &res)
     for (size_t i = 0; i < bootValues.size(); i++)
       CSysfsPath(fb0 + nodes[i], bootValues[i]);
     bootValues.clear();
+    s_nativeGuiWidth = s_nativeGuiHeight = 0;
     CSysfsPath(fb0 + "blank", 1);
     CSysfsPath(fb0 + "blank", 0);
     CLog::Log(LOGDEBUG, "AMLUtils::{}: OSD back to its boot configuration", __FUNCTION__);
@@ -5729,9 +5739,23 @@ static void aml_handle_native_gui_osd(const RESOLUTION_INFO &res)
   }
 
   aml_apply_native_gui_osd(fb0, res.iWidth, res.iHeight);
+  s_nativeGuiWidth = res.iWidth;
+  s_nativeGuiHeight = res.iHeight;
 
   CLog::Log(LOGDEBUG, "AMLUtils::{}: OSD set up for a native {}x{} GUI", __FUNCTION__,
             res.iWidth, res.iHeight);
+}
+
+// Kernel 4.9: a write to display/mode, even of the current mode, makes the OSD
+// driver's logo freescaler (osd_logo.c) reset osd0 to the boot logo geometry
+// (1920x1080 scaled to the output), which stretches a native GUI.
+static void aml_reapply_native_gui_osd(const char* fn)
+{
+  if (s_nativeGuiWidth == 0)
+    return;
+  aml_apply_native_gui_osd("/sys/class/graphics/fb0/", s_nativeGuiWidth, s_nativeGuiHeight);
+  CLog::Log(LOGDEBUG, "AMLUtils::{}: native {}x{} GUI OSD set up again after the mode write",
+            fn, s_nativeGuiWidth, s_nativeGuiHeight);
 }
 
 void aml_handle_scale(const RESOLUTION_INFO &res)
