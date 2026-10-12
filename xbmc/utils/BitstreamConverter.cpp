@@ -26,6 +26,9 @@
 #include "utils/StringUtils.h"
 #include "cores/VideoPlayer/Process/ProcessInfo.h"
 #include "cores/VideoPlayer/DVDStreamInfo.h"
+#if defined(HAS_LIBAMCODEC)
+#include "utils/AMLUtils.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -1479,10 +1482,17 @@ void CBitstreamConverter::AddDoViRpuNaluWrap(const Hdr10PlusMetadata& meta, uint
 
 void CBitstreamConverter::AddDoViRpuNalu(const Hdr10PlusMetadata& meta, uint8_t **poutbuf, int *poutbuf_size, double pts) {
 
+  // Cap the scene peak at the source peak only where the TV does the DV tone mapping.
+#if defined(HAS_LIBAMCODEC)
+  const bool capMaxPqAtSource = aml_dv_type() == DV_TYPE_DISPLAY_LED;
+#else
+  const bool capMaxPqAtSource = true;
+#endif
   auto nalu = create_rpu_nalu_for_hdr10plus(
     meta,
     m_convert_Hdr10Plus_peak_brightness_source, 
-    m_hdrStaticMetadataInfo);
+    m_hdrStaticMetadataInfo,
+    capMaxPqAtSource);
 
   if (!nalu.empty())
   {

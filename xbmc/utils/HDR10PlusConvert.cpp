@@ -38,6 +38,7 @@ constexpr double ST2084_C3 = (2392.0 / 4096.0) * 32.0;
 
 // Clamp Values
 constexpr std::uint16_t L1_MAX_PQ_MIN_VALUE = 2081;
+constexpr std::uint16_t L1_MAX_PQ_MAX_VALUE = 4095;
 constexpr std::uint16_t L1_AVG_PQ_MIN_VALUE = 819;
 
 int max_pq_to_nits(int pq) {
@@ -180,7 +181,8 @@ static Hdr10PlusPqValues last_pq = {};
 std::vector<uint8_t> create_rpu_nalu_for_hdr10plus(
   const Hdr10PlusMetadata& meta,
   const PeakBrightnessSource& peak_source,
-  const HDRStaticMetadataInfo& hdrStaticMetadataInfo)
+  const HDRStaticMetadataInfo& hdrStaticMetadataInfo,
+  bool capMaxPqAtSource)
 {
   uint16_t min_pq = 0;
   if (hdrStaticMetadataInfo.min_lum == 0)
@@ -226,10 +228,12 @@ std::vector<uint8_t> create_rpu_nalu_for_hdr10plus(
   pq.source_min_pq = source_min_pq;
   pq.source_max_pq = source_max_pq;
   pq.min_pq = min_pq;
-  // Cap the scene peak at the source peak: HDR10+ maxscl/histogram may legally
-  // exceed the mastering display luminance, but an RPU with L1 max_pq above
-  // source_max_pq breaks DV tone mapping (red screen on TV-led displays).
-  pq.max_pq = clamp16(max_pq, L1_MAX_PQ_MIN_VALUE, source_max_pq);
+  // HDR10+ maxscl/histogram may legally exceed the mastering display luminance.
+  // An RPU with L1 max_pq above source_max_pq breaks a TV's DV tone mapping (red
+  // screen on TV-led), so the caller caps it there. Player-led tone mapping
+  // handles it, and capping would flatten the scenes brighter than the mastering peak.
+  const uint16_t max_pq_cap = capMaxPqAtSource ? source_max_pq : L1_MAX_PQ_MAX_VALUE;
+  pq.max_pq = clamp16(max_pq, L1_MAX_PQ_MIN_VALUE, max_pq_cap);
   pq.avg_pq = clamp16(avg_pq, L1_AVG_PQ_MIN_VALUE, (pq.max_pq - 1));
   pq.max_display_mastering_luminance = hdrStaticMetadataInfo.max_lum;
   pq.min_display_mastering_luminance = hdrStaticMetadataInfo.min_lum;
