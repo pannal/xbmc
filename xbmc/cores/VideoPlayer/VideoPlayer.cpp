@@ -3830,6 +3830,33 @@ CVideoSeekQueueState CVideoPlayer::GetVideoSeekQueueState()
   return state;
 }
 
+std::optional<double> CVideoPlayer::GetVideoRecoveryStartupPosition() const
+{
+  // Until A/V sync re-anchors the clock, it still describes the previous position.
+  if (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC ||
+      m_videoRecoveryStartPts == DVD_NOPTS_VALUE || !m_pInputStream)
+    return std::nullopt;
+
+  if (m_pInputStream->GetIPosTime())
+    return m_videoRecoveryStartTime;
+  if (m_demuxSeekBasePts != DVD_NOPTS_VALUE)
+    return DVD_TIME_TO_MSEC(m_videoRecoveryStartPts - m_demuxSeekBasePts);
+  return DVD_TIME_TO_MSEC(m_videoRecoveryStartPts + m_State.time_offset);
+}
+
+std::chrono::milliseconds CVideoPlayer::GetVideoRecoveryPosition() const
+{
+  double position = m_State.time;
+  if (const auto startup = GetVideoRecoveryStartupPosition())
+  {
+    position = *startup;
+    // The budget follows displayed playback time, which already excludes EDL cuts.
+    if (m_Edl.HasCuts())
+      position = m_Edl.GetTimeWithoutCuts(static_cast<int>(position));
+  }
+  return std::chrono::milliseconds(llrint(position));
+}
+
 CVideoRecoveryGate::Conditions CVideoPlayer::GetVideoRecoveryConditions(uint64_t generation)
 {
   CVideoRecoveryGate::Conditions conditions;
@@ -3850,6 +3877,7 @@ CVideoRecoveryGate::Conditions CVideoPlayer::GetVideoRecoveryConditions(uint64_t
   conditions.decoderOutputBlocked = playback.DecoderOutputBlocked();
   conditions.displayAvailable = !m_displayLost;
   conditions.endOfStream = m_videoRecoveryEndOfStream;
+  conditions.position = GetVideoRecoveryPosition();
   const auto menus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
   conditions.sourceEligible =
       (!menus || menus->IsTimeSearchAllowed()) && m_pInputStream && m_pDemuxer &&
@@ -3933,16 +3961,9 @@ void CVideoPlayer::HandleMessages()
       CDVDMsgPlayerSeek::CMode mode;
       mode.time = 0;
       mode.relative = true;
-      // Until A/V sync re-anchors the clock (INSYNC), it still describes the previous position.
-      if (m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC &&
-          m_videoRecoveryStartPts != DVD_NOPTS_VALUE)
+      if (const auto startup = GetVideoRecoveryStartupPosition())
       {
-        if (m_pInputStream->GetIPosTime())
-          mode.time = m_videoRecoveryStartTime;
-        else if (m_demuxSeekBasePts != DVD_NOPTS_VALUE)
-          mode.time = DVD_TIME_TO_MSEC(m_videoRecoveryStartPts - m_demuxSeekBasePts);
-        else
-          mode.time = DVD_TIME_TO_MSEC(m_videoRecoveryStartPts + m_State.time_offset);
+        mode.time = *startup;
         mode.relative = false;
       }
       mode.backward = false;
@@ -4039,7 +4060,7 @@ void CVideoPlayer::HandleMessages()
       }
 
       if (msg.IsVideoRecovery())
-        m_videoRecoveryGate.OnExecute();
+        m_videoRecoveryGate.OnExecute(GetVideoRecoveryPosition());
 
       const ECacheState cacheStateBeforeSeek = m_caching;
       if (!msg.GetTrickPlay())

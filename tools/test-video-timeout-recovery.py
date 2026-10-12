@@ -41,7 +41,7 @@ struct Input: CDVDInputStream::IMenus {
 std::shared_ptr<Input> m_pInputStream=std::make_shared<Input>();
 Input& input=*m_pInputStream;''')
 source = source.replace('struct {bool streamsReady=false; double time_offset=0;} m_State;',
-                        'struct {bool streamsReady=false,canseek=true; double time_offset=0;} m_State;')
+                        'struct {bool streamsReady=false,canseek=true; double time=0,time_offset=0;} m_State;')
 source = source.replace('  CDVDMessageQueue queue;\n  bool m_bAbortRequest', '''
   CDVDMessageQueue queue; CDVDMessageQueue& m_messenger=queue;
   bool m_waitingForVideoFlush=false,m_displayLost=false,inMenu=false;
@@ -49,8 +49,15 @@ source = source.replace('  CDVDMessageQueue queue;\n  bool m_bAbortRequest', '''
   struct {int state=DVDSTATE_NORMAL;} m_dvd;
   bool IsInMenuInternal() const {return inMenu;}
   double m_demuxSeekBasePts=DVD_NOPTS_VALUE;
-  struct {double GetTimeAfterRestoringCuts(double time) const {return time;}} m_Edl;
+  struct Edl {
+    int cut=0; bool HasCuts() const {return cut>0;}
+    int GetTimeWithoutCuts(int time) const {return time-cut;}
+    double GetTimeAfterRestoringCuts(double time) const {return time+cut;}
+  } m_Edl;
   std::vector<double> targets; std::vector<int> chapters;
+  std::optional<double> GetVideoRecoveryStartupPosition() const;
+  std::chrono::milliseconds GetVideoRecoveryPosition() const;
+  void ExecuteRecovery(CDVDMsgPlayerSeek msg);
   CVideoSeekQueueState GetVideoSeekQueueState();
   CVideoRecoveryGate::Conditions GetVideoRecoveryConditions(uint64_t);
   bool AdmitVideoStream();
@@ -58,6 +65,8 @@ source = source.replace('  CDVDMessageQueue queue;\n  bool m_bAbortRequest', '''
   void DrainControls();
   bool m_bAbortRequest''')
 source += '\n'.join(f.block(parent, marker).replace('CVideoPlayer::', 'Parent::') for marker in (
+    'std::optional<double> CVideoPlayer::GetVideoRecoveryStartupPosition() const',
+    'std::chrono::milliseconds CVideoPlayer::GetVideoRecoveryPosition() const',
     'CVideoSeekQueueState CVideoPlayer::GetVideoSeekQueueState()',
     'CVideoRecoveryGate::Conditions CVideoPlayer::GetVideoRecoveryConditions('))
 
@@ -72,6 +81,8 @@ source += 'void Parent::EnterEndOfStream() {\n' + eof + '}\n'
 request = f.body(parent, 'else if (pMsg->IsType(CDVDMsg::PLAYER_VIDEO_RECOVERY))')
 seek = f.body(parent, 'else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK) ||')
 admission = seek[:seek.index('      if (!m_State.canseek)')]
+execute = seek[seek.index('      if (msg.IsVideoRecovery())\n        m_videoRecoveryGate.OnExecute('):seek.index('      const ECacheState cacheStateBeforeSeek')]
+source += 'void Parent::ExecuteRecovery(CDVDMsgPlayerSeek msg) {\n' + execute + '}\n'
 conversion = seek[seek.index('      double time = msg.GetTime();'):seek.index('      CLog::Log(LOGDEBUG, "demuxer seek to:')]
 chapter = f.body(parent, 'else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK_CHAPTER))')
 chapter_guard = chapter[:chapter.index('      m_processInfo->SeekFinished(0);')]
@@ -83,6 +94,7 @@ void Parent::DrainControls() {
     if(pMsg->IsType(CDVDMsg::PLAYER_VIDEO_RECOVERY)) { @REQUEST@ }
     else if(pMsg->IsType(CDVDMsg::PLAYER_SEEK) || pMsg->IsType(CDVDMsg::PLAYER_VIDEO_RECOVERY_SEEK)) {
       @ADMISSION@
+      ExecuteRecovery(msg);
       @CONVERSION@
       targets.push_back(time);
       FlushBuffers(time*1000,msg.GetAccurate(),msg.GetSync());
@@ -95,6 +107,7 @@ void Parent::DrainControls() {
   }
 }
 '''.replace('@REQUEST@', request).replace('@ADMISSION@', admission).replace('@CONVERSION@', conversion).replace('@CHAPTER@', chapter_guard)
+source = '#include <cmath>\n' + source
 source += r'''
 static CVideoRecoveryGate::Conditions ready() {
   CVideoRecoveryGate::Conditions c;
@@ -107,7 +120,66 @@ static void pending(Parent& p) {
   mode.videoRecoveryGeneration=10;mode.trickplay=true;mode.relative=true;mode.restore=false;
   p.queue.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
 }
+static void spent(Parent& p) {
+  const auto start=CVideoRecoveryGate::TimePoint{};
+  auto c=ready();c.position=20min;
+  for(int n=0;n<2;++n) {
+    assert(p.m_videoRecoveryGate.TryBegin(start+n*60s,c));
+    p.m_videoRecoveryGate.OnExecute(c.position);p.m_videoRecoveryGate.OnFlush();
+  }
+}
 int main() {
+  // Admission and executed bookkeeping share the pending seek, not the paused clock.
+  for(bool backwards:{false,true}) {
+    CVideoPlayerVideo video;Parent p(video);spent(p);video.accepts=false;
+    p.m_CurrentAudio.id=-1;p.m_streamPlayerSpeed=0;p.m_caching=CACHESTATE_INIT;
+    p.m_State.time=backwards?35*60000:20*60000;
+    p.m_videoRecoveryStartPts=(backwards?20:35)*60000000.0;
+    auto c=p.GetVideoRecoveryConditions(10);
+    const auto now=CVideoRecoveryGate::TimePoint{}+180s;
+    assert(p.m_videoRecoveryGate.TryBegin(now,c)==!backwards);
+    if(backwards)continue;
+    CDVDMsgPlayerSeek::CMode mode;mode.videoRecovery=true;
+    p.ExecuteRecovery(CDVDMsgPlayerSeek(mode));p.m_videoRecoveryGate.OnFlush();
+    p.m_CurrentVideo.syncState=IDVDStreamPlayer::SYNC_INSYNC;p.m_State.time=35*60000;
+    c=p.GetVideoRecoveryConditions(10);c.streamPlaying=c.cacheReady=true;
+    assert(p.m_videoRecoveryGate.TryBegin(now+60s,c));
+    p.ExecuteRecovery(CDVDMsgPlayerSeek(mode));p.m_videoRecoveryGate.OnFlush();
+    assert(!p.m_videoRecoveryGate.TryBegin(now+120s,c));
+  }
+  // Pending coordinates cover both pre-sync states and every existing seek domain.
+  for(auto sync:{IDVDStreamPlayer::SYNC_STARTING,IDVDStreamPlayer::SYNC_WAITSYNC}) {
+    for(int domain:{0,1,2}) {
+      CVideoPlayerVideo video;Parent p(video);p.m_CurrentVideo.syncState=sync;
+      p.m_State.time=1200000;p.m_State.time_offset=5000000;
+      p.m_videoRecoveryStartPts=2100000000;p.m_videoRecoveryStartTime=2110000;
+      if(domain==1)p.m_demuxSeekBasePts=100000000;
+      if(domain==2)p.input.posTime=true;
+      const double expected=domain==2?2110000:domain==1?2000000:2105000;
+      assert(p.GetVideoRecoveryStartupPosition()==expected);
+      assert(p.GetVideoRecoveryConditions(10).position==std::chrono::milliseconds((int)expected));
+    }
+  }
+  // INSYNC, absent input and invalid startup PTS use the clock.
+  for(int invalid:{0,1,2}) {
+    CVideoPlayerVideo video;Parent p(video);p.m_State.time=1200000;
+    p.m_videoRecoveryStartPts=2100000000;
+    if(invalid==0)p.m_CurrentVideo.syncState=IDVDStreamPlayer::SYNC_INSYNC;
+    if(invalid==1)p.m_videoRecoveryStartPts=DVD_NOPTS_VALUE;
+    if(invalid==2)p.m_pInputStream.reset();
+    assert(!p.GetVideoRecoveryStartupPosition());assert(p.GetVideoRecoveryPosition()==20min);
+  }
+  // EDL removal keeps the same exhausted section across startup and clock re-anchoring.
+  {
+    CVideoPlayerVideo video;Parent p(video);spent(p);p.m_Edl.cut=15*60000;
+    p.m_State.time=20*60000;p.m_videoRecoveryStartPts=35*60000000.0;
+    assert(p.GetVideoRecoveryStartupPosition()==35*60000);
+    assert(p.GetVideoRecoveryPosition()==20min);
+    auto c=p.GetVideoRecoveryConditions(10);
+    assert(!p.m_videoRecoveryGate.TryBegin(CVideoRecoveryGate::TimePoint{}+180s,c));
+    p.m_CurrentVideo.syncState=IDVDStreamPlayer::SYNC_INSYNC;
+    assert(p.GetVideoRecoveryPosition()==20min);
+  }
   // Full-queue video-only startup may recover while child speed is paused.
   for(int excluded=0;excluded<10;++excluded) {
     CVideoPlayerVideo video;Parent p(video);
@@ -234,7 +306,10 @@ with tempfile.TemporaryDirectory(prefix='video-timeout-recovery-') as tmp:
         ('recover-into-drain', 'conditions.endOfStream = m_videoRecoveryEndOfStream;', ''),
         ('reset-budget-on-same-stream', 'if (m_videoRecoverySameStream)', 'if (false)'),
         ('strand-generation-on-refused-open', '      m_videoRecoveryGeneration = previousGeneration;\n', ''),
-        ('waitsync-uses-stale-clock', 'm_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC &&\n          m_videoRecoveryStartPts', 'm_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_STARTING &&\n          m_videoRecoveryStartPts'),
+        ('waitsync-uses-stale-clock', 'm_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC ||', 'm_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_STARTING ||'),
+        ('admit-at-stale-clock', 'conditions.position = GetVideoRecoveryPosition();', 'conditions.position = std::chrono::milliseconds(llrint(m_State.time));'),
+        ('record-stale-clock', 'm_videoRecoveryGate.OnExecute(GetVideoRecoveryPosition());', 'm_videoRecoveryGate.OnExecute(std::chrono::milliseconds(llrint(m_State.time)));'),
+        ('mix-edl-coordinates', 'if (m_Edl.HasCuts())', 'if (false)'),
         ('keep-admitted-at-eof', 'm_videoRecoveryEndOfStream = true;\n      m_videoRecoveryGate.CancelPending();', 'm_videoRecoveryGate.CancelPending();'),
         ('stay-ineligible-after-seek', '  m_videoRecoveryEndOfStream = false;\n  m_videoRecoveryStartPts = sync', '  m_videoRecoveryStartPts = sync'),
     ):

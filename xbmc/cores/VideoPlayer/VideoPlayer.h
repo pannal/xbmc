@@ -509,6 +509,8 @@ protected:
   bool m_waitingForVideoFlush{false};
 
   CVideoSeekQueueState GetVideoSeekQueueState();
+  std::optional<double> GetVideoRecoveryStartupPosition() const;
+  std::chrono::milliseconds GetVideoRecoveryPosition() const;
   CVideoRecoveryGate::Conditions GetVideoRecoveryConditions(uint64_t generation);
   void HandleMessages();
   void QueueAudioRecoverySeek();

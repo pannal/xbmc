@@ -185,6 +185,7 @@ struct CVideoPlayer{
  @CACHE_ENUM@
  struct CacheInfo{bool valid;};bool cacheValid=true;
  ECacheState m_caching=CACHESTATE_DONE;
+ std::chrono::milliseconds GetVideoRecoveryPosition() const {return 0ms;}
  struct{bool canseek=true;double lastSeek=2000000,dts=17000,time_offset=0;}m_State;
  struct{int id=0,syncState=2;double starttime=17000;}m_CurrentVideo;
  Clock m_clock;StreamPlayer audio,video;StreamPlayer* m_VideoPlayerAudio=&audio,*m_VideoPlayerVideo=&video;
@@ -343,9 +344,9 @@ void unchangedRecovery(){
  assert(p.m_clock.value==17000&&p.m_caching==CVideoPlayer::CACHESTATE_DONE&&p.recalls==0);
  assert(!p.m_subtitleSeekNewRun&&p.m_chapterSeekTarget==3&&!p.complete&&!p.process.seeking);
  assert(!p.m_videoRecoveryGate.CanExecute(eligible()) && "rejected recovery must end its pending attempt");
- // The attempt counts: one more executed recovery exhausts the per-stream budget.
+ // The attempt counts: one more executed recovery exhausts the per-section budget.
  assert(p.m_videoRecoveryGate.TryBegin(now+std::chrono::seconds(60),eligible()));
- p.m_videoRecoveryGate.OnExecute();p.m_videoRecoveryGate.CancelPending();
+ p.m_videoRecoveryGate.OnExecute(0ms);p.m_videoRecoveryGate.CancelPending();
  assert(!p.m_videoRecoveryGate.TryBegin(now+std::chrono::seconds(600),eligible()) &&
         "rejected recovery counts against the budget");
 }
@@ -440,7 +441,7 @@ def main():
         assert cancel in source
         run(source.replace(cancel, 'int expectedChapterTarget = 0;', 1),
             tmp, 'rejected-recovery-stays-pending', 'recovery', 'rejected recovery must end its pending attempt')
-        execute = 'if (msg.IsVideoRecovery())\n        m_videoRecoveryGate.OnExecute();'
+        execute = 'if (msg.IsVideoRecovery())\n        m_videoRecoveryGate.OnExecute(GetVideoRecoveryPosition());'
         assert execute in source
         run(source.replace(execute, '', 1), tmp, 'rejected-recovery-not-counted', 'recovery',
             'rejected recovery counts against the budget')
