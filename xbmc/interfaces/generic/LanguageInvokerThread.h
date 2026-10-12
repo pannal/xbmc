@@ -28,10 +28,11 @@ public:
 
   const std::string& GetScript() const { return m_script; }
   LanguageInvokerPtr GetInvoker() const { return m_invoker; }
-  bool Reuseable(const std::string& script) const
-  {
-    return !m_bStop && m_reusable && GetState() == InvokerStateScriptDone && m_script == script;
-  };
+  bool Reuseable(const std::string& script) const;
+  /*! \brief Whether the thread is kept for the script, busy or not. */
+  bool Keeps(const std::string& script) const;
+  /*! \brief Whether the thread will run no further scripts. */
+  bool Retired() const;
   virtual void Release();
 
 protected:
@@ -50,8 +51,11 @@ private:
   std::string m_script;
   std::vector<std::string> m_args;
 
-  std::mutex m_mutex;
+  mutable std::mutex m_mutex;
   std::condition_variable m_condition;
   bool m_restart = false;
+  bool m_idle = false;
+  bool m_released = false;
+  bool m_cancelled = false;
   bool m_reusable = false;
 };
