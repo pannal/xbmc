@@ -879,8 +879,12 @@ JSONRPC_STATUS CSettingsOperations::SetSkinSettingValue(const std::string& metho
                                                         CVariant& result)
 {
   const std::string settingId = parameterObject["setting"].asString();
-  ADDON::CSkinSettingPtr setting = CSkinSettings::GetInstance().GetSetting(settingId);
+  // the skin that owns the setting, also if the skin is switched meanwhile
+  const std::shared_ptr<ADDON::CSkinInfo> skin = g_SkinInfo;
+  if (skin == nullptr)
+    return InternalError;
 
+  ADDON::CSkinSettingPtr setting = skin->GetSkinSetting(settingId);
   if (setting == nullptr)
     return InvalidParams;
 
@@ -890,19 +894,21 @@ JSONRPC_STATUS CSettingsOperations::SetSkinSettingValue(const std::string& metho
     if (!value.isString())
       return InvalidParams;
 
-    result = std::static_pointer_cast<ADDON::CSkinSettingString>(setting)->value = value.asString();
+    std::static_pointer_cast<ADDON::CSkinSettingString>(setting)->value = value.asString();
   }
   else if (setting->GetType() == "bool")
   {
     if (!value.isBoolean())
       return InvalidParams;
 
-    result = std::static_pointer_cast<ADDON::CSkinSettingBool>(setting)->value = value.asBoolean();
+    std::static_pointer_cast<ADDON::CSkinSettingBool>(setting)->value = value.asBoolean();
   }
   else
   {
     return InvalidParams;
   }
 
+  skin->SettingChanged();
+  result = true;
   return OK;
 }

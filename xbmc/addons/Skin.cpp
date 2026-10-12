@@ -437,6 +437,11 @@ void CSkinInfo::FlushSettings()
   m_settingsUpdateHandler->Close();
 }
 
+void CSkinInfo::SettingChanged()
+{
+  m_settingsUpdateHandler->TriggerSave();
+}
+
 bool CSkinInfo::TimerIsRunning(const std::string& timer) const
 {
   return m_skinTimerManager->TimerIsRunning(timer);
