@@ -374,6 +374,7 @@ void aml_native_gui_set_heavy_video(bool playing);
 bool aml_native_gui_needs_update(RESOLUTION res);
 void aml_native_gui_prepare(RESOLUTION res);
 void aml_native_gui_prepare_failed();
+bool aml_native_gui_size_changing();
 // called by the GUI present path (main thread) to show the OSD again
 void aml_native_gui_osd_present(bool swapped);
 void aml_native_gui_playback_stopped();

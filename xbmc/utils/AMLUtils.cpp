@@ -5932,6 +5932,11 @@ void aml_native_gui_prepare_failed()
   aml_native_gui_apply(s_nativeGuiSuspendedBefore);
 }
 
+bool aml_native_gui_size_changing()
+{
+  return s_nativeGuiSuspended != s_nativeGuiSuspendedBefore;
+}
+
 void aml_native_gui_osd_present(bool swapped)
 {
   if (!s_nativeGuiOsdHold)

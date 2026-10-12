@@ -195,7 +195,9 @@ bool CWinSystemAmlogic::CreateNativeWindow(const std::string& name,
   // the sink locks once, into DV at the title's mode. Without a real mode set
   // it stays pending for CRenderManager::UpdateResolution, which applies it
   // after its trigger reset so the update aml_dv_on() requests is kept.
-  if (aml_display_mode_changing(res) || (m_force_mode_switch && aml_has_frac_rate_policy()))
+  const bool modeChanging =
+      aml_display_mode_changing(res) || (m_force_mode_switch && aml_has_frac_rate_policy());
+  if (modeChanging)
     aml_dv_engage_deferred_disc(true);
 
   aml_set_native_resolution(res, m_framebuffer_name, m_stereo_mode, m_force_mode_switch);
@@ -214,7 +216,11 @@ bool CWinSystemAmlogic::CreateNativeWindow(const std::string& name,
   }
 
   // Make sure DV Display activates if enabled - TODO: Why needed?
-  aml_dv_display_trigger();
+  // Not for a native GUI size change at the same mode: its display/mode
+  // rewrite becomes a real mode set (HDMI handshake) whenever the hdmitx attr
+  // was respelled since the last one (write_resolution_ini at playback start).
+  if (modeChanging || !aml_native_gui_size_changing())
+    aml_dv_display_trigger();
 
   m_bWindowCreated = true;
   return true;
