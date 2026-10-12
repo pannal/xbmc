@@ -5688,6 +5688,16 @@ static constexpr int NATIVE_GUI_CORE2_VTIMING = (0x18 << 8) | 0x10;
 static int s_nativeGuiWidth = 0;
 static int s_nativeGuiHeight = 0;
 
+// While the GUI changes size the OSD is kept blanked (video stays visible)
+// until GUI frames of the new size are on screen, see aml_native_gui_osd_present.
+static std::atomic<bool> s_nativeGuiOsdHold{false};
+
+static void aml_native_gui_osd_unblank(const std::string& fb0)
+{
+  if (!s_nativeGuiOsdHold)
+    CSysfsPath(fb0 + "blank", 0);
+}
+
 static void aml_apply_native_gui_osd(const std::string& fb0, int width, int height)
 {
   const std::string axis = StringUtils::Format("0 0 {} {}", width - 1, height - 1);
@@ -5702,7 +5712,7 @@ static void aml_apply_native_gui_osd(const std::string& fb0, int width, int heig
   CSysfsPath(fb0 + "osd_hwc_enable", 1);
   // the blend and DV sizes are only recomputed when the OSD is (re)enabled
   CSysfsPath(fb0 + "blank", 1);
-  CSysfsPath(fb0 + "blank", 0);
+  aml_native_gui_osd_unblank(fb0);
 }
 
 static void aml_handle_native_gui_osd(const RESOLUTION_INFO &res)
@@ -5730,7 +5740,7 @@ static void aml_handle_native_gui_osd(const RESOLUTION_INFO &res)
     bootVtiming.clear();
     s_nativeGuiWidth = s_nativeGuiHeight = 0;
     CSysfsPath(fb0 + "blank", 1);
-    CSysfsPath(fb0 + "blank", 0);
+    aml_native_gui_osd_unblank(fb0);
     CLog::Log(LOGDEBUG, "AMLUtils::{}: OSD back to its boot configuration", __FUNCTION__);
     return;
   }
@@ -5832,6 +5842,8 @@ bool aml_native_gui_needs_update(RESOLUTION res)
 }
 
 static bool s_nativeGuiSuspendedBefore = false;
+static std::chrono::steady_clock::time_point s_nativeGuiOsdHoldStart;
+static int s_nativeGuiOsdHoldSwaps = 0;
 
 static void aml_native_gui_apply(bool suspend)
 {
@@ -5888,8 +5900,16 @@ static void aml_native_gui_apply(bool suspend)
     s_nativeGuiCalibrations.clear();
 
   if (suspend != s_nativeGuiSuspended)
+  {
     CLog::Log(LOGINFO, "AMLUtils::{}: native GUI {} (DV FEL above 30 Hz)", __FUNCTION__,
               suspend ? "suspended, GUI at 1920x1080" : "resumed");
+    // hide the OSD while the window is recreated at the new size, otherwise the
+    // old frame shows rescaled for a moment
+    s_nativeGuiOsdHoldStart = std::chrono::steady_clock::now();
+    s_nativeGuiOsdHoldSwaps = 0;
+    s_nativeGuiOsdHold = true;
+    CSysfsPath("/sys/class/graphics/fb0/blank", 1);
+  }
   s_nativeGuiSuspended = suspend;
 }
 
@@ -5907,6 +5927,22 @@ void aml_native_gui_prepare_failed()
     return;
   CLog::Log(LOGINFO, "AMLUtils::{}: window not updated, GUI size change undone", __FUNCTION__);
   aml_native_gui_apply(s_nativeGuiSuspendedBefore);
+}
+
+void aml_native_gui_osd_present(bool swapped)
+{
+  if (!s_nativeGuiOsdHold)
+    return;
+  // two GUI frames of the new size, or a 1 s fallback should the GUI not redraw
+  if (swapped)
+    s_nativeGuiOsdHoldSwaps++;
+  if (s_nativeGuiOsdHoldSwaps < 2 &&
+      std::chrono::steady_clock::now() - s_nativeGuiOsdHoldStart < std::chrono::seconds(1))
+    return;
+  s_nativeGuiOsdHold = false;
+  CSysfsPath("/sys/class/graphics/fb0/blank", 0);
+  CLog::Log(LOGDEBUG, "AMLUtils::{}: OSD shown again after the GUI size change ({} frames)",
+            __FUNCTION__, s_nativeGuiOsdHoldSwaps);
 }
 
 void aml_native_gui_playback_stopped()

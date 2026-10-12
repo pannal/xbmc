@@ -645,6 +645,7 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   if (!rendered)
   {
     GuiABPresented(false);
+    aml_native_gui_osd_present(false);
     observe();
     return;
   }
@@ -674,6 +675,7 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   else
     m_presentResult = PresentResult::SWAP_FAILED;
   GuiABPresented(m_presentResult == PresentResult::SWAP_ACCEPTED);
+  aml_native_gui_osd_present(m_presentResult == PresentResult::SWAP_ACCEPTED);
   observe();
 }
 

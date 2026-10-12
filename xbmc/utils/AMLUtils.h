@@ -374,6 +374,8 @@ void aml_native_gui_set_fel_playing(bool playing);
 bool aml_native_gui_needs_update(RESOLUTION res);
 void aml_native_gui_prepare(RESOLUTION res);
 void aml_native_gui_prepare_failed();
+// called by the GUI present path (main thread) to show the OSD again
+void aml_native_gui_osd_present(bool swapped);
 void aml_native_gui_playback_stopped();
 void aml_handle_display_stereo_mode(const int stereo_mode);
 void aml_enable_freeScale(const RESOLUTION_INFO &res);
