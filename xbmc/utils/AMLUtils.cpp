@@ -5831,9 +5831,10 @@ bool aml_native_gui_needs_update(RESOLUTION res)
   return aml_native_gui_suspend_wanted(res) != s_nativeGuiSuspended;
 }
 
-void aml_native_gui_prepare(RESOLUTION res)
+static bool s_nativeGuiSuspendedBefore = false;
+
+static void aml_native_gui_apply(bool suspend)
 {
-  const bool suspend = aml_native_gui_suspend_wanted(res);
   if (!suspend && !s_nativeGuiSuspended)
     return;
 
@@ -5890,6 +5891,22 @@ void aml_native_gui_prepare(RESOLUTION res)
     CLog::Log(LOGINFO, "AMLUtils::{}: native GUI {} (DV FEL above 30 Hz)", __FUNCTION__,
               suspend ? "suspended, GUI at 1920x1080" : "resumed");
   s_nativeGuiSuspended = suspend;
+}
+
+void aml_native_gui_prepare(RESOLUTION res)
+{
+  s_nativeGuiSuspendedBefore = s_nativeGuiSuspended;
+  aml_native_gui_apply(aml_native_gui_suspend_wanted(res));
+}
+
+void aml_native_gui_prepare_failed()
+{
+  // the window was not recreated (display busy): the GUI size must follow the
+  // window, and the caller retries with the state it still sees as needed
+  if (s_nativeGuiSuspended == s_nativeGuiSuspendedBefore)
+    return;
+  CLog::Log(LOGINFO, "AMLUtils::{}: window not updated, GUI size change undone", __FUNCTION__);
+  aml_native_gui_apply(s_nativeGuiSuspendedBefore);
 }
 
 void aml_native_gui_playback_stopped()
