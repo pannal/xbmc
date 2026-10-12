@@ -10,6 +10,7 @@
 
 #include "addons/IAddon.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -70,7 +71,7 @@ protected:
 
 private:
   int m_id = -1;
-  InvokerState m_state = InvokerStateUninitialized;
+  std::atomic<InvokerState> m_state{InvokerStateUninitialized};
   ILanguageInvocationHandler *m_invocationHandler;
 };
 

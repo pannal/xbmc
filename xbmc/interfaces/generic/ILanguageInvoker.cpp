@@ -87,8 +87,8 @@ void ILanguageInvoker::onExecutionFinalized()
 
 void ILanguageInvoker::setState(InvokerState state)
 {
-  if (state <= m_state)
-    return;
-
-  m_state = state;
+  // The state only advances; other threads read it (e.g. to decide reuse)
+  InvokerState current = m_state;
+  while (state > current && !m_state.compare_exchange_weak(current, state))
+    ;
 }
