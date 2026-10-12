@@ -5800,15 +5800,18 @@ void aml_handle_scale(const RESOLUTION_INFO &res)
   aml_handle_native_gui_osd(res);
 }
 
-// Kernel 4.9: a DV FEL stream (dual-layer decode through the DV core) with a
-// native 2160p GUI scanned out above 30 Hz runs short of memory bandwidth and
-// the OSD glitches, mostly while it is redrawn; a 1920x1080 GUI scaled to the
+// Kernel 4.9: a DV FEL stream (dual-layer decode through the DV core) or an 8K
+// video (~5-7 GB/s measured) with a native 2160p GUI scanned out above 30 Hz
+// runs short of memory bandwidth and the OSD glitches, mostly while it is
+// redrawn. A 4K video through the DV core in Player-Led LLDV output glitches
+// too at a normal bus load (~3.5 GB/s), while a 1080p one is clean. So any
+// video larger than 1080p (or FEL) counts; a 1920x1080 GUI scaled to the
 // output is clean. While such a stream plays, the native GUI is suspended: the
 // GUI size of the 2160p entries of the resolution list drops to 1920x1080
 // (their calibration with it) and the resolution is set again. The display
 // mode stays, so aml_set_display_resolution() writes no display/mode and only
 // the framebuffer and the OSD scaling change: no HDMI handshake.
-static std::atomic<bool> s_felPlaying{false};
+static std::atomic<bool> s_heavyVideo{false};
 static std::atomic<bool> s_nativeGuiSuspended{false}; // written on the main thread only
 
 struct NativeGuiCalibration
@@ -5821,14 +5824,14 @@ struct NativeGuiCalibration
 };
 static std::vector<NativeGuiCalibration> s_nativeGuiCalibrations;
 
-void aml_native_gui_set_fel_playing(bool playing)
+void aml_native_gui_set_heavy_video(bool playing)
 {
-  s_felPlaying = playing;
+  s_heavyVideo = playing;
 }
 
 static bool aml_native_gui_suspend_wanted(RESOLUTION res)
 {
-  if (((LINUX_VERSION_CODE >> 16) & 0xFF) >= 5 || !s_felPlaying || res < RES_DESKTOP ||
+  if (((LINUX_VERSION_CODE >> 16) & 0xFF) >= 5 || !s_heavyVideo || res < RES_DESKTOP ||
       !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
           CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING))
     return false;
@@ -5901,7 +5904,7 @@ static void aml_native_gui_apply(bool suspend)
 
   if (suspend != s_nativeGuiSuspended)
   {
-    CLog::Log(LOGINFO, "AMLUtils::{}: native GUI {} (DV FEL above 30 Hz)", __FUNCTION__,
+    CLog::Log(LOGINFO, "AMLUtils::{}: native GUI {} (DV FEL or video above 1080p, above 30 Hz)", __FUNCTION__,
               suspend ? "suspended, GUI at 1920x1080" : "resumed");
     // hide the OSD while the window is recreated at the new size, otherwise the
     // old frame shows rescaled for a moment
@@ -5948,7 +5951,7 @@ void aml_native_gui_osd_present(bool swapped)
 void aml_native_gui_playback_stopped()
 {
   // the decoder is closed by now; also covers a stop with the GUI shown
-  s_felPlaying = false;
+  s_heavyVideo = false;
   if (s_nativeGuiSuspended)
     CServiceBroker::GetAppMessenger()->PostMsg(
         TMSG_SETVIDEORESOLUTION,

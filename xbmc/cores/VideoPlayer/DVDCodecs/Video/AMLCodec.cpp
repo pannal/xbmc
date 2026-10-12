@@ -2449,10 +2449,15 @@ bool CAMLCodec::OpenDecoderInternal()
     if (((hints.dovi.dv_profile == 4) || (hints.dovi.dv_profile == 7)) && (hints.dovi_el_type != DOVIELType::TYPE_MEL))
     {
       aml_dv_enable_fel();                              // Make sure enable fel is set.
-      aml_native_gui_set_fel_playing(true);
+      aml_native_gui_set_heavy_video(true);
       am_private->gcodec.dec_mode = STREAM_TYPE_STREAM; // Use stream path if FEL
     }
   }
+
+  // video larger than 1080p (4K, 8K) with a native 4K GUI above 30 Hz glitches
+  // too, see aml_native_gui_suspend_wanted
+  if (hints.width > 1920 || hints.height > 1088)
+    aml_native_gui_set_heavy_video(true);
 
   // DEC_CONTROL_FLAG_DISABLE_FAST_POC
   CSysfsPath("/sys/module/amvdec_h264/parameters/dec_control", 4);
@@ -2735,7 +2740,7 @@ void CAMLCodec::CloseDecoderInternal()
   if (m_dvOpened)
     aml_dv_close();
   m_dvOpened = false;
-  aml_native_gui_set_fel_playing(false);
+  aml_native_gui_set_heavy_video(false);
   m_dvSession.reset();
   m_decoderNeedsClose = false;
 }
