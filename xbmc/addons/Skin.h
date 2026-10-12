@@ -191,6 +191,10 @@ public:
    */
   void FlushSettings();
 
+  /*! \brief Saves the settings shortly, after a setting's value was changed directly.
+   */
+  void SettingChanged();
+
   void ToggleDebug();
   const INFO::CSkinVariableString* CreateSkinVariable(const std::string& name, int context);
 
