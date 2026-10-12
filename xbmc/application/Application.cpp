@@ -2177,6 +2177,12 @@ bool CApplication::Cleanup()
     CEventServer::RemoveInstance();
     CServiceBroker::GetPlaylistPlayer().Clear();
 
+    // A skin setting changed while scripts and windows shut down is saved by a
+    // timer, which must not fire after DeinitStageTwo() destroys the add-on
+    // manager it notifies. Save it now and ignore later changes.
+    if (g_SkinInfo)
+      g_SkinInfo->FlushSettings();
+
     if (m_ServiceManager)
       m_ServiceManager->DeinitStageTwo();
 

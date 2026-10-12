@@ -186,6 +186,11 @@ public:
    */
   void Unload();
 
+  /*! \brief Saves a pending settings change now and ignores later changes.
+   * Called during shutdown before the add-on manager is destroyed.
+   */
+  void FlushSettings();
+
   void ToggleDebug();
   const INFO::CSkinVariableString* CreateSkinVariable(const std::string& name, int context);
 
