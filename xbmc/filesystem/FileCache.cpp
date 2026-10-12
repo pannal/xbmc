@@ -13,6 +13,7 @@
 #include "URL.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "threads/SystemClock.h"
 #include "threads/Thread.h"
 #include "utils/log.h"
 
@@ -505,6 +506,9 @@ ssize_t CFileCache::Read(void* lpBuf, size_t uiBufSize)
   if (uiBufSize > SSIZE_MAX)
     uiBufSize = SSIZE_MAX;
 
+  if (uiBufSize == 0)
+    return 0;
+
 retry:
   // attempt to read
   iRc = m_pCache->ReadFromCache((char *)lpBuf, uiBufSize);
@@ -516,8 +520,36 @@ retry:
 
   if (iRc == CACHE_RC_WOULD_BLOCK)
   {
-    // just wait for some data to show up
-    iRc = m_pCache->WaitForData(1, 10s);
+    // Keep the read/parser in progress, but let an opted-in reader pause its
+    // playback clock when downstream queues run dry during a blocked read.
+    XbmcThreads::EndTime<> deadline{10s};
+    do
+    {
+      const auto wait = m_readWaitCallback ? std::min(deadline.GetTimeLeft(), 100ms)
+                                          : deadline.GetTimeLeft();
+      if (wait == 0ms)
+      {
+        iRc = CACHE_RC_TIMEOUT;
+        break;
+      }
+      iRc = m_pCache->WaitForData(1, wait);
+      if (iRc != CACHE_RC_TIMEOUT || deadline.IsTimePast())
+        break;
+      if (m_readWaitCallback)
+      {
+        try
+        {
+          m_readWaitCallback();
+        }
+        catch (...)
+        {
+          // An observer failure must not turn an in-progress read into an
+          // input error (and hence a demux flush/end). Continue the same read.
+          m_readWaitCallback = {};
+          CLog::Log(LOGERROR, "CFileCache::Read - read wait callback failed");
+        }
+      }
+    } while (!deadline.IsTimePast());
     if (iRc > 0)
       goto retry;
   }
@@ -639,6 +671,13 @@ const std::string CFileCache::GetProperty(XFILE::FileProperty type, const std::s
 
 int CFileCache::IoControl(EIoControl request, void* param)
 {
+  if (request == IOCTRL_CACHE_SET_WAIT_CALLBACK)
+  {
+    std::unique_lock<CCriticalSection> lock(m_sync);
+    m_readWaitCallback = *static_cast<std::function<void()>*>(param);
+    return 0;
+  }
+
   if (request == IOCTRL_CACHE_STATUS)
   {
     SCacheStatus* status = (SCacheStatus*)param;

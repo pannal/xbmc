@@ -4587,6 +4587,13 @@
           </constraints>
           <control type="slider" format="integer" />
         </setting>
+        <setting id="coreelec.amlogic.dolbyvision.handshake_bypass" type="boolean" label="60644" help="60645">
+          <level>2</level>
+          <default>false</default>
+          <requirement>HAVE_AMCODEC</requirement>
+          <visible>false</visible>
+          <control type="toggle" />
+        </setting>
         <setting id="coreelec.amlogic.dolbyvision.keep_sdr_state" type="boolean" label="60646" help="60647">
           <level>2</level>
           <default>false</default>

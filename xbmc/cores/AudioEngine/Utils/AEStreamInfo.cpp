@@ -52,6 +52,8 @@ static const uint8_t AC3Channels[] = {2, 1, 2, 3, 3, 4, 4, 5};
 static const uint8_t DTSChannels[] = {1, 2, 2, 2, 2, 3, 3, 4, 4, 5, 6, 6, 6, 7, 8, 8};
 static const uint8_t THDChanMap[] = {2, 1, 1, 2, 2, 2, 2, 1, 1, 2, 2, 1, 1};
 
+static bool ReadAC3DialNorm(const uint8_t* data, unsigned int size, int& attenuation);
+
 static const uint32_t DTSSampleRates[DTS_SFREQ_COUNT] = {0,     8000,  16000, 32000, 64000,  128000,
                                                          11025, 22050, 44100, 88200, 176400, 12000,
                                                          24000, 48000, 96000, 192000};
@@ -114,6 +116,9 @@ bool CAEStreamInfo::operator==(const CAEStreamInfo& info) const
 
 void CAEStreamParser::Reset()
 {
+  m_info.m_hasDialNorm = false;
+  m_info.m_dialNormOriginal = 0;
+  m_info.m_dialNormApplied = 0;
   m_skipBytes = 0;
   m_bufferSize = 0;
   m_needBytes = 0;
@@ -207,6 +212,7 @@ int CAEStreamParser::AddData(uint8_t* data,
         m_syncFunc = &CAEStreamParser::DetectType;
         m_info.m_type = CAEStreamInfo::STREAM_TYPE_NULL;
         m_info.m_repeat = 1;
+        m_info.m_hasDialNorm = false;
 
         // if the buffer is full, or the offset < the buffer size
         if (m_bufferSize == sizeof(m_buffer) || offset < m_bufferSize)
@@ -260,6 +266,13 @@ void CAEStreamParser::GetPacket(uint8_t** buffer, unsigned int* bufferSize)
     if (m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE)
       size = m_coreSize;
 
+    const bool ac3 = m_info.m_type == CAEStreamInfo::STREAM_TYPE_AC3 ||
+                     m_info.m_type == CAEStreamInfo::STREAM_TYPE_EAC3;
+    if (m_info.m_type != CAEStreamInfo::STREAM_TYPE_TRUEHD)
+      m_info.m_hasDialNorm = false;
+    if (ac3)
+      m_info.m_hasDialNorm = ReadAC3DialNorm(m_buffer, size, m_info.m_dialNormOriginal);
+
     // Defeat AC-3/E-AC-3 dialnorm on the full frame before copying out
     if (m_defeatAC3DialNorm &&
         (m_info.m_type == CAEStreamInfo::STREAM_TYPE_AC3 ||
@@ -267,6 +280,10 @@ void CAEStreamParser::GetPacket(uint8_t** buffer, unsigned int* bufferSize)
     {
       DefeatAC3DialNorm(m_buffer, size);
     }
+
+    // Describe the bytes actually emitted, rather than the requested setting.
+    if (ac3 && m_info.m_hasDialNorm)
+      m_info.m_hasDialNorm = ReadAC3DialNorm(m_buffer, size, m_info.m_dialNormApplied);
 
     // Defeat DTS / DTS-HD dialnorm on the full frame before copying out
     if (m_defeatDTSDialNorm &&
@@ -410,6 +427,41 @@ static uint8_t AC3_ParseDialnorm(const uint8_t* data, uint8_t acmod)
                   (static_cast<uint32_t>(data[7]) << 8)  | data[8];
   unsigned int shift = 24 - (4 + extra) - 5; // = 15 - extra
   return (bits >> shift) & 0x1F;
+}
+
+// Read the primary program's encoded attenuation from a completed syncframe.
+static bool ReadAC3DialNorm(const uint8_t* data, unsigned int size, int& attenuation)
+{
+  if (size < 9 || data[0] != 0x0B || data[1] != 0x77)
+    return false;
+
+  const uint8_t bsid = data[5] >> 3;
+  uint8_t raw = 0;
+  if (bsid <= 10)
+  {
+    const uint8_t acmod = data[6] >> 5;
+    // Dual mono has separate normalization for each program; one value would
+    // misrepresent it. Reserved zero values are also deliberately unknown.
+    if (acmod == 0)
+      return false;
+    raw = AC3_ParseDialnorm(data, acmod);
+  }
+  else if (bsid <= 16)
+  {
+    const uint8_t strmtyp = data[2] >> 6;
+    const uint8_t substream = (data[2] >> 3) & 7;
+    const uint8_t acmod = (data[4] >> 1) & 7;
+    if (size < 10 || strmtyp == 1 || strmtyp == 3 || substream != 0 || acmod == 0)
+      return false;
+    raw = ((data[5] & 7) << 2) | (data[6] >> 6);
+  }
+  else
+    return false;
+
+  if (raw == 0)
+    return false;
+  attenuation = raw - 31;
+  return true;
 }
 
 // Set the 5-bit dialnorm field in an AC-3 BSI header to a given value.
@@ -1968,6 +2020,10 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
       // figures described the whole disc.
       m_info.m_hasAtmos = hasAtmos;
       m_info.m_dialNorm = dialNormDefeated ? 0 : origDialNorm;
+      m_info.m_hasDialNorm = hasExtChannelMeaning && fields.dialNorm16ch != 0;
+      m_info.m_dialNormOriginal = origDialNorm;
+      m_info.m_dialNormApplied =
+          hasExtChannelMeaning ? (((data[30] & 0x0F) << 1) | (data[31] >> 7)) - 31 : 0;
       m_info.m_atmosChannels = atmosChannels;
       m_info.m_atmosObjects = atmosObjects;
 

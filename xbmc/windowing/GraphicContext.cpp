@@ -359,6 +359,18 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
     {
       SetVideoResolution(targetResolutionOnStop, false);
     }
+#if defined(HAS_LIBAMCODEC)
+    else if (!bTriggerUpdateRes)
+    {
+      // "On start" keeps the playback mode on stop, so no window update runs
+      // and CreateNewWindow never sees the HDR type leave Dolby Vision: the
+      // forced mode switch that re-handshakes the sink on DV exit is skipped,
+      // and a Display-LED TV stays latched in DV tunnel, decoding the SDR GUI
+      // as purple/green. Re-apply the current mode; CreateNewWindow switches
+      // only on a DV transition and otherwise has nothing to do.
+      SetVideoResolution(m_Resolution, false);
+    }
+#endif
   }
   else
     SetVideoResolution(RES_WINDOW, false);

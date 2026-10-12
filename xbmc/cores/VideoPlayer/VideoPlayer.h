@@ -513,6 +513,7 @@ protected:
   void HandleMessages();
   void QueueAudioRecoverySeek();
   void HandlePlaySpeed();
+  void CheckCacheReadStall();
   bool IsInMenuInternal() const;
   void SynchronizeDemuxer();
   void CheckAutoSceneSkip();
@@ -607,13 +608,17 @@ protected:
   } m_SpeedState;
 
   double m_offset_pts;
+  // Corrected seek timeline; later continuity corrections normalize new packets
+  // into this domain and must not move the floor beneath queued decoded frames.
+  double m_videoPrerollTarget{DVD_NOPTS_VALUE};
   double m_demuxSeekBasePts{DVD_NOPTS_VALUE};
 
   // Last chapter requested via SeekChapter(). Chapter seeks land on the
   // keyframe before the chapter mark, so the clock-derived m_State.chapter
   // stays one behind until playback crosses the mark; stepping from it would
-  // re-seek the same chapter on every rapid press. 0 = none pending; cleared
-  // by time seeks.
+  // re-seek the same chapter on every rapid press. Backward/mixed requests
+  // also step from this intent while the clock still shows the old chapter.
+  // 0 = none pending; cleared by time seeks or when playback catches up.
   std::atomic<int> m_chapterSeekTarget{0};
 
   CDVDMessageQueue m_messenger;
