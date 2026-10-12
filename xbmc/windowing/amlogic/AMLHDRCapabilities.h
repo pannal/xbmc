@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "utils/AMLDisplayPeak.h"
 #include "utils/HDRCapabilities.h"
 
 #include <array>
@@ -92,7 +93,7 @@ inline bool ReadyEDID(const std::string& raw)
 }
 
 template<typename Reader>
-std::optional<CHDRCapabilities> ReadStable(Reader&& read, std::string* edid = nullptr)
+std::optional<CHDRCapabilities> ReadStable(Reader&& read, std::string* edid = nullptr, int* peakNits = nullptr)
 {
   constexpr std::array<const char*, 5> paths{
       "hpd_state", "edid_parsing", "rawedid", "hdr_cap", "dv_cap"};
@@ -119,6 +120,8 @@ std::optional<CHDRCapabilities> ReadStable(Reader&& read, std::string* edid = nu
   }
   if (edid != nullptr)
     *edid = before[2];
+  if (peakNits != nullptr)
+    *peakNits = AML::DisplayPeak::Reported(before[3], before[4]);
   return caps;
 }
 } // namespace AML::HDR

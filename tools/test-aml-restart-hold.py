@@ -35,6 +35,9 @@ PRELUDE = r'''
 #include <string>
 #include <thread>
 #include <sstream>
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
+constexpr int DVP_FLAG_DROPPED=4,DVP_FLAG_INTERLACED=8;
+enum class MPEG2OutputMode {UNKNOWN,INTERLACED_FIELD,PROGRESSIVE};
 constexpr int LOGDEBUG=0, LOGVIDEO=0, LOGERROR=0, LOGAVTIMING=0;
 static std::string lastReleaseReason;
 struct CLog {template<class... T> static void Log(int,int,const char* format,T&&... args){Log(0,format,std::forward<T>(args)...);}
@@ -67,15 +70,18 @@ public:
  int m_videoHoldTimeoutMs=3000,m_pollDevice=7;
  std::chrono::steady_clock::time_point m_videoHoldStart;
  std::unique_ptr<Device> m_amlVideoFile=std::make_unique<Device>();
- struct Frame {uint64_t pts,index;}; std::deque<Frame> m_reorderQueue;
+ struct Frame {uint64_t pts,index;bool interlaced=false;}; std::deque<Frame> m_reorderQueue;
  uint64_t m_prev_last_pts=0,m_last_pts=0,m_cur_pts=0,m_bufferIndex=0;
+ double m_prerollTarget=DVD_NOPTS_VALUE;
+ bool m_keepMPEG2Progressive=false;
+ int m_speed=DVD_PLAYSPEED_NORMAL;
  void HoldVideo(bool);void CheckVideoHold();void VideoHoldDecoded();
  void ReleaseVideoHoldLocked(const char* reason="cancel");
  @PRESENTATION_TYPES@
  static bool ReadVideoPresentation(VideoPresentation&);
  int PollFrame(const CAMLSession::Permit&);
  int ReleaseFrame(uint32_t,uint64_t,const CAMLSession::Permit&,bool=false);
- void DQBuf(){m_reorderQueue.push_back({5,3});struct {int iFlags=0;} videoPicture; @DQBUF@ (void)videoPicture;}
+ void DQBuf(){m_reorderQueue.push_back({5,3});struct {int iFlags=0;double dts=0,pts=0;MPEG2OutputMode mpeg2OutputMode=MPEG2OutputMode::UNKNOWN;} videoPicture; @DQBUF@ (void)videoPicture;}
  void Open(){auto r=m_session.Fence();assert(m_session.BeginMutation(r));assert(m_session.Complete(r,true));}
  void Reset(){auto r=m_session.Fence();assert(m_session.BeginMutation(r));HoldVideo(VideoRestartHoldWanted());assert(m_session.Complete(r,true));}
  void Submit(bool drop=false){auto p=m_session.Acquire(m_session.Epoch(),drop);assert(p);ReleaseFrame(3,1,p,drop);}
@@ -185,6 +191,10 @@ def main():
         dq=subprocess.check_output(['git','show',f'{args.baseline_dqbuf}:{CODEC}'],cwd=ROOT,text=True)
     body=function(dq,'CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(')
     dq=body[body.index('    m_prev_last_pts ='):body.index('    // Frame mode:')]
+    # The eligibility call now follows finalized PTS and preroll classification.
+    # Execute that production fragment too; old-baseline mode retains its old call.
+    if 'VideoHoldDecoded();' not in dq:
+        dq += body[body.index('    videoPicture.dts ='):body.index('    const int infoResult =')]
     methods='\n'.join(function(s,sig) for sig in [
         'bool CAMLCodec::VideoRestartHoldWanted(', 'void CAMLCodec::HoldVideo(', 'bool CAMLCodec::ReadVideoPresentation(',
         'void CAMLCodec::VideoHoldDecoded(',

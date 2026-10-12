@@ -41,12 +41,12 @@ namespace ANNOUNCEMENT {
  };
 }
 struct CSetting {std::string id;const std::string& GetId()const{return id;}};
-enum DV_TYPE {DV_TYPE_DISPLAY_LED,DV_TYPE_PLAYER_LED_LLDV,DV_TYPE_PLAYER_LED_HDR2,DV_TYPE_VS10_ONLY};
+enum DV_TYPE {DV_TYPE_DISPLAY_LED=0,DV_TYPE_PLAYER_LED_LLDV=1,DV_TYPE_PLAYER_LED_HDR=2,DV_TYPE_VS10_ONLY=3,DV_TYPE_PLAYER_LED_HDR2=4};
 enum DV_MODE {DV_MODE_OFF,DV_MODE_ON,DV_MODE_ON_DEMAND};
 enum TV_PRESET{TV_PRESET_MANUAL,TV_PRESET_AUTO,TV_PRESET_LG,TV_PRESET_SONY,TV_PRESET_SAMSUNG,TV_PRESET_PANASONIC,TV_PRESET_PHILIPS,TV_PRESET_TCL};
 struct AMLDVCapability {std::string edid_pnpid="test";};
 AMLDVCapability aml_read_dv_cap();
-constexpr int DOLBY_VISION_OUTPUT_MODE_IPT=0,DOLBY_VISION_OUTPUT_MODE_HDR10=1,DOLBY_VISION_OUTPUT_MODE_SDR10=2,DOLBY_VISION_OUTPUT_MODE_SDR8=3;
+constexpr int DOLBY_VISION_OUTPUT_MODE_IPT=0,DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL=1,DOLBY_VISION_OUTPUT_MODE_HDR10=2,DOLBY_VISION_OUTPUT_MODE_SDR10=3,DOLBY_VISION_OUTPUT_MODE_SDR8=4;
 struct CSettings {@IDS@};
 thread_local bool inCallback=false;
 struct Settings {
@@ -86,6 +86,7 @@ bool aml_display_support_dv(){return true;}
 bool aml_display_support_hdr10plus(){return false;}
 bool aml_display_support_hdr_pq(){return true;}
 bool aml_display_support_dv_ll(){return true;}
+bool aml_dv_new_backend_available(){return true;}
 bool aml_support_dolby_vision(){return true;}
 bool force_modes(){return false;}
 void set_vsvdb_children_visible(bool){}

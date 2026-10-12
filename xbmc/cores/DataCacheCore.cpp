@@ -17,6 +17,7 @@
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
 #include "utils/AgedMap.h"
 #include "utils/BitstreamConverter.h"
+#include "utils/StringUtils.h"
 
 #include <mutex>
 #include <utility>
@@ -670,6 +671,25 @@ std::string CDataCacheCore::GetAudioObjectFormat()
   std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
 
   return m_playerAudioInfo.objectFormat;
+}
+
+void CDataCacheCore::SetAudioDialNorm(bool available, int original, int applied)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+  m_playerAudioInfo.hasDialNorm = available;
+  m_playerAudioInfo.dialNormOriginal = original;
+  m_playerAudioInfo.dialNormApplied = applied;
+}
+
+std::string CDataCacheCore::GetAudioDialNorm(bool colored)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+  if (!m_playerAudioInfo.hasDialNorm)
+    return {};
+
+  return StringUtils::Format("{} dB {} applied {} dB", m_playerAudioInfo.dialNormOriginal,
+                            colored ? "[COLOR FF404040]|[/COLOR]" : "|",
+                            m_playerAudioInfo.dialNormApplied);
 }
 
 void CDataCacheCore::SetAudioObjectLayout(const std::string& layout)

@@ -135,6 +135,8 @@ struct CVideoPlayerAudio {
 struct CDVDVideoCodec { enum VCReturn { VC_FLUSHED, VC_FLUSHED_TIMEOUT, VC_REOPEN }; };
 struct FakeCodec {
   bool pending=false, ready=false, failed=false, asynchronous=true; int resets=0, aborts=0, reopens=0;
+  double prerollTarget=DVD_NOPTS_VALUE;
+  void SetPrerollTarget(double target) { prerollTarget=target; }
   void Reset() { ++resets; pending=asynchronous; ready=!asynchronous; }
   void Reopen() { ++reopens; pending=true; ready=false; }
   void Abort() { ++aborts; }
@@ -275,7 +277,7 @@ struct Parent {
   uint64_t m_videoRecoveryGeneration=10;
   double m_videoRecoveryStartPts=DVD_NOPTS_VALUE,m_videoRecoveryStartTime=DVD_NOPTS_VALUE;
   bool m_videoRecoveryEndOfStream=false,m_videoRecoverySameStream=false;
-  double m_offset_pts=0;
+  double m_offset_pts=0,m_videoPrerollTarget=DVD_NOPTS_VALUE;
   std::chrono::steady_clock::time_point m_syncStartPtsWait{};
   int m_playSpeed=DVD_PLAYSPEED_NORMAL, cacheChanges=0,m_demuxerSpeed=0,updates=0,replacements=0;
   void SetCaching(int value) {assert(value==CACHESTATE_FLUSH || value==CACHESTATE_DONE); ++cacheChanges;}

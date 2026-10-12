@@ -162,10 +162,18 @@ def main():
     callbacks = function(codec, 'void CDVDVideoCodecAmlogic::UpdateAppendCMv40SettingCache(')
     callbacks += function(codec, 'void CDVDVideoCodecAmlogic::UpdateStripCMv40SettingCache(')
     callbacks += function(codec, 'void CDVDVideoCodecAmlogic::OnSettingChanged(')
+    callbacks += function(codec, 'int CDVDVideoCodecAmlogic::GetCMv40DisplayPeakNits(')
     assert 'CSysfsPath' not in callbacks
+    constructor = function(codec, 'CDVDVideoCodecAmlogic::CDVDVideoCodecAmlogic(')
+    for key in ['SETTING_COREELEC_AMLOGIC_DV_VSVDB_INJECT', 'SETTING_COREELEC_AMLOGIC_DV_OVERRIDE_EDID']:
+        assert 'CSettings::' + key in constructor
+    opening_codec = function(codec, 'bool CDVDVideoCodecAmlogic::Open(')
+    assert 'SetSmartBypassDisplayNits(GetCMv40DisplayPeakNits())' in opening_codec
+
 
     source = r'''
 #define HAVE_LIBDOVI
+#include "utils/AMLDisplayPeak.h"
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -266,6 +274,8 @@ struct CDVDVideoCodecAmlogic {
  DOVICMv40Mode m_appendCMv40ModeApplied=CMV40_NONE;bool m_stripCMv40Applied=false;
  std::atomic<bool> m_level5OverrideActiveSetting{false};std::atomic<uint64_t> m_level5OverrideValuesSetting{0};
  bool m_level5OverrideActiveApplied=false;uint64_t m_level5OverrideValuesApplied=0;
+ int GetCMv40DisplayPeakNits() const;
+ std::atomic<bool> m_smartUseConfiguredPeak{false};
  void UpdateAppendCMv40SettingCache();void UpdateStripCMv40SettingCache();void ApplyDynamicDoViSettings();
  void UpdateLevel5OverrideSettingCache() {}
  void OnSettingChanged(const std::shared_ptr<const CSetting>&);
@@ -326,13 +336,30 @@ int main() {
  // Real callbacks update settings atomics; real Apply propagates same-mode
  // threshold, display and Auto trigger changes to the cached-input converter.
  CDVDVideoCodecAmlogic codec;codec.m_bitstream=&c;
+ // Existing configured-target tests exercise an explicit injection override.
+ changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_INJECT,1);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,0);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM,1000);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,3);
  expect(c,rpu(3079,3100),false);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD,20);expect(c,rpu(3079,3100),true);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM,100);expect(c,rpu(3079,3100),false);
+ // Automatic Smart responds to the independently published sink peak. Neither
+ // the configured target nor converter metadata inputs are rewritten.
+ changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_INJECT,0);
+ AML::DisplayPeak::Publish(1000);codec.ApplyDynamicDoViSettings();expect(c,rpu(3079,3100),true);
+ AML::DisplayPeak::Publish(100);codec.ApplyDynamicDoViSettings();expect(c,rpu(3079,3100),false);
+ assert(component.settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM)==100);
+ AML::DisplayPeak::Publish(0);codec.ApplyDynamicDoViSettings();expect(c,rpu(3079,3100),true);
+ changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_OVERRIDE_EDID,1);expect(c,rpu(3079,3100),false);
+ changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_OVERRIDE_EDID,0);expect(c,rpu(3079,3100),true);
+ changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_INJECT,1);expect(c,rpu(3079,3100),false);
+ changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_INJECT,0);expect(c,rpu(3079,3100),true);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_APPEND,4);
+ AML::DisplayPeak::Publish(1000);
+ assert(codec.GetCMv40DisplayPeakNits()==100); // Auto target stays configured.
+ changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER,0);expect(c,rpu(3079,3100),false);
+
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER,1);expect(c,rpu(3388),false);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER,2);expect(c,rpu(3388),true);
  changed(codec,CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE,1);expect(c,rpu(3388),false);

@@ -24,6 +24,10 @@
 #include "threads/SingleLock.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WindowSystemFactory.h"
+#include "settings/SettingsComponent.h"
+#include "ServiceBroker.h"
+#include "settings/Settings.h"
+#include "windowing/WinSystem.h"
 
 extern "C"
 {
@@ -244,6 +248,42 @@ bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
   return result;
 }
 
+void CWinSystemAmlogicGLESContext::EngageDolbyVisionAtStartup()
+{
+  if (!m_firstStartGUI)
+    return;
+  // A usable first GUI window consumes startup even with DV Off/On or this option off.
+  m_firstStartGUI = false;
+
+  if (aml_dv_mode() != DV_MODE_ON_DEMAND || aml_dv_playback_active())
+    return;
+
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  if (!settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_ENGAGE_AT_STARTUP))
+    return;
+
+  // The DV-video selector offers SDR and Off (native DV); only SDR is a conversion.
+  const int configuredMode = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
+  if (configuredMode != static_cast<int>(DOLBY_VISION_OUTPUT_MODE_SDR10))
+  {
+    CLog::Log(LOGINFO, "CWinSystemAmlogicGLESContext::{}: engage at startup skipped: set DV VS10 for DV video to SDR",
+              __FUNCTION__);
+    return;
+  }
+
+  CSysfsPath dolbyVisionMode{"/sys/module/amdolby_vision/parameters/dolby_vision_mode"};
+  const auto existingMode = dolbyVisionMode.Get<unsigned int>();
+  // Missing/unreadable DV hardware is not a mode mismatch.
+  if (!existingMode || *existingMode == static_cast<unsigned int>(configuredMode))
+    return;
+
+  aml_dv_on(configuredMode);
+  // Publish the new HDMI signalling as well as the DV core's internal mode.
+  aml_dv_display_trigger();
+  CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: set SDR startup output (existing mode {})",
+            __FUNCTION__, *existingMode);
+}
+
 bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
                                                bool fullScreen,
                                                RESOLUTION_INFO& res)
@@ -276,10 +316,13 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
 
   // If changing in or out of Dolby Vision and it is on then make sure we do a mode swtich - TODO: combine with DV InfoFrame?
   StreamHdrType hdrType = CServiceBroker::GetWinSystem()->GetGfxContext().GetHDRType();
-  bool force_mode_switch_by_dv = 
-      ((hdrType != m_hdrType) &&
-       ((hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION) || (m_hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)) &&
-       (aml_dv_mode() != DV_MODE_OFF));
+  const auto bypass_dv_mode_switch_gui = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS);
+
+  bool force_mode_switch_by_dv = !bypass_dv_mode_switch_gui &&
+                                 ((hdrType != m_hdrType) &&
+                                  ((hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION) ||
+                                   (m_hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)) &&
+                                  (aml_dv_mode() != DV_MODE_OFF));
 
   PLAYBACK_DIAGNOSTICS::endDisplay.Record(PLAYBACK_DIAGNOSTICS::NowUs(), "display-target", [&] {
     return fmt::format("width={} height={} screen_width={} screen_height={} hz={} hdr={} cached_hdr={} force_dv={}",
@@ -297,11 +340,12 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: "
     "m_bWindowCreated: {}, "
     "frac rate {:d}({:d}), "
-    "hdrType: {}({}), force mode switch: {}",
+    "hdrType: {}({}), force mode switch: {}, bypass DV switch: {}",
     __FUNCTION__,
     m_bWindowCreated,
     fractional_rate, cur_fractional_rate,
-    CStreamDetails::DynamicRangeToString(hdrType), CStreamDetails::DynamicRangeToString(m_hdrType), force_mode_switch_by_dv);
+    CStreamDetails::DynamicRangeToString(hdrType), CStreamDetails::DynamicRangeToString(m_hdrType), force_mode_switch_by_dv, bypass_dv_mode_switch_gui);
+
   CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: "
     "cur: iWidth: {:04d}, iHeight: {:04d}, iScreenWidth: {:04d}, iScreenHeight: {:04d}, fRefreshRate: {:02.2f}, dwFlags: {:02x}",
     __FUNCTION__,
@@ -343,6 +387,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
       (fractional_rate == cur_fractional_rate))
   {
     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
+    EngageDolbyVisionAtStartup();
     display.Finish(m_displayGeometryReady && !m_delayDispReset && CanRender()
                        ? CAMLDisplayLifecycle::Phase::READY
                        : CAMLDisplayLifecycle::Phase::WAITING_FOR_RESET);
@@ -377,68 +422,6 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     return false;
   }
 
-  // Init the value set in the DV settings for DV_MODE_ON_DEMAND on Kodi startup
-  if (aml_dv_mode() == DV_MODE_ON_DEMAND && m_firstStartGUI)
-  {
-    m_firstStartGUI = false; // Always clear flag so it only runs once at startup
-
-    // Opt-in: under On Demand the GUI is otherwise meant to stay out of DV
-    // entirely until content asks for it. This engages the DV core early
-    // instead, trading that for a display that's slow to re-sync (some
-    // projectors take up to 15s) not having to do it on every play/stop.
-    if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_ENGAGE_AT_STARTUP))
-    {
-      // DOLBY_VISION_OUTPUT_MODE_IPT:        mode_string = "0-IPT";
-      // DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL: mode_string = "1-IPT Tunnel";
-      // DOLBY_VISION_OUTPUT_MODE_HDR10:      mode_string = "2-HDR10";
-      // DOLBY_VISION_OUTPUT_MODE_SDR10:      mode_string = "3-SDR10";
-      // DOLBY_VISION_OUTPUT_MODE_BYPASS:     mode_string = "5-Bypass";
-
-      int configured_mode = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
-
-      // Guard: never put the GUI itself into a Dolby Vision output mode here.
-      // "DV VS10 for DV video" defaults to IPT, and engaging that at startup
-      // brings the GUI up in DV (washed-out on Player-LED, and on Display-LED
-      // the TV latches DV and shows the next SDR output purple/green). A GUI in
-      // DV is what DV mode "On" is for; under On Demand only a VS10 conversion
-      // (SDR10 / HDR10) makes sense, with every VS10 mode set to that same
-      // output so play/stop never changes it.
-      const bool dv_output_mode =
-          configured_mode == static_cast<int>(DOLBY_VISION_OUTPUT_MODE_IPT) ||
-          configured_mode == static_cast<int>(DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL);
-      if (dv_output_mode)
-        CLog::Log(LOGINFO, "CWinSystemAmlogicGLESContext::{}: engage at startup skipped: \"DV VS10 for DV video\" is [{}], a DV output mode -- set every VS10 mode to SDR (or HDR10) to use it",
-                  __FUNCTION__, configured_mode);
-
-      CSysfsPath dolby_vision_mode{"/sys/module/amdolby_vision/parameters/dolby_vision_mode"};
-      std::optional<unsigned int> existing_mode = dolby_vision_mode.Get<unsigned int>();
-
-      // No amdolby_vision module (or the node can't be read) means there is no DV
-      // core to set a mode on -- skip rather than falling back to a sentinel that
-      // would never match configured_mode and fire aml_dv_on() on every boot on
-      // hardware that has no DV support at all.
-      if (!dv_output_mode && existing_mode && *existing_mode != static_cast<unsigned int>(configured_mode))
-      {
-        aml_dv_on(configured_mode);
-
-        // aml_dv_on() alone flips the DV core's internal mode but doesn't push
-        // the new signaling (colorimetry/EOTF) out over HDMI on its own -- at
-        // this point in startup there's no resolution/mode switch happening
-        // that would otherwise carry it. Without this, Display-LED output
-        // stayed on stale SDR signaling despite the DV core reporting
-        // engaged, until something else (e.g. a manual resync) forced a real
-        // re-assert. Same call used elsewhere (aml_dv_restore_gui_ipt()'s
-        // caller) after a DV mode change; its round-trip covers every output
-        // mode, and its Player-LED-only reassert-after-modeswitch extra step
-        // already excludes Display-LED/IPT_TUNNEL on its own.
-        aml_dv_display_trigger();
-
-        CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: Set mode from settings: [{}] (existing_mode [{}])",
-                  __FUNCTION__, configured_mode, *existing_mode);
-      }
-    }
-  }
-
   // Wait for any in-progress DV pipeline restoration to complete before
   // creating the EGL surface. Prevents color corruption when the OnStop
   // handler is restoring IPT while we recreate the GL context.
@@ -455,6 +438,8 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     ObserveEndDisplay("bind-failed");
     return false;
   }
+
+  EngageDolbyVisionAtStartup();
 
   InvalidateRenderTarget(); // Replacement surface is now bound; callbacks do not establish readiness.
   ResetVSync(); // A newly bound EGL surface needs its own interval initialization.

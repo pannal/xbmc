@@ -99,6 +99,29 @@ void photometricLimits(){
  }
  std::cout<<"PASS: 12 stripes, four raised returns, two centre flashes rejected; three explicitly accepted graphic ambiguities remain unsafe for native geometry\n";
 }
+void interiorBlackObjects(){
+ PixelImage image;
+ // Real-film failures occur hundreds of rows beyond the boundary: a single
+ // peripheral strip crosses a black object while centre/distributed image
+ // evidence remains. This must not reject an otherwise sustained picture.
+ for(bool bottom:{false,true})for(int lane:{0,2,3,7,8}){
+  image.fill(20,20,0,0,90,90,20,20);
+  const int start=lane*(1920-64)/8;
+  for(int d=102;d<365;++d)for(int x=start;x<start+64;++x)
+   image.bytes[(bottom?1079-d:d)*1920+x]=16;
+  const auto e=placement(image);assert(e.top==20&&e.bottom==20&&!e.rejected);
+ }
+ // Centre darkness remains an independent veto even with eight bright lanes.
+ image.fill(20,20,0,0,90,90,20,20);
+ for(int x=928;x<992;++x)image.bytes[102*1920+x]=16;
+ auto e=placement(image);assert(e.top==Unobserved&&e.rejected);
+ // A surviving centre plus one other strip is insufficient distributed support.
+ image.fill(20,20,0,0,90,90,20,20);
+ for(int lane=0;lane<9;++lane)if(lane!=4&&lane!=5)
+  for(int x=lane*(1920-64)/8;x<lane*(1920-64)/8+64;++x)image.bytes[102*1920+x]=16;
+ e=placement(image);assert(e.top==Unobserved&&e.rejected);
+ std::cout<<"PASS: ten peripheral black-object controls; centre return and lost distributed support still reject\n";
+}
 bool estimatedGet(uint16_t expected=20){uint16_t t,b,l,r;bool found=aml_subtitle_detect_active_area_get(1920,1080,t,b,l,r,true);if(found)assert(t==expected&&b==expected&&l==0&&r==0);return found;}
 void onlyEstimate(const DetectResult& result){CAMLNativeWorker::Run run(s_detectSource->superseded);detect_publish_subtitle(run,s_detectSource,result);}
 void awaitEstimate(){
@@ -164,7 +187,7 @@ void isolation(const char* font,const DetectResult& result){
  std::cout<<"PASS: connected subtitle-only libass bounds20..1060; no native/public/signal geometry, strict-zero precedence, warm-cache/state, authored/manual and source/lifecycle/HW isolation\n";
 }
 int main(int argc,char** argv){
- assert(argc==2);auto result=nativeEstimate();photometricLimits();ready();isolation(argv[1],result);s_detectWorker.Stop();
+ assert(argc==2);auto result=nativeEstimate();photometricLimits();interiorBlackObjects();ready();isolation(argv[1],result);s_detectWorker.Stop();
 }
 '''
 
@@ -213,6 +236,9 @@ def main():
             ('destructive subtitle cache survives', 's_detectSource->retainedSubtitle.reset();', '(void)preserveGeometry;'),
             ('measured-black returns ignored', 'depth > result.departures[lane] && levels[lane] <= blackMax[lane] + strip', 'false && depth > result.departures[lane] && levels[lane] <= blackMax[lane] + strip'),
             ('whole-picture evidence lost', 'if (!strong)', 'if (false && !strong)'),
+            ('peripheral return still vetoes picture', 'pictureSupport < 3)', 'pictureSupport < 10)'),
+            ('centre return ignored', 'levels[lanes / 2] <= blackMax[lanes / 2] + strip', 'false'),
+            ('distributed support ignored', 'pictureSupport < 3)', 'pictureSupport < 0)'),
             ('inward temporal tolerance allowed', 'result.top = std::min(result.top, top[i]);', '(void)top[i];'),
         ]:
             assert old in code, label

@@ -199,6 +199,9 @@ int64_t CCircularCache::WaitForData(uint32_t minimum, std::chrono::milliseconds 
     avail = m_end - m_cur;
   }
 
+  if (avail == 0 && minimum != 0 && !IsEndOfInput())
+    return CACHE_RC_TIMEOUT;
+
   return avail;
 }
 

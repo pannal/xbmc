@@ -26457,7 +26457,7 @@ msgid "CMv4.0 smart bypass threshold (%)"
 msgstr ""
 
 msgctxt "#60333"
-msgid "Only applies to Smart. Bypass CMv4.0 append when a frame's Level 1 peak exceeds the display's peak brightness plus this percentage. At 20%, a frame above 1200 nits bypasses append on a 1000-nit display. Metadata without L2 trims or usable peak information is still upgraded. Existing CMv4.0 metadata is preserved."
+msgid "Only applies to Smart. Bypass CMv4.0 append when a frame's Level 1 peak exceeds the display's peak brightness plus this percentage. The display peak uses reported Dolby Vision luminance, then HDR luminance, or 1000 nits if neither is available. Custom VSVDB injection or EDID override uses the configured peak instead. This does not change the VSVDB payload. At 20%, a frame above 1200 nits bypasses append on a 1000-nit display. Metadata without L2 trims or usable peak information is still upgraded. Existing CMv4.0 metadata is preserved."
 msgstr ""
 
 msgctxt "#60334"
@@ -27275,6 +27275,30 @@ msgctxt "#60627"
 msgid "For Player-Led output on projectors whose automatic dynamic-range detection flip-flops between SDR and HDR. Re-applies the Dolby Vision / VS10 output after the resolution switches at playback start (the same effect as manually toggling the VS10 mode). May cause a brief blip at playback start, so leave this off unless you actually see SDR/HDR flickering."
 msgstr ""
 
+#. "Dolby Vision HDR Bypass"
+#: system/settings/settings.xml
+msgctxt "#60644"
+msgid "Disable DV black screen when starting or stopping playback"
+msgstr ""
+
+#. "Dolby Vision HDR Bypass"
+#: system/settings/settings.xml
+msgctxt "#60645"
+msgid "Skips the HDMI mode switch when entering or leaving Dolby Vision playback. Only avoids the black screen if the GUI and the video use the same output: with DV mode On Demand set EVERY DV VS10 mode to SDR, with DV mode On set every one to DV. Some TVs need the mode switch to pick up the Dolby Vision signalling correctly."
+msgstr ""
+
+#. "Keep SDR state on stop"
+#: system/settings/settings.xml
+msgctxt "#60646"
+msgid "Keep SDR output state on playback stop"
+msgstr ""
+
+#. "Keep SDR output state on playback stop"
+#: system/settings/settings.xml
+msgctxt "#60647"
+msgid "Under On Demand, keeps the SDR output on playback stop instead of shutting down the Dolby Vision pipeline, avoiding a blink when returning to the GUI. Only effective when EVERY DV VS10 mode is set to SDR, so the GUI and the video share the same output."
+msgstr ""
+
 #. "Engage Dolby Vision at startup"
 #: system/settings/settings.xml
 msgctxt "#60648"
@@ -27284,7 +27308,7 @@ msgstr ""
 #. "Engage Dolby Vision at startup"
 #: system/settings/settings.xml
 msgctxt "#60649"
-msgid "Under On Demand, sets the DV core at GUI startup to the output of \"DV VS10 for DV video\", so starting and stopping playback needs no HDMI mode switch (some projectors take up to 15 seconds per switch). Only works with a VS10 conversion: set EVERY DV VS10 mode to SDR (or every one to HDR10). Skipped if \"DV VS10 for DV video\" is a Dolby Vision mode; for a GUI in Dolby Vision use DV mode On instead. Best combined with \"Disable DV black screen when starting or stopping playback\" and \"Keep SDR output state on playback stop\"."
+msgid "Under On Demand, prepares SDR output at Kodi startup when \"DV VS10 for DV video\" is set to SDR. Set every DV VS10 mode to SDR and enable \"Disable DV black screen when starting or stopping playback\" and \"Keep SDR output state on playback stop\" to keep the same output during playback and in the GUI. Resolution or refresh-rate changes can still cause a black screen."
 msgstr ""
 
 #. Title of Dolby Vision RPU conversion setting

@@ -89,7 +89,10 @@ void CDVDMsgGeneralSynchronize::Wait(std::atomic<bool>& abort, unsigned int sour
 /**
  * CDVDMsgDemuxerPacket --- DEMUXER_PACKET
  */
-CDVDMsgDemuxerPacket::CDVDMsgDemuxerPacket(DemuxPacket* packet, bool drop) : CDVDMsg(DEMUXER_PACKET)
+CDVDMsgDemuxerPacket::CDVDMsgDemuxerPacket(DemuxPacket* packet,
+                                         bool drop,
+                                         std::optional<double> prerollTarget)
+  : CDVDMsg(DEMUXER_PACKET), m_prerollTarget(prerollTarget)
 {
   m_packet = packet;
   m_drop   = drop;

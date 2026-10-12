@@ -1296,6 +1296,15 @@ const infomap player_times[] =   {{ "seektime",         PLAYER_SEEKTIME },
 ///     @skinning_v21 **[New Infolabel]** \link Player_Process_omniphony_sofa `Player.Process(omniphony.sofa)`\endlink
 ///     <p>
 ///   }
+///   \table_row3{ <b>`Player.Process(audio.dialnorm)`</b>, _string_,
+///     Original and emitted passthrough dialnorm attenuation, for example
+///     `-4 dB [COLOR FF404040]|[/COLOR] applied 0 dB`. The colored separator
+///     preserves R10 addon compatibility. Empty for decoded audio or unsupported
+///     metadata; this reports encoded values, not measured receiver gain.
+///   }
+///   \table_row3{ <b>`Player.Process(audio.dialnorm.plain)`</b>, _string_,
+///     The same values without skin markup: `-4 dB | applied 0 dB`.
+///   }
 /// \table_end
 ///
 /// -----------------------------------------------------------------------------
@@ -1316,6 +1325,8 @@ const infomap player_process[] = {{"videodecoder", PLAYER_PROCESS_VIDEODECODER},
                                   {"audio.object.count", PLAYER_PROCESS_AUDIO_OBJECT_COUNT},
                                   {"audio.object.description", PLAYER_PROCESS_AUDIO_OBJECT_DESCRIPTION},
                                   {"audio.object.layout", PLAYER_PROCESS_AUDIO_OBJECT_LAYOUT},
+                                  {"audio.dialnorm", PLAYER_PROCESS_AUDIO_DIALNORM},
+                                  {"audio.dialnorm.plain", PLAYER_PROCESS_AUDIO_DIALNORM_PLAIN},
                                   {"audio.live.bit.rate", PLAYER_PROCESS_AUDIO_LIVE_BIT_RATE},
                                   {"audio.live.kibit.rate", PLAYER_PROCESS_AUDIO_LIVE_KIBIT_RATE},
                                   {"audio.live.mibit.rate", PLAYER_PROCESS_AUDIO_LIVE_MIBIT_RATE},

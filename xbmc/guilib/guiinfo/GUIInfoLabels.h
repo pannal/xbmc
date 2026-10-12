@@ -872,6 +872,8 @@ static constexpr unsigned int SYSTEM_LOCALE = 1012;
 // generic audio run, where its two counts already sit at +13 and +14 with no
 // room beside them.
 #define PLAYER_PROCESS_AUDIO_OBJECT_LAYOUT (PLAYER_PROCESS + 170)
+#define PLAYER_PROCESS_AUDIO_DIALNORM (PLAYER_PROCESS + 171)
+#define PLAYER_PROCESS_AUDIO_DIALNORM_PLAIN (PLAYER_PROCESS + 172)
 
 // One coherent, versioned JSON snapshot for Python addon geometry comparisons.
 #define PLAYER_PROCESS_VIDEO_ACTIVE_PICTURE (PLAYER_PROCESS + 180)
