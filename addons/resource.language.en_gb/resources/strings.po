@@ -27275,6 +27275,18 @@ msgctxt "#60627"
 msgid "For Player-Led output on projectors whose automatic dynamic-range detection flip-flops between SDR and HDR. Re-applies the Dolby Vision / VS10 output after the resolution switches at playback start (the same effect as manually toggling the VS10 mode). May cause a brief blip at playback start, so leave this off unless you actually see SDR/HDR flickering."
 msgstr ""
 
+#. "Dolby Vision HDR Bypass"
+#: system/settings/settings.xml
+msgctxt "#60644"
+msgid "Disable DV black screen when starting or stopping playback"
+msgstr ""
+
+#. "Dolby Vision HDR Bypass"
+#: system/settings/settings.xml
+msgctxt "#60645"
+msgid "Skips the HDMI mode switch when entering or leaving Dolby Vision playback. Only avoids the black screen if the GUI and the video use the same output: with DV mode On Demand set EVERY DV VS10 mode to SDR, with DV mode On set every one to DV. Some TVs need the mode switch to pick up the Dolby Vision signalling correctly."
+msgstr ""
+
 #. Title of Dolby Vision RPU conversion setting
 #: system/settings/settings.xml
 msgctxt "#69196"
