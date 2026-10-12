@@ -50,7 +50,7 @@ protected:
     auto result = CScriptRunner::RunScript(addon, path, handle, resume);
 
     // remove the script handle if necessary
-    RemoveScriptHandle(handle);
+    RemoveScriptHandle(handle, script);
 
     return result;
   }
@@ -70,10 +70,14 @@ protected:
     s_scriptHandles[handle] = script;
   }
 
-  static void RemoveScriptHandle(HandleType handle)
+  static void RemoveScriptHandle(HandleType handle, TScript* script)
   {
     std::unique_lock<CCriticalSection> lock(s_critical);
-    s_scriptHandles.erase(handle);
+    // A reused handle may already belong to the next call of the same add-on
+    // if its script finished before we got here.
+    auto scriptHandle = s_scriptHandles.find(handle);
+    if (scriptHandle != s_scriptHandles.end() && scriptHandle->second == script)
+      s_scriptHandles.erase(scriptHandle);
   }
 
   static TScript* GetScriptFromHandle(HandleType handle)

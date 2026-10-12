@@ -32,11 +32,18 @@ public:
   void RegisterLanguageInvocationHandler(ILanguageInvocationHandler *invocationHandler, const std::set<std::string> &extensions);
   void UnregisterLanguageInvocationHandler(ILanguageInvocationHandler *invocationHandler);
   bool HasLanguageInvoker(const std::string &script) const;
+  /*!
+   * \brief Creates a new language invoker for the given script.
+   *
+   * \details Reusing a kept interpreter is decided by ExecuteAsync(), which
+   * claims and restarts the kept thread under one lock.
+   */
   LanguageInvokerPtr GetLanguageInvoker(const std::string& script);
 
   /*!
-  * \brief Returns addon_handle if last reusable invoker is ready to use.
-  */
+   * \brief Returns the addon_handle of the kept reusable invoker and claims it
+   * for the caller's next ExecuteAsync() with that handle, or -1.
+   */
   int GetReusablePluginHandle(const std::string& script);
 
   /*!
@@ -131,6 +138,9 @@ protected:
 
 private:
   void RemoveFailedInvocation(const CLanguageInvokerThreadPtr& thread);
+  void ReleaseLastInvokerThread();
+  bool OwnsClaim(int pluginHandle) const;
+  CLanguageInvokerThreadPtr TakeReusableThread(const std::string& script, int pluginHandle);
   void RemoveScriptPath(const std::string& script, int id);
   CScriptInvocationManager() = default;
   CScriptInvocationManager(const CScriptInvocationManager&) = delete;
@@ -151,6 +161,7 @@ private:
   LanguageInvokerThreadMap m_scripts;
   CLanguageInvokerThreadPtr m_lastInvokerThread;
   int m_lastPluginHandle = -1;
+  bool m_lastInvokerClaimed = false;
 
   std::map<std::string, int> m_scriptPaths;
   int m_nextId = 0;
