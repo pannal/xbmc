@@ -248,6 +248,42 @@ bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
   return result;
 }
 
+void CWinSystemAmlogicGLESContext::EngageDolbyVisionAtStartup()
+{
+  if (!m_firstStartGUI)
+    return;
+  // A usable first GUI window consumes startup even with DV Off/On or this option off.
+  m_firstStartGUI = false;
+
+  if (aml_dv_mode() != DV_MODE_ON_DEMAND || aml_dv_playback_active())
+    return;
+
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  if (!settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_ENGAGE_AT_STARTUP))
+    return;
+
+  // The DV-video selector offers SDR and Off (native DV); only SDR is a conversion.
+  const int configuredMode = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
+  if (configuredMode != static_cast<int>(DOLBY_VISION_OUTPUT_MODE_SDR10))
+  {
+    CLog::Log(LOGINFO, "CWinSystemAmlogicGLESContext::{}: engage at startup skipped: set DV VS10 for DV video to SDR",
+              __FUNCTION__);
+    return;
+  }
+
+  CSysfsPath dolbyVisionMode{"/sys/module/amdolby_vision/parameters/dolby_vision_mode"};
+  const auto existingMode = dolbyVisionMode.Get<unsigned int>();
+  // Missing/unreadable DV hardware is not a mode mismatch.
+  if (!existingMode || *existingMode == static_cast<unsigned int>(configuredMode))
+    return;
+
+  aml_dv_on(configuredMode);
+  // Publish the new HDMI signalling as well as the DV core's internal mode.
+  aml_dv_display_trigger();
+  CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: set SDR startup output (existing mode {})",
+            __FUNCTION__, *existingMode);
+}
+
 bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
                                                bool fullScreen,
                                                RESOLUTION_INFO& res)
@@ -275,7 +311,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   if (aml_has_frac_rate_policy())
   {
     CSysfsPath amhdmitx0_frac_rate_policy{"/sys/class/amhdmitx/amhdmitx0/frac_rate_policy"};
-    cur_fractional_rate = amhdmitx0_frac_rate_policy.Get<int>().value();
+    cur_fractional_rate = amhdmitx0_frac_rate_policy.Get<int>().value_or(0);
   }
 
   // If changing in or out of Dolby Vision and it is on then make sure we do a mode swtich - TODO: combine with DV InfoFrame?
@@ -351,6 +387,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
       (fractional_rate == cur_fractional_rate))
   {
     CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: No need to create a new window", __FUNCTION__);
+    EngageDolbyVisionAtStartup();
     display.Finish(m_displayGeometryReady && !m_delayDispReset && CanRender()
                        ? CAMLDisplayLifecycle::Phase::READY
                        : CAMLDisplayLifecycle::Phase::WAITING_FOR_RESET);
@@ -401,6 +438,8 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     ObserveEndDisplay("bind-failed");
     return false;
   }
+
+  EngageDolbyVisionAtStartup();
 
   InvalidateRenderTarget(); // Replacement surface is now bound; callbacks do not establish readiness.
   ResetVSync(); // A newly bound EGL surface needs its own interval initialization.

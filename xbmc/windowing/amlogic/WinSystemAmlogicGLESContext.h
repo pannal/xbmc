@@ -93,6 +93,7 @@ protected:
   void PresentRenderImpl(bool rendered) override;
 
 private:
+  void EngageDolbyVisionAtStartup();
   NativeGuiWait<> m_nativeGuiWait;
   int m_nativeGuiWaitReportedError{0};
   bool m_vsyncFailureReported{false}; // One failure per streak; retry remains on main.
@@ -164,6 +165,7 @@ private:
   int m_menuFboHeight = 0;
   bool m_menuFboHasContent = false;
   bool m_menuScissor = false;
+  bool m_firstStartGUI = true;
 };
 
 }
