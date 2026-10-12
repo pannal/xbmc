@@ -239,8 +239,10 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
 // CPU-only cancellation; pure same-source seek/reset may retain accepted file geometry.
 void aml_subtitle_active_area_invalidate(bool preserveGeometry = false);
 bool aml_subtitle_native_dv();
+// The default exposes only conservative geometry. Only subtitle placement may
+// opt into the separate estimate; it is never evidence for native L5 or cropping.
 bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
-    uint16_t& bottom, uint16_t& left, uint16_t& right);
+    uint16_t& bottom, uint16_t& left, uint16_t& right, bool allowSubtitleEstimate = false);
 bool aml_dv_get_l5_override(uint16_t& top, uint16_t& bottom, uint16_t& left, uint16_t& right);
 bool aml_dv_detect_active_area_enabled();
 bool aml_dv_detect_active_area_stable();

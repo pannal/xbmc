@@ -24,6 +24,7 @@ public:
   BitstreamStats GetBitstreamStats() const override ;
   int GetBlockSize() override;
   void SetReadRate(uint32_t rate) override;
+  void SetReadWaitCallback(const std::function<void()>& callback) override;
   bool GetCacheStatus(XFILE::SCacheStatus *status) override;
 
 protected:

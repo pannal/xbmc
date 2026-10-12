@@ -673,6 +673,10 @@ void CVideoPlayerVideo::Process()
 
       m_renderManager.DiscardBuffer();
       LogSyncTransition("flush-complete", DVD_NOPTS_VALUE);
+      // A queued seek flush ends the old target lifetime. Local decoder resets
+      // retain it so convergence replay cannot publish old preroll again.
+      if (m_pVideoCodec)
+        m_pVideoCodec->SetPrerollTarget(DVD_NOPTS_VALUE);
       FlushMessages();
       std::static_pointer_cast<CDVDMsgVideoFlush>(pMsg)->request->state =
           CVideoFlushRequest::State::COMPLETED;
@@ -749,6 +753,10 @@ void CVideoPlayerVideo::Process()
       m_isEOS = false;
       DemuxPacket* pPacket = std::static_pointer_cast<CDVDMsgDemuxerPacket>(pMsg)->GetPacket();
       bool bPacketDrop = std::static_pointer_cast<CDVDMsgDemuxerPacket>(pMsg)->GetPacketDrop();
+      const auto& prerollTarget =
+          std::static_pointer_cast<CDVDMsgDemuxerPacket>(pMsg)->m_prerollTarget;
+      if (prerollTarget)
+        m_pVideoCodec->SetPrerollTarget(*prerollTarget);
 
       // Carry 3D MVC subtitle depth (ss_offset_sequence_id from MPLS) into
       // the video picture and per-picture overlay metadata. This does not

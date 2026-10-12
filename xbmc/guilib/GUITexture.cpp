@@ -341,6 +341,7 @@ void CGUITexture::Render(float left,
   if (y[3] == y[1]) y[3] += 1.0f;
   if (x[3] == x[1]) x[3] += 1.0f;
 
+  CServiceBroker::GetWinSystem()->GetGfxContext().CaptureControlQuad(x, y, z);
   Draw(x, y, z, texture, diffuse, orientation);
 }
 

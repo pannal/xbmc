@@ -4,7 +4,7 @@
 Executes real CAMLDisplayLifecycle/AMLSession, full AML base and GLES window
 creation, SetFullScreen/ResetRenderSystem/Resize/Present, graphics resolution
 request/retry methods and RenderManager::UpdateResolution/FrameMove. FrameMove
-queue, GUI, capture and clock-sync callees are stubs; its readiness guard is real. Native mode/DV/EGL,
+queue, active-picture, GUI, capture and clock-sync callees are stubs; its readiness guard is real. Native mode/DV/EGL,
 GLES geometry implementation, services and callbacks are controlled stubs.
 Independent presentation is absent in this fixture; its stand-ins reject entry.
 Diagnostic formatting and native-wait/VSync backend effects are stand-ins.
@@ -324,6 +324,7 @@ public:
   void ProcessPresentationQueue(){}
   void UpdateGuiPresentationState(bool){}
   void ManageCaptures(){}
+  void UpdateActivePicture(){}
   void FrameMove();
   StreamHdrType m_hdrType_override{StreamHdrType::HDR_TYPE_HDR10};float m_fps{24};
   struct{StreamHdrType hdrType{StreamHdrType::HDR_TYPE_NONE};unsigned iWidth{1920},iHeight{1080};std::string stereoMode;}m_picture;

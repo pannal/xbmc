@@ -20,6 +20,8 @@ public:
   ~CGUIControlLookup(void) override = default;
 
   CGUIControl *GetControl(int id, std::vector<CGUIControl*> *idCollector = nullptr) override;
+  void CollectRenderBounds(int windowID, GUIRenderBoundsMap& bounds) const;
+
 protected:
   typedef std::multimap<int, CGUIControl *> LookupMap;
 

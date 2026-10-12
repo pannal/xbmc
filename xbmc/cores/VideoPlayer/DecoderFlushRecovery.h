@@ -153,8 +153,8 @@ private:
   // into the same broken section must not repeat. After this many, only the
   // local reset remains (the behaviour before recovery) until playback is
   // RECOVERY_SECTION away from the last recovery, or a new stream starts.
-  // The position is the player clock, which keeps running on A/V content
-  // while video is stalled: such a stall gets one reseek per section.
+  // The position follows the player clock during playback and the pending
+  // seek target until startup sync re-anchors it, excluding EDL cuts in both.
   static constexpr unsigned int RECOVERY_ATTEMPTS_PER_SECTION{2};
   static constexpr std::chrono::minutes RECOVERY_SECTION{10};
 

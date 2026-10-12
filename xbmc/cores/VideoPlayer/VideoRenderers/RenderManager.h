@@ -398,7 +398,7 @@ private:
 
   CRect CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view, bool useActiveArea, double pts);
   CRect CalcPictureActiveArea(const CRect& src, const CRect& dst, const CRect& view,
-                             double pts, bool canvasOverride);
+                             double pts, bool canvasOverride, bool allowSubtitleEstimate = false);
   void UpdateActivePicture();
 
   std::atomic_bool m_subtitleEnabled{false};

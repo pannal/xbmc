@@ -122,6 +122,24 @@ void expect(CWinSystemAmlogic& window,unsigned int expected,bool pending){
 }
 void confirm(CWinSystemAmlogic& window){window.RefreshHDRCapabilities();
  Clock::now+=std::chrono::seconds(1);window.RefreshHDRCapabilities();}
+void displayPeakRefresh(){
+ CWinSystemAmlogic window;
+ auto values=files(15);values["dv_cap"]=supported+"TmaxQ: 15pqi\n";
+ install(values);window.RefreshHDRCapabilities();assert(AML::DisplayPeak::Resolve(false,100)==934);
+ // Another sink, same formats: peak refresh must not depend on format changes.
+ values["rawedid"]="00ffffffffffff00"+std::string(240,'1');
+ values["dv_cap"]=supported+"TmaxQ: 20pqi\n";
+ install(values);window.RefreshHDRCapabilities();assert(AML::DisplayPeak::Resolve(false,100)==1943);
+ values["hpd_state"]="0";install(values);window.RefreshHDRCapabilities();
+ assert(AML::DisplayPeak::Resolve(false,100)==1000);
+ assert(AML::DisplayPeak::Resolve(true,100)==100);
+ values=files(1);values["hdr_cap"]=hdr(1)+"Supported SMD type1: 1\nMax: 128\n";
+ install(values);window.RefreshHDRCapabilities();assert(AML::DisplayPeak::Resolve(false,100)==800);
+ // The peak from the accepted replacement publishes before format-loss debounce.
+ assert(window.m_hdrRefreshPending.load());
+ values["hdr_cap"]=hdr(1);install(values);window.RefreshHDRCapabilities();
+ assert(AML::DisplayPeak::Resolve(false,100)==1000);
+}
 void pure(){
  for(int bits=0;bits<16;++bits){
   auto parsed=AML::HDR::Parse(hdr(bits),bits&8?supported:unsupported);
@@ -248,7 +266,7 @@ void concurrency(){
  for(int i=0;i<300;++i){write("hdr_cap",hdr(i%2?3:4));confirm(window);expect(window,i%2?3:4,false);}
  stop.store(true);reader.join();assert(reads.load()>0);
 }
-int main(int argc,char** argv){assert(argc==2);fixtureDirectory=argv[1];pure();refresh();lossConfirmation();concurrency();}
+int main(int argc,char** argv){assert(argc==2);fixtureDirectory=argv[1];displayPeakRefresh();pure();refresh();lossConfirmation();concurrency();}
 '''
 
 PROBE_PRELUDE = r'''
@@ -324,7 +342,9 @@ int main(int argc,char** argv){
  assert(argc==2);fixtureDirectory=argv[1];CWinSystemAmlogic window;
  scriptedValues=files(15);window.RefreshHDRCapabilities();expect(window,15,false);
  for(const auto& field:{"hpd_state","edid_parsing","rawedid","hdr_cap","dv_cap"}){
+  AML::DisplayPeak::Publish(934);
   scriptedReads.clear();changeField=field;window.RefreshHDRCapabilities();expect(window,15,true);
+  assert(AML::DisplayPeak::Resolve(false,100)==1000);
  }
  changeField.clear();scriptedReads.clear();scriptedValues=files(0);
  confirm(window);expect(window,0,false);

@@ -50,9 +50,13 @@ using namespace std::chrono_literals;
 
 namespace
 {
-bool TextSubtitleNeedsSignal(bool restricted, const CRect& active, const CRect& view,
-                             float baseline)
+bool TextSubtitleNeedsSignal(bool restricted, const CRect& placement, const CRect& active,
+                             const CRect& view, float baseline)
 {
+  // Restriction to an estimated picture is not proof of native mask clearance.
+  // Keep protection while visible text uses geometry the strict path cannot prove.
+  if (placement != active)
+    return true;
   if (restricted)
     return false; // existing libass restriction policy
   // A baseline only proves vertical clearance. Preserve visible-text signaling
@@ -1186,7 +1190,8 @@ RESOLUTION CRenderManager::GetResolution()
 }
 
 CRect CRenderManager::CalcPictureActiveArea(const CRect& src, const CRect& dst, const CRect& view,
-                                           double pts, bool canvasOverride)
+                                           double pts, bool canvasOverride,
+                                           bool allowSubtitleEstimate)
 {
   // Source/detector geometry is shared with subtitle placement. The public
   // snapshot additionally maps applicable absolute overrides from the final
@@ -1220,12 +1225,13 @@ CRect CRenderManager::CalcPictureActiveArea(const CRect& src, const CRect& dst, 
       right = metadata.level5_active_area_right_offset;
     }
     else if (!override && !phantom)
-      aml_subtitle_detect_active_area_get(m_picture.iWidth, m_picture.iHeight, top, bottom, left, right);
+      aml_subtitle_detect_active_area_get(m_picture.iWidth, m_picture.iHeight, top, bottom, left,
+                                         right, allowSubtitleEstimate);
     inFrame = CRect(static_cast<float>(left), static_cast<float>(top),
                     coded.x2 - right, coded.y2 - bottom);
   }
   else if (!stereo && aml_subtitle_detect_active_area_get(
-               m_picture.iWidth, m_picture.iHeight, top, bottom, left, right))
+               m_picture.iWidth, m_picture.iHeight, top, bottom, left, right, allowSubtitleEstimate))
     inFrame = CRect(static_cast<float>(left), static_cast<float>(top),
                     coded.x2 - right, coded.y2 - bottom);
 
@@ -1235,7 +1241,7 @@ CRect CRenderManager::CalcPictureActiveArea(const CRect& src, const CRect& dst, 
 CRect CRenderManager::CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view,
                                           bool useActiveArea, double pts)
 {
-  const CRect active = CalcPictureActiveArea(src, dst, view, pts, false);
+  const CRect active = CalcPictureActiveArea(src, dst, view, pts, false, true);
   const bool stereo = (!m_picture.stereoMode.empty() && m_picture.stereoMode != "mono") ||
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF;
   const bool applyUserPos = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
@@ -1354,6 +1360,9 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     bool signalSubtitles = false;
     if (subsSignalMode == 2)
     {
+      // A placement estimate is not proof of clearance from native L5 bars.
+      // Keep masking protection on the conservative source/override geometry.
+      const CRect signalActive = CalcPictureActiveArea(src, dst, view, frame->present.pts, false);
       signalSubtitles = m_overlays.HasTextOverlay(frame->overlays);
       if (signalSubtitles)
       {
@@ -1361,10 +1370,11 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
         const float margin = CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->GetVerticalMarginPerc();
         const float baseline = static_cast<float>(resInfo.iSubtitles) -
                                margin * static_cast<float>(resInfo.iHeight) / 100.0f;
-        signalSubtitles = TextSubtitleNeedsSignal(restrictSubsToActiveArea, active, view, baseline);
+        signalSubtitles = TextSubtitleNeedsSignal(restrictSubsToActiveArea, active, signalActive,
+                                                  view, baseline);
       }
       if (m_picture.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION && aml_subtitle_native_dv())
-        signalSubtitles |= m_overlays.HasImageSubOutsideActiveArea(prepared, active);
+        signalSubtitles |= m_overlays.HasImageSubOutsideActiveArea(prepared, signalActive);
     }
     if (subsSignalMode == 2)
       aml_dv_set_subtitles(signalSubtitles);

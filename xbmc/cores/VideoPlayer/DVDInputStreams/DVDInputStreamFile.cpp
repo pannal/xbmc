@@ -165,3 +165,12 @@ void CDVDInputStreamFile::SetReadRate(uint32_t rate)
               "CDVDInputStreamFile::SetReadRate - set cache base rate to {} B/s (before read factor)",
               maxrate);
 }
+
+void CDVDInputStreamFile::SetReadWaitCallback(const std::function<void()>& callback)
+{
+  if (m_pFile)
+  {
+    auto waitCallback = callback;
+    m_pFile->IoControl(IOCTRL_CACHE_SET_WAIT_CALLBACK, &waitCallback);
+  }
+}

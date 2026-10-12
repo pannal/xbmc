@@ -24,12 +24,9 @@ clipped to the renderer's visible view before coordinate conversion.
 The conversion inverts Kodi's normal GUI scaling for this reference canvas,
 including video calibration/overscan, GUI insets, skin zoom and output pixel
 ratio. It does not use the currently rendering window or group's transform.
-For a normally scaled XML window of coordinate size `W×H`, convert its final
-window-space button bounds with `x * 1920 / W` and `y * 1080 / H`. A 1080i window
-already uses these units. Include window/group origins and any animation or
-other control transforms when obtaining those bounds: Python control positions
-alone are local coordinates, not necessarily the final visible rectangle.
-Custom unscaled windows require their own screen-to-GUI-reference conversion.
+Use the companion rendered-button snapshot below for GUI comparisons. Python
+control getters return cached local positions and sizes; adding group origins to
+those values does not account for dynamic text width and animations.
 Calibration can produce bounds outside 0–1920 or 0–1080; do not clamp them again.
 
 The rectangle describes geometry **before temporary OSD/subtitle suppression**.
@@ -76,10 +73,11 @@ bounds from the previous item or substitute source L5 offsets. The caller owns
 fallback policy; conservatively signalling while a marker is visible is safe
 when protecting it from possible cropping, but the API does not assert a signal.
 
-PM4K's intended valid-snapshot rule is:
+PM4K's intended signalling rule is:
 
 ```text
-signal = full OSD open OR any visible marker button not fully contained in bounds
+signal = full OSD open OR visible marker AND (
+    either snapshot unavailable OR marker not fully contained in active picture)
 ```
 
 Containment needs all four edges, including a button that only partly crosses an
@@ -92,3 +90,60 @@ The host check requires g++ and fmt headers; set `FMT_INCLUDE` to an existing
 include directory containing `fmt/` if the host does not install them.
 These checks and CE syntax compilation do not establish native playback, rendered
 GUI, HDMI behaviour, linking or inclusion in an image.
+
+## Rendered-button snapshot
+
+```python
+raw = xbmc.getInfoLabel('Control.GetRenderBounds(12005,901)')
+```
+
+Supply the actual numeric window ID followed by the control ID. The window ID
+includes any instance bits; the control ID must be 1–16777215. One call returns
+one coherent value snapshot, without accessing GUI objects on the addon thread:
+
+```json
+{"version":1,"coordinate_system":"gui-1080","width":1920,"height":1080,"window_id":12005,"control_id":901,"instance":42,"visible":true,"valid":true,"left":1500,"top":900,"right":1850,"bottom":980}
+```
+
+Edges use exactly the same reference conversion and outer-edge convention as
+`Player.Process(video.active.picture)`. Compare the edges directly; no additional
+window, group or screen scaling is required. `instance` is an opaque identifier
+for the native control's lifetime, not a frame or timestamp. Copies/replacements
+get fresh instances. The two APIs are individually atomic and may describe
+adjacent GUI frames; they are not a joint transaction.
+
+Version 1 supports standard button controls on GL/GLES with output stereo off
+and without debug hit-rectangle overlays.
+It captures submitted texture and font quad envelopes, including current text
+width, both labels, scrolling, glyph overhang, shadows, window/group placement,
+animations, camera projection, structural parent/text clipping and raster
+rounding. Both render passes contribute. Bounds are clipped to the display
+viewport before reference conversion. This is a conservative axis-aligned draw
+envelope, not a texture-alpha silhouette or a test for occlusion by another
+window. It can include transparent pixels and gaps between glyphs.
+
+Dirty-region scissors restrict repainting, not the retained button; they do not
+shrink this snapshot. Clean frames keep their last displayed bounds. Changes to
+the reference transform or display size invalidate retained bounds until a new
+render. A changed
+control becomes invalid until a render supplies new bounds. Visible closing
+animations remain eligible. Ancestor hiding/culling, resource release, removal,
+window closure/reload and replacement prevent reuse of a prior valid rectangle.
+Repeated control IDs, unsupported control types/backends/stereo, no completed
+nonempty draw or invalid scaling yield `valid:false` with all four edges `null`.
+Missing/closed controls return `instance:0`, `visible:false`, `valid:false`.
+`visible` describes GUI eligibility, including ancestors and processing state;
+it is not proof of nontransparent pixels. It does not replace the addon's marker
+visibility state. An ambiguous ID yields `visible:true`, `valid:false`.
+
+Other builds may return an empty label. Treat empty/malformed data, invalid IDs,
+unknown versions/coordinates or `valid:false` from either API as unavailable.
+While an addon-owned marker is visible, the intended fallback is to signal OSD.
+Keep reading fresh snapshots; never retain a previous valid rectangle as fallback.
+Neither getter writes OSD properties or changes control behavior. PM4K comparison
+and signalling remain a separate change.
+
+`python3 tools/test-control-render-bounds.py` exercises production capture,
+snapshot, label, parsing and lifetime code with host GUI/GPU/service substitutes.
+It shares the fmt-header requirement described above. Actual native playback,
+rendered GUI and HDMI behavior still require device verification.

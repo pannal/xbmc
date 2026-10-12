@@ -49,6 +49,11 @@ public:
   unsigned int m_ac3FrameSize = 0;
   unsigned int m_dtsSamplesPerFrame = 0;
   int m_dialNorm = 0; // Dialog Normalization in dB (TrueHD Atmos 16ch)
+  // Encoded attenuation before and after the existing passthrough rewrite.
+  // Unknown is distinct from a known 0 dB; these are not measured receiver gains.
+  bool m_hasDialNorm = false;
+  int m_dialNormOriginal = 0;
+  int m_dialNormApplied = 0;
   bool m_hasAtmos = false; // TrueHD Atmos (16-channel presentation)
   // Encoded elements in the presentation: bed/static channels plus dynamic
   // objects. Both codecs state it - TrueHD as 16ch_channel_count in the major

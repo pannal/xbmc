@@ -410,6 +410,7 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
   // This overload also serves a codec change mid-playback, which reaches us
   // without a CloseStream, so retire the outgoing stream's figures here too
   // rather than let them describe the incoming one until its first frame lands.
+  m_dataCacheCore.SetAudioDialNorm();
   m_processInfo.SetAudioObjectCount(-1);
   m_processInfo.SetAudioElementCount(-1);
   m_processInfo.SetAudioObjectFormat("");
@@ -485,6 +486,7 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
 
   // No frames will arrive to say otherwise once the codec is gone, so the last
   // figures this stream published have to be retired here.
+  m_dataCacheCore.SetAudioDialNorm();
   m_processInfo.SetAudioObjectCount(-1);
   m_processInfo.SetAudioElementCount(-1);
   m_processInfo.SetAudioObjectFormat("");
@@ -686,6 +688,7 @@ void CVideoPlayerAudio::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))
     {
+      m_dataCacheCore.SetAudioDialNorm();
       if (m_pAudioCodec)
         m_pAudioCodec->Reset();
       m_audioSink.Flush();
@@ -704,6 +707,7 @@ void CVideoPlayerAudio::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH))
     {
+      m_dataCacheCore.SetAudioDialNorm();
       m_syncEpoch = std::static_pointer_cast<CDVDMsgStreamFlush>(pMsg)->epoch;
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       m_audioSink.Flush();
@@ -1334,6 +1338,10 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   // sync, DD+ in the object metadata its frames carry, and m_hasAtmos is set by
   // whichever parser found them.
   const CAEStreamInfo& streamInfo = audioframe.format.m_streamInfo;
+  // Only output frames describe this stream. A periodic query of the codec's
+  // cached format during a reset could republish the previous frame instead.
+  m_dataCacheCore.SetAudioDialNorm(audioframe.passthrough && streamInfo.m_hasDialNorm,
+                                 streamInfo.m_dialNormOriginal, streamInfo.m_dialNormApplied);
   const bool haveAtmosInfo = audioframe.passthrough && streamInfo.m_hasAtmos;
   const int atmosElements = haveAtmosInfo ? static_cast<int>(streamInfo.m_atmosChannels) : -1;
 
@@ -1729,6 +1737,7 @@ bool CVideoPlayerAudio::SwitchCodecIfNeeded()
 
   // Use the new codec (passthrough state changed)
   m_pAudioCodec = std::move(codec);
+  m_dataCacheCore.SetAudioDialNorm();
 
   // LAV: Set up sync on the new codec if it's passthrough
   if (isPassthrough)

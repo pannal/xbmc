@@ -36,6 +36,9 @@ def source(aml=None):
         code += aml[aml.index('enum class DetectEdgeReason'):aml.index('enum class DetectAxisConfidence')]
         code += 'template<typename Luma>\n' + function(aml, 'static DetectEdgeMeasurement detect_refine_edge(') + '\n'
         code += '#define TYPED_EDGE_EVIDENCE 1\nstd::vector<DetectEdgeMeasurement> edgeMeasurements;\n'
+        if 'static DetectEdgeMeasurement detect_subtitle_edge(' in aml:
+            code += 'template<typename Luma>\n' + function(aml, 'static DetectEdgeMeasurement detect_subtitle_edge(') + '\n'
+            code += '#define SUBTITLE_EDGE_ESTIMATE 1\nstd::vector<DetectEdgeMeasurement> subtitleEdgeMeasurements;\n'
     elif 'static uint16_t detect_refine_edge(' in aml:
         code += 'template<typename Luma>\n' + function(aml, 'static uint16_t detect_refine_edge(') + '\n'
     code += 'Result Edges(Frame* frame){int lastWidth=frame->width,lastHeight=frame->height;\n'
@@ -44,6 +47,8 @@ def source(aml=None):
     code += edges
     if typed:
         code += 'edgeMeasurements.assign(std::begin(measurements),std::end(measurements));\n'
+        if 'static DetectEdgeMeasurement detect_subtitle_edge(' in aml:
+            code += 'subtitleEdgeMeasurements.assign(std::begin(subtitleMeasurements),std::end(subtitleMeasurements));\n'
     code += 'return {sTop,sBottom,sLeft,sRight' + (',rejectedSpatial' if typed else '') + '};}\n'
     code += 'constexpr uint16_t Unobserved=' + ('UINT16_MAX' if typed else '0') + ';\n'
     code += re.search(r'enum class DetectAxisConfidence\s*\{.*?\};', aml, re.S).group() + '\n'
@@ -52,10 +57,15 @@ def source(aml=None):
         code += function(aml, 'static DetectPairEvidence detect_pair_evidence(') + '\n'
     code += function(aml, 'static DetectAxisConfidence detect_axis_consensus(') + '\n'
     code += function(aml, 'static bool detect_samples_consensus(') + '\n'
+    if 'static bool detect_subtitle_consensus(' in aml:
+        code += function(aml, 'static bool detect_subtitle_consensus(') + '\n'
+        code += 'Result SubtitleEdges(Frame* frame){Edges(frame);auto& m=subtitleEdgeMeasurements;return {m[0].value,m[1].value,m[2].value,m[3].value,std::any_of(m.begin(),m.end(),[](const auto& e){return e.RejectedSpatialEvidence();})};}\n'
     code += re.search(r'static const uint32_t s_commonAR\[\] = \{.*?\};', aml, re.S).group() + '\n'
     final = scan[scan.index('    /* Require enough usable samples'):scan.index('\n  }\n\n  detect_publish(')]
     code += 'bool Select(const uint16_t* samples_top,const uint16_t* samples_bottom,const uint16_t* samples_left,const uint16_t* samples_right,int validSamples,int lastWidth,int lastHeight,DetectResult& result,const bool* rejected=nullptr){\n'
     code += 'bool known[7]{};const bool* samples_rejected=rejected?rejected:known;(void)samples_rejected;\n'
+    if 'static bool detect_subtitle_consensus(' in aml:
+        code += '(void)detect_subtitle_consensus;\n'
     code += 'constexpr int numSeeks=7;uint16_t detTop=0,detBottom=0,detLeft=0,detRight=0;{\n'
     code += final + '\n}result={detTop,detBottom,detLeft,detRight};return true;cleanup:return false;}\n'
     cache = (ROOT / 'xbmc/cores/DataCacheCore.cpp').read_text()

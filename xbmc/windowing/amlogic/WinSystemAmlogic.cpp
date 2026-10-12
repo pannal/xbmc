@@ -348,6 +348,7 @@ void CWinSystemAmlogic::RefreshHDRCapabilities()
 {
   std::lock_guard<std::mutex> refreshLock(m_hdrRefreshMutex);
   std::string edid;
+  int peakNits = 0;
   const auto caps = AML::HDR::ReadStable([](const char* name) -> std::optional<std::string> {
     std::ifstream file(std::string("/sys/class/amhdmitx/amhdmitx0/") + name);
     if (!file.is_open())
@@ -357,14 +358,18 @@ void CWinSystemAmlogic::RefreshHDRCapabilities()
     if (file.bad() || !file.eof() || AML::HDR::Trim(value).empty())
       return std::nullopt;
     return value;
-  }, &edid);
+  }, &edid, &peakNits);
   if (!caps.has_value())
   {
+    // Discard the automatic peak during an unavailable/mixed sink snapshot.
+    AML::DisplayPeak::Publish(0);
     // Disconnection, EDID-not-ready and failed reads are not a valid loss.
     m_hdrLossCandidate.reset();
     m_hdrRefreshPending.store(true);
     return;
   }
+  // Peak belongs to this accepted sink snapshot, independently of format-loss debounce.
+  AML::DisplayPeak::Publish(peakNits);
   const auto previous = GetDisplayHDRCapabilities();
   const auto mask = AML::HDR::Mask(*caps);
   if ((AML::HDR::Mask(previous) & ~mask) != 0 || (!m_hdrCapsValid && mask == 0))

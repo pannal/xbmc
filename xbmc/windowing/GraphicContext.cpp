@@ -359,6 +359,18 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
     {
       SetVideoResolution(targetResolutionOnStop, false);
     }
+#if defined(HAS_LIBAMCODEC)
+    else if (!bTriggerUpdateRes)
+    {
+      // "On start" keeps the playback mode on stop, so no window update runs
+      // and CreateNewWindow never sees the HDR type leave Dolby Vision: the
+      // forced mode switch that re-handshakes the sink on DV exit is skipped,
+      // and a Display-LED TV stays latched in DV tunnel, decoding the SDR GUI
+      // as purple/green. Re-apply the current mode; CreateNewWindow switches
+      // only on a DV transition and otherwise has nothing to do.
+      SetVideoResolution(m_Resolution, false);
+    }
+#endif
   }
   else
     SetVideoResolution(RES_WINDOW, false);
@@ -882,6 +894,62 @@ float CGraphicContext::GetTransformDepth(int32_t depthOffset)
   depth /= m_layer;
   depth = depth * 2 - 1;
   return depth;
+}
+
+void CGraphicContext::CaptureControlQuad(const float* x, const float* y, const float* z)
+{
+  if (!m_controlBounds)
+    return;
+  float px[4], py[4];
+  for (int i = 0; i < 4; ++i)
+  {
+    px[i] = x[i];
+    py[i] = y[i];
+    float pz = z[i];
+    CServiceBroker::GetRenderSystem()->Project(px[i], py[i], pz);
+  }
+  m_controlBounds->Union(CRect(*std::min_element(px, px + 4), *std::min_element(py, py + 4),
+                               *std::max_element(px, px + 4), *std::max_element(py, py + 4)));
+}
+
+void CGraphicContext::CaptureControlRect(const CRect& rect)
+{
+  if (m_controlBounds && !rect.IsEmpty())
+    m_controlBounds->Union(GenerateAABB(rect));
+}
+
+void CGraphicContext::CaptureControlText(const CRect& glyphs, float x, float y, float dx, float dy)
+{
+  if (!m_controlBounds || glyphs.IsEmpty())
+    return;
+  const float sx = GetGUIScaleX(), sy = GetGUIScaleY();
+  const float fx = ScaleFinalXCoord(x, y), fy = ScaleFinalYCoord(x, y);
+  const CPoint correction(sx * (std::round(fx) - fx), sy * (std::round(fy) - fy));
+  CRect bounds(glyphs.x1 * sx + x + dx, glyphs.y1 * sy + y + dy, glyphs.x2 * sx + x + dx,
+               glyphs.y2 * sy + y + dy);
+  auto* renderer = CServiceBroker::GetRenderSystem();
+  if (renderer->ScissorsCanEffectClipping())
+  {
+    bounds += correction;
+    bounds = GenerateAABB(bounds);
+    CRect clip = renderer->ClipRectToScissorRect(GetClipRegion());
+    // GL/GLES round structural scissors to physical pixel edges. Ignore the
+    // temporary dirty repaint scissor, which does not describe retained pixels.
+    clip =
+        CRect(std::round(clip.x1), std::round(clip.y1), std::round(clip.x2), std::round(clip.y2));
+    bounds.Intersect(clip);
+    m_controlBounds->Union(bounds);
+  }
+  else
+  {
+    // Font vertex-shader clipping precedes fractional raster correction.
+    bounds.Intersect(GetClipRegion());
+    if (!bounds.IsEmpty())
+    {
+      bounds += correction;
+      CaptureControlRect(bounds);
+    }
+  }
 }
 
 CRect CGraphicContext::GenerateAABB(const CRect &rect) const

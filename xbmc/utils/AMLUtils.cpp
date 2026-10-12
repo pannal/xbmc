@@ -1900,6 +1900,27 @@ void aml_dv_close()
 
   s_dvDiscDeferred = false;
   s_dvDiscDeferredSinceMs = 0;
+
+  // On Demand mode with active SDR output state:
+  // Avoid shutting down the DV pipeline on playback stop when the core is
+  // currently running in an SDR-ish output mode, preventing unnecessary
+  // HDMI mode switches/blinks when returning to the SDR GUI.
+  if (aml_dv_mode() == DV_MODE_ON_DEMAND && aml_is_dv_enable())
+  {
+    // Ensure this optimization is opt-in via a setting to protect VS10-only / non-DV setups
+    bool keep_sdr_state = settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_KEEP_SDR_STATE);
+
+    int current_dv_mode = aml_dv_dolby_vision_mode();
+    if (keep_sdr_state && (current_dv_mode == DOLBY_VISION_OUTPUT_MODE_SDR10 || current_dv_mode == DOLBY_VISION_OUTPUT_MODE_BYPASS))
+    {
+      // What aml_dv_off() would stop: the active-area detect must not keep
+      // running in the GUI, and its L5 values must not carry over.
+      aml_dv_detect_active_area_stop();
+      aml_dv_dump_state("dv_close/post(dv_mode_on_demand_sdr_skip)");
+      return;
+    }
+  }
+
   if (aml_is_dv_enable())
     aml_dv_off();
   aml_dv_dump_state("dv_close/post");
@@ -2758,6 +2779,10 @@ struct DetectSource
   std::shared_ptr<const DetectResult> result; // protected by s_detectSourceMutex
   // Accepted file-wide geometry may outlive a cancelled probe, never its admission.
   std::shared_ptr<const DetectResult> retained;
+  // Subtitle placement has a separate error contract. These must never pass
+  // through detect_publish or become strict/native retained geometry.
+  std::shared_ptr<const DetectResult> subtitleResult;
+  std::shared_ptr<const DetectResult> retainedSubtitle;
 };
 static std::mutex s_detectSourceMutex;
 static std::shared_ptr<DetectSource> s_detectSource = std::make_shared<DetectSource>("");
@@ -2781,7 +2806,10 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
                                                  nativeDV, allowProbe, expectedSource);
   if (allowProbe && previous->width == width && previous->height == height &&
       previous->nativeDV == nativeDV && previous->allowProbe == allowProbe)
+  {
     s_detectSource->retained = previous->retained;
+    s_detectSource->retainedSubtitle = previous->retainedSubtitle;
+  }
   s_detectStable.store(false);
   return true;
 }
@@ -2794,11 +2822,17 @@ void aml_subtitle_active_area_invalidate(bool preserveGeometry)
   {
     if (!s_detectSource->superseded->load() && s_detectSource->result)
       s_detectSource->retained = s_detectSource->result;
+    if (!s_detectSource->superseded->load() && s_detectSource->subtitleResult)
+      s_detectSource->retainedSubtitle = s_detectSource->subtitleResult;
   }
   else
+  {
     s_detectSource->retained.reset();
+    s_detectSource->retainedSubtitle.reset();
+  }
   s_detectSource->superseded->store(true);
   s_detectSource->result.reset();
+  s_detectSource->subtitleResult.reset();
   s_detectStable.store(false);
   CServiceBroker::GetDataCacheCore().ClearVideoDoViFrameMetadata();
 }
@@ -2810,7 +2844,7 @@ bool aml_subtitle_native_dv()
 }
 
 bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
-    uint16_t& bottom, uint16_t& left, uint16_t& right)
+    uint16_t& bottom, uint16_t& left, uint16_t& right, bool allowSubtitleEstimate)
 {
   top = bottom = left = right = 0;
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
@@ -2819,8 +2853,12 @@ bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
       : settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA);
   // Retention is only set by an explicit pure seek/reset and remains bound to
   // this selection/dimension/native/probe identity, independent of worker state.
-  const auto accepted = !source->superseded->load() && source->result ?
+  auto accepted = !source->superseded->load() && source->result ?
       source->result : source->retained;
+  // Strict zero is also a result and must override a positive estimate.
+  if (!accepted && allowSubtitleEstimate)
+    accepted = !source->superseded->load() && source->subtitleResult ?
+        source->subtitleResult : source->retainedSubtitle;
   if (!enabled || !source->allowProbe || !accepted ||
       source->width != width || source->height != height)
     return false;
@@ -2995,6 +3033,20 @@ static void detect_publish(const CAMLNativeWorker::Run& run,
   s_detectInjected.store(true);
 }
 
+static void detect_publish_subtitle(const CAMLNativeWorker::Run& run,
+                                    const std::shared_ptr<DetectSource>& source,
+                                    const DetectResult& result)
+{
+  // CPU-only storage: no native admission, native state, sysfs or public picture
+  // geometry. The renderer must explicitly request this placement estimate.
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  if (run.Cancelled() || source != s_detectSource || source->superseded->load() ||
+      !source->allowProbe || result.top + result.bottom >= source->height ||
+      result.left + result.right >= source->width)
+    return;
+  source->subtitleResult = std::make_shared<const DetectResult>(result);
+}
+
 enum class DetectEdgeReason
 {
   ORIGINAL,
@@ -3004,7 +3056,8 @@ enum class DetectEdgeReason
   AXIS_UNUSED,
   RETURN_TO_BLACK,
   CENTRE_UNSUPPORTED,
-  STRIPS_UNSUPPORTED
+  STRIPS_UNSUPPORTED,
+  PICTURE_UNSUPPORTED
 };
 
 struct DetectEdgeMeasurement
@@ -3030,7 +3083,8 @@ struct DetectEdgeMeasurement
   {
     return reason == DetectEdgeReason::RETURN_TO_BLACK ||
            reason == DetectEdgeReason::CENTRE_UNSUPPORTED ||
-           reason == DetectEdgeReason::STRIPS_UNSUPPORTED;
+           reason == DetectEdgeReason::STRIPS_UNSUPPORTED ||
+           reason == DetectEdgeReason::PICTURE_UNSUPPORTED;
   }
 };
 
@@ -3046,6 +3100,7 @@ static const char* detect_edge_reason(DetectEdgeReason reason)
     case DetectEdgeReason::RETURN_TO_BLACK: return "return-to-black";
     case DetectEdgeReason::CENTRE_UNSUPPORTED: return "centre-unsupported";
     case DetectEdgeReason::STRIPS_UNSUPPORTED: return "strips-unsupported";
+    case DetectEdgeReason::PICTURE_UNSUPPORTED: return "picture-unsupported";
   }
   return "unknown";
 }
@@ -3228,6 +3283,120 @@ static DetectEdgeMeasurement detect_refine_edge(const Luma& getY, int width, int
   return result;
 }
 
+// Placement-only photometry, never native L5 evidence. Strong departures use
+// the conservative six-code threshold; dim picture may subsequently fall below
+// it without returning to the observed black distribution. Individual peripheral
+// strips can cross black objects inside the picture. Keep centre evidence and
+// at least three departed strips above calibrated black when any strip returns;
+// every inward row must also retain strong picture evidence. Inspect through
+// the midpoint, beyond the legacy edge, so a stripe cannot end its validation.
+// Graphics can still imitate picture: this estimates where to place subtitles,
+// not an authored crop. It never exceeds the original/earliest observed edge.
+template<typename Luma>
+static DetectEdgeMeasurement detect_subtitle_edge(const Luma& getY, int width, int height,
+                                                  bool vertical, bool reverse,
+                                                  const DetectEdgeMeasurement& strict)
+{
+  if (strict.reason == DetectEdgeReason::NO_TRANSITION ||
+      strict.reason == DetectEdgeReason::AXIS_UNUSED || strict.value == 0)
+    return strict;
+  DetectEdgeMeasurement result(strict.original);
+  constexpr int lanes = 9;
+  const int length = vertical ? height : width;
+  const int cross = vertical ? width : height;
+  const int strip = std::min(64, cross / 2);
+  auto sum = [&](int lane, int depth) -> uint32_t {
+    const int start = lane * (cross - strip) / (lanes - 1);
+    const int pos = reverse ? length - 1 - depth : depth;
+    uint32_t value = 0;
+    for (int i = 0; i < strip; ++i)
+      value += vertical ? getY(pos, start + i) : getY(start + i, pos);
+    return value;
+  };
+  uint32_t blackMax[lanes];
+  for (int lane = 0; lane < lanes; ++lane)
+  {
+    blackMax[lane] = sum(lane, 0);
+    result.borders[lane] = static_cast<uint16_t>(blackMax[lane] / strip);
+  }
+  uint16_t earliest = strict.original;
+  for (int depth = 1; depth < length / 2; ++depth)
+  {
+    uint32_t levels[lanes];
+    bool strong = false;
+    for (int lane = 0; lane < lanes; ++lane)
+    {
+      levels[lane] = sum(lane, depth);
+      if (levels[lane] / strip > static_cast<uint32_t>(result.borders[lane]) + 6)
+      {
+        strong = true;
+        if (result.departures[lane] == UINT16_MAX)
+          result.departures[lane] = static_cast<uint16_t>(depth);
+        earliest = std::min(earliest, result.departures[lane]);
+      }
+    }
+    result.earliest = earliest;
+    // All lanes establish the common black prefix before any lane calibrates
+    // from this row. Later-departing dark picture must not enter that prefix.
+    if (depth < earliest)
+    {
+      for (int lane = 0; lane < lanes; ++lane)
+        blackMax[lane] = std::max(blackMax[lane], levels[lane]);
+      continue;
+    }
+    if (!strong)
+    {
+      result.reason = DetectEdgeReason::PICTURE_UNSUPPORTED;
+      result.depth = depth;
+      return result;
+    }
+    int pictureSupport = 0;
+    int returnedLane = -1;
+    for (int lane = 0; lane < lanes; ++lane)
+    {
+      // Preserve fractional strip means. One normalized code above the maximum
+      // observed prefix accommodates quantization without reusing the much
+      // wider departure threshold as the definition of a black return.
+      if (depth > result.departures[lane] && levels[lane] <= blackMax[lane] + strip)
+      {
+        if (returnedLane < 0 || lane == lanes / 2)
+          returnedLane = lane;
+      }
+      if (result.departures[lane] <= depth && levels[lane] > blackMax[lane] + strip)
+        ++pictureSupport;
+    }
+    if (returnedLane >= 0 &&
+        (levels[lanes / 2] <= blackMax[lanes / 2] + strip || pictureSupport < 3))
+    {
+      result.reason = DetectEdgeReason::RETURN_TO_BLACK;
+      result.lane = returnedLane;
+      result.depth = depth;
+      result.returnLevel = static_cast<uint16_t>(levels[returnedLane] / strip);
+      return result;
+    }
+  }
+  result.support = 0;
+  for (const auto departure : result.departures)
+    if (departure <= earliest + 5)
+      ++result.support;
+  if (earliest < strict.original)
+  {
+    if (result.departures[lanes / 2] > earliest + 5)
+    {
+      result.reason = DetectEdgeReason::CENTRE_UNSUPPORTED;
+      return result;
+    }
+    if (result.support < 3)
+    {
+      result.reason = DetectEdgeReason::STRIPS_UNSUPPORTED;
+      return result;
+    }
+  }
+  result.value = earliest;
+  result.reason = DetectEdgeReason::REFINED;
+  return result;
+}
+
 static DetectAxisConfidence detect_axis_consensus(const uint16_t* first,
                                                   const uint16_t* second,
                                                   int count, uint16_t& border)
@@ -3303,6 +3472,25 @@ static bool detect_samples_consensus(const uint16_t* top, const uint16_t* bottom
       (v == DetectAxisConfidence::UNCERTAIN && h == DetectAxisConfidence::UNCERTAIN))
     return false;
   result = {vertical, vertical, horizontal, horizontal};
+  return true;
+}
+
+static bool detect_subtitle_consensus(const uint16_t* top, const uint16_t* bottom,
+                                      const uint16_t* left, const uint16_t* right,
+                                      const bool* rejected, int count, DetectResult& result)
+{
+  if (!detect_samples_consensus(top, bottom, left, right, count, result) ||
+      std::any_of(rejected, rejected + count, [](bool value) { return value; }))
+    return false;
+  // No aspect-ratio snap, and no inward movement within the temporal tolerance.
+  // Preserve every smaller measured edge, independently on all four sides.
+  for (int i = 0; i < count; ++i)
+  {
+    result.top = std::min(result.top, top[i]);
+    result.bottom = std::min(result.bottom, bottom[i]);
+    result.left = std::min(result.left, left[i]);
+    result.right = std::min(result.right, right[i]);
+  }
   return true;
 }
 
@@ -3489,6 +3677,9 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     uint16_t samples_top[7] = {}, samples_bottom[7] = {};
     uint16_t samples_left[7] = {}, samples_right[7] = {};
     bool samples_rejected[7] = {};
+    uint16_t subtitle_top[7] = {}, subtitle_bottom[7] = {};
+    uint16_t subtitle_left[7] = {}, subtitle_right[7] = {};
+    bool subtitle_rejected[7] = {};
     int validSamples = 0;
     int lastWidth = 0, lastHeight = 0;
     /* Stale-frame detection: catches broken-seek cases (format-specific
@@ -3743,12 +3934,24 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
       sRight = measurements[3].value;
       const bool rejectedSpatial = std::any_of(std::begin(measurements), std::end(measurements),
           [](const auto& edge) { return edge.RejectedSpatialEvidence(); });
+      const DetectEdgeMeasurement subtitleMeasurements[] = {
+          detect_subtitle_edge(getY, lastWidth, lastHeight, true, false, measurements[0]),
+          detect_subtitle_edge(getY, lastWidth, lastHeight, true, true, measurements[1]),
+          detect_subtitle_edge(getY, lastWidth, lastHeight, false, false, measurements[2]),
+          detect_subtitle_edge(getY, lastWidth, lastHeight, false, true, measurements[3])};
 
       samples_top[validSamples] = sTop;
       samples_bottom[validSamples] = sBottom;
       samples_left[validSamples] = sLeft;
       samples_right[validSamples] = sRight;
       samples_rejected[validSamples] = rejectedSpatial;
+      subtitle_top[validSamples] = subtitleMeasurements[0].value;
+      subtitle_bottom[validSamples] = subtitleMeasurements[1].value;
+      subtitle_left[validSamples] = subtitleMeasurements[2].value;
+      subtitle_right[validSamples] = subtitleMeasurements[3].value;
+      subtitle_rejected[validSamples] = std::any_of(
+          std::begin(subtitleMeasurements), std::end(subtitleMeasurements),
+          [](const auto& edge) { return edge.RejectedSpatialEvidence(); });
       // Bounded to four records per admitted seek position (at most 28/run),
       // no extra frames/I/O or media URL. '?' means unvisited/no departure.
       const char* names[] = {"T", "B", "L", "R"};
@@ -3757,7 +3960,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
         const auto& measurement = measurements[edge];
         CLog::Log(LOGINFO, "DetectActiveArea: evidence sample={} seek={}% pts={} tb={}/{} "
                   "edge={} original={} result={} reason={} lane={} depth={} support={} earliest={} return-luma={} "
-                  "lanes(border:first)=[{}]",
+                  "lanes(border:first)=[{}] subtitle-result={} subtitle-reason={}",
                   validSamples + 1, measuredSeekPct, frame->best_effort_timestamp,
                   fmtCtx->streams[videoIdx]->time_base.num, fmtCtx->streams[videoIdx]->time_base.den,
                   names[edge], measurement.original,
@@ -3766,7 +3969,10 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
                   measurement.support,
                   measurement.earliest == UINT16_MAX ? -1 : static_cast<int>(measurement.earliest),
                   measurement.returnLevel == UINT16_MAX ? -1 : static_cast<int>(measurement.returnLevel),
-                  detect_edge_lanes(measurement));
+                  detect_edge_lanes(measurement),
+                  subtitleMeasurements[edge].value == UINT16_MAX ? -1 :
+                      static_cast<int>(subtitleMeasurements[edge].value),
+                  detect_edge_reason(subtitleMeasurements[edge].reason));
       }
       validSamples++;
 
@@ -3815,6 +4021,17 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
       goto cleanup;
     }
 
+    DetectResult subtitleConsensus{};
+    if (detect_subtitle_consensus(subtitle_top, subtitle_bottom, subtitle_left, subtitle_right,
+                                  subtitle_rejected, validSamples, subtitleConsensus))
+    {
+      detect_publish_subtitle(run, source, subtitleConsensus);
+      CLog::Log(LOGINFO, "DetectActiveArea: subtitle estimate T={} B={} L={} R={} "
+                "({} samples; no native L5 publication)", subtitleConsensus.top,
+                subtitleConsensus.bottom, subtitleConsensus.left, subtitleConsensus.right,
+                validSamples);
+    }
+
     /* Require enough usable samples for confident detection. If too many
      * positions failed (dark DV content), the unanalysed portions may
      * contain fullscreen scenes we can't see — e.g. Foundation's dark
@@ -3843,8 +4060,8 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     if (std::any_of(samples_rejected, samples_rejected + validSamples,
                     [](bool rejected) { return rejected; }))
     {
-      CLog::Log(LOGINFO, "DetectActiveArea: rejected spatial evidence in {} positions — "
-                "retaining uncertainty; no geometry published", validSamples);
+      CLog::Log(LOGINFO, "DetectActiveArea: rejected spatial evidence among {} positions — "
+                "retaining uncertainty; no conservative geometry published", validSamples);
       s_detectState.store(DV_DETECT_SKIPPED);
       goto cleanup;
     }
@@ -3853,7 +4070,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     if (!detect_samples_consensus(samples_top, samples_bottom, samples_left, samples_right,
                                   validSamples, consensus))
     {
-      CLog::Log(LOGINFO, "DetectActiveArea: no safe paired border consensus in {} samples — "
+      CLog::Log(LOGINFO, "DetectActiveArea: no conservative paired border consensus in {} samples — "
                 "skipping uncertain or variable framing", validSamples);
       s_detectState.store(DV_DETECT_SKIP_IMAX);
       goto cleanup;
@@ -3984,6 +4201,7 @@ void aml_dv_detect_active_area_start()
     std::lock_guard<std::mutex> lock(s_detectSourceMutex);
     source = s_detectSource;
     source->result.reset();
+    source->subtitleResult.reset();
   }
   s_detectThrottleActive.store(false);
   s_detectCacheStarved.store(false);
@@ -4007,13 +4225,25 @@ void aml_dv_detect_active_area_start()
   s_detectState.store(DV_DETECT_RUNNING);
   s_detectWorker.Start([source](const CAMLNativeWorker::Run& run) {
     std::shared_ptr<const DetectResult> retained;
+    std::shared_ptr<const DetectResult> retainedSubtitle;
     {
       std::lock_guard<std::mutex> lock(s_detectSourceMutex);
       if (source == s_detectSource && !source->superseded->load())
+      {
         retained = source->retained;
+        retainedSubtitle = source->retainedSubtitle;
+      }
     }
+    if (retainedSubtitle)
+      detect_publish_subtitle(run, source, *retainedSubtitle);
     if (retained)
       detect_publish(run, source, retained->top, retained->bottom, retained->left, retained->right);
+    else if (retainedSubtitle)
+    {
+      std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+      if (!run.Cancelled() && source == s_detectSource && !source->superseded->load())
+        s_detectState.store(DV_DETECT_SKIPPED); // no conservative/native result
+    }
     else
       DetectActiveAreaFromFile(source, run);
   }, source->superseded);

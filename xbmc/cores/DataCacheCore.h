@@ -11,6 +11,7 @@
 #include "DVDStreamInfo.h"
 #include "EdlEdit.h"
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
+#include "guilib/GUIRenderBounds.h"
 #include "threads/CriticalSection.h"
 #include "utils/AgedMap.h"
 #include "utils/BitstreamConverter.h"
@@ -24,6 +25,12 @@
 class CDataCacheCore
 {
 public:
+  using GUIRenderBounds = CGUIRenderBounds;
+  using GUIRenderBoundsMap = ::GUIRenderBoundsMap;
+  void SetGUIRenderBounds(GUIRenderBoundsMap bounds);
+  GUIRenderBounds GetGUIRenderBounds(int windowID, int controlID);
+  void InvalidateGUIRenderBounds(uint64_t instance);
+
   struct VideoActivePicture
   {
     // Fixed 1920x1080 GUI coordinates, before temporary OSD suppression.
@@ -208,6 +215,8 @@ public:
   void SetAudioQueueDataLevel(int level);
   int GetAudioQueueDataLevel();
   void SetAudioPts(double pts);
+  void SetAudioDialNorm(bool available = false, int original = 0, int applied = 0);
+  std::string GetAudioDialNorm(bool colored = true);
 
   // content info
 
@@ -339,6 +348,8 @@ public:
   int64_t GetMaxTime();
 
 protected:
+  CCriticalSection m_guiSection;
+  GUIRenderBoundsMap m_guiRenderBounds;
   std::atomic_bool m_AVChange = false;
   std::atomic_bool m_AVChangeExtended = false;
   std::atomic_bool m_hasAVInfoChanges = false;
@@ -397,6 +408,9 @@ protected:
     int elementCount = -1;
     std::string objectFormat;
     std::string objectLayout;
+    bool hasDialNorm = false;
+    int dialNormOriginal = 0;
+    int dialNormApplied = 0;
   } m_playerAudioInfo;
 
   mutable CCriticalSection m_contentSection;

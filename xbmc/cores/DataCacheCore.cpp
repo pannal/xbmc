@@ -17,6 +17,7 @@
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
 #include "utils/AgedMap.h"
 #include "utils/BitstreamConverter.h"
+#include "utils/StringUtils.h"
 
 #include <mutex>
 #include <utility>
@@ -180,6 +181,31 @@ void CDataCacheCore::SetVideoDimensions(int width, int height)
 
   m_playerVideoInfo.width = width;
   m_playerVideoInfo.height = height;
+}
+
+void CDataCacheCore::SetGUIRenderBounds(GUIRenderBoundsMap bounds)
+{
+  std::unique_lock<CCriticalSection> lock(m_guiSection);
+  m_guiRenderBounds = std::move(bounds);
+}
+
+CDataCacheCore::GUIRenderBounds CDataCacheCore::GetGUIRenderBounds(int windowID, int controlID)
+{
+  std::unique_lock<CCriticalSection> lock(m_guiSection);
+  const auto it = m_guiRenderBounds.find({windowID, controlID});
+  return it == m_guiRenderBounds.end() ? GUIRenderBounds{} : it->second;
+}
+
+void CDataCacheCore::InvalidateGUIRenderBounds(uint64_t instance)
+{
+  std::unique_lock<CCriticalSection> lock(m_guiSection);
+  for (auto it = m_guiRenderBounds.begin(); it != m_guiRenderBounds.end();)
+  {
+    if (it->second.instance == instance)
+      it = m_guiRenderBounds.erase(it);
+    else
+      ++it;
+  }
 }
 
 void CDataCacheCore::SetVideoActivePicture(VideoActivePicture picture)
@@ -645,6 +671,25 @@ std::string CDataCacheCore::GetAudioObjectFormat()
   std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
 
   return m_playerAudioInfo.objectFormat;
+}
+
+void CDataCacheCore::SetAudioDialNorm(bool available, int original, int applied)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+  m_playerAudioInfo.hasDialNorm = available;
+  m_playerAudioInfo.dialNormOriginal = original;
+  m_playerAudioInfo.dialNormApplied = applied;
+}
+
+std::string CDataCacheCore::GetAudioDialNorm(bool colored)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioPlayerSection);
+  if (!m_playerAudioInfo.hasDialNorm)
+    return {};
+
+  return StringUtils::Format("{} dB {} applied {} dB", m_playerAudioInfo.dialNormOriginal,
+                            colored ? "[COLOR FF404040]|[/COLOR]" : "|",
+                            m_playerAudioInfo.dialNormApplied);
 }
 
 void CDataCacheCore::SetAudioObjectLayout(const std::string& layout)

@@ -21,6 +21,7 @@
 #include "application/Application.h"
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
+#include "cores/DataCacheCore.h"
 #include "events/windows/GUIWindowEventLog.h"
 #include "favourites/GUIWindowFavourites.h"
 #include "input/actions/Action.h"
@@ -663,6 +664,8 @@ void CGUIWindowManager::RegisterDialog(CGUIWindow* dialog)
 void CGUIWindowManager::Remove(int id)
 {
   std::unique_lock<CCriticalSection> lock(CServiceBroker::GetWinSystem()->GetGfxContext());
+  if (CServiceBroker::IsAddonInterfaceUp())
+    CServiceBroker::GetDataCacheCore().SetGUIRenderBounds({});
 
   auto it = m_mapWindows.find(id);
   if (it != m_mapWindows.end())
@@ -1263,6 +1266,27 @@ void CGUIWindowManager::Process(unsigned int currentTime)
 
   for (auto& itr : m_dirtyregions)
     m_tracker.MarkDirtyRegion(itr);
+  PublishRenderBounds();
+}
+
+void CGUIWindowManager::PublishRenderBounds()
+{
+  if (!CServiceBroker::IsAddonInterfaceUp())
+    return;
+  // Native tree traversal stays on the GUI thread. Addon readers receive a
+  // coherent value copy under DataCacheCore's lock even while rendering has
+  // released the graphics lock.
+  std::unique_lock<CCriticalSection> lock(CServiceBroker::GetWinSystem()->GetGfxContext());
+  CDataCacheCore::GUIRenderBoundsMap bounds;
+  if (const auto* window = GetWindow(GetActiveWindow()))
+    window->CollectRenderBounds(window->GetID(), bounds);
+  for (const auto& window : m_activeDialogs)
+    if (window->IsDialogRunning())
+      window->CollectRenderBounds(window->GetID(), bounds);
+  if (CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF)
+    for (auto& entry : bounds)
+      entry.second.valid = false;
+  CServiceBroker::GetDataCacheCore().SetGUIRenderBounds(std::move(bounds));
 }
 
 void CGUIWindowManager::MarkDirty()
@@ -1384,6 +1408,7 @@ bool CGUIWindowManager::Render()
   CServiceBroker::GetWinSystem()->SetDirtyRegions(dirtyRegions);
 
   bool hasRendered = false;
+  CServiceBroker::GetWinSystem()->GetGfxContext().NextControlBoundsFrame();
   // If we visualize the regions we will always render the entire viewport
   // If the buffer age is zero, the current content is undefined and has to be rendered
   if (visualizeDirtyRegions || bufferAge == 0 ||
@@ -1425,6 +1450,7 @@ bool CGUIWindowManager::Render()
       CGUITexture::DrawQuad(i, 0x4c00ff00);
   }
 
+  PublishRenderBounds();
   return hasRendered;
 }
 
@@ -1449,6 +1475,7 @@ void CGUIWindowManager::AfterRender()
   }
 
   // Inform AMLogic kernel if OSD is displaying
+  PublishRenderBounds();
   aml_dv_set_xbmc_osd();
 }
 

@@ -260,6 +260,10 @@ public:
    */
   virtual void SetCodecControl(int flags) {}
 
+  // Accurate seek presentation floor in the corrected packet PTS domain.
+  // Async decoders must retain this independently of the latest packet's DROP bit.
+  virtual void SetPrerollTarget(double target) {}
+
   /**
    * Abort a blocking AddData call (e.g. when a flush is pending).
    * Called from a non-codec thread; implementation must be thread-safe.

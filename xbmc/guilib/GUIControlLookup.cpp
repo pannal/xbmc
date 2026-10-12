@@ -12,6 +12,23 @@ CGUIControlLookup::CGUIControlLookup(const CGUIControlLookup& from) : CGUIContro
 {
 }
 
+void CGUIControlLookup::CollectRenderBounds(int windowID, GUIRenderBoundsMap& bounds) const
+{
+  for (auto it = m_lookup.begin(); it != m_lookup.end();)
+  {
+    const auto range = m_lookup.equal_range(it->first);
+    const auto key = std::make_pair(windowID, it->first);
+    if (std::distance(range.first, range.second) == 1)
+      bounds[key] = it->second->GetRenderedBounds();
+    else
+    {
+      bounds[key] = {};
+      bounds[key].visible = true; // ambiguous IDs require the conservative fallback
+    }
+    it = range.second;
+  }
+}
+
 CGUIControl *CGUIControlLookup::GetControl(int iControl, std::vector<CGUIControl*> *idCollector)
 {
   if (idCollector)
@@ -69,12 +86,14 @@ void CGUIControlLookup::AddLookup(CGUIControl *control)
 
 void CGUIControlLookup::RemoveLookup(CGUIControl *control)
 {
+  control->InvalidateRenderedBounds();
   CGUIControlLookup *lookupControl(dynamic_cast<CGUIControlLookup*>(control));
   if (lookupControl)
   { // remove the group's lookup
     const LookupMap &map(lookupControl->GetLookup());
     for (const auto &i : map)
     { // remove this control
+      i.second->InvalidateRenderedBounds();
       for (LookupMap::iterator it = m_lookup.begin(); it != m_lookup.end(); ++it)
       {
         if (i.second == it->second)

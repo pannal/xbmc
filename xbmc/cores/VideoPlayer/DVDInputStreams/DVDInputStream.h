@@ -15,6 +15,7 @@
 #include "utils/BitstreamStats.h"
 #include "utils/Geometry.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -206,6 +207,9 @@ public:
    *  be seen as only a hint
    */
   virtual void SetReadRate(uint32_t rate) {}
+  // Synchronous observation only: the callback must not seek, close or flush
+  // the input/demuxer whose read is still in progress.
+  virtual void SetReadWaitCallback(const std::function<void()>& callback) {}
 
   /*! \brief Get the cache status
    \return true when cache status was successfully obtained

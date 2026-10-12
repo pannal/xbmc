@@ -120,6 +120,7 @@ set(HEADERS DDSImage.h
             GUIRadioButtonControl.h
             GUIRangesControl.h
             GUIRenderingControl.h
+            GUIRenderBounds.h
             GUIResizeControl.h
             GUIRSSControl.h
             GUIScrollBarControl.h

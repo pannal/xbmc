@@ -124,6 +124,7 @@ public:
   CDVDVideoCodec::VCReturn GetPicture(VideoPicture& videoPicture);
 
   void          SetSpeed(int speed);
+  void SetPrerollTarget(double target) { m_prerollTarget = target; }
   void          SetDrain(bool drain){m_drain = drain; if (drain) m_tp_drain_start = std::chrono::system_clock::now();};
   void          SetStreamEOF(bool eof){m_stream_eof = eof;};
   void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect, uint64_t generation, const CAMLSession::Permit& permit);
@@ -161,6 +162,7 @@ private:
   std::function<void()> m_beforeClose;
   bool m_lifecycleFailed{false};
   bool m_speedPending{false};
+  double m_prerollTarget{DVD_NOPTS_VALUE};
   int m_requestedSpeed{0};
   void SetSpeedInternal(int speed);
 

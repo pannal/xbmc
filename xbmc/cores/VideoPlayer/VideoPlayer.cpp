@@ -57,6 +57,7 @@
 #include "utils/JobManager.h"
 #include "utils/LangCodeExpander.h"
 #include "utils/MathUtils.h"
+#include "utils/ScopeGuard.h"
 #include "utils/StreamDetails.h"
 #include "utils/StreamUtils.h"
 #include "utils/StringUtils.h"
@@ -940,6 +941,7 @@ bool CVideoPlayer::IsPlaying() const
 
 void CVideoPlayer::OnStartup()
 {
+  m_videoPrerollTarget = DVD_NOPTS_VALUE;
   m_CurrentVideo.Clear();
   m_CurrentAudio.Clear();
   m_CurrentSubtitle.Clear();
@@ -1293,7 +1295,16 @@ bool CVideoPlayer::ReadPacket(DemuxPacket*& packet, CDemuxStream*& stream)
 
   // read a data frame from stream.
   if (m_pDemuxer)
+  {
+    // The callback belongs only to this foreground read. In particular, it
+    // must not survive into demux probing, seeking or a replacement input.
+    const auto input = m_pInputStream;
+    KODI::UTILS::CScopeGuard<CDVDInputStream*, nullptr, void(CDVDInputStream*)> readWaitGuard(
+        [](CDVDInputStream* stream) { stream->SetReadWaitCallback({}); }, input.get());
+    if (input)
+      input->SetReadWaitCallback([this] { CheckCacheReadStall(); });
     packet = m_pDemuxer->Read();
+  }
 
   if (packet)
   {
@@ -2297,7 +2308,8 @@ void CVideoPlayer::ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket)
   //   pPacket->iSize, pPacket->dts/DVD_TIME_BASE, pPacket->pts/DVD_TIME_BASE, pPacket->duration/1000.0,
   //   static_cast<double>(m_clock.GetClock()/DVD_TIME_BASE), m_VideoPlayerVideo->GetLevel());
 
-  m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgDemuxerPacket>(pPacket, drop));
+  m_VideoPlayerVideo->SendMessage(
+      std::make_shared<CDVDMsgDemuxerPacket>(pPacket, drop, m_videoPrerollTarget));
 
   if (!drop)
     m_CurrentVideo.packets++;
@@ -2985,6 +2997,24 @@ void CVideoPlayer::SynchronizeStreams(bool allowRecovery)
   }
 }
 
+void CVideoPlayer::CheckCacheReadStall()
+{
+  // This runs on the player thread with a demux read on the stack. Only pause
+  // for the existing non-realtime starvation policy; completion and recovery
+  // stay in HandlePlaySpeed after the read returns. Never flush or seek here.
+  if (m_bAbortRequest || m_bStop || m_displayLost || ParentLifecyclePending() ||
+      m_caching != CACHESTATE_DONE || m_playSpeed != DVD_PLAYSPEED_NORMAL || !m_pInputStream ||
+      m_pInputStream->IsRealtime() || IsInMenuInternal() ||
+      (m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES))
+    return;
+
+  if (((m_VideoPlayerAudio->IsStalled() && m_CurrentAudio.inited) ||
+       (m_VideoPlayerVideo->IsStalled() && m_CurrentVideo.inited)) &&
+      m_syncTimer.IsTimePast() &&
+      (m_VideoPlayerAudio->GetLevel() <= 20 || m_VideoPlayerVideo->GetLevel() <= 20))
+    SetCaching(CACHESTATE_FULL);
+}
+
 void CVideoPlayer::HandlePlaySpeed()
 {
   const bool isInMenu = IsInMenuInternal();
@@ -3355,6 +3385,9 @@ bool CVideoPlayer::CheckPlayerInit(CCurrentStream& current)
     if ((current.startpts - current.dts) > DVD_SEC_TO_TIME(20))
     {
       CLog::Log(LOGDEBUG, "{} - too far to decode before finishing seek", __FUNCTION__);
+      // Keep the decoded-video floor in step when either stream relaxes preroll.
+      if (m_videoPrerollTarget != DVD_NOPTS_VALUE)
+        m_videoPrerollTarget = current.dts;
       if(m_CurrentAudio.startpts != DVD_NOPTS_VALUE)
         m_CurrentAudio.startpts = current.dts;
       if(m_CurrentVideo.startpts != DVD_NOPTS_VALUE)
@@ -3797,6 +3830,33 @@ CVideoSeekQueueState CVideoPlayer::GetVideoSeekQueueState()
   return state;
 }
 
+std::optional<double> CVideoPlayer::GetVideoRecoveryStartupPosition() const
+{
+  // Until A/V sync re-anchors the clock, it still describes the previous position.
+  if (m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC ||
+      m_videoRecoveryStartPts == DVD_NOPTS_VALUE || !m_pInputStream)
+    return std::nullopt;
+
+  if (m_pInputStream->GetIPosTime())
+    return m_videoRecoveryStartTime;
+  if (m_demuxSeekBasePts != DVD_NOPTS_VALUE)
+    return DVD_TIME_TO_MSEC(m_videoRecoveryStartPts - m_demuxSeekBasePts);
+  return DVD_TIME_TO_MSEC(m_videoRecoveryStartPts + m_State.time_offset);
+}
+
+std::chrono::milliseconds CVideoPlayer::GetVideoRecoveryPosition() const
+{
+  double position = m_State.time;
+  if (const auto startup = GetVideoRecoveryStartupPosition())
+  {
+    position = *startup;
+    // The budget follows displayed playback time, which already excludes EDL cuts.
+    if (m_Edl.HasCuts())
+      position = m_Edl.GetTimeWithoutCuts(static_cast<int>(position));
+  }
+  return std::chrono::milliseconds(llrint(position));
+}
+
 CVideoRecoveryGate::Conditions CVideoPlayer::GetVideoRecoveryConditions(uint64_t generation)
 {
   CVideoRecoveryGate::Conditions conditions;
@@ -3817,7 +3877,7 @@ CVideoRecoveryGate::Conditions CVideoPlayer::GetVideoRecoveryConditions(uint64_t
   conditions.decoderOutputBlocked = playback.DecoderOutputBlocked();
   conditions.displayAvailable = !m_displayLost;
   conditions.endOfStream = m_videoRecoveryEndOfStream;
-  conditions.position = std::chrono::milliseconds(llrint(m_State.time));
+  conditions.position = GetVideoRecoveryPosition();
   const auto menus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
   conditions.sourceEligible =
       (!menus || menus->IsTimeSearchAllowed()) && m_pInputStream && m_pDemuxer &&
@@ -3901,16 +3961,9 @@ void CVideoPlayer::HandleMessages()
       CDVDMsgPlayerSeek::CMode mode;
       mode.time = 0;
       mode.relative = true;
-      // Until A/V sync re-anchors the clock (INSYNC), it still describes the previous position.
-      if (m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC &&
-          m_videoRecoveryStartPts != DVD_NOPTS_VALUE)
+      if (const auto startup = GetVideoRecoveryStartupPosition())
       {
-        if (m_pInputStream->GetIPosTime())
-          mode.time = m_videoRecoveryStartTime;
-        else if (m_demuxSeekBasePts != DVD_NOPTS_VALUE)
-          mode.time = DVD_TIME_TO_MSEC(m_videoRecoveryStartPts - m_demuxSeekBasePts);
-        else
-          mode.time = DVD_TIME_TO_MSEC(m_videoRecoveryStartPts + m_State.time_offset);
+        mode.time = *startup;
         mode.relative = false;
       }
       mode.backward = false;
@@ -4007,7 +4060,7 @@ void CVideoPlayer::HandleMessages()
       }
 
       if (msg.IsVideoRecovery())
-        m_videoRecoveryGate.OnExecute(std::chrono::milliseconds(llrint(m_State.time)));
+        m_videoRecoveryGate.OnExecute(GetVideoRecoveryPosition());
 
       const ECacheState cacheStateBeforeSeek = m_caching;
       if (!msg.GetTrickPlay())
@@ -4115,10 +4168,12 @@ void CVideoPlayer::HandleMessages()
       CDVDMsgPlayerSeekChapter& msg(*std::static_pointer_cast<CDVDMsgPlayerSeekChapter>(pMsg));
       double start = DVD_NOPTS_VALUE;
       int offset = 0;
+      bool chapterSeekAccepted = false;
 
       // This should always be the case.
       if(m_pDemuxer && m_pDemuxer->SeekChapter(msg.GetChapter(), &start))
       {
+        chapterSeekAccepted = true;
         FlushBuffers(start, true, true, [this, start, chapter = msg.GetChapter()] {
           const int64_t beforeSeek = GetTime();
           const int offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
@@ -4131,6 +4186,7 @@ void CVideoPlayer::HandleMessages()
         CDVDInputStream::IChapter* pChapter = m_pInputStream->GetIChapter();
         if (pChapter && pChapter->SeekChapter(msg.GetChapter()))
         {
+          chapterSeekAccepted = true;
           FlushBuffers(start, true, true, [this, start, chapter = msg.GetChapter()] {
             const int64_t beforeSeek = GetTime();
             const int offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
@@ -4138,6 +4194,15 @@ void CVideoPlayer::HandleMessages()
             m_processInfo->SeekFinished(offset);
           }, true);
         }
+      }
+      if (!chapterSeekAccepted)
+      {
+        // A rejected request cannot be the base for the next chapter action.
+        // Keep any newer queued intent, including another request for this chapter.
+        std::unique_lock<CCriticalSection> lock(m_StateSection);
+        int failedChapter = std::max(msg.GetChapter(), 1);
+        if (m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER) == 0)
+          m_chapterSeekTarget.compare_exchange_strong(failedChapter, 0);
       }
       if (!ParentLifecyclePending())
         m_processInfo->SeekFinished(offset);
@@ -4630,7 +4695,7 @@ void CVideoPlayer::Seek(bool bPlus, bool bLargeStep, bool bChapterOverride)
     const int pending = m_chapterSeekTarget;
     if (!bPlus)
     {
-      if (pending > GetChapter())
+      if (pending > 0)
         SeekChapter(pending - 1);
       else
         SeekChapter(GetPreviousChapter());
@@ -4638,7 +4703,7 @@ void CVideoPlayer::Seek(bool bPlus, bool bLargeStep, bool bChapterOverride)
     }
     else
     {
-      const int chapter = std::max(GetChapter(), pending);
+      const int chapter = pending > 0 ? pending : GetChapter();
       if (chapter < GetChapterCount())
       {
         SeekChapter(chapter + 1);
@@ -4988,9 +5053,8 @@ void CVideoPlayer::SeekTime(int64_t iTime)
   // anchors at the demuxer's keyframe landing time instead of the seek
   // target, matching video. Result: clean snap to keyframe with both
   // streams in sync, at the cost of landing up to one GOP-length earlier
-  // than requested. Off restores frame-accurate seek and its fast-forward
-  // catch-up window on hardware decoders that can't fast-decode pre-target
-  // frames (AML hwdec).
+  // than requested. Off retains accurate positioning: decode the preceding
+  // reference frames while suppressing their presentation before the target.
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   const bool fastSeek =
       settings && settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_FAST_SEEK);
@@ -5669,12 +5733,6 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::funct
   if (m_VideoPlayerVideo->IsInited())
     ++m_videoRecoveryGeneration;
 
-  double startpts;
-  if (accurate)
-    startpts = pts;
-  else
-    startpts = DVD_NOPTS_VALUE;
-
   m_SpeedState.Reset(pts);
 
   if (sync)
@@ -5705,6 +5763,11 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::funct
             CSettings::SETTING_COREELEC_RESET_PTS_ON_SEEK))
       m_offset_pts = 0.0;
   }
+
+  // Packet DTS/PTS have m_offset_pts removed. Apply the same projection to
+  // accurate input targets after deciding whether external subtitles reset it.
+  const double startpts = accurate && pts != DVD_NOPTS_VALUE ? pts - m_offset_pts : DVD_NOPTS_VALUE;
+  m_videoPrerollTarget = startpts;
 
   m_CurrentAudio.dts         = DVD_NOPTS_VALUE;
   m_CurrentAudio.startpts    = startpts;
@@ -6726,11 +6789,14 @@ int CVideoPlayer::SeekChapter(int iChapter)
     if (iChapter > GetChapterCount())
       return 0;
 
-    // Remember the target: the demuxer clamps requests below 1 to chapter 1.
-    m_chapterSeekTarget = std::max(iChapter, 1);
-
-    // Seek to the chapter.
-    m_messenger.Put(std::make_shared<CDVDMsgPlayerSeekChapter>(iChapter));
+    {
+      // Publish the intent and its message together with respect to playback
+      // state publication, which retires completed chapter targets.
+      std::unique_lock<CCriticalSection> lock(m_StateSection);
+      // The demuxer clamps requests below 1 to chapter 1.
+      if (m_messenger.Put(std::make_shared<CDVDMsgPlayerSeekChapter>(iChapter)) == MSGQ_OK)
+        m_chapterSeekTarget = std::max(iChapter, 1);
+    }
     SynchronizeDemuxer();
   }
 
@@ -7104,6 +7170,17 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
   std::unique_lock<CCriticalSection> lock(m_StateSection);
   m_State = state;
+
+  // Retain intent until the sought streams have resynchronized and the clock
+  // reaches the marker. Pause/speed changes can end caching before that point.
+  // Ordinary chapter stepping then uses the current chapter's five-second grace.
+  int pendingChapter = m_chapterSeekTarget;
+  if (IsCurrentThread() && pendingChapter > 0 && state.chapter >= pendingChapter &&
+      m_caching == CACHESTATE_DONE &&
+      (m_CurrentVideo.id < 0 || m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC) &&
+      (m_CurrentAudio.id < 0 || m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC) &&
+      !ParentLifecyclePending() && m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER) == 0)
+    m_chapterSeekTarget.compare_exchange_strong(pendingChapter, 0);
 }
 
 int64_t CVideoPlayer::GetUpdatedTime()
