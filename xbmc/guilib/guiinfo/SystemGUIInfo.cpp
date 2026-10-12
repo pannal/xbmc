@@ -183,6 +183,36 @@ bool CSystemGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
       }
       return true;
     }
+    case SYSTEM_GUI_RESOLUTION:
+    {
+      // Size the GUI is rendered at, as opposed to the output mode: they differ
+      // when the GUI is scaled up (1920x1080 GUI in a 2160p output).
+      value.clear();
+      const auto winSystem = CServiceBroker::GetWinSystem();
+      if (winSystem)
+      {
+        const RESOLUTION_INFO& resInfo = winSystem->GetGfxContext().GetResInfo();
+        const bool native =
+            resInfo.iWidth == resInfo.iScreenWidth && resInfo.iHeight == resInfo.iScreenHeight;
+        value = StringUtils::Format("{}x{} - {}", resInfo.iWidth, resInfo.iHeight,
+                                    g_localizeStrings.Get(native ? 69368 : 69369));
+      }
+      return true;
+    }
+    case SYSTEM_DISPLAY_OUTPUT_MODE:
+    {
+      // What the display driver is outputting right now, which can differ from
+      // the desktop resolution in Settings > Display (e.g. still 2160p23hz after
+      // a film with refresh rate adjust "on start").
+      value = CSysfsPath("/sys/class/display/mode").Get<std::string>().value_or("");
+      StringUtils::Trim(value);
+      std::string attr =
+          CSysfsPath("/sys/class/amhdmitx/amhdmitx0/attr").Get<std::string>().value_or("");
+      StringUtils::Trim(attr, " ,\n");
+      if (!value.empty() && !attr.empty())
+        value += " (" + attr + ")";
+      return true;
+    }
     case SYSTEM_BUILD_VERSION_SHORT:
       value = CSysInfo::GetVersionShort();
       return true;

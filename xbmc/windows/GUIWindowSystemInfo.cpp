@@ -166,6 +166,8 @@ void CGUIWindowSystemInfo::FrameMove()
     SET_CONTROL_LABEL(i++, CServiceBroker::GetGUI()->GetInfoManager().GetLabel(
                                SYSTEM_VIDEO_ENCODER_INFO, INFO::DEFAULT_CONTEXT));
     SetControlLabel(i++, "{} {}", 13287, SYSTEM_SCREEN_RESOLUTION);
+    SetControlLabel(i++, "{} {}", 69366, SYSTEM_GUI_RESOLUTION);
+    SetControlLabel(i++, "{} {}", 69367, SYSTEM_DISPLAY_OUTPUT_MODE);
 
     auto renderingSystem = CServiceBroker::GetRenderSystem();
     if (renderingSystem)
