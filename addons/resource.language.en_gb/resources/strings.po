@@ -27287,6 +27287,18 @@ msgctxt "#60645"
 msgid "Skips the HDMI mode switch when entering or leaving Dolby Vision playback. Only avoids the black screen if the GUI and the video use the same output: with DV mode On Demand set EVERY DV VS10 mode to SDR, with DV mode On set every one to DV. Some TVs need the mode switch to pick up the Dolby Vision signalling correctly."
 msgstr ""
 
+#. "Keep SDR state on stop"
+#: system/settings/settings.xml
+msgctxt "#60646"
+msgid "Keep SDR output state on playback stop"
+msgstr ""
+
+#. "Keep SDR output state on playback stop"
+#: system/settings/settings.xml
+msgctxt "#60647"
+msgid "Under On Demand, keeps the SDR output on playback stop instead of shutting down the Dolby Vision pipeline, avoiding a blink when returning to the GUI. Only effective when EVERY DV VS10 mode is set to SDR, so the GUI and the video share the same output."
+msgstr ""
+
 #. Title of Dolby Vision RPU conversion setting
 #: system/settings/settings.xml
 msgctxt "#69196"
