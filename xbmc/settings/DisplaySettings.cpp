@@ -257,8 +257,47 @@ bool CDisplaySettings::Save(TiXmlNode *settings) const
   if (pRoot == NULL)
     return false;
 
+  ResolutionInfos calibrations = m_calibrations;
+#if defined(HAS_LIBAMCODEC)
+  // A calibration of a native GUI ("Disable GUI scaling", 3840x2160 GUI of a
+  // 2160p mode) is stored in the 1920x1080 GUI units of the upscaled GUI, so
+  // a build without the native GUI reads it right. ApplyCalibrations scales
+  // it back to the native GUI size on load (half-pixel rounding).
+  for (auto& cal : calibrations)
+  {
+    int screenW = cal.iScreenWidth;
+    int screenH = cal.iScreenHeight;
+    bool native = cal.iWidth > 0 && cal.iWidth == cal.iScreenWidth && cal.iHeight == cal.iScreenHeight;
+    if (cal.iWidth == 0)
+    {
+      // loaded and not updated since: its units are those of the closer GUI size
+      if (m_resolutions.size() <= RES_DESKTOP)
+        continue;
+      const auto res = std::find_if(m_resolutions.cbegin() + RES_DESKTOP, m_resolutions.cend(),
+          [&](const RESOLUTION_INFO& info) { return StringUtils::EqualsNoCase(cal.strMode, info.strMode); });
+      if (res == m_resolutions.cend())
+        continue;
+      screenW = res->iScreenWidth;
+      screenH = res->iScreenHeight;
+      native = std::abs(cal.Overscan.right - screenW) < std::abs(cal.Overscan.right - std::min(screenW, 1920)) &&
+               std::abs(cal.Overscan.bottom - screenH) < std::abs(cal.Overscan.bottom - std::min(screenH, 1080));
+    }
+    const int guiW = std::min(screenW, 1920);
+    const int guiH = std::min(screenH, 1080);
+    if (!native || guiW == screenW || guiH == screenH)
+      continue;
+    const float sx = static_cast<float>(guiW) / screenW;
+    const float sy = static_cast<float>(guiH) / screenH;
+    cal.Overscan.left = std::lround(cal.Overscan.left * sx);
+    cal.Overscan.right = std::lround(cal.Overscan.right * sx);
+    cal.Overscan.top = std::lround(cal.Overscan.top * sy);
+    cal.Overscan.bottom = std::lround(cal.Overscan.bottom * sy);
+    cal.iSubtitles = std::lround(cal.iSubtitles * sy);
+  }
+#endif
+
   // save calibrations
-  for (ResolutionInfos::const_iterator it = m_calibrations.begin(); it != m_calibrations.end(); ++it)
+  for (ResolutionInfos::const_iterator it = calibrations.begin(); it != calibrations.end(); ++it)
   {
     // Write the resolution tag
     TiXmlElement resElement("resolution");
@@ -628,7 +667,8 @@ void CDisplaySettings::ApplyCalibrations()
         // "Disable GUI scaling" changes the GUI size of a 2160p mode (1920x1080
         // upscaled <-> native 3840x2160) while calibrations stay keyed by mode,
         // so one saved for the other GUI size would clip or shrink the GUI.
-        // Rescale it to the current GUI size (the next settings save keeps it).
+        // Rescale it to the current GUI size (Save stores native ones in
+        // 1920x1080 GUI units again).
         {
           const RESOLUTION_INFO& cur = m_resolutions[res];
           const int otherW = cur.iWidth == cur.iScreenWidth ? std::min(cur.iScreenWidth, 1920) : cur.iScreenWidth;
