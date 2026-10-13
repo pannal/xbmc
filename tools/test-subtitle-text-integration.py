@@ -127,6 +127,7 @@ PREFIX = r'''
 #include <vector>
 #include <ass/ass.h>
 #include "utils/AMLNativeWorker.h"
+#include "utils/ActiveAreaCache.h"
 #include "utils/Geometry.h"
 #include "cores/VideoPlayer/DVDSubtitles/DVDSubtitlesLibassRenderResult.h"
 #include "cores/VideoPlayer/DVDSubtitles/SubtitlesStyle.h"
@@ -136,6 +137,13 @@ using namespace KODI;
 using namespace KODI::SUBTITLES::STYLE;
 using namespace UTILS;
 using CCriticalSection=std::recursive_mutex;
+// Saved-file I/O is a boundary in this geometry fixture. The feature remains
+// disabled; its production persistence is verified by the dedicated cache test.
+namespace ACTIVE_AREA_CACHE {
+bool ReadIdentity(Identity&){return false;}
+bool Load(const Identity&,Record&){return false;}
+bool Store(const Identity&,const Record&){return false;}
+}
 #define DVD_TIME_TO_MSEC(x) ((x)/1000)
 constexpr int LOGERROR=1,LOGDEBUG=2,LOGWARNING=3,LOGINFO=4,ASS_NO_ID=-1,NATIVE=1,ADAPTED=0;
 constexpr int ASS_BORDER_STYLE_OUTLINE=1,ASS_BORDER_STYLE_BOX=3,ASS_BORDER_STYLE_SQUARE_BOX=4;
@@ -160,10 +168,10 @@ struct Cache {
 } cache;
 struct CSettings{static constexpr int SETTING_SUBTITLES_DETECTACTIVEAREA=1,
  SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_USER_POS=2,SETTING_SUBTITLES_BITMAPZOOM=3,
- SETTING_COREELEC_AMLOGIC_DV_LEVEL5=4;};
+ SETTING_COREELEC_AMLOGIC_DV_LEVEL5=4,SETTING_SUBTITLES_CACHEACTIVEAREA=6;};
 struct Settings{
  bool detect=true,applyMargin=false;int zoom=100;
- bool GetBool(int id){return id==1?detect:applyMargin;}int GetInt(int){return zoom;}
+ bool GetBool(int id){return id==6?false:(id==1?detect:applyMargin);}int GetInt(int){return zoom;}
 } settingsValue;
 Settings* settings(){return &settingsValue;}
 struct RESOLUTION_INFO{int iSubtitles=1080,iHeight=1080;float fPixelRatio=1;struct{int top=0;}Overscan;};

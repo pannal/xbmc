@@ -20565,3 +20565,15 @@ msgstr "6.1"
 msgctxt "#69365"
 msgid "{0:.1f} %"
 msgstr "{0:.1f} %"
+
+#. Active picture detection cache
+#: system/settings/settings.xml
+msgctxt "#69370"
+msgid "Remember detected picture area"
+msgstr "Erkannten Bildbereich speichern"
+
+#. Active picture detection cache
+#: system/settings/settings.xml
+msgctxt "#69371"
+msgid "Save successful active-area detections in the Kodi profile and reuse them without scanning when the file size, timestamps and selected video stream match. Files without usable modification timestamps are scanned again. Applies to subtitle placement and eligible native DV detection. Enabled by default. Changes apply on next playback."
+msgstr "Erfolgreiche Erkennungen des aktiven Bildbereichs im Kodi-Profil speichern und ohne erneute Analyse wiederverwenden, wenn Dateigröße, Zeitstempel und ausgewählter Videostream übereinstimmen. Dateien ohne nutzbaren Änderungszeitstempel werden erneut analysiert. Gilt für die Untertitelplatzierung und geeignete native DV-Erkennung. Standardmäßig aktiviert. Änderungen gelten bei der nächsten Wiedergabe."

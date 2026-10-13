@@ -24,6 +24,7 @@
 #include <thread>
 
 #include "AMLUtils.h"
+#include "ActiveAreaCache.h"
 #include "DVBackendState.h"
 #include "utils/PlaybackDiagnostics.h"
 #include "utils/PlaybackEndDiagnostics.h"
@@ -4669,7 +4670,34 @@ void aml_dv_detect_active_area_start()
     return;
   // Known player padding is already represented by the renderer video rectangle.
   s_detectState.store(DV_DETECT_RUNNING);
-  s_detectWorker.Start([source](const CAMLNativeWorker::Run& run) {
+  const bool cacheEnabled = settings()->GetBool(CSettings::SETTING_SUBTITLES_CACHEACTIVEAREA);
+  s_detectWorker.Start([source, cacheEnabled](const CAMLNativeWorker::Run& run) {
+    ACTIVE_AREA_CACHE::Identity identity;
+    identity.path = source->path;
+    identity.streamIndex = source->streamIndex;
+    identity.codec = source->codecHint;
+    identity.width = source->width;
+    identity.height = source->height;
+    identity.nativeDV = source->nativeDV;
+    const bool identified = cacheEnabled && ACTIVE_AREA_CACHE::ReadIdentity(identity);
+    ACTIVE_AREA_CACHE::Record saved;
+    if (identified && !run.Cancelled() && ACTIVE_AREA_CACHE::Load(identity, saved))
+    {
+      if (saved.hasSubtitle)
+        detect_publish_subtitle(run, source,
+            {saved.subtitle[0], saved.subtitle[1], saved.subtitle[2], saved.subtitle[3]});
+      if (saved.hasStrict)
+        detect_publish(run, source, saved.strict[0], saved.strict[1],
+                       saved.strict[2], saved.strict[3], saved.highConfidence);
+      else
+      {
+        std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+        if (!run.Cancelled() && source == s_detectSource && !source->superseded->load())
+          s_detectState.store(saved.state);
+      }
+      CLog::Log(LOGDEBUG, "DetectActiveArea: reused saved stream {} geometry", source->streamIndex);
+      return;
+    }
     std::shared_ptr<const DetectResult> retained;
     std::shared_ptr<const DetectResult> retainedSubtitle;
     {
@@ -4693,6 +4721,32 @@ void aml_dv_detect_active_area_start()
     else
     {
       DetectActiveAreaFromFile(source, run);
+    }
+    if (identified && !run.Cancelled())
+    {
+      ACTIVE_AREA_CACHE::Record record;
+      {
+        std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+        if (source != s_detectSource || source->superseded->load())
+          return;
+        record.state = s_detectState.load();
+        if (source->result)
+        {
+          record.hasStrict = true;
+          record.highConfidence = source->result->highConfidence;
+          record.strict = {source->result->top, source->result->bottom,
+                           source->result->left, source->result->right};
+        }
+        if (source->subtitleResult)
+        {
+          record.hasSubtitle = true;
+          record.subtitle = {source->subtitleResult->top, source->subtitleResult->bottom,
+                             source->subtitleResult->left, source->subtitleResult->right};
+        }
+      }
+      // Metadata is checked again before writing; changing files cannot seed reuse.
+      if (!run.Cancelled() && settings()->GetBool(CSettings::SETTING_SUBTITLES_CACHEACTIVEAREA))
+        ACTIVE_AREA_CACHE::Store(identity, record);
     }
   }, source->superseded);
 }
