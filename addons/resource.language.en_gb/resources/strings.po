@@ -27840,11 +27840,11 @@ msgstr ""
 #. Optional active picture detection CPU isolation
 #: system/settings/settings.xml
 msgctxt "#69372"
-msgid "Use separate CPUs for picture-area detection"
+msgid "Use A53 cores for black-border detection"
 msgstr ""
 
 #. Optional active picture detection CPU isolation
 #: system/settings/settings.xml
 msgctxt "#69373"
-msgid "Run the detector and its decoder threads on available CPUs outside the playback CPU selection. The active playback thread masks are checked before scanning. If no separate CPU is available, detection is skipped. Detection may take longer on slower CPUs. Saved results can still be reused. Disabled by default. Changes apply to the next scan."
+msgid "Run black-border detection and its decoder threads on the two slower Cortex-A53 cores (CPUs 0-1) of the S922X, keeping this work off the faster Cortex-A73 cores used for video output and presentation. Detection takes longer. Playback CPU masks are checked; detection is skipped if no separate CPU can be used. Cached results still avoid scanning. Disabled by default. Changes apply to the next scan."
 msgstr ""
