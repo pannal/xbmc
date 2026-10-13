@@ -20589,3 +20589,21 @@ msgstr "A53-Kerne für die Erkennung schwarzer Balken verwenden"
 msgctxt "#69373"
 msgid "Run black-border detection and its decoder threads on the two slower Cortex-A53 cores (CPUs 0-1) of the S922X, keeping this work off the faster Cortex-A73 cores used for video output and presentation. Detection takes longer. Playback CPU masks are checked; detection is skipped if no separate CPU can be used. Cached results still avoid scanning. Disabled by default. Changes apply to the next scan."
 msgstr "Die Erkennung schwarzer Balken und ihre Decoder-Threads auf den beiden langsameren Cortex-A53-Kernen (CPUs 0-1) des S922X ausführen. Dadurch bleiben die schnelleren Cortex-A73-Kerne für Videoausgabe und Präsentation von dieser Arbeit frei. Die Erkennung dauert länger. Die CPU-Masken der Wiedergabe werden geprüft; ist kein separater CPU-Kern nutzbar, wird die Erkennung übersprungen. Zwischengespeicherte Ergebnisse vermeiden weiterhin eine erneute Analyse. Standardmäßig deaktiviert. Änderungen gelten bei der nächsten Analyse."
+
+#. Optional startup wait for black-border detection
+#: system/settings/settings.xml
+msgctxt "#69374"
+msgid "Wait for black-border detection before playback"
+msgstr "Vor der Wiedergabe auf die Erkennung schwarzer Balken warten"
+
+#. Optional startup wait for black-border detection
+#: system/settings/settings.xml
+msgctxt "#69375"
+msgid "Hold playback at startup until enabled black-border detection finishes, fails or is skipped. A still frame may be visible while waiting. Cached results avoid a new scan. While waiting, detection runs without the playback I/O throttle. A pause you request is preserved. Enabled by default. Changes apply on next playback."
+msgstr "Den Wiedergabestart zurückhalten, bis die aktivierte Erkennung schwarzer Balken abgeschlossen, fehlgeschlagen oder übersprungen ist. Während des Wartens kann ein Standbild sichtbar sein. Zwischengespeicherte Ergebnisse vermeiden eine erneute Analyse. Während des Wartens läuft die Erkennung ohne die E/A-Drosselung zum Schutz der Wiedergabe. Eine selbst angeforderte Pause bleibt erhalten. Standardmäßig aktiviert. Änderungen gelten bei der nächsten Wiedergabe."
+
+#. Optional startup wait for black-border detection
+#: system/settings/settings.xml
+msgctxt "#69376"
+msgid "Detecting black borders..."
+msgstr "Schwarze Balken werden erkannt..."

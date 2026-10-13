@@ -847,6 +847,11 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   m_playerOptions = options;
   m_processInfo->SetFullscreen(options.fullscreen);
   aml_dv_detect_set_file(file.GetDynPath());
+#if defined(HAS_LIBAMCODEC)
+  aml_subtitle_active_area_startup_begin();
+#endif
+  m_activeAreaWaitStart = {};
+  m_activeAreaWaitNotified = false;
 
   m_processInfo->SetPlayTimes(0,0,0,0);
   m_bAbortRequest = false;
@@ -2791,6 +2796,11 @@ void CVideoPlayer::SynchronizeStreams(bool allowRecovery)
 {
   if (!m_pInputStream || ParentLifecyclePending() || m_bAbortRequest || m_bStop)
     return;
+  if (WaitForActiveAreaDetection())
+  {
+    SetCaching(CACHESTATE_INIT);
+    return;
+  }
   // sync streams to clock
   if ((m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_WAITSYNC) ||
       (m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_WAITSYNC))
@@ -2977,6 +2987,13 @@ void CVideoPlayer::SynchronizeStreams(bool allowRecovery)
           cb->OnAVStarted(fileItem);
         });
         m_State.streamsReady = true;
+#if defined(HAS_LIBAMCODEC)
+        // Audio-only startup has no video hint; retire the file's hold as well
+        // so a video stream added later retains normal playback I/O protection.
+        aml_subtitle_active_area_startup_complete(
+            m_CurrentVideo.id >= 0 ? m_CurrentVideo.hint.subtitleProbeSource
+                                   : aml_subtitle_active_area_source());
+#endif
       }
     }
     else
@@ -3017,6 +3034,16 @@ void CVideoPlayer::CheckCacheReadStall()
 
 void CVideoPlayer::HandlePlaySpeed()
 {
+  if (WaitForActiveAreaDetection())
+  {
+    SetCaching(CACHESTATE_INIT);
+    // Intentional startup waiting must not look like a stalled/broken stream.
+    m_videoWedgePts = DVD_NOPTS_VALUE;
+    m_brokenFileStallStart = {};
+    m_brokenFileStallBytes = -1;
+    m_brokenFileStallStarveLogged = false;
+    return;
+  }
   const bool isInMenu = IsInMenuInternal();
   const bool tolerateStall =
       isInMenu || (m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES);
@@ -4454,10 +4481,15 @@ void CVideoPlayer::HandleMessages()
       m_playSpeed = speed;
 
       m_caching = CACHESTATE_DONE;
-      m_clock.SetSpeed(speed);
-      m_VideoPlayerAudio->SetSpeed(speed);
-      m_VideoPlayerVideo->SetSpeed(speed);
-      m_streamPlayerSpeed = speed;
+      if (WaitForActiveAreaDetection())
+        SetCaching(CACHESTATE_INIT);
+      else
+      {
+        m_clock.SetSpeed(speed);
+        m_VideoPlayerAudio->SetSpeed(speed);
+        m_VideoPlayerVideo->SetSpeed(speed);
+        m_streamPlayerSpeed = speed;
+      }
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_FRAME_ADVANCE))
     {
@@ -4576,8 +4608,31 @@ void CVideoPlayer::QueueAudioRecoverySeek()
                               {CDVDMsg::PLAYER_SEEK, CDVDMsg::PLAYER_SEEK_CHAPTER});
 }
 
+bool CVideoPlayer::WaitForActiveAreaDetection()
+{
+#if defined(HAS_LIBAMCODEC)
+  if (!m_State.streamsReady && m_CurrentVideo.id >= 0 &&
+      aml_subtitle_active_area_startup_pending(m_CurrentVideo.hint.subtitleProbeSource))
+  {
+    const auto now = std::chrono::steady_clock::now();
+    if (m_activeAreaWaitStart == std::chrono::steady_clock::time_point{})
+      m_activeAreaWaitStart = now;
+    // Cached/immediate outcomes should not flash a notification.
+    if (!m_activeAreaWaitNotified && now - m_activeAreaWaitStart >= 500ms)
+    {
+      CGUIDialogKaiToast::QueueNotification(g_localizeStrings.Get(69376), "");
+      m_activeAreaWaitNotified = true;
+    }
+    return true;
+  }
+#endif
+  return false;
+}
+
 void CVideoPlayer::SetCaching(ECacheState state)
 {
+  if ((state == CACHESTATE_PLAY || state == CACHESTATE_DONE) && WaitForActiveAreaDetection())
+    state = CACHESTATE_INIT;
   if(state == CACHESTATE_FLUSH)
   {
     CacheInfo cache = GetCachingTimes();

@@ -2746,6 +2746,9 @@ struct DetectSource
   const int streamIndex;
   const int codecHint;
   const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
+  std::atomic<bool> pending{false};
+  // Shared across configuration of the same startup selection, never a new file.
+  std::shared_ptr<std::atomic<bool>> startupWait{std::make_shared<std::atomic<bool>>(false)};
   std::shared_ptr<const DetectResult> result; // protected by s_detectSourceMutex
   // Accepted file-wide geometry may outlive a cancelled probe, never its admission.
   std::shared_ptr<const DetectResult> retained;
@@ -2821,9 +2824,11 @@ std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int
   if (streamIndex < 0 || s_detectSource->streamIndex != streamIndex ||
       s_detectSource->codecHint != codec)
   {
+    const auto startupWait = s_detectSource->startupWait;
     s_detectSource->superseded->store(true);
     s_detectSource = std::make_shared<DetectSource>(s_detectSource->path, 0, 0, false, false,
                                                    std::shared_ptr<const void>{}, streamIndex, codec);
+    s_detectSource->startupWait = startupWait;
     s_detectStable.store(false);
     CServiceBroker::GetDataCacheCore().ClearVideoDoViFrameMetadata();
   }
@@ -2841,6 +2846,7 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
   s_detectSource = std::make_shared<DetectSource>(previous->path, width, height,
                                                  nativeDV, allowProbe, expectedSource,
                                                  previous->streamIndex, previous->codecHint);
+  s_detectSource->startupWait = previous->startupWait;
   if (allowProbe && previous->width == width && previous->height == height &&
       previous->nativeDV == nativeDV && previous->allowProbe == allowProbe)
   {
@@ -2878,6 +2884,37 @@ bool aml_subtitle_native_dv()
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   return s_detectSource->nativeDV && s_detectSource->width > 0 && s_detectSource->height > 0;
+}
+
+void aml_subtitle_active_area_startup_begin()
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  s_detectSource->startupWait->store(
+      settings()->GetBool(CSettings::SETTING_SUBTITLES_WAITACTIVEAREA));
+}
+
+bool aml_subtitle_active_area_startup_pending(const std::shared_ptr<const void>& expectedSource)
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  return expectedSource && expectedSource == s_detectSource->selection &&
+         !s_detectSource->superseded->load() && s_detectSource->startupWait->load() &&
+         s_detectSource->pending.load();
+}
+
+void aml_subtitle_active_area_startup_complete(const std::shared_ptr<const void>& expectedSource)
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  if (expectedSource && expectedSource == s_detectSource->selection)
+    s_detectSource->startupWait->store(false);
+}
+
+static bool detect_startup_wait_active(const CAMLNativeWorker::Run& run)
+{
+  if (run.Cancelled())
+    return false;
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  return !s_detectSource->superseded->load() && s_detectSource->startupWait->load() &&
+         s_detectSource->pending.load();
 }
 
 bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
@@ -2979,7 +3016,7 @@ static int detect_interrupt_cb(void *opaque)
   /* Abort the in-flight read if playback's buffer goes critical.  Rate-limited:
    * the interrupt callback is polled in tight I/O loops, and the cache query
    * takes a (brief) player lock. */
-  if (s_detectThrottleActive.load())
+  if (s_detectThrottleActive.load() && !detect_startup_wait_active(*run))
   {
     const int64_t now = detect_steady_ms();
     if (now - s_detectLastCacheCheckMs.load() >= 150)
@@ -3045,6 +3082,9 @@ static int detect_wait_for_cache(const CAMLNativeWorker::Run& run, int targetPct
   {
     if (run.Cancelled())
       return -1;
+    // Startup holds the clock/A/V, so there is no draining playback to protect.
+    if (detect_startup_wait_active(run))
+      return 100;
     /* No active playback to protect (stopped / never started) — proceed. */
     if (!appPlayer || !appPlayer->IsPlaying())
       return 100;
@@ -4669,7 +4709,13 @@ void aml_dv_detect_active_area_start()
   // Known player padding is already represented by the renderer video rectangle.
   s_detectState.store(DV_DETECT_RUNNING);
   const bool cacheEnabled = settings()->GetBool(CSettings::SETTING_SUBTITLES_CACHEACTIVEAREA);
-  s_detectWorker.Start([source, cacheEnabled](const CAMLNativeWorker::Run& run) {
+  // The captured guard also releases on early return, worker exception, failed
+  // launch and cancellation; a stale global RUNNING state cannot hold playback.
+  auto completion = std::shared_ptr<const void>(nullptr, [source](const void*) {
+    source->pending.store(false);
+  });
+  source->pending.store(true);
+  s_detectWorker.Start([source, cacheEnabled, completion](const CAMLNativeWorker::Run& run) {
     ACTIVE_AREA_CACHE::Identity identity;
     identity.path = source->path;
     identity.streamIndex = source->streamIndex;

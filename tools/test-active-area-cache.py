@@ -142,6 +142,7 @@ struct DetectResult {uint16_t top,bottom,left,right;bool highConfidence=false;};
 struct DetectSource {
  std::string path;int streamIndex=0,codecHint=173,width=1920,height=1080;
  bool nativeDV=false,allowProbe=true;
+ std::atomic<bool> pending{false};
  std::shared_ptr<std::atomic<bool>> superseded=std::make_shared<std::atomic<bool>>(false);
  std::shared_ptr<const DetectResult> result,subtitleResult,retained,retainedSubtitle;
 };
@@ -171,6 +172,7 @@ void detect_publish(const CAMLNativeWorker::Run&,const std::shared_ptr<DetectSou
  source->result=std::make_shared<DetectResult>(DetectResult{t,b,l,r,highConfidence});s_detectState=3;
 }
 void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source,const CAMLNativeWorker::Run& run){
+ assert(source->pending.load());
  ++scans;detect_publish_subtitle(run,source,{20,20,0,0});s_detectState=2;
 }
 '''
@@ -214,6 +216,7 @@ int main(int argc,char** argv){
  aml_dv_detect_active_area_start();assert(scans==5&&s_detectState==DV_DETECT_SKIPPED);
  assert(!s_detectSource->result&&!s_detectSource->subtitleResult);
  assert(XFILE::statCalls==offStats&&XFILE::openCalls==offOpens&&XFILE::writeCalls==offWrites);
+ assert(!s_detectSource->pending.load());
  std::cout<<"PASS: production startup disabled-cache I/O bypass, persistent miss/save, blind hit without scanning, strict/subtitle separation, selected-stream/file invalidation\n";
 }
 '''

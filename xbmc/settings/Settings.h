@@ -171,6 +171,7 @@ public:
   static constexpr auto SETTING_SUBTITLES_DETECTACTIVEAREA = "subtitles.detectactivearea";
   static constexpr auto SETTING_SUBTITLES_CACHEACTIVEAREA = "subtitles.cacheactivearea";
   static constexpr auto SETTING_SUBTITLES_ISOLATEACTIVEAREA = "subtitles.isolateactivearea";
+  static constexpr auto SETTING_SUBTITLES_WAITACTIVEAREA = "subtitles.waitactivearea";
   static constexpr auto SETTING_SUBTITLES_BITMAPZOOM = "subtitles.bitmapzoom";
   static constexpr auto SETTING_SUBTITLES_PARSECAPTIONS = "subtitles.parsecaptions";
   static constexpr auto SETTING_SUBTITLES_CAPTIONSALIGN = "subtitles.captionsalign";

@@ -51,13 +51,16 @@ PREFIX = r'''
 #include <vector>
 std::vector<bool> subtitleInvalidations;
 void aml_subtitle_active_area_invalidate(bool preserve) { subtitleInvalidations.push_back(preserve); }
+std::vector<std::shared_ptr<const void>> startupCompletions;
+void aml_subtitle_active_area_startup_complete(const std::shared_ptr<const void>& source) {startupCompletions.push_back(source);}
+std::shared_ptr<const void> aml_subtitle_active_area_source(){static auto source=std::make_shared<int>(0);return source;}
 @RECOVERY_HEADER@
 using namespace std::chrono_literals;
 using CCriticalSection = std::mutex;
 constexpr int LOGFATAL=0, LOGWARNING=1, LOGDEBUG=2, LOGERROR=3, LOGAUDIO=4, LOGVIDEO=5;
 constexpr double DVD_NOPTS_VALUE=-1;
 constexpr int DVD_PLAYSPEED_NORMAL=1000, DVD_PLAYSPEED_PAUSE=0;
-constexpr int SYNCSOURCE_AUDIO=1,SYNCSOURCE_VIDEO=2,CACHESTATE_FLUSH=3,CACHESTATE_DONE=4;
+constexpr int SYNCSOURCE_AUDIO=1,SYNCSOURCE_VIDEO=2,CACHESTATE_FLUSH=3,CACHESTATE_DONE=4,CACHESTATE_INIT=5;
 constexpr int VideoPlayer_AUDIO=1, VideoPlayer_VIDEO=2, TMSG_SWITCHTOFULLSCREEN=3;
 constexpr double DVD_TIME_BASE=1000000;
 constexpr double DVD_TIME_TO_MSEC(double pts) {return pts/1000;}
@@ -237,6 +240,7 @@ struct CCurrentStream {
   enum {AV_SYNC_NONE,AV_SYNC_CONT,AV_SYNC_FORCE};
   int id=0,syncState=IDVDStreamPlayer::SYNC_STARTING,avsync=AV_SYNC_FORCE;
   bool inited=false; unsigned packets=0;
+  struct {std::shared_ptr<const void> subtitleProbeSource;} hint;
   double dts=0,startpts=0,lastdts=0,starttime=DVD_NOPTS_VALUE,cachetime=0,cachetotal=0;
 };
 struct IPlayerCallback { int starts=0; void OnAVStarted(int) {++starts;} };
@@ -287,6 +291,7 @@ struct Parent {
   struct { void Suspend() {} } m_vs10Action;
   void FlushBuffers(double pts, bool accurate, bool sync, std::function<void()> complete={},bool preserveSubtitleGeometry=false);
   void CancelParentLifecycle(); bool ContinueParentLifecycle(); void SynchronizeStreams(bool);
+  bool WaitForActiveAreaDetection(){return false;}
   void HandleMessages() {
     std::shared_ptr<CDVDMsg> pMsg; int priority=0;
     while(queue.Get(pMsg,0ms,priority,ParentLifecyclePending() ? 2 : 0)==MSGQ_OK) {

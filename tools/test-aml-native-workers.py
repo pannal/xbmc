@@ -36,8 +36,8 @@ std::function<void()> writeHook;
 struct CSysfsPath{CSysfsPath(const char*,int){assert(session&&!session->AcquireDecoder());++writes;if(writeHook)writeHook();}};
 void aml_dv_apply_l5_override_sysfs(){assert(session&&!session->AcquireDecoder());++watchWrites;if(writeHook)writeHook();}
 @AUTO_GLOBALS@
-struct CSettings {static constexpr int SETTING_COREELEC_AMLOGIC_DV_L5_AUTO_LETTERBOX=1,SETTING_SUBTITLES_DETECTACTIVEAREA=2,SETTING_SUBTITLES_CACHEACTIVEAREA=3,SETTING_SUBTITLES_ISOLATEACTIVEAREA=4;};
-struct Settings {bool detect=true;bool GetBool(int id){return id==2?detect:id<3;}} settingsValue;
+struct CSettings {static constexpr int SETTING_COREELEC_AMLOGIC_DV_L5_AUTO_LETTERBOX=1,SETTING_SUBTITLES_DETECTACTIVEAREA=2,SETTING_SUBTITLES_CACHEACTIVEAREA=3,SETTING_SUBTITLES_ISOLATEACTIVEAREA=4,SETTING_SUBTITLES_WAITACTIVEAREA=5;};
+struct Settings {bool detect=true,wait=false;bool GetBool(int id){return id==5?wait:id==2?detect:id<3;}} settingsValue;
 Settings* settings(){return &settingsValue;}
 bool aml_dv_l5_override_active(){return false;}
 @CONSTANTS@

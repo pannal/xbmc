@@ -470,6 +470,9 @@ protected:
   };
 
   void SetCaching(ECacheState state);
+  bool WaitForActiveAreaDetection();
+  std::chrono::steady_clock::time_point m_activeAreaWaitStart;
+  bool m_activeAreaWaitNotified{false};
 
   double GetQueueTime();
   CacheInfo GetCachingTimes();

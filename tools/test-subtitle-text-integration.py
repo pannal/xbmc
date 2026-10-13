@@ -101,7 +101,8 @@ def generate(baseline=None):
         code += SOFTWARE_ADAPTERS
         for signature in ('void CVideoPlayerVideo::UpdateSubtitleProbe(', 'void CVideoPlayerVideo::ResetSubtitleProbe()', 'void CVideoPlayerVideo::StopSubtitleProbe()'):
             code += '\n' + FUNCTION(owner, signature)
-    code += '\nvoid DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& value,const CAMLNativeWorker::Run& run){++scans;const uint16_t border=value->width==1920?132:263;detect_publish(run,value,border,border,0,0);}\n'
+    startup_check = 'assert(!detect_startup_wait_active(run));' if 'static bool detect_startup_wait_active(' in aml else ''
+    code += '\nvoid DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& value,const CAMLNativeWorker::Run& run){' + startup_check + '++scans;const uint16_t border=value->width==1920?132:263;detect_publish(run,value,border,border,0,0);}\n'
     return code + TESTS
 
 
@@ -170,7 +171,8 @@ struct Cache {
 } cache;
 struct CSettings{static constexpr int SETTING_SUBTITLES_DETECTACTIVEAREA=1,
  SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_USER_POS=2,SETTING_SUBTITLES_BITMAPZOOM=3,
- SETTING_COREELEC_AMLOGIC_DV_LEVEL5=4,SETTING_SUBTITLES_CACHEACTIVEAREA=6;};
+ SETTING_COREELEC_AMLOGIC_DV_LEVEL5=4,SETTING_SUBTITLES_CACHEACTIVEAREA=6,
+ SETTING_SUBTITLES_WAITACTIVEAREA=7;};
 struct Settings{
  bool detect=true,applyMargin=false;int zoom=100;
  bool GetBool(int id){return id==6?false:(id==1?detect:applyMargin);}int GetInt(int){return zoom;}

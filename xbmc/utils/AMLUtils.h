@@ -258,6 +258,10 @@ enum DvDetectState { DV_DETECT_FAILED = 0, DV_DETECT_SKIP_NON16X9 = 1,
                      DV_DETECT_RUNNING = 6 };
 int aml_dv_detect_active_area_state();
 void aml_dv_detect_set_file(const std::string& path);
+// Startup hold is selection-bound and independent of the DV-only status label.
+void aml_subtitle_active_area_startup_begin();
+bool aml_subtitle_active_area_startup_pending(const std::shared_ptr<const void>& expectedSource);
+void aml_subtitle_active_area_startup_complete(const std::shared_ptr<const void>& expectedSource);
 void aml_dv_detect_active_area_start();
 void aml_dv_detect_active_area_stop();
 // True when coreelec.amlogic.dolbyvision.level5.override is set to ANY value
