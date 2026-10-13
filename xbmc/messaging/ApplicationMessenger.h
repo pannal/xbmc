@@ -319,6 +319,7 @@ public:
    * \param [in] messageId defined further up in this file
    */
   void PostMsg(uint32_t messageId);
+  void PostCallback(std::function<void()> callback);
 
   /*!
    * \brief Send a non-blocking message and return immediately

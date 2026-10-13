@@ -24,7 +24,7 @@ std::optional<std::string> CSysfsPath::Get()
 
     std::string value(std::istreambuf_iterator<char>(file), {});
 
-    if (file.bad())
+    if (!file.is_open() || file.bad())
     {
       CLog::LogF(LOGERROR, "error reading from '{}'", m_path);
       return std::nullopt;

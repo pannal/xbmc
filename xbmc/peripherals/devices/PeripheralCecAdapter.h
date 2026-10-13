@@ -48,6 +48,7 @@ public:
 #include "input/actions/interfaces/IActionListener.h"
 
 #include <chrono>
+#include <memory>
 #include <queue>
 #include <vector>
 
@@ -95,6 +96,7 @@ typedef enum
 class CPeripheralCecAdapter : public CPeripheralHID,
                               public ANNOUNCEMENT::IAnnouncer,
                               public KODI::ACTION::IActionListener,
+                              public std::enable_shared_from_this<CPeripheralCecAdapter>,
                               private CThread
 {
   friend class CPeripheralCecAdapterUpdateThread;
@@ -104,6 +106,7 @@ public:
   CPeripheralCecAdapter(CPeripherals& manager,
                         const PeripheralScanResult& scanResult,
                         CPeripheralBus* bus);
+  ~CPeripheralCecAdapter() override;
 
   void Deinitialize(void) override;
 
@@ -141,11 +144,16 @@ public:
 private:
   bool InitialiseFeature(const PeripheralFeature feature) override;
   void ResetMembers(void);
+  void RetireCecCallbacks(void);
+  void OnCecSourceActivated(CEC::cec_logical_address address,
+                            uint8_t activated,
+                            bool isActive,
+                            uint64_t generation);
   void Process(void) override;
   bool IsRunning(void) const;
 
   bool OpenConnection(void);
-  bool ReopenConnection(bool bAsync = false);
+  bool ReopenConnection(bool bAsync = false, uint64_t generation = 0);
 
   void SetConfigurationFromSettings(void);
   void SetConfigurationFromLibCEC(const CEC::libcec_configuration& config);
@@ -203,9 +211,13 @@ private:
   bool m_bGoingToStandby;
   bool m_bBypassWakeCooldown;
   bool m_bIsRunning;
-  bool m_bDeviceRemoved;
+  std::atomic<bool> m_bDeviceRemoved{false};
   CPeripheralCecAdapterUpdateThread* m_queryThread;
   CEC::ICECCallbacks m_callbacks;
+  // Only lifecycle owners take this lock; native callbacks must remain able to drain.
+  CCriticalSection m_lifecycleSection;
+  std::atomic<bool> m_retired{false};
+  bool m_deinitialized{false};
   mutable CCriticalSection m_critSection;
   CEC::libcec_configuration m_configuration;
   bool m_bActiveSourcePending;
@@ -217,6 +229,7 @@ private:
   bool m_bActiveSourceBeforeStandby;
   bool m_bOnPlayReceived;
   bool m_bPlaybackPaused;
+  std::atomic<uint64_t> m_sourceEventGeneration{0};
   std::string m_strComPort;
   std::chrono::time_point<std::chrono::steady_clock> m_lastSourceDeactivatedTime;
   std::chrono::time_point<std::chrono::steady_clock> m_lastCecKeypressTime;

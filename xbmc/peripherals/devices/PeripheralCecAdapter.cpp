@@ -74,6 +74,22 @@ using namespace XBMCAddon;
 /* time in seconds to suppress source activation after receiving OnStop */
 #define CEC_SUPPRESS_ACTIVATE_SOURCE_AFTER_ON_STOP 2
 
+namespace
+{
+void DrainCecCallbacks(ICECAdapter* adapter)
+{
+  if (!adapter)
+    return;
+  // libCEC holds its callback mutex until an in-flight callback returns.
+  // Call outside m_critSection: callbacks can acquire that Kodi lock.
+#if CEC_LIB_VERSION_MAJOR >= 5
+  adapter->DisableCallbacks();
+#else
+  adapter->EnableCallbacks(nullptr, nullptr);
+#endif
+}
+}
+
 CPeripheralCecAdapter::CPeripheralCecAdapter(CPeripherals& manager,
                                              const PeripheralScanResult& scanResult,
                                              CPeripheralBus* bus)
@@ -89,33 +105,58 @@ CPeripheralCecAdapter::CPeripheralCecAdapter(CPeripherals& manager,
     appListener->RegisterActionListener(this);
 }
 
+CPeripheralCecAdapter::~CPeripheralCecAdapter()
+{
+  Deinitialize();
+}
+
 void CPeripheralCecAdapter::Deinitialize(void)
 {
+  // Close admission before waiting for an already executing reopen.
+  m_retired.store(true, std::memory_order_release);
+  std::unique_lock<CCriticalSection> lifecycleLock(m_lifecycleSection);
+  if (m_deinitialized)
+    return;
   {
     std::unique_lock<CCriticalSection> lock(m_critSection);
     m_bStop = true;
   }
 
-  CServiceBroker::GetAnnouncementManager()->RemoveAnnouncer(this);
   auto& components = CServiceBroker::GetAppComponents();
   auto appListener = components.GetComponent<CApplicationActionListeners>();
   if (appListener)
     appListener->UnregisterActionListener(this);
 
   StopThread(true);
+  // An Open already in progress can register the announcer before it exits.
+  if (auto announcements = CServiceBroker::GetAnnouncementManager())
+    announcements->RemoveAnnouncer(this);
   delete m_queryThread;
+  m_queryThread = nullptr;
 
   if (m_cecAdapter)
   {
+    RetireCecCallbacks();
     CECDestroy(m_cecAdapter);
     m_cecAdapter = NULL;
   }
+  m_deinitialized = true;
+}
+
+void CPeripheralCecAdapter::RetireCecCallbacks(void)
+{
+  m_sourceEventGeneration.fetch_add(1, std::memory_order_relaxed);
+  DrainCecCallbacks(m_cecAdapter);
 }
 
 void CPeripheralCecAdapter::ResetMembers(void)
 {
   if (m_cecAdapter)
+  {
+    RetireCecCallbacks();
     CECDestroy(m_cecAdapter);
+  }
+  std::unique_lock<CCriticalSection> lock(m_critSection);
   m_cecAdapter = NULL;
   m_bStarted = false;
   m_bHasButton = false;
@@ -134,7 +175,6 @@ void CPeripheralCecAdapter::ResetMembers(void)
   m_bBypassWakeCooldown = false;
   m_bExplicitStandbyPending = false;
   m_bIsRunning = false;
-  m_bDeviceRemoved = false;
   m_bActiveSourcePending = false;
   m_bStandbyPending = false;
   m_bInactiveViewPending = false;
@@ -295,6 +335,9 @@ void CPeripheralCecAdapter::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
 
 bool CPeripheralCecAdapter::InitialiseFeature(const PeripheralFeature feature)
 {
+  std::unique_lock<CCriticalSection> lifecycleLock(m_lifecycleSection);
+  if (m_retired.load(std::memory_order_acquire))
+    return false;
   if (feature == FEATURE_CEC && !m_bStarted && GetSettingBool("enabled"))
   {
     // hide settings that have an override set
@@ -314,9 +357,21 @@ bool CPeripheralCecAdapter::InitialiseFeature(const PeripheralFeature feature)
     m_configuration.callbackParam = this;
     m_configuration.callbacks = &m_callbacks;
 
+    // A stopped session may still own its native adapter and query object.
+    StopThread(true);
+    delete m_queryThread;
+    m_queryThread = nullptr;
+    if (m_cecAdapter)
+    {
+      RetireCecCallbacks();
+      CECDestroy(m_cecAdapter);
+      m_cecAdapter = nullptr;
+    }
+    if (m_retired.load(std::memory_order_acquire))
+      return false;
     m_cecAdapter = CECInitialise(&m_configuration);
 
-    if (m_configuration.serverVersion < CEC_LIB_SUPPORTED_VERSION)
+    if (!m_cecAdapter || m_configuration.serverVersion < CEC_LIB_SUPPORTED_VERSION)
     {
       /* unsupported libcec version */
       CLog::Log(
@@ -332,7 +387,10 @@ bool CPeripheralCecAdapter::InitialiseFeature(const PeripheralFeature feature)
                                             strMessage);
       m_bError = true;
       if (m_cecAdapter)
+      {
+        RetireCecCallbacks();
         CECDestroy(m_cecAdapter);
+      }
       m_cecAdapter = NULL;
 
       m_features.clear();
@@ -383,6 +441,13 @@ bool CPeripheralCecAdapter::OpenConnection(void)
 
   bool bConnectionFailedDisplayed(false);
 
+  // A previous close drained callbacks; a genuine reopen reinstalls them.
+  m_sourceEventGeneration.fetch_add(1, std::memory_order_relaxed);
+#if CEC_LIB_VERSION_MAJOR >= 5
+  m_cecAdapter->SetCallbacks(&m_callbacks, this);
+#else
+  m_cecAdapter->EnableCallbacks(this, &m_callbacks);
+#endif
   while (!m_bStop && !bIsOpen)
   {
     if ((bIsOpen = m_cecAdapter->Open(m_strComPort.c_str(), 10000)) == false)
@@ -453,6 +518,7 @@ void CPeripheralCecAdapter::Process(void)
 
   m_queryThread->StopThread(true);
 
+  RetireCecCallbacks();
   UnregisterDevice();
 
   m_cecAdapter->Close();
@@ -1206,6 +1272,9 @@ void CPeripheralCecAdapter::ResetButton(void)
 
 void CPeripheralCecAdapter::OnSettingChanged(const std::string& strChangedSetting)
 {
+  std::unique_lock<CCriticalSection> lifecycleLock(m_lifecycleSection);
+  if (m_retired.load(std::memory_order_acquire))
+    return;
   if (StringUtils::EqualsNoCase(strChangedSetting, "enabled"))
   {
     bool bEnabled(GetSettingBool("enabled"));
@@ -1277,11 +1346,41 @@ void CPeripheralCecAdapter::CecSourceActivated(void* cbParam,
                                                const CEC::cec_logical_address address,
                                                const uint8_t activated)
 {
-  CPeripheralCecAdapter* adapter = static_cast<CPeripheralCecAdapter*>(cbParam);
+  auto* adapter = static_cast<CPeripheralCecAdapter*>(cbParam);
   if (!adapter)
     return;
 
-  bool isActive = adapter->m_cecAdapter->IsLibCECActiveSource();
+  // Only native work remains inside libCEC's callback lifetime. GUI effects
+  // cannot wait for main while main is draining this callback during shutdown.
+  const auto generation = adapter->m_sourceEventGeneration.load(std::memory_order_relaxed);
+  const bool isActive = adapter->m_cecAdapter->IsLibCECActiveSource();
+  auto weak = adapter->weak_from_this();
+  CServiceBroker::GetAppMessenger()->PostCallback([weak, generation, address, activated, isActive] {
+    auto owner = weak.lock();
+    if (!owner)
+      return;
+    if (owner->m_bStop || owner->m_sourceEventGeneration.load(std::memory_order_relaxed) != generation)
+      return;
+    owner->OnCecSourceActivated(address, activated, isActive, generation);
+  });
+}
+
+void CPeripheralCecAdapter::OnCecSourceActivated(CEC::cec_logical_address address,
+                                              uint8_t activated,
+                                              bool isActive,
+                                              uint64_t generation)
+{
+  std::unique_lock<CCriticalSection> lifecycleLock(m_lifecycleSection);
+  if (m_retired.load(std::memory_order_acquire))
+    return;
+  auto* adapter = this;
+  bool pausedByCec;
+  {
+    std::unique_lock<CCriticalSection> lock(m_critSection);
+    if (m_bStop || m_sourceEventGeneration.load(std::memory_order_relaxed) != generation)
+      return;
+    pausedByCec = m_bPlaybackPaused;
+  }
   FILE* fp = fopen("/run/kodi_cec_startup_done", "w");
   if (fp)
   {
@@ -1294,10 +1393,10 @@ void CPeripheralCecAdapter::CecSourceActivated(void* cbParam,
 
   if (activated == 0)
   {
+    std::unique_lock<CCriticalSection> lock(adapter->m_critSection);
     adapter->m_lastSourceDeactivatedTime = std::chrono::steady_clock::now();
     if (adapter->GetSettingInt("pause_or_stop_playback_on_deactivate") != LOCALISED_ID_NONE)
     {
-      std::unique_lock<CCriticalSection> lock(adapter->m_critSection);
       adapter->m_bOnPlayReceived = false;
     }
   }
@@ -1339,12 +1438,17 @@ void CPeripheralCecAdapter::CecSourceActivated(void* cbParam,
                                    !appPlayer->IsPausedPlayback());
 
     bool bPausedAndActivated =
-        activated == 1 && adapter->m_bPlaybackPaused &&
+        activated == 1 && pausedByCec &&
         ((pSlideShow && pSlideShow->IsPaused()) || (appPlayer && appPlayer->IsPausedPlayback()));
-    if (bPlayingAndDeactivated)
-      adapter->m_bPlaybackPaused = true;
-    else if (bPausedAndActivated)
-      adapter->m_bPlaybackPaused = false;
+    {
+      std::unique_lock<CCriticalSection> lock(adapter->m_critSection);
+      if (m_bStop || m_sourceEventGeneration.load(std::memory_order_relaxed) != generation)
+        return;
+      if (bPlayingAndDeactivated)
+        adapter->m_bPlaybackPaused = true;
+      else if (bPausedAndActivated)
+        adapter->m_bPlaybackPaused = false;
+    }
 
     if ((bPlayingAndDeactivated || bPausedAndActivated) &&
         adapter->GetSettingInt("pause_or_stop_playback_on_deactivate") == LOCALISED_ID_PAUSE)
@@ -1891,44 +1995,70 @@ void CPeripheralCecAdapterUpdateThread::Process(void)
 
 void CPeripheralCecAdapter::OnDeviceRemoved(void)
 {
-  std::unique_lock<CCriticalSection> lock(m_critSection);
-  m_bDeviceRemoved = true;
+  m_retired.store(true, std::memory_order_release);
+  {
+    std::unique_lock<CCriticalSection> lock(m_critSection);
+    m_bDeviceRemoved = true;
+  }
+  Deinitialize();
 }
 
 class PERIPHERALS::CPeripheralCecAdapterReopenJob : public CJob
 {
 public:
-  CPeripheralCecAdapterReopenJob(CPeripheralCecAdapter* adapter) : m_adapter(adapter) {}
+  CPeripheralCecAdapterReopenJob(std::weak_ptr<CPeripheralCecAdapter> adapter, uint64_t generation)
+    : m_adapter(std::move(adapter)), m_generation(generation)
+  {
+  }
   ~CPeripheralCecAdapterReopenJob() override = default;
 
-  bool DoWork(void) override { return m_adapter->ReopenConnection(false); }
+  bool DoWork(void) override
+  {
+    auto adapter = m_adapter.lock();
+    return adapter && adapter->ReopenConnection(false, m_generation);
+  }
 
 private:
-  CPeripheralCecAdapter* m_adapter;
+  std::weak_ptr<CPeripheralCecAdapter> m_adapter;
+  uint64_t m_generation;
 };
 
-bool CPeripheralCecAdapter::ReopenConnection(bool bAsync /* = false */)
+bool CPeripheralCecAdapter::ReopenConnection(bool bAsync /* = false */, uint64_t generation)
 {
   if (bAsync)
   {
-    CServiceBroker::GetJobManager()->AddJob(new CPeripheralCecAdapterReopenJob(this), nullptr,
-                                            CJob::PRIORITY_NORMAL);
+    if (m_retired.load(std::memory_order_acquire))
+      return false;
+    CServiceBroker::GetJobManager()->AddJob(
+        new CPeripheralCecAdapterReopenJob(
+            weak_from_this(), m_sourceEventGeneration.load(std::memory_order_relaxed)),
+        nullptr, CJob::PRIORITY_NORMAL);
     return true;
   }
+
+  std::unique_lock<CCriticalSection> lifecycleLock(m_lifecycleSection);
+  if (m_retired.load(std::memory_order_acquire) ||
+      m_sourceEventGeneration.load(std::memory_order_relaxed) != generation)
+    return false;
 
   // stop running thread
   {
     std::unique_lock<CCriticalSection> lock(m_critSection);
     m_iExitCode = EXITCODE_RESTARTAPP;
-    CServiceBroker::GetAnnouncementManager()->RemoveAnnouncer(this);
     StopThread(false);
   }
   StopThread();
+  if (auto announcements = CServiceBroker::GetAnnouncementManager())
+    announcements->RemoveAnnouncer(this);
+  delete m_queryThread;
+  m_queryThread = nullptr;
 
   // reset all members to their defaults
   ResetMembers();
 
   // reopen the connection
+  if (m_retired.load(std::memory_order_acquire))
+    return false;
   return InitialiseFeature(FEATURE_CEC);
 }
 
@@ -2137,7 +2267,8 @@ void CPeripheralCecAdapter::ProcessStandbyDevices(void)
 bool CPeripheralCecAdapter::ToggleDeviceState(CecStateChange mode /*= STATE_SWITCH_TOGGLE */,
                                               bool forceType /*= false */)
 {
-  if (!IsRunning())
+  std::unique_lock<CCriticalSection> lifecycleLock(m_lifecycleSection);
+  if (m_retired.load(std::memory_order_acquire) || !IsRunning())
     return false;
 
   // For explicit standby, skip the IsLibCECActiveSource() check entirely.

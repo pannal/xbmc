@@ -175,6 +175,13 @@ void CApplicationMessenger::PostMsg(uint32_t messageId)
   SendMsg(ThreadMessage{ messageId }, false);
 }
 
+void CApplicationMessenger::PostCallback(std::function<void()> callback)
+{
+  ThreadMessage message{TMSG_CALLBACK};
+  message.callback = std::move(callback);
+  SendMsg(std::move(message), false);
+}
+
 void CApplicationMessenger::PostMsg(uint32_t messageId, int64_t param3)
 {
   SendMsg(ThreadMessage{ messageId, param3 }, false);
@@ -229,6 +236,22 @@ void CApplicationMessenger::ProcessMessage(ThreadMessage *pMsg)
   //special case for this that we handle ourselves
   if (pMsg->dwMessage == TMSG_CALLBACK)
   {
+    if (pMsg->callback)
+    {
+      try
+      {
+        pMsg->callback();
+      }
+      catch (const std::exception& error)
+      {
+        CLog::Log(LOGERROR, "Application callback failed: {}", error.what());
+      }
+      catch (...)
+      {
+        CLog::Log(LOGERROR, "Application callback failed");
+      }
+      return;
+    }
     ThreadMessageCallback *callback = static_cast<ThreadMessageCallback*>(pMsg->lpVoid);
     callback->callback(callback->userptr);
     return;

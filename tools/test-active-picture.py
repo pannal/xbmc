@@ -36,8 +36,7 @@ def harness():
     cache = read('xbmc/cores/DataCacheCore.cpp')
     header = read('xbmc/cores/DataCacheCore.h')
     label = read('xbmc/guilib/guiinfo/PlayerGUIInfo.cpp')
-    label = label[label.index('    case PLAYER_PROCESS_VIDEO_ACTIVE_PICTURE:'):
-                  label.index('    case PLAYER_PROCESS_VIDEO_DOVI_HAS_L5:')]
+    label = function(label, 'case PLAYER_PROCESS_VIDEO_ACTIVE_PICTURE:')
     # Registration and IDs are part of the optional Python surface.
     assert '{"video.active.picture", PLAYER_PROCESS_VIDEO_ACTIVE_PICTURE}' in read('xbmc/GUIInfoManager.cpp')
     labels = read('xbmc/guilib/guiinfo/GUIInfoLabels.h')
@@ -134,7 +133,7 @@ struct CServiceBroker {
   static WinSystem* GetWinSystem(){return &win;}
   static GUI* GetGUI(){return &gui;}
 };
-bool s_pm4kActive=true;CGUIWindow* s_pm4kHome=&home;
+std::atomic<bool> s_pm4kActive{true};
 std::atomic<bool> s_discMenuVisible=false;
 int s_lastOsd=-1,emittedOsd=-1;
 struct CSysfsPath {CSysfsPath(const char* path,int value){assert(std::string(path).find("dolby_vision_xbmc_osd")!=std::string::npos);emittedOsd=value;}};
@@ -152,6 +151,8 @@ bool aml_dv_get_l5_override(uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r){if(
 bool aml_dv_auto_letterbox_active(){return autoLb;}
 bool aml_dv_auto_letterbox_additive(){return additive;}
 bool aml_subtitle_detect_active_area_get(int,int,uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r,bool allowSubtitleEstimate=false){assert(!allowSubtitleEstimate);if(!detected)return false;t=dt;b=db;l=dl;r=dr;return true;}
+// These retained cases exercise authored/manual geometry, without an HC override.
+bool aml_dv_detect_active_area_override_get(int,int,uint16_t&,uint16_t&,uint16_t&,uint16_t&){return false;}
 struct MathUtils {static int round_int(double value){return std::lround(value);}};
 struct CBaseRenderer {
   unsigned int m_renderOrientation=0;

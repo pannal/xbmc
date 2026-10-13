@@ -35,11 +35,8 @@ public:
     {
       std::ifstream file(m_path);
 
-      T value;
-
-      file >> value;
-
-      if (file.bad())
+      T value{};
+      if (!(file >> value))
       {
         CLog::LogF(LOGERROR, "error reading from '{}'", m_path);
         return std::nullopt;

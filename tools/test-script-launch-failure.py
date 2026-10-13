@@ -12,7 +12,7 @@ import runpy
 import subprocess
 import tempfile
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get('SCRIPT_LAUNCH_SOURCE_ROOT', Path(__file__).resolve().parents[1]))
 function = runpy.run_path(str(ROOT / 'tools/test-render-slot-publication.py'))['function']
 FILES = ['xbmc/threads/Thread.h', 'xbmc/threads/Thread.cpp',
          'xbmc/interfaces/generic/ILanguageInvoker.h', 'xbmc/interfaces/generic/ILanguageInvoker.cpp',
@@ -22,9 +22,9 @@ FILES = ['xbmc/threads/Thread.h', 'xbmc/threads/Thread.cpp',
 BASELINE = '6a19454cab0cccf91bd838aff59a93477b79e36a'
 
 
-def program(baseline=False):
-    source = {p: subprocess.check_output(['git', 'show', BASELINE + ':' + p], cwd=ROOT, text=True)
-              if baseline else (ROOT / p).read_text() for p in FILES}
+def program(baseline=False, revision=None):
+    source = {p: subprocess.check_output(['git', 'show', (revision or BASELINE) + ':' + p], cwd=ROOT, text=True)
+              if baseline or revision else (ROOT / p).read_text() for p in FILES}
     th = source[FILES[0]]
     tc = source[FILES[1]]
     ih = source[FILES[2]]
@@ -120,12 +120,15 @@ def expect_failure(binary, mode, marker, timeout=4, baseline=False):
         print(mode + ': timed out at the missing completion/startup signal as expected', flush=True)
 
 
-def main(baseline=False, controls=False):
+def main(baseline=False, controls=False, startup_baseline=False):
     with tempfile.TemporaryDirectory(prefix='script-launch-') as name:
         out = Path(name)
-        code = program(baseline)
+        code = program(baseline, '2a8fd121f87e41f257ead0f5421e3de974b21a9d' if startup_baseline else None)
         compile_test(out, code)
-        if baseline:
+        if startup_baseline:
+            for mode in ['startup-allocation', 'startup-info']:
+                expect_failure(out / 'test', mode, 'timeout')
+        elif baseline:
             for mode, marker in [('gui-failure', 'std::system_error'), ('destructor-failure', 'timeout'),
                                  ('retirement', 'LeakSanitizer'), ('path-retirement', 'manager.IsRunning(second)')]:
                 expect_failure(out / 'test', mode, marker, baseline=True)
@@ -133,8 +136,14 @@ def main(baseline=False, controls=False):
             subprocess.run([str(out / 'test')], check=True, timeout=30,
                            env={**os.environ, 'UBSAN_OPTIONS': 'halt_on_error=1'})
         if controls:
-            assert not baseline
+            assert not baseline and not startup_baseline
             mutations = [
+                ('worker startup exception propagation', 'startupFuture.get();',
+                 'startupFuture.wait();', 'startup-allocation', 'caught&&startupFailure'),
+                ('worker startup event', 'pThread->m_StartEvent.Set();\n            promise.set_value(false);',
+                 'promise.set_value(false);', 'startup-info', 'worker.m_bStop'),
+                ('worker startup completion', 'promise.set_value(false);\n            startup.set_exception(error);',
+                 'promise.set_value(true);\n            startup.set_exception(error);', 'startup-allocation', 'worker.m_future.get()'),
                 ('startup rollback', 'm_StopEvent.Set();\n    m_StartEvent.Set();',
                  'm_StopEvent.Set();', 'destructor-failure', 'timeout'),
                 ('optional launch catch', 'OnLaunchFailed();\n      return false;',
@@ -159,7 +168,7 @@ def main(baseline=False, controls=False):
                 compile_test(out, code.replace(old, new))
                 print('Negative control: ' + label, flush=True)
                 expect_failure(out / 'test', mode, marker)
-    print('Script launch: ' + ('BASELINE REPRODUCED' if baseline else 'PASS') +
+    print('Script launch: ' + ('STARTUP BASELINE REPRODUCED' if startup_baseline else 'BASELINE REPRODUCED' if baseline else 'PASS') +
           ' (production thread/invocation methods; native host threads; interpreter/platform stubs; ASan/UBSan)', flush=True)
 
 
@@ -185,7 +194,7 @@ using namespace std::chrono_literals;
 using CCriticalSection=std::recursive_mutex;
 class ILanguageInvoker;class CScriptInvocationManager;
 namespace ADDON{struct IAddon{};using AddonPtr=std::shared_ptr<IAddon>;}
-std::atomic<int> failCode{0}, launches{0};
+std::atomic<int> failCode{0}, launches{0}, startupFailure{0};
 thread_local std::function<void()> beforeFailedLaunch,afterJoinUnlock;
 std::mutex logMutex;std::vector<std::string> messages;
 constexpr int LOGDEBUG=0,LOGERROR=1;
@@ -237,8 +246,14 @@ template<class...T>std::shared_ptr<std::thread> LaunchSharedThread(T&&...args){
 PLATFORM = r'''
 struct IRunnable{virtual ~IRunnable()=default;virtual void Run()=0;};
 struct IThreadImpl{
- static std::unique_ptr<IThreadImpl> CreateThreadImpl(std::thread::native_handle_type){return std::make_unique<IThreadImpl>();}
- void SetThreadInfo(const std::string&){}
+ static std::unique_ptr<IThreadImpl> CreateThreadImpl(std::thread::native_handle_type){
+  int expected=1;if(startupFailure.compare_exchange_strong(expected,0))throw std::bad_alloc();
+  return std::make_unique<IThreadImpl>();
+ }
+ void SetThreadInfo(const std::string&){
+  int expected=2;if(startupFailure.compare_exchange_strong(expected,0))
+   throw std::system_error(99,std::generic_category(),"injected thread info");
+ }
  bool SetPriority(const ThreadPriority&){return true;}
 };
 '''
@@ -266,10 +281,61 @@ struct FakeInvoker:ILanguageInvoker{
 ILanguageInvoker* Handler::CreateInvoker(){return new FakeInvoker(*this);}
 void Setup(CScriptInvocationManager& manager,Handler& handler){manager.m_invocationHandlers[".py"]=&handler;}
 struct Worker:CThread{
- CEvent finish;std::atomic<int> ran{0};
+ CEvent finish;std::atomic<int> ran{0},started{0},exited{0};
  Worker():CThread("worker"){}
+ void OnStartup()override{++started;}
+ void OnExit()override{++exited;}
  void Process()override{++ran;finish.Wait();}
 };
+
+template<class F>void ExpectStartupFailure(int failure,F action){
+ startupFailure=failure;bool caught=false;
+ try{action();}
+ catch(const std::bad_alloc&){assert(failure==1);caught=true;}
+ catch(const std::system_error& error){assert(failure==2&&error.code()==std::error_code(99,std::generic_category()));caught=true;}
+ assert(caught&&startupFailure==0);
+}
+void WorkerStartupFailure(int failure){
+ Worker worker;
+ ExpectStartupFailure(failure,[&]{worker.Create();});
+ assert(worker.ran==0&&worker.started==0&&worker.exited==0);
+ assert(worker.m_bStop&&worker.m_StartEvent.Signaled()&&worker.m_StopEvent.Signaled());
+ assert(worker.m_future.valid()&&worker.m_future.wait_for(1s)==std::future_status::ready);
+ assert(!worker.m_future.get()&&!worker.IsRunning());
+ worker.StopThread();assert(!worker.m_thread);
+ worker.Create();Await([&]{return worker.ran==1;});
+ assert(worker.started==1);worker.finish.Set();worker.StopThread();assert(worker.exited==1);
+ // Failure followed immediately by destruction must also join and retire.
+ {Worker doomed;ExpectStartupFailure(failure,[&]{doomed.Create();});}
+ struct AutoWorker:Worker{
+  std::atomic<int>& destroyed;explicit AutoWorker(std::atomic<int>& d):destroyed(d){}
+  ~AutoWorker()override{++destroyed;}
+ };
+ std::atomic<int> destroyed{0};auto* owned=new AutoWorker(destroyed);
+ ExpectStartupFailure(failure,[&]{owned->Create(true);});
+ assert(destroyed==0&&owned->ran==0&&owned->started==0&&owned->exited==0);
+ owned->StopThread();delete owned;assert(destroyed==1);
+}
+void OptionalStartupFailure(){
+ for(int failure:{1,2}){
+  Handler handler;CScriptInvocationManager manager;Setup(manager,handler);
+  auto invoker=std::make_shared<FakeInvoker>(handler);startupFailure=failure;
+  assert(manager.ExecuteAsync("startup.py",invoker,{}, {},true,73)==-1);
+  assert(startupFailure==0&&invoker->GetState()==InvokerStateFailed&&invoker->GetId()==-1);
+  assert(manager.m_scripts.empty()&&manager.m_scriptPaths.empty()&&!manager.m_lastInvokerThread&&manager.m_lastPluginHandle==-1);
+  assert(handler.starts==0&&handler.ends==0&&handler.executions==0);
+  int id=manager.ExecuteAsync("startup.py",{}, {},true,73);assert(id>=0);
+  auto thread=manager.m_lastInvokerThread;
+  auto live=std::static_pointer_cast<FakeInvoker>(thread->GetInvoker());
+  Await([&]{return live->ready==1;});{std::lock_guard<std::mutex> lock(thread->m_mutex);}
+  thread->Stop(true);
+  startupFailure=failure;assert(manager.ExecuteAsync("startup.py",live)==-1);
+  assert(startupFailure==0&&live->GetState()==InvokerStateFailed);
+  assert(!manager.m_lastInvokerThread&&manager.m_scripts.empty()&&manager.m_scriptPaths.empty());
+  assert(handler.starts==1&&handler.ends==1&&handler.executions==1);
+ }
+}
+
 void GUIFailure(){
  Handler handler;CScriptInvocationManager manager;Setup(manager,handler);failCode=11;
  assert(manager.ExecuteAsync("optional.py",ADDON::AddonPtr(),{},true,73)==-1);
@@ -398,7 +464,8 @@ void ConcurrentRetirement(){
  }
 }
 int main(int argc,char**argv){
- if(argc>1){std::string mode=argv[1];if(mode=="gui-failure")GUIFailure();else if(mode=="destructor-failure")DestructorFailure();else if(mode=="retirement")Retirement();else if(mode=="path-retirement")PathRetirement();else if(mode=="pinned-retirement")PinnedRetirement();return 0;}
+ if(argc>1){std::string mode=argv[1];if(mode=="startup-allocation")WorkerStartupFailure(1);else if(mode=="startup-info")WorkerStartupFailure(2);else if(mode=="startup-optional")OptionalStartupFailure();else if(mode=="gui-failure")GUIFailure();else if(mode=="destructor-failure")DestructorFailure();else if(mode=="retirement")Retirement();else if(mode=="path-retirement")PathRetirement();else if(mode=="pinned-retirement")PinnedRetirement();return 0;}
+ WorkerStartupFailure(1);WorkerStartupFailure(2);OptionalStartupFailure();
  GUIFailure();DestructorFailure();RawFailureAndRetry();Retirement();FailureAndRetry();SuccessReuse();ParallelPaths();PathRetirement();ReentrantFailure();PinnedRetirement();AutoDelete();ConcurrentRetirement();
  std::cout<<"script launch scenarios passed\n";
 }
@@ -407,5 +474,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--baseline', action='store_true')
     parser.add_argument('--controls', action='store_true')
+    parser.add_argument('--startup-baseline', action='store_true')
     args = parser.parse_args()
-    main(args.baseline, args.controls)
+    main(args.baseline, args.controls, args.startup_baseline)

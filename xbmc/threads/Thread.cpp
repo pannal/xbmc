@@ -20,6 +20,7 @@
 #include <inttypes.h>
 #include <iostream>
 #include <mutex>
+#include <stdexcept>
 #include <stdlib.h>
 
 #include <fmt/format.h>
@@ -103,13 +104,16 @@ void CThread::Create(bool bAutoDelete)
   m_StopEvent.Reset();
   m_StartEvent.Reset();
 
+  std::future<void> startupFuture;
   try
   {
     std::promise<bool> prom;
     m_future = prom.get_future().share();
+    std::promise<void> startup;
+    startupFuture = startup.get_future();
 
     m_thread = std::make_shared<std::thread>(
-        [](CThread* pThread, std::promise<bool> promise)
+        [](CThread* pThread, std::promise<bool> promise, std::promise<void> startup)
         {
           try
           {
@@ -131,6 +135,7 @@ void CThread::Create(bool bAutoDelete)
             {
               CLog::Log(LOGERROR, "{}, sanity failed. thread is NULL.", __FUNCTION__);
               promise.set_value(false);
+              startup.set_exception(std::make_exception_ptr(std::runtime_error("thread is NULL")));
               return;
             }
 
@@ -139,9 +144,24 @@ void CThread::Create(bool bAutoDelete)
 
             CLog::Log(LOGDEBUG, "Thread {} start, auto delete: {}", pThread->m_ThreadName,
                       (pThread->m_bAutoDelete ? "true" : "false"));
-
+          }
+          catch (...)
+          {
+            // The creator still owns the object, even for an auto-deleting run.
+            // Publish completion before failure so Stop/destruction/retry can retire it.
+            const auto error = std::current_exception();
+            pThread->m_bStop = true;
+            pThread->m_StopEvent.Set();
             pThread->m_StartEvent.Set();
+            promise.set_value(false);
+            startup.set_exception(error);
+            return;
+          }
 
+          pThread->m_StartEvent.Set();
+          startup.set_value();
+          try
+          {
             pThread->Action();
 
             if (pThread->m_bAutoDelete)
@@ -166,7 +186,7 @@ void CThread::Create(bool bAutoDelete)
 
           promise.set_value(true);
         },
-        this, std::move(prom));
+        this, std::move(prom), std::move(startup));
   }
   catch (...)
   {
@@ -179,7 +199,8 @@ void CThread::Create(bool bAutoDelete)
   }
   createLock.unlock();
 
-  m_StartEvent.Wait(); // wait for the thread just spawned to set its internals
+  // Local receipt remains valid if a successful auto-deleting run already exited.
+  startupFuture.get();
 }
 
 bool CThread::IsRunning() const

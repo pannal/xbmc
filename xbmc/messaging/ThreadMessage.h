@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -77,6 +78,7 @@ public:
       lpVoid(other.lpVoid),
       strParam(std::move(other.strParam)),
       params(std::move(other.params)),
+      callback(std::move(other.callback)),
       waitEvent(std::move(other.waitEvent)),
       result(std::move(other.result))
   {
@@ -93,6 +95,7 @@ public:
     lpVoid = other.lpVoid;
     strParam = other.strParam;
     params = other.params;
+    callback = other.callback;
     waitEvent = other.waitEvent;
     result = other.result;
     return *this;
@@ -109,6 +112,7 @@ public:
     lpVoid = other.lpVoid;
     strParam = std::move(other.strParam);
     params = std::move(other.params);
+    callback = std::move(other.callback);
     waitEvent = std::move(other.waitEvent);
     result = std::move(other.result);
     return *this;
@@ -121,6 +125,8 @@ public:
   void* lpVoid;
   std::string strParam;
   std::vector<std::string> params;
+  // Posted callbacks keep their captures alive until dispatch or queue cleanup.
+  std::function<void()> callback;
 
   /*!
    * \brief set the message return value, will only be returned when

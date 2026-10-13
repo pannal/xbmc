@@ -74,8 +74,7 @@ static bool vs10_conversion = false;
 // Default must be false or the IPT restore fires spuriously on the first
 // HDR10 close of the session (see aml_kodi_reset_cd_cs).
 static bool vs10_conversion_reset_hdr10 = false;
-static bool s_pm4kActive = false;
-static CGUIWindow* s_pm4kHome = nullptr;
+static std::atomic<bool> s_pm4kActive{false};
 
 static std::shared_ptr<CSettings> settings()
 {
@@ -1774,8 +1773,7 @@ void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries 
   aml_dv_dump_state("dv_open/pre");
   std::atomic_store(&s_dvPlaybackSession, std::move(session));
   s_dvPlaybackActive = true;
-  s_pm4kHome = pm4kHome;
-  s_pm4kActive = pm4kActive;
+  s_pm4kActive.store(pm4kActive, std::memory_order_relaxed);
 
   enum DV_MODE dv_mode(aml_dv_mode());
   CLog::Log(LOGINFO, "AMLUtils::{} - Checking DV for DV mode: [{}], DV type: [{}]", __FUNCTION__, aml_dv_mode_to_string(dv_mode), aml_dv_type_to_string(aml_dv_type()));
@@ -1869,8 +1867,7 @@ void aml_dv_close()
   aml_dv_dump_state("dv_close/pre");
   std::atomic_store(&s_dvPlaybackSession, std::shared_ptr<const void>{});
   s_dvPlaybackActive = false;
-  s_pm4kActive = false;
-  s_pm4kHome = nullptr;
+  s_pm4kActive.store(false, std::memory_order_relaxed);
 
   // DV_MODE_ON: leave DV enabled in its current output mode.  This avoids
   // costly HDMI mode-switch cycles (off->IPT->playback-mode) during live-TV
@@ -2311,11 +2308,12 @@ void aml_set_disc_menu_visible(bool visible)
 void aml_dv_set_xbmc_osd()
 {
   auto &wm = CServiceBroker::GetGUI()->GetWindowManager();
+  CGUIWindow* home = wm.GetWindow(WINDOW_HOME);
 
   bool osd_active;
-  if (s_pm4kActive && s_pm4kHome)
+  if (s_pm4kActive.load(std::memory_order_relaxed) && home)
   {
-    osd_active = s_pm4kHome->GetProperty("script.plex.osd_active").asString() == "1";
+    osd_active = home->GetProperty("script.plex.osd_active").asString() == "1";
   }
   else
   {
@@ -2325,7 +2323,6 @@ void aml_dv_set_xbmc_osd()
     // AVChangeExtended fallback, which otherwise zeroes L5 for the whole av.change
     // window on every DV start regardless of logos. Skins that don't set it keep
     // the old behavior — backward compatible.
-    CGUIWindow* home = wm.GetWindow(WINDOW_HOME);
     const bool codecLogosOnScreen =
         home && home->GetProperty("skin.codeclogosonscreen").asString() == "1";
     const bool skinHandlesOsd =
