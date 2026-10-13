@@ -844,6 +844,58 @@ bool CPlayerGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
       return true;
     }
 
+    case PLAYER_PROCESS_VIDEO_BORDERS:
+    case PLAYER_PROCESS_VIDEO_BORDERS_DETECTED:
+    case PLAYER_PROCESS_VIDEO_BORDERS_LEFT_OFFSET:
+    case PLAYER_PROCESS_VIDEO_BORDERS_RIGHT_OFFSET:
+    case PLAYER_PROCESS_VIDEO_BORDERS_TOP_OFFSET:
+    case PLAYER_PROCESS_VIDEO_BORDERS_BOTTOM_OFFSET:
+    {
+      auto& cache = CServiceBroker::GetDataCacheCore();
+      const int width = cache.GetVideoWidth();
+      const int height = cache.GetVideoHeight();
+      uint16_t top = 0, bottom = 0, left = 0, right = 0;
+      // This is the detector's subtitle envelope, including variable framing.
+      // The getter checks source lifetime, dimensions and current settings;
+      // source L5 and manual overrides never supply these values.
+      const bool detected = m_appPlayer->IsPlayingVideo() &&
+          aml_subtitle_detect_active_area_get(width, height, top, bottom, left, right, true);
+      value.clear();
+      switch (info.m_info)
+      {
+        case PLAYER_PROCESS_VIDEO_BORDERS:
+          if (detected)
+            value = StringUtils::Format(
+                R"({{"version":1,"valid":true,"coordinate_system":"coded-video-pixels","width":{},"height":{},"left":{},"top":{},"right":{},"bottom":{}}})",
+                width, height, left, top, right, bottom);
+          else
+            value = R"({"version":1,"valid":false,"coordinate_system":"coded-video-pixels","width":null,"height":null,"left":null,"top":null,"right":null,"bottom":null})";
+          break;
+        case PLAYER_PROCESS_VIDEO_BORDERS_DETECTED:
+          value = std::to_string(detected);
+          break;
+        case PLAYER_PROCESS_VIDEO_BORDERS_LEFT_OFFSET:
+          if (detected)
+            value = std::to_string(left);
+          break;
+        case PLAYER_PROCESS_VIDEO_BORDERS_RIGHT_OFFSET:
+          if (detected)
+            value = std::to_string(right);
+          break;
+        case PLAYER_PROCESS_VIDEO_BORDERS_TOP_OFFSET:
+          if (detected)
+            value = std::to_string(top);
+          break;
+        case PLAYER_PROCESS_VIDEO_BORDERS_BOTTOM_OFFSET:
+          if (detected)
+            value = std::to_string(bottom);
+          break;
+        default:
+          break;
+      }
+      return true;
+    }
+
     case PLAYER_PROCESS_VIDEO_DOVI_HAS_L5:
     case PLAYER_PROCESS_VIDEO_DOVI_L5_LEFT_OFFSET:
     case PLAYER_PROCESS_VIDEO_DOVI_L5_RIGHT_OFFSET:
@@ -853,17 +905,16 @@ bool CPlayerGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
     case PLAYER_PROCESS_VIDEO_DOVI_L5_AUTO:
     case PLAYER_PROCESS_VIDEO_DOVI_ACTIVE_AREA_CLASS:
     {
-      /* Prefer source L5 when it has non-zero offsets. Only fall back to
-       * detected values when source is absent or all-zero — avoids
-       * overriding valid source L5 with FFmpeg border scan results. */
+      // Mirror the native L5 owner: manual (including zero), auto-letterbox,
+      // high-confidence detection, then source or conservative fallback.
       auto meta = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
       bool sourceHasL5 = meta.has_level5_metadata &&
           (meta.level5_active_area_top_offset || meta.level5_active_area_bottom_offset ||
            meta.level5_active_area_left_offset || meta.level5_active_area_right_offset);
-      bool detected = !sourceHasL5 && aml_dv_detect_active_area_stable();
+      uint16_t mTop = 0, mBottom = 0, mLeft = 0, mRight = 0;
+      const bool manual = aml_subtitle_native_dv() &&
+          aml_dv_get_l5_override(mTop, mBottom, mLeft, mRight);
       uint16_t dTop = 0, dBottom = 0, dLeft = 0, dRight = 0;
-      if (detected)
-        aml_dv_detect_active_area_get(dTop, dBottom, dLeft, dRight);
       /* Auto-letterbox synthesises L5 from the coded aspect for cropped
        * (non-16:9) content — neither source nor the pixel detector provides
        * it (the detector skips non-16:9 and never goes stable). The kernel
@@ -873,18 +924,30 @@ bool CPlayerGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
        * which case the kernel replaces and so do we. */
       uint16_t aTop = 0, aBottom = 0, aLeft = 0, aRight = 0;
       bool autoLb = aml_dv_auto_letterbox_get(aTop, aBottom, aLeft, aRight);
+      const bool highConfidence = !manual && !autoLb &&
+          aml_dv_detect_active_area_override_get(
+              CServiceBroker::GetDataCacheCore().GetVideoWidth(),
+              CServiceBroker::GetDataCacheCore().GetVideoHeight(), dTop, dBottom, dLeft, dRight);
+      const bool detected = !manual && !autoLb && (highConfidence ||
+          (!sourceHasL5 && aml_dv_detect_active_area_stable()));
+      if (detected && !highConfidence)
+        aml_dv_detect_active_area_get(dTop, dBottom, dLeft, dRight);
       /* hasL5: true when there are non-zero source offsets, detection completed
        * (even 0/0/0/0 — valid for 16:9), or auto-letterbox is reacting. */
-      bool hasL5 = sourceHasL5 || detected || autoLb;
+      bool hasL5 = manual || sourceHasL5 || detected || autoLb;
 
       /* Value precedence mirrors kernel emission:
-       * detected → auto-letterbox (composed with source) → source. */
+       * manual → auto-letterbox (composed with source) → detected → source. */
       auto satAdd = [](uint16_t a, uint16_t b) {
         uint32_t sum = static_cast<uint32_t>(a) + b;
         return static_cast<uint16_t>(sum > 0xFFFF ? 0xFFFF : sum);
       };
       uint16_t fTop, fBottom, fLeft, fRight;
-      if (detected)
+      if (manual)
+      {
+        fTop = mTop; fBottom = mBottom; fLeft = mLeft; fRight = mRight;
+      }
+      else if (detected)
       {
         fTop = dTop; fBottom = dBottom; fLeft = dLeft; fRight = dRight;
       }
