@@ -26307,7 +26307,7 @@ msgstr ""
 #. "Dolby Vision Display Led Restrict Overlays"
 #: system/settings/settings.xml
 msgctxt "#60191"
-msgid "Constrain bitmap subtitles horizontally and vertically and adapted text subtitles vertically to the visible picture, refined by native Dolby Vision L5 or valid detected borders. Applies to SDR, HDR and Dolby Vision. Player-added bars need no detection. Authored ASS positions and forced margins are preserved. Oversized dialogue keeps its size and may extend beyond the picture. This setting does not enable scanning or change Dolby signaling."
+msgid "Keep bitmap subtitles horizontally and vertically, and text subtitles such as SRT vertically, within the active picture. Applies to SDR, HDR and Dolby Vision. The picture area comes from the video rectangle, Dolby Vision picture metadata or detected black borders. Authored ASS positions and forced margins are preserved. Oversized dialogue keeps its size and may extend beyond the picture. Enable 'Detect active picture for subtitles' to scan for encoded black borders."
 msgstr ""
 
 #. "Dolby Vision Display Led Restrict Overlays - User Position"
@@ -26331,7 +26331,7 @@ msgstr ""
 #. "Dolby Vision Detect Active Area Help"
 #: system/settings/settings.xml
 msgctxt "#60195"
-msgid "Scan Dolby Vision files for stable encoded black borders. High-confidence detection takes priority over embedded Level 5 areas; explicit Level 5 overrides remain highest priority. The bounded background scan cannot follow live aspect-ratio changes. Pre-cropped video needs no scan. The selected video stream is matched and attached cover images are ignored. Disc sources, MPEG-TS, unsupported pixel formats, ambiguous stream selection and resolution changes are skipped. Separate reads and software decoding add load; detection I/O throttling is recommended for slow storage. Disable for reference videos with intentionally varying Level 5 metadata."
+msgid "Scan Dolby Vision files for stable encoded black borders. High-confidence detection takes priority over embedded Level 5 areas; explicit Level 5 overrides remain highest priority. The bounded background scan cannot follow live aspect-ratio changes. Pre-cropped video needs no scan. The selected video stream is matched and attached cover images are ignored. Blu-ray/BDMV and DVD playback, MPEG-TS (.ts/.m2ts) files, unsupported pixel formats, ambiguous stream selection and resolution changes are skipped. Separate reads and software decoding add load; detection I/O throttling is recommended for slow storage. Disable for reference videos with intentionally varying Level 5 metadata."
 msgstr ""
 
 #. "Dolby Vision Detect Active Area Throttle Label"
@@ -27590,7 +27590,7 @@ msgstr ""
 #. Subtitle placement
 #: system/settings/settings.xml
 msgctxt "#69325"
-msgid "Refine the active picture aspect for picture-edge positioning. Auto uses the visible video rectangle, current native Dolby Vision L5 or valid detected borders. An override can narrow this area but cannot enlarge it. This affects bitmap placement only, not detection, video output or text subtitles."
+msgid "Refine the active picture aspect for picture-edge positioning. Auto uses the visible video rectangle, Dolby Vision picture metadata or detected black borders. An override can narrow this area but cannot enlarge it. This affects bitmap placement only, not detection, video output or text subtitles."
 msgstr ""
 
 #. Subtitle placement
@@ -27656,7 +27656,7 @@ msgstr ""
 #. Subtitle placement
 #: system/settings/settings.xml
 msgctxt "#69336"
-msgid "Optionally scan files during Amlogic SDR, HDR and Dolby Vision playback for encoded black borders. Player-added bars need no scan. A bounded set of samples protects subtitle placement, including sampled framing changes and conflicting source Level 5 areas. Explicit Level 5 overrides take priority. Separate reads, seeks and software decoding can compete with playback. Non-Dolby-Vision scans always use detection I/O throttling. Insufficient readable samples fall back to the visible video rectangle. No live aspect tracking or Dolby metadata is produced. Changes apply on next playback."
+msgid "Detect black borders encoded in video files during Amlogic SDR, HDR and Dolby Vision playback. Enable 'Restrict subtitles to active picture' to use the detected area for subtitle confinement. Player-added bars and pre-cropped video need no scan. Blu-ray/BDMV and DVD playback, and MPEG-TS (.ts/.m2ts) files, are not scanned. The background scan samples several positions and does not track aspect-ratio changes live. If detection is inconclusive, existing picture bounds are used. Manual Dolby Vision active-area overrides take priority. Extra file reads and software decoding can compete with playback. Changes apply on next playback."
 msgstr ""
 
 #. SDR bitmap subtitle colour
