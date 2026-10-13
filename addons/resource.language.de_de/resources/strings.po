@@ -20577,3 +20577,15 @@ msgstr "Erkannten Bildbereich speichern"
 msgctxt "#69371"
 msgid "Save successful active-area detections in the Kodi profile and reuse them without scanning when the file size, timestamps and selected video stream match. Files without usable modification timestamps are scanned again. Applies to subtitle placement and eligible native DV detection. Enabled by default. Changes apply on next playback."
 msgstr "Erfolgreiche Erkennungen des aktiven Bildbereichs im Kodi-Profil speichern und ohne erneute Analyse wiederverwenden, wenn Dateigröße, Zeitstempel und ausgewählter Videostream übereinstimmen. Dateien ohne nutzbaren Änderungszeitstempel werden erneut analysiert. Gilt für die Untertitelplatzierung und geeignete native DV-Erkennung. Standardmäßig aktiviert. Änderungen gelten bei der nächsten Wiedergabe."
+
+#. Optional active picture detection CPU isolation
+#: system/settings/settings.xml
+msgctxt "#69372"
+msgid "Use separate CPUs for picture-area detection"
+msgstr "Separate CPUs für die Bildbereichserkennung verwenden"
+
+#. Optional active picture detection CPU isolation
+#: system/settings/settings.xml
+msgctxt "#69373"
+msgid "Run the detector and its decoder threads on available CPUs outside the playback CPU selection. The active playback thread masks are checked before scanning. If no separate CPU is available, detection is skipped. Detection may take longer on slower CPUs. Saved results can still be reused. Disabled by default. Changes apply to the next scan."
+msgstr "Die Erkennung und ihre Decoder-Threads auf verfügbaren CPUs außerhalb der CPU-Auswahl für die Wiedergabe ausführen. Die CPU-Masken der aktiven Wiedergabe-Threads werden vor der Analyse geprüft. Ist keine separate CPU verfügbar, wird die Erkennung übersprungen. Auf langsameren CPUs kann die Erkennung länger dauern. Gespeicherte Ergebnisse können weiterhin wiederverwendet werden. Standardmäßig deaktiviert. Änderungen gelten bei der nächsten Analyse."

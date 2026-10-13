@@ -55,6 +55,7 @@
 
 #include "platform/linux/SysfsPath.h"
 #include "threads/Thread.h"
+#include "threads/PerformanceCores.h"
 #include "filesystem/File.h"
 
 extern "C" {
@@ -4720,6 +4721,16 @@ void aml_dv_detect_active_area_start()
     }
     else
     {
+      // Pin before opening FFmpeg: its software decoder threads inherit this
+      // mask rather than the video-output caller's performance-core affinity.
+      if (!PERFORMANCE_CORES::ApplyDetectionCurrentThread())
+      {
+        std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+        if (!run.Cancelled() && source == s_detectSource && !source->superseded->load())
+          s_detectState.store(DV_DETECT_SKIPPED);
+        CLog::Log(LOGERROR, "DetectActiveArea: skipping scan; CPU separation unavailable");
+        return;
+      }
       DetectActiveAreaFromFile(source, run);
     }
     if (identified && !run.Cancelled())

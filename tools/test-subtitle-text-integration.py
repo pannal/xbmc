@@ -144,6 +144,8 @@ bool ReadIdentity(Identity&){return false;}
 bool Load(const Identity&,Record&){return false;}
 bool Store(const Identity&,const Record&){return false;}
 }
+// Host geometry fixtures do not assert the target's fixed CPU topology.
+namespace PERFORMANCE_CORES {bool ApplyDetectionCurrentThread(){return true;}}
 #define DVD_TIME_TO_MSEC(x) ((x)/1000)
 constexpr int LOGERROR=1,LOGDEBUG=2,LOGWARNING=3,LOGINFO=4,ASS_NO_ID=-1,NATIVE=1,ADAPTED=0;
 constexpr int ASS_BORDER_STYLE_OUTLINE=1,ASS_BORDER_STYLE_BOX=3,ASS_BORDER_STYLE_SQUARE_BOX=4;

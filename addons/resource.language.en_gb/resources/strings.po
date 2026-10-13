@@ -27836,3 +27836,15 @@ msgstr ""
 msgctxt "#69371"
 msgid "Save successful active-area detections in the Kodi profile and reuse them without scanning when the file size, timestamps and selected video stream match. Files without usable modification timestamps are scanned again. Applies to subtitle placement and eligible native DV detection. Enabled by default. Changes apply on next playback."
 msgstr ""
+
+#. Optional active picture detection CPU isolation
+#: system/settings/settings.xml
+msgctxt "#69372"
+msgid "Use separate CPUs for picture-area detection"
+msgstr ""
+
+#. Optional active picture detection CPU isolation
+#: system/settings/settings.xml
+msgctxt "#69373"
+msgid "Run the detector and its decoder threads on available CPUs outside the playback CPU selection. The active playback thread masks are checked before scanning. If no separate CPU is available, detection is skipped. Detection may take longer on slower CPUs. Saved results can still be reused. Disabled by default. Changes apply to the next scan."
+msgstr ""

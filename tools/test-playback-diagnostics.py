@@ -97,7 +97,8 @@ struct CAMLCodec {
   CAMLSession m_session;
   std::mutex m_videoHoldMutex;
   bool m_videoHoldActive=false; uint64_t m_videoHoldProviderEpoch=0;
-  static bool ReadVideoPresentation(uint64_t&,uint64_t&) {return false;}
+  struct VideoPresentation {uint64_t epoch=0;};
+  static bool ReadVideoPresentation(VideoPresentation&) {return false;}
   void CheckVideoHold() {}
   std::mutex m_presentationMutex;
   bool m_presentationActive=true;
@@ -223,6 +224,13 @@ def main():
         subprocess.run([str(out / 'test')], check=True, timeout=20)
         (out / 'utils').mkdir()
         (out / 'utils/log.h').write_text(LOG_STUB)
+        # CPU-isolation admission is a setting boundary; playback affinity stays
+        # the same in this fixture. Dedicated isolation tests exercise the option.
+        affinity_stubs = runpy.run_path(str(ROOT / 'tools/test-active-area-affinity.py'))
+        (out / 'ServiceBroker.h').write_text(affinity_stubs['SETTINGS_STUB'])
+        (out / 'settings').mkdir()
+        for name in ['Settings.h', 'SettingsComponent.h']:
+            (out / 'settings' / name).write_text('#pragma once\n#include "ServiceBroker.h"\n')
         extract = runpy.run_path(str(ROOT / 'tools/test-render-slot-publication.py'))['function']
         source = (ROOT / 'xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp').read_text()
         methods = '\n'.join(extract(source, name) for name in

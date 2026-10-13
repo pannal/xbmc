@@ -1071,6 +1071,12 @@
           <default>true</default>
           <control type="toggle" />
         </setting>
+        <setting id="subtitles.isolateactivearea" type="boolean" label="69372" help="69373">
+          <requirement>HAVE_AMCODEC</requirement>
+          <level>2</level>
+          <default>false</default>
+          <control type="toggle" />
+        </setting>
         <setting id="coreelec.amlogic.dolbyvision.restrict.subs.active.area" type="boolean" label="60190" help="60191">
           <visible>true</visible>
           <level>2</level>

@@ -209,6 +209,11 @@ int main(int argc,char** argv){
  assert(XFILE::statCalls==offStats&&XFILE::openCalls==offOpens&&XFILE::writeCalls==offWrites);
  setting.cache=true;setting.enabled=false;aml_dv_detect_active_area_start();assert(scans==5);
  assert(XFILE::statCalls==offStats&&XFILE::openCalls==offOpens&&XFILE::writeCalls==offWrites);
+ // Failed CPU isolation must prevent decoding and must not create a cache record.
+ setting.cache=false;setting.enabled=true;PERFORMANCE_CORES::allowed=false;
+ aml_dv_detect_active_area_start();assert(scans==5&&s_detectState==DV_DETECT_SKIPPED);
+ assert(!s_detectSource->result&&!s_detectSource->subtitleResult);
+ assert(XFILE::statCalls==offStats&&XFILE::openCalls==offOpens&&XFILE::writeCalls==offWrites);
  std::cout<<"PASS: production startup disabled-cache I/O bypass, persistent miss/save, blind hit without scanning, strict/subtitle separation, selected-stream/file invalidation\n";
 }
 '''
