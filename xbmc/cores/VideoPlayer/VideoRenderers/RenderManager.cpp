@@ -1223,6 +1223,29 @@ CRect CRenderManager::CalcPictureActiveArea(const CRect& src, const CRect& dst, 
       bottom = metadata.level5_active_area_bottom_offset;
       left = metadata.level5_active_area_left_offset;
       right = metadata.level5_active_area_right_offset;
+      if (allowSubtitleEstimate)
+      {
+        // Authored L5 still defines native/public geometry. Adapted dialogue
+        // may need a tighter pixel-supported rectangle when those authored
+        // offsets understate visible bars; manual and phantom paths stay above.
+        uint16_t textTop = 0, textBottom = 0, textLeft = 0, textRight = 0;
+        if (aml_subtitle_detect_active_area_get(m_picture.iWidth, m_picture.iHeight,
+                                               textTop, textBottom, textLeft, textRight, true))
+        {
+          const uint16_t confinedTop = std::max(top, textTop);
+          const uint16_t confinedBottom = std::max(bottom, textBottom);
+          const uint16_t confinedLeft = std::max(left, textLeft);
+          const uint16_t confinedRight = std::max(right, textRight);
+          if (confinedTop + confinedBottom < m_picture.iHeight &&
+              confinedLeft + confinedRight < m_picture.iWidth)
+          {
+            top = confinedTop;
+            bottom = confinedBottom;
+            left = confinedLeft;
+            right = confinedRight;
+          }
+        }
+      }
     }
     else if (!override && !phantom)
       aml_subtitle_detect_active_area_get(m_picture.iWidth, m_picture.iHeight, top, bottom, left,

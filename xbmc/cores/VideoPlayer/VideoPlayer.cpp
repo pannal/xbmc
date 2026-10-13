@@ -5364,7 +5364,8 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
 
 bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
 {
-  hint.subtitleProbeSource = aml_subtitle_active_area_source();
+  hint.subtitleProbeSource = aml_subtitle_active_area_source(
+      dynamic_cast<CDVDDemuxFFmpeg*>(m_pDemuxer.get()) ? hint.uniqueId : -1, hint.codec);
   m_processInfo->SetVideoInterlaced((hint.codecOptions & CODEC_INTERLACED) == CODEC_INTERLACED);
   if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
   {

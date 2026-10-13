@@ -10,6 +10,7 @@ required. This does not establish device GPU/HDMI or reporter-file acceptance.
 import argparse
 import ctypes.util
 import os
+import re
 from pathlib import Path
 import runpy
 import shutil
@@ -36,6 +37,12 @@ def source(path, baseline=None):
 
 
 def generate(baseline=None):
+    # Numeric states cross the persistent-cache and report boundaries too.
+    actual = {name: int(value) for name, value in re.findall(
+        r'(DV_DETECT_\w+)\s*=\s*(\d+)', source('xbmc/utils/AMLUtils.h', baseline))}
+    fixture = {name: int(value) for name, value in re.findall(
+        r'(DV_DETECT_\w+)\s*=\s*(\d+)', PREFIX)}
+    assert fixture == actual, (fixture, actual)
     aml, libass, renderer = (source(path, baseline) for path in (AML, LIBASS, RENDERER))
     header, gles, gles_header = (source(path, baseline) for path in (RENDERHEADER, GLES, GLESHEADER))
     fields = FUNCTION(header, 'class COverlay\n')
@@ -110,6 +117,7 @@ PREFIX = r'''
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -191,21 +199,32 @@ struct CServiceBroker {
  static SettingsComponent*GetSettingsComponent(){static SettingsComponent value;return &value;}
  static RenderSystem*GetRenderSystem(){return &renderSystem;}
 };
-constexpr int RENDER_STEREO_MODE_OFF=0,DV_DETECT_FAILED=0,DV_DETECT_RUNNING=1,DV_DETECT_SKIPPED=2,
- DV_DETECT_OK=3,DV_DETECT_SKIP_NON16X9=4,DV_DETECT_INACTIVE=5;
+constexpr int RENDER_STEREO_MODE_OFF=0,DV_DETECT_FAILED=0,DV_DETECT_RUNNING=6,DV_DETECT_SKIPPED=4,
+ DV_DETECT_OK=3,DV_DETECT_SKIP_NON16X9=1,DV_DETECT_SKIP_IMAX=2,DV_DETECT_INACTIVE=5;
 std::atomic<bool> s_detectStable{false},s_detectThrottleActive{false},s_detectCacheStarved{false};
 std::atomic<int> s_detectState{DV_DETECT_FAILED},writes{0},scans{0};
 std::atomic<uint16_t> s_detectedTop{0},s_detectedBottom{0},s_detectedLeft{0},s_detectedRight{0};
 bool dvDetection=true;bool aml_dv_detect_active_area_enabled(){return dvDetection;}
-struct CSysfsPath{CSysfsPath(const char*,int){++writes;}};
+std::map<std::string,int> sysfsValues;
+struct CSysfsPath{CSysfsPath(const char* path,int value){sysfsValues[path]=value;++writes;}};
 bool overrideActive=false,phantom=false;uint16_t overrideTop=0,overrideBottom=0;
 bool aml_dv_get_l5_override(uint16_t& t,uint16_t& b,uint16_t&,uint16_t&){t=overrideTop;b=overrideBottom;return overrideActive;}
+bool _l5_override_parse(uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r){return aml_dv_get_l5_override(t,b,l,r);}
+// Automatic cropped-canvas synthesis is a separate geometry fixture boundary.
+bool _auto_letterbox_geometry(uint16_t&,uint16_t&,uint16_t&,uint16_t&){return false;}
+std::atomic<bool> s_autoLbAdditive{false};
+#ifdef FIXTURE_CURRENT
+constexpr int NativeClearWrites=4;
+#else
+constexpr int NativeClearWrites=4;
+#endif
 bool aml_dv_auto_letterbox_active(){return phantom;}
 bool aml_dv_auto_letterbox_additive(){return !phantom;}
 struct DetectSource;
 void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>&,const CAMLNativeWorker::Run&);
 class CDVDSubtitlesLibass {
 public:
+ bool IsAdapted()const{return m_subtitleType==ADAPTED;}
  ASS_Library* m_library=nullptr;ASS_Renderer* m_renderer=nullptr;ASS_Track* m_track=nullptr;
  CCriticalSection m_section;int m_subtitleType=ADAPTED,m_currentDefaultStyleId=ASS_NO_ID,m_defaultKodiStyleId=0;
  std::string m_defaultFontFamilyName="DejaVu Sans";
@@ -353,6 +372,40 @@ void select(bool native=false,int width=3840,int height=2160,bool probe=true){
 void publish(uint16_t border=263){CAMLNativeWorker::Run run(s_detectSource->superseded);detect_publish(run,s_detectSource,border,border,0,0);}
 bool get(int width=3840,int height=2160){uint16_t t,b,l,r;bool found=aml_subtitle_detect_active_area_get(width,height,t,b,l,r);if(found)assert(t==263&&b==263&&l==0&&r==0);return found;}
 std::shared_ptr<CDVDOverlayLibass> cue(const char* font,const std::string& text){auto result=std::make_shared<CDVDOverlayLibass>();result->handler=std::make_shared<CDVDSubtitlesLibass>();result->handler->Init(font,text);return result;}
+size_t visibleGlyphPixels(const CLibassRenderResult& result){
+ size_t count=0;for(auto* image=COverlay::Images(result);image;image=image->next){
+  if((image->color&255)==255)continue;
+  for(int y=0;y<image->h;++y)for(int x=0;x<image->w;++x)count+=image->bitmap[y*image->stride+x]!=0;
+ }return count;
+}
+void textEnvelopePrecedence(){
+ select(false,1920,1080);CAMLNativeWorker::Run run(s_detectSource->superseded);
+ detect_publish_subtitle(run,s_detectSource,DetectResult{42,42,500,500});
+ detect_publish(run,s_detectSource,42,42,0,0);
+ uint16_t t,b,l,r;
+ assert(aml_subtitle_detect_active_area_get(1920,1080,t,b,l,r,false)&&t==42&&l==0&&r==0);
+ assert(aml_subtitle_detect_active_area_get(1920,1080,t,b,l,r,true)&&t==42&&l==500&&r==500);
+ detect_publish(run,s_detectSource,0,0,0,0);
+ assert(aml_subtitle_detect_active_area_get(1920,1080,t,b,l,r,true)&&t==0&&b==0&&l==0&&r==0);
+ std::cout<<"PASS: native positive-axis crop preserves text envelope; strict full-frame remains authoritative\n";
+}
+void fullFrameConfinement(const char* font){
+ select(false,1920,1080);CRenderManager manager;manager.m_picture.iWidth=1920;manager.m_picture.iHeight=1080;
+ manager.m_overlays.m_rs={0,0,1920,1080};settingsValue.applyMargin=true;
+ auto text=cue(font,"Going deeply below\\NYoung glyphs descend: gypq");
+ for(int margin:{0,1,3}){
+  manager.m_overlays.m_subtitleAlign=SUBTITLES::Align::BOTTOM_INSIDE;
+  auto bottom=draw(manager,text,makeStyle(false,margin),true,true);
+  manager.m_overlays.m_subtitleAlign=SUBTITLES::Align::TOP_INSIDE;
+  auto top=draw(manager,text,makeStyle(true,margin),true,true);
+  // Matching uncut raster pixel counts detect libass canvas clipping before
+  // atlas submission; a clipped host canvas alone cannot establish a fit.
+  assert(visibleGlyphPixels(*bottom.owned)==visibleGlyphPixels(*top.owned));
+  const int padding=static_cast<int>(std::ceil(margin*1080.0/720.0));
+  assert(bottom.bounds.bottom<=1080-padding&&top.bounds.top>=padding);
+ }
+ settingsValue.applyMargin=false;
+}
 void discovery(const char* font){
  select();int before=writes.load();CRenderManager manager;auto c=cue(font,"Going deeply below\\NYoung glyphs descend: gypq");auto st=makeStyle();
  auto normal=draw(manager,c,st,true,true);assert(normal.bounds.bottom>1000);assert(!get());
@@ -372,7 +425,9 @@ void discovery(const char* font){
  for(;a&&b;a=a->next,b=b->next){assert(b->dst_y-a->dst_y==delta&&b->dst_x==a->dst_x&&b->w==a->w&&b->h==a->h&&b->color==a->color);}
  assert(!a&&!b);
  for(int n=0;n<10;++n){auto stable=draw(manager,c,st);assert(stable.owned==confined.owned&&stable.overlay==confined.overlay&&stable.canvas==confined.canvas);}
- auto unrestricted=draw(manager,c,st,false);assert(unrestricted.canvas==normal.canvas);
+ // Full-frame restriction now also preserves complete glyphs and its margin
+ // policy; disabling it restores the independent unrestricted style route.
+ auto unrestricted=draw(manager,c,st,false);assert(unrestricted.canvas!=normal.canvas);
  auto confinedAgain=draw(manager,c,st);inside(confinedAgain.bounds,manager.m_overlays.m_activePicture);
  // Style object/options must invalidate a retained handler even if the renderer
  // gives updateStyle=false (e.g. another handler consumed its global flag).
@@ -458,13 +513,35 @@ void native(){
  CRenderManager manager;manager.m_picture.hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;auto& r=manager.m_overlays;
  cache.pts=500000;cache.meta.has_level5_metadata=true;cache.meta.level5_active_area_top_offset=cache.meta.level5_active_area_bottom_offset=300;
  rect(manager.CalcOverlayActiveArea(r.m_rs,r.m_rd,r.m_rv,true,500000),150,930);
+#ifdef FIXTURE_CURRENT
+ // Understated authored metadata remains the native/public rectangle while
+ // adapted text uses its independent detected confinement. Native writes do
+ // not change. Detection can protect text while native injection is disabled.
+ cache.meta.level5_active_area_top_offset=cache.meta.level5_active_area_bottom_offset=20;
+ rect(manager.CalcPictureActiveArea(r.m_rs,r.m_rd,r.m_rv,500000,false,false),10,1070);
+ rect(manager.CalcOverlayActiveArea(r.m_rs,r.m_rd,r.m_rv,true,500000),131.5f,948.5f);
+ dvDetection=false;uint16_t dt,db,dl,dr;
+ assert(!aml_subtitle_detect_active_area_get(3840,2160,dt,db,dl,dr,false));
+ assert(aml_subtitle_detect_active_area_get(3840,2160,dt,db,dl,dr,true)&&dt==263);
+ rect(manager.CalcOverlayActiveArea(r.m_rs,r.m_rd,r.m_rv,true,500000),131.5f,948.5f);
+ dvDetection=true;assert(writes==nativeWrites);
+#endif
+ cache.meta.level5_active_area_top_offset=cache.meta.level5_active_area_bottom_offset=300;
  overrideActive=true;overrideTop=overrideBottom=0;rect(manager.CalcOverlayActiveArea(r.m_rs,r.m_rd,r.m_rv,true,500000),0,1080);overrideActive=false;
  // Authored frame metadata prevents detected native sysfs replacement.
  publish();assert(writes==nativeWrites);
  Invalidate(true);assert(get()&&!cache.meta.has_level5_metadata);auto current=aml_subtitle_active_area_source();assert(aml_subtitle_active_area_configure(3840,2160,true,true,current));
  cache.meta.has_level5_metadata=true;cache.meta.level5_active_area_top_offset=cache.meta.level5_active_area_bottom_offset=300;
- aml_dv_detect_active_area_start();awaitPublication();s_detectWorker.Stop();assert(writes==nativeWrites+4); // startup clears only; authored metadata blocks injection
- dvDetection=false;assert(!get());dvDetection=true;
+ aml_dv_detect_active_area_start();awaitPublication();s_detectWorker.Stop();assert(writes==nativeWrites+NativeClearWrites); // startup clears only; authored metadata blocks injection
+ dvDetection=false;assert(!get());
+#ifdef FIXTURE_CURRENT
+ select(true);cache.meta={};auto textOnlyScans=scans.load(),textOnlyWrites=writes.load();
+ aml_dv_detect_active_area_start();awaitPublication();s_detectWorker.Stop();
+ assert(scans==textOnlyScans+1&&writes==textOnlyWrites+NativeClearWrites&&!s_detectInjected.load()); // startup clears old driver state; no native injection
+ uint16_t st,sb,sl,sr;assert(aml_subtitle_detect_active_area_get(3840,2160,st,sb,sl,sr,true)&&st==263);
+ assert(!aml_subtitle_detect_active_area_get(3840,2160,st,sb,sl,sr,false));
+#endif
+ dvDetection=true;
  select(false);publish();auto genericWrites=writes.load();Invalidate(true);current=aml_subtitle_active_area_source();assert(aml_subtitle_active_area_configure(3840,2160,false,true,current));aml_dv_detect_active_area_start();awaitPublication();s_detectWorker.Stop();assert(writes==genericWrites&&get());
  // Converted output type does not turn original HDR10 into native geometry.
  manager.m_picture.hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;cache.meta.has_level5_metadata=true;cache.meta.level5_active_area_top_offset=cache.meta.level5_active_area_bottom_offset=300;
@@ -515,6 +592,9 @@ void softwareRoute(const char* font){
  std::cout<<"PASS: actual software FFmpeg admission, decoded geometry, installed/HW/native guards, source-safe reset/close and SRT raster bounds\n";
 }
 #endif
+#ifdef FIXTURE_CURRENT
+
+#endif
 void ownedTranslation(){
  // Independent exact byte/coordinate oracle for the actual owned-header offset.
  unsigned char pixels[]={1,2,3,4};ASS_Image raw{};raw.w=2;raw.h=2;raw.stride=2;raw.bitmap=pixels;raw.color=0xffffff00;raw.dst_x=5;raw.dst_y=10;
@@ -535,6 +615,7 @@ void ownedTranslation(){
 int main(int argc,char** argv){assert(argc==2);assert(ass_library_version()==LIBASS_VERSION);assert(LIBASS_VERSION>=0x01704000);
  ready();ownedTranslation();
 #ifdef FIXTURE_CURRENT
+ textEnvelopePrecedence();fullFrameConfinement(argv[1]);
  softwareRoute(argv[1]);
 #endif
  discovery(argv[1]);lifecycle(argv[1]);nativeExemption(argv[1]);native();s_detectWorker.Stop();

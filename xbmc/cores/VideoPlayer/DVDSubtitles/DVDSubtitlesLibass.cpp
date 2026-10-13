@@ -775,8 +775,20 @@ void CDVDSubtitlesLibass::ApplyStyle(const std::shared_ptr<const style>& subStyl
       }
       else
         style->MarginV = l5Margin;
-      style->MarginL = 0;
-      style->MarginR = 0;
+      // Libass clips glyph rasters at its canvas before our owned-image
+      // confinement can translate them. Keep adapted outline/shadow/blur
+      // inside that canvas even with a zero requested margin.
+      if (m_subtitleType == ADAPTED)
+      {
+        const int rasterMargin = static_cast<int>(std::ceil(
+            style->Outline + std::abs(style->Shadow) + 4.0 * style->Blur + 2.0));
+        style->MarginV = std::max(style->MarginV, rasterMargin);
+      }
+      const int horizontalMargin = (!opts.activeAreaTopMargin && !opts.activeAreaBottomMargin)
+                                       ? static_cast<int>(20.0 * scaleDefault)
+                                       : 0;
+      style->MarginL = horizontalMargin;
+      style->MarginR = horizontalMargin;
     }
     else
     {

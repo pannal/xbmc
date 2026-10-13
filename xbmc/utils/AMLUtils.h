@@ -234,6 +234,8 @@ bool aml_dv_use_active_area();
 int aml_dv_l5_subs_signal_mode();
 // Geometry publication is separate from DV injection and bound to source lifetime.
 std::shared_ptr<const void> aml_subtitle_active_area_source();
+// Only FFmpeg demux stream indexes can be matched by the file scanner.
+std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int codec);
 bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bool allowProbe,
                                       const std::shared_ptr<const void>& expectedSource);
 // CPU-only cancellation; pure same-source seek/reset may retain accepted file geometry.

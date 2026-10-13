@@ -94,6 +94,7 @@ public:
   * \return The PlayResY value of current track
   */
   int GetPlayResY();
+  bool IsAdapted() const { return m_subtitleType == ADAPTED; }
 
   /*!
   * \brief Check if currently an event is active

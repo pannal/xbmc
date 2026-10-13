@@ -226,6 +226,7 @@ public:
   Renderer renderer;Renderer* m_pRenderer=&renderer;
   OVERLAY::CRenderer m_overlays,m_debugRenderer;
   Clock m_dvdClock;Condition m_presentevent;Event m_flushEvent;
+  struct DataCache {int clears=0;void SetVideoActivePicture(std::initializer_list<int>){++clears;}} m_dataCacheCore;
   XbmcThreads::EndTime<> m_presentTimer;
   EPRESENTSTEP m_presentstep=PRESENT_IDLE;
   bool m_bRenderGUI=true,m_forceNext=false,m_presentstarted=false;
@@ -307,7 +308,7 @@ int main() {
     r.SelectFrame();assert(r.m_frameSelection);
     const auto queued=r.m_queued;const auto discarded=r.m_discard;r.renderer.saveResult=result;
     assert(r.Flush(true,request));assert(r.renderer.lastSaveRequest==request);
-    assert(!r.m_frameSelection);
+    assert(!r.m_frameSelection);assert(r.m_dataCacheCore.clears==1);
     assert(!submit(r,old,p));old=Reservation{};
     for(auto& b:r.m_overlays.m_buffers)assert(b.empty());
     if(result) {assert(r.m_queued==queued&&r.m_discard==discarded&&r.m_presentstarted&&r.m_presentsourcePast==3);assert(ref.refs==2);}

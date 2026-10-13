@@ -30,7 +30,7 @@ def generate(baseline=None, native_frames=None):
     native = ''
     if native_frames:
         native = '#include <fstream>\n#define NATIVE_NINE_FRAMES 1\nstatic const char* nativeFramePaths[]={' + ','.join(json.dumps(str(path)) for path in native_frames) + '};\n'
-    return connected + formats + frame + '\nstruct Result {uint16_t top,bottom,left,right;bool rejected{false};};\nconstexpr int DV_DETECT_SKIP_IMAX=6;\n' + bodies + native + TESTS
+    return connected + formats + frame + '\nstruct Result {uint16_t top,bottom,left,right;bool rejected{false};};\n\n' + bodies + native + TESTS
 
 
 TESTS = r'''

@@ -881,7 +881,9 @@ std::shared_ptr<COverlay> CRenderer::ConvertLibass(
   // Shared active picture: restrict supported text to the content area.
   // Uses style MarginV to push subs inside the L5 boundaries, keeping the
   // full rendering canvas intact (no font/border/shadow distortion).
-  if (!o.IsForcedMargins() && (m_activeAreaTopOffset > 0 || m_activeAreaBottomOffset > 0))
+  if (!o.IsForcedMargins() &&
+      (m_activeAreaTopOffset > 0 || m_activeAreaBottomOffset > 0 ||
+       (m_restrictToActivePicture && o.GetLibassHandler()->IsAdapted())))
   {
     rOpts.marginsMode = SUBTITLES::STYLE::MarginsMode::INSIDE_ACTIVE_AREA;
     rOpts.activeAreaTopMargin = m_activeAreaTopOffset;

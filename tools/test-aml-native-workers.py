@@ -13,6 +13,7 @@ fixture=runpy.run_path(str(ROOT/'tools/test-aml-native-continuation.py'))
 function,run=fixture['function'],fixture['run']
 PREFIX=r'''
 #include "utils/AMLNativeWorker.h"
+@CACHE_HEADER@
 #include "windowing/amlogic/AMLDisplayLifecycle.h"
 #include <cassert>
 #include <cmath>
@@ -35,15 +36,15 @@ std::function<void()> writeHook;
 struct CSysfsPath{CSysfsPath(const char*,int){assert(session&&!session->AcquireDecoder());++writes;if(writeHook)writeHook();}};
 void aml_dv_apply_l5_override_sysfs(){assert(session&&!session->AcquireDecoder());++watchWrites;if(writeHook)writeHook();}
 @AUTO_GLOBALS@
-struct CSettings {static constexpr int SETTING_COREELEC_AMLOGIC_DV_L5_AUTO_LETTERBOX=1,SETTING_SUBTITLES_DETECTACTIVEAREA=2;};
-struct Settings {bool detect=true;bool GetBool(int id){return id==2?detect:true;}} settingsValue;
+struct CSettings {static constexpr int SETTING_COREELEC_AMLOGIC_DV_L5_AUTO_LETTERBOX=1,SETTING_SUBTITLES_DETECTACTIVEAREA=2,SETTING_SUBTITLES_CACHEACTIVEAREA=3,SETTING_SUBTITLES_ISOLATEACTIVEAREA=4;};
+struct Settings {bool detect=true;bool GetBool(int id){return id==2?detect:id<3;}} settingsValue;
 Settings* settings(){return &settingsValue;}
 bool aml_dv_l5_override_active(){return false;}
 @CONSTANTS@
 @GEOMETRY@
 bool aml_dv_auto_letterbox_active(){uint16_t t,b,l,r;return _auto_letterbox_geometry(t,b,l,r);}
 @SAMPLE@
-constexpr int DV_DETECT_FAILED=0,DV_DETECT_RUNNING=1,DV_DETECT_SKIPPED=2,DV_DETECT_OK=3,DV_DETECT_SKIP_NON16X9=4,DV_DETECT_INACTIVE=5;
+@DETECT_ENUM@
 bool dvDetection=true;bool aml_dv_detect_active_area_enabled(){return dvDetection;}
 std::atomic<bool> s_detectStable{false},s_detectThrottleActive{false},s_detectCacheStarved{false};
 std::atomic<int> s_detectState{DV_DETECT_FAILED};
@@ -60,11 +61,14 @@ void aml_dv_detect_set_file(const std::string&);
 void select(const std::string& path,bool native=true,int w=1920,int h=1080){
   aml_dv_detect_set_file(path);assert(aml_subtitle_active_area_configure(w,h,native,true,aml_subtitle_active_area_source()));
 }
+@CACHE_BOUNDARY@
+namespace PERFORMANCE_CORES {inline bool ApplyDetectionCurrentThread(){return true;}} // affinity is covered separately
 @METHODS@
 struct DV{bool ready=false;bool Retire(){return ready;}};
 struct CWinSystemAmlogic{std::unique_ptr<DV> m_dolbyVisionAML=std::make_unique<DV>();bool RetireNativeTransactions();};
 @RETIRE@
 struct CWinSystemAmlogicGLESContext:CWinSystemAmlogic{
+ void GuiABFinish(const char*){} // diagnostics are a boundary of the shutdown fixture
  void SetNativeGuiWait(bool){} // lease policy is covered by the native GUI wait fixture
  bool m_shutdownRequested=false;CAMLDisplayLifecycle m_displayLifecycle;
  std::unique_ptr<CAMLDisplayLifecycle::Mutation> m_shutdownAdmission;bool PrepareForShutdown();
@@ -182,8 +186,19 @@ void generic_detector(){
  assert(!aml_subtitle_active_area_configure(1920,1080,true,true,selected));
  detect_publish(current,oldSource,300,300,0,0);assert(!s_detectSource->result);
  assert(writes==count);
- // Cropped sources are declined before the worker/source I/O starts.
- select("crop",false,1920,800);aml_dv_detect_active_area_start();assert(s_detectState==DV_DETECT_SKIP_NON16X9&&writes==count);
+ // The default getter deliberately withholds subtitle-only estimates.
+ // Coded crops can retain in-picture borders for text. They do not count as
+ // uncropped corpus inputs, and subtitle-only publication never writes sysfs.
+ std::promise<void> cropFinished;auto cropDone=cropFinished.get_future();
+ scanHook=[&](const auto& source,const CAMLNativeWorker::Run& state){
+   assert(source->path=="crop"&&!source->nativeDV&&source->width==1920&&source->height==800);
+   detect_publish_subtitle(state,source,DetectResult{12,12,0,0});cropFinished.set_value();
+ };
+ select("crop",false,1920,800);aml_dv_detect_active_area_start();
+ assert(cropDone.wait_for(2s)==std::future_status::ready);s_detectWorker.Stop();
+ assert(aml_subtitle_detect_active_area_get(1920,800,t,b,l,r,true)&&t==12&&b==12&&l==0&&r==0);
+ assert(!aml_subtitle_detect_active_area_get(1920,800,t,b,l,r));
+ assert(!aml_dv_detect_active_area_stable()&&writes==count&&!s_detectSource->result);
  // Native initial cleanup remains unconditional even after a previous process crash.
  {CAMLNativeTransaction owner;assert(owner.TryBegin());select("native");dvDetection=false;
   aml_dv_detect_active_area_start();assert(writes==count+4);dvDetection=true;
@@ -200,6 +215,11 @@ def source():
     detector=aml[aml.index('static CAMLNativeWorker s_detectWorker;'):aml.index('/* Mid-read cache guard.')]
     declaration=(ROOT/'xbmc/utils/AMLUtils.h').read_text().split('bool aml_subtitle_detect_active_area_get(',1)[1].split(';',1)[0]
     detector='bool aml_subtitle_detect_active_area_get('+declaration+';\n'+detector
+    # Force ownership is covered by test-active-area-l5-override.py; this fixture
+    # controls sysfs while exercising real worker joins and admission.
+    if 'static void detect_apply_l5_override_locked()\n{' in detector:
+        detector=detector.replace(function(detector,'static void detect_apply_l5_override_locked()\n{'),'static void detect_apply_l5_override_locked() {}')
+        detector=detector.replace(function(detector,'void aml_dv_apply_l5_override_sysfs()'),'')
     detector+=function(aml,'static void detect_publish_subtitle(')
     methods='\n'.join(function(aml,sig) for sig in (
       'void aml_dv_set_active_area_geometry(', 'static void _auto_letterbox_watch_run(',
@@ -209,14 +229,25 @@ def source():
     # Wiring into FFmpeg's interrupt and final publication; the full scan is not host-compiled.
     scan=function(aml,'static void DetectActiveAreaFromFile(')
     assert 'fmtCtx->interrupt_callback.opaque = const_cast<CAMLNativeWorker::Run*>(&run);' in scan
-    assert 'detect_publish(run, source, detTop, detBottom, detLeft, detRight);' in scan
+    confidence='aml_dv_detect_active_area_override_get(' in (ROOT/'xbmc/utils/AMLUtils.h').read_text()
+    expected_publication='detect_publish(run, source, detTop, detBottom, detLeft, detRight'+(', nativeHighConfidence' if confidence else '')+');'
+    assert expected_publication in scan
+    assert 'if (source->nativeDV &&' in scan and 's_detectState.store(DV_DETECT_SKIP_NON16X9);' in scan
     assert 's_detectCancel' not in aml
     base=(ROOT/'xbmc/windowing/amlogic/WinSystemAmlogic.cpp').read_text()
     window=(ROOT/'xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp').read_text()
     constants=aml[aml.index('static constexpr uint32_t AUTO_LB_AR_MAX'):aml.index('/* One sample of the current frame')]
     import re
+    detector_enum=re.search(r'enum DvDetectState\s*\{.*?\};',(ROOT/'xbmc/utils/AMLUtils.h').read_text(),re.S).group()
+    assert 'DV_DETECT_RUNNING = 6' in detector_enum and 'DV_DETECT_SKIP_NON16X9 = 1' in detector_enum
     constants+=re.search(r'enum\s*\{\s*AUTO_LB_SAMPLE_OK.*?\};',aml,re.S).group()
-    return PREFIX.replace('@CONSTANTS@',constants).replace('@GEOMETRY@',function(aml,'static bool _auto_letterbox_geometry(')).replace('@SAMPLE@',function(aml,'static int _auto_letterbox_duplicate_sample(')).replace('@AUTO_GLOBALS@',globals).replace('@DETECT_GLOBALS@',detector).replace('@IO@','\n'.join(function(aml,sig) for sig in ('static int64_t detect_steady_ms()', 'static int detect_interrupt_cb(', 'static int detect_wait_for_cache('))).replace('@PUBLISH@',function(aml,'static void detect_publish(')).replace('@METHODS@',methods).replace('@RETIRE@',function(base,'bool CWinSystemAmlogic::RetireNativeTransactions()')).replace('@PREPARE@',function(window,'bool CWinSystemAmlogicGLESContext::PrepareForShutdown()'))+TESTS
+    cache_header='#include "utils/ActiveAreaCache.h"' if '#include "ActiveAreaCache.h"' in aml else ''
+    cache_boundary='''namespace ACTIVE_AREA_CACHE {
+inline bool ReadIdentity(Identity&){assert(false);return false;}
+inline bool Load(const Identity&,Record&){assert(false);return false;}
+inline bool Store(const Identity&,const Record&){assert(false);return false;}
+}''' if cache_header else ''
+    return PREFIX.replace('@CACHE_HEADER@',cache_header).replace('@CACHE_BOUNDARY@',cache_boundary).replace('@DETECT_ENUM@',detector_enum).replace('@CONSTANTS@',constants).replace('@GEOMETRY@',function(aml,'static bool _auto_letterbox_geometry(')).replace('@SAMPLE@',function(aml,'static int _auto_letterbox_duplicate_sample(')).replace('@AUTO_GLOBALS@',globals).replace('@DETECT_GLOBALS@',detector).replace('@IO@','\n'.join(function(aml,sig) for sig in ('static int64_t detect_steady_ms()', 'static int detect_interrupt_cb(', 'static int detect_wait_for_cache('))).replace('@PUBLISH@',function(aml,'static void detect_publish(')).replace('@METHODS@',methods).replace('@RETIRE@',function(base,'bool CWinSystemAmlogic::RetireNativeTransactions()')).replace('@PREPARE@',function(window,'bool CWinSystemAmlogicGLESContext::PrepareForShutdown()'))+TESTS
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--negative-controls',action='store_true');args=parser.parse_args()

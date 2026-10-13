@@ -27,6 +27,10 @@ def source(aml=None):
     edges_start = scan.index('      /* Re-derive frame accessors')
     edges_end = scan.index('      samples_top[validSamples] = sTop;', edges_start)
     edges = scan[edges_start:edges_end]
+    if 'spatial[validSamples] = ' in edges:
+        start = edges.index('      spatial[validSamples] = ')
+        end = edges.index('      sTop = measurements[0].value;', start)
+        edges = edges[:start] + edges[end:]
     code = PREFIX
     code += 'bool AdmitFrame(Frame* frame,Source* source){\n' + admit + 'return true;cleanup:return false;}\n'
     code += 'uint32_t Contrast(Frame* frame){int lastWidth=frame->width,lastHeight=frame->height;{\n'
@@ -60,14 +64,27 @@ def source(aml=None):
     if 'static bool detect_subtitle_consensus(' in aml:
         code += function(aml, 'static bool detect_subtitle_consensus(') + '\n'
         code += 'Result SubtitleEdges(Frame* frame){Edges(frame);auto& m=subtitleEdgeMeasurements;return {m[0].value,m[1].value,m[2].value,m[3].value,std::any_of(m.begin(),m.end(),[](const auto& e){return e.RejectedSpatialEvidence();})};}\n'
+    if 'struct DetectSpatialSample' in aml:
+        code += function(aml, 'struct DetectSpatialSample') + ';\n'
+        code += 'template<class Luma>\n' + function(aml, 'static DetectSpatialSample detect_spatial_sample(') + '\n'
+        code += function(aml, 'static bool detect_tiered_consensus(') + '\n'
+        if 'static bool detect_strict_positive_axis(' in aml:
+            code += function(aml, 'static bool detect_strict_positive_axis(') + '\n'
+            code += '#define STRICT_POSITIVE_AXIS 1\n'
+        code += '#define TIERED_SPATIAL_EVIDENCE 1\n'
     code += re.search(r'static const uint32_t s_commonAR\[\] = \{.*?\};', aml, re.S).group() + '\n'
-    final = scan[scan.index('    /* Require enough usable samples'):scan.index('\n  }\n\n  detect_publish(')]
+    end = '\n  }\n\n  // A coded crop' if '// A coded crop' in scan else '\n  }\n\n  detect_publish('
+    final = scan[scan.index('    /* Require enough usable samples'):scan.index(end)]
     code += 'bool Select(const uint16_t* samples_top,const uint16_t* samples_bottom,const uint16_t* samples_left,const uint16_t* samples_right,int validSamples,int lastWidth,int lastHeight,DetectResult& result,const bool* rejected=nullptr){\n'
     code += 'bool known[7]{};const bool* samples_rejected=rejected?rejected:known;(void)samples_rejected;\n'
     if 'static bool detect_subtitle_consensus(' in aml:
         code += '(void)detect_subtitle_consensus;\n'
     code += 'constexpr int numSeeks=7;uint16_t detTop=0,detBottom=0,detLeft=0,detRight=0;{\n'
-    code += final + '\n}result={detTop,detBottom,detLeft,detRight};return true;cleanup:return false;}\n'
+    if 'struct DetectSpatialSample' in aml:
+        code += '(void)detect_tiered_consensus;constexpr bool spatialAccepted=false;bool nativeHighConfidence=false;DetectResult subtitleConsensus{};\n'
+        if 'static bool detect_strict_positive_axis(' in aml:
+            code += '(void)detect_strict_positive_axis;constexpr bool positiveAxisOnly=false;DetectResult positiveAxes{};\n'
+    code += final + '\n(void)nativeHighConfidence;}result={detTop,detBottom,detLeft,detRight};return true;cleanup:return false;}\n'
     cache = (ROOT / 'xbmc/cores/DataCacheCore.cpp').read_text()
     code += function(cache, 'DOVIFrameMetadata CDataCacheCore::GetVideoDoViFrameMetadata(double pts)') + '\n'
     code += function(cache, 'void CDataCacheCore::ClearVideoDoViFrameMetadata()')
@@ -125,7 +142,108 @@ int main(){
  assert(detect_samples_consensus(top,bottom,left,right,6,result));
  assert(!detect_samples_consensus(top,bottom,left,right,5,result));
  assert(!detect_samples_consensus(top,bottom,left,right,0,result));
- assert(!detect_samples_consensus(top,bottom,left,right,8,result));
+ assert(!detect_samples_consensus(top,bottom,left,right,15,result));
+#ifdef TIERED_SPATIAL_EVIDENCE
+ auto y=[&](int row,int col){return static_cast<uint32_t>(image[row*128+col]);};
+ auto spatial=detect_spatial_sample(y,128,72);
+ assert(spatial.edge[0]==8&&spatial.edge[1]==8&&spatial.edge[2]==0&&spatial.edge[3]==0&&spatial.strong);
+ DetectSpatialSample scouts[14];
+ for(auto& sample:scouts)sample=spatial;
+ bool invariant=false;
+ assert(detect_tiered_consensus(scouts,14,result,invariant)&&invariant&&result.top==8&&result.bottom==8);
+#ifdef STRICT_POSITIVE_AXIS
+ uint16_t axisFirst[14],axisSecond[14],axisBorder=0;bool axisRejected[14]{};
+ std::fill_n(axisFirst,14,8);std::fill_n(axisSecond,14,8);
+ // A confirmed letterbox may crop vertically while an unrelated dark object
+ // leaves the horizontal axis unresolved. No horizontal crop is inferred.
+ for(auto& sample:scouts){sample.edge[2]=UINT16_MAX;sample.edge[3]=400;}
+ assert(detect_strict_positive_axis(axisFirst,axisSecond,axisRejected,scouts,14,0,axisBorder)&&axisBorder==8);
+ axisRejected[3]=true;
+ assert(!detect_strict_positive_axis(axisFirst,axisSecond,axisRejected,scouts,14,0,axisBorder));
+ axisRejected[3]=false;scouts[3].edge[0]=scouts[3].edge[1]=0;
+ assert(!detect_strict_positive_axis(axisFirst,axisSecond,axisRejected,scouts,14,0,axisBorder));
+ scouts[3].edge[0]=UINT16_MAX;scouts[3].edge[1]=8;
+ assert(!detect_strict_positive_axis(axisFirst,axisSecond,axisRejected,scouts,14,0,axisBorder));
+ scouts[3].edge[0]=8;axisFirst[3]=0;
+ assert(!detect_strict_positive_axis(axisFirst,axisSecond,axisRejected,scouts,14,0,axisBorder));
+ axisFirst[3]=UINT16_MAX;
+ assert(!detect_strict_positive_axis(axisFirst,axisSecond,axisRejected,scouts,14,0,axisBorder));
+ axisFirst[3]=8;scouts[3].edge[0]=scouts[3].edge[1]=20;
+ assert(!detect_strict_positive_axis(axisFirst,axisSecond,axisRejected,scouts,14,0,axisBorder));
+ for(auto& sample:scouts)sample=spatial;
+#endif
+ // Proposed-prefix guards distinguish dark picture beyond the bar from
+ // a caption inside it. The same strict implementation validates both cases.
+ std::vector<uint8_t> guardedPicture(128*72,16);
+ for(int row=8;row<25;++row)for(int col=0;col<128;++col)guardedPicture[row*128+col]=120;
+ auto guardedY=[&](int row,int col){return static_cast<uint32_t>(guardedPicture[row*128+col]);};
+ auto withinBar=detect_refine_edge(guardedY,128,72,true,false,8,true);
+ auto intoPicture=detect_refine_edge(guardedY,128,72,true,false,32,true);
+ assert(withinBar.value==8&&!withinBar.RejectedSpatialEvidence());
+ assert(intoPicture.value==UINT16_MAX&&intoPicture.RejectedSpatialEvidence());
+ for(int row=2;row<4;++row)for(int col=0;col<128;++col)guardedPicture[row*128+col]=100;
+ auto captionInBar=detect_refine_edge(guardedY,128,72,true,false,8,true);
+ assert(captionInBar.value==UINT16_MAX&&captionInBar.RejectedSpatialEvidence());
+ // One strongly supported full-frame scene blocks native cropping, while text
+ // keeps the common interior envelope. A rare strong mode is also retained.
+ scouts[13]=DetectSpatialSample{};std::fill_n(scouts[13].edge,4,0);scouts[13].strong=true;
+ assert(detect_tiered_consensus(scouts,14,result,invariant)&&!invariant&&result.top==8);
+ for(int i=0;i<13;++i)scouts[i]=scouts[13];scouts[13]=spatial;
+ assert(detect_tiered_consensus(scouts,14,result,invariant)&&!invariant&&result.top==0);
+ // Intermittent small raster darkness cannot override known full-frame edges;
+ // a strongly supported larger rare framing mode still protects text.
+ scouts[13].edge[0]=scouts[13].edge[1]=20;
+ assert(detect_tiered_consensus(scouts,14,result,invariant)&&!invariant&&result.top==20);
+ // A single weak dark-object hypothesis cannot add an inset to full-frame text.
+ scouts[13].strong=false;
+ assert(detect_tiered_consensus(scouts,14,result,invariant)&&!invariant&&result.top==0);
+ scouts[12].edge[0]=UINT16_MAX;
+ assert(detect_tiered_consensus(scouts,14,result,invariant)&&!invariant&&result.top==0);
+#endif
+#ifdef TIERED_SPATIAL_EVIDENCE
+ // A rare asymmetric window has four proven black prefixes and sustained
+ // picture within its orthogonal bounds. It protects text without native AR.
+ std::vector<uint8_t> windowPixels(128*72,16);
+ for(int row=12;row<56;++row)for(int col=20;col<105;++col)windowPixels[row*128+col]=100;
+ auto windowY=[&](int row,int col){return static_cast<uint32_t>(windowPixels[row*128+col]);};
+ auto boxed=detect_spatial_sample(windowY,128,72);
+ assert(boxed.window&&boxed.edge[0]==12&&boxed.edge[1]==16&&boxed.edge[2]==20&&boxed.edge[3]==23);
+ for(auto& scout:scouts){scout=DetectSpatialSample{};std::fill_n(scout.edge,4,0);scout.strong=true;}
+ scouts[13]=boxed;
+ assert(detect_tiered_consensus(scouts,14,result,invariant)&&!invariant&&result.top==12&&result.bottom==16&&result.left==20&&result.right==23);
+ // Caption/picture in a proposed prefix contradicts the rectangular proof.
+ for(int col=20;col<105;++col)windowPixels[4*128+col]=100;
+ assert(!detect_spatial_sample(windowY,128,72).window);
+ // Uniform raised grey mattes protect text but cannot establish native L5.
+ std::vector<uint8_t> greyPixels(128*72,29);
+ for(int row=12;row<60;++row)for(int col=0;col<128;++col)greyPixels[row*128+col]=100;
+ auto greyY=[&](int row,int col){return static_cast<uint32_t>(greyPixels[row*128+col]);};
+ auto grey=detect_spatial_sample(greyY,128,72);
+ assert(grey.raised&&grey.edge[0]==12&&grey.edge[1]==12);
+ for(auto& scout:scouts)scout=grey;
+ assert(detect_tiered_consensus(scouts,14,result,invariant)&&!invariant&&result.top==12);
+#ifdef STRICT_POSITIVE_AXIS
+ std::fill_n(axisFirst,14,12);std::fill_n(axisSecond,14,12);
+ assert(!detect_strict_positive_axis(axisFirst,axisSecond,axisRejected,scouts,14,0,axisBorder));
+#endif
+ // Patterned/unequal grey picture edges and a caption in the prefix veto it.
+ greyPixels[12]=40;
+ assert(!detect_spatial_sample(greyY,128,72).raised);
+ greyPixels[12]=29;
+ for(int row=60;row<72;++row)for(int col=0;col<128;++col)greyPixels[row*128+col]=35;
+ assert(!detect_spatial_sample(greyY,128,72).raised);
+ for(int row=60;row<72;++row)for(int col=0;col<128;++col)greyPixels[row*128+col]=29;
+ for(int col=0;col<128;++col)greyPixels[5*128+col]=100;
+ assert(!detect_spatial_sample(greyY,128,72).raised);
+ std::fill(greyPixels.begin(),greyPixels.end(),29);
+ assert(!detect_spatial_sample(greyY,128,72).raised);
+ std::fill(greyPixels.begin(),greyPixels.end(),60);
+ for(int row=12;row<60;++row)for(int col=0;col<128;++col)greyPixels[row*128+col]=100;
+ assert(!detect_spatial_sample(greyY,128,72).raised);
+ // Bright framing and a partial window cannot supply four black edges.
+ for(int col=0;col<128;++col)windowPixels[col]=100;
+ assert(!detect_spatial_sample(windowY,128,72).window);
+#endif
  // Repeated completed reporter scan: paired vertical4/7; noisy horizontal has no veto.
  uint16_t rt[]={262,846,262,471,262,262,262},rb[]={527,262,262,262,262,262,262};
  uint16_t rl[]={5,714,0,499,0,896,128},rr[]={0,1041,532,0,523,941,0};
@@ -203,8 +321,16 @@ int main(){
  for(int y=8;y<64;++y)for(int x=0;x<128;++x)ten[y*128+x]=120<<2;
  frame.data[0]=reinterpret_cast<uint8_t*>(ten.data());frame.linesize[0]=256;frame.format=AV_PIX_FMT_YUV420P10LE;
  assert(AdmitFrame(&frame,&source)&&Contrast(&frame)>10);edges=Edges(&frame);assert(edges.top==8&&edges.bottom==8);
+#ifdef TIERED_SPATIAL_EVIDENCE
+ auto tenY=[&](int row,int col){return static_cast<uint32_t>(ten[row*128+col]>>2);};
+ spatial=detect_spatial_sample(tenY,128,72);assert(spatial.edge[0]==8&&spatial.edge[1]==8&&spatial.strong);
+#endif
  for(auto& value:ten)value<<=6;frame.format=AV_PIX_FMT_P010LE;
  assert(AdmitFrame(&frame,&source)&&Contrast(&frame)>10);edges=Edges(&frame);assert(edges.top==8&&edges.bottom==8);
+#ifdef TIERED_SPATIAL_EVIDENCE
+ auto p010Y=[&](int row,int col){return static_cast<uint32_t>(ten[row*128+col]>>8);};
+ spatial=detect_spatial_sample(p010Y,128,72);assert(spatial.edge[0]==8&&spatial.edge[1]==8&&spatial.strong);
+#endif
  // Exact lookup cannot borrow latest metadata or survive explicit source/seek clearing.
  CDataCacheCore cache;cache.m_playerVideoInfo.doviFrameMetadataMap.insert(100,{100,true,8});
  cache.m_playerVideoInfo.doviFrameMetadataMap.insert(200,{200,true,16});
@@ -250,7 +376,7 @@ def main():
             ('unrelated horizontal noise vetoes picture', 'uint16_t vertical = 0, horizontal = 0;', 'if (*std::max_element(left,left+count)-*std::min_element(left,left+count)>5) return false; uint16_t vertical = 0, horizontal = 0;'),
             ('scanner discards consensus', 'detTop = consensus.top;', 'detTop = 0;'),
             ('snap bypassed', 'detTop = tb; detBottom = tb; detLeft = 0; detRight = 0;', 'detLeft = 0; detRight = 0; (void)tb;'),
-            ('dark coverage accepted', 'if (count < 6 || count > 7)', 'if (count < 1 || count > 7)'),
+            ('dark coverage accepted', 'if (count < 6 || count > 14)', 'if (count < 1 || count > 14)'),
             ('latest metadata borrowed', '.find(static_cast<uint64_t>(pts))', '.findOrLatest(static_cast<uint64_t>(pts))'),
             ('source dimensions ignored', 'frame->width != source->width || frame->height != source->height ||', '(frame->width != source->width && false) || (frame->height != source->height && false) ||'),
         ]:

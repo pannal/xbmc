@@ -2766,15 +2766,18 @@ struct DetectSource
 {
   explicit DetectSource(std::string value, int w = 0, int h = 0,
                         bool native = false, bool probe = false,
-                        std::shared_ptr<const void> selected = {})
+                        std::shared_ptr<const void> selected = {}, int index = -1, int codec = 0)
     : path(std::move(value)), width(w), height(h), nativeDV(native), allowProbe(probe),
-      selection(selected ? std::move(selected) : std::make_shared<const unsigned char>(0)) {}
+      selection(selected ? std::move(selected) : std::make_shared<const unsigned char>(0)),
+      streamIndex(index), codecHint(codec) {}
   const std::string path;
   const int width;
   const int height;
   const bool nativeDV;
   const bool allowProbe;
   const std::shared_ptr<const void> selection;
+  const int streamIndex;
+  const int codecHint;
   const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
   std::shared_ptr<const DetectResult> result; // protected by s_detectSourceMutex
   // Accepted file-wide geometry may outlive a cancelled probe, never its admission.
@@ -2794,6 +2797,23 @@ std::shared_ptr<const void> aml_subtitle_active_area_source()
   return s_detectSource->selection;
 }
 
+std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int codec)
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  // A stream switch must retire same-file/same-dimensions results as well.
+  // Unknown demux identities cannot safely retain geometry across an open.
+  if (streamIndex < 0 || s_detectSource->streamIndex != streamIndex ||
+      s_detectSource->codecHint != codec)
+  {
+    s_detectSource->superseded->store(true);
+    s_detectSource = std::make_shared<DetectSource>(s_detectSource->path, 0, 0, false, false,
+                                                   std::shared_ptr<const void>{}, streamIndex, codec);
+    s_detectStable.store(false);
+    CServiceBroker::GetDataCacheCore().ClearVideoDoViFrameMetadata();
+  }
+  return s_detectSource->selection;
+}
+
 bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bool allowProbe,
                                       const std::shared_ptr<const void>& expectedSource)
 {
@@ -2803,7 +2823,8 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
   const auto previous = s_detectSource;
   previous->superseded->store(true);
   s_detectSource = std::make_shared<DetectSource>(previous->path, width, height,
-                                                 nativeDV, allowProbe, expectedSource);
+                                                 nativeDV, allowProbe, expectedSource,
+                                                 previous->streamIndex, previous->codecHint);
   if (allowProbe && previous->width == width && previous->height == height &&
       previous->nativeDV == nativeDV && previous->allowProbe == allowProbe)
   {
@@ -2849,16 +2870,24 @@ bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
   top = bottom = left = right = 0;
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   const auto& source = s_detectSource;
-  const bool enabled = source->nativeDV ? aml_dv_detect_active_area_enabled()
-      : settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA);
+  const bool subtitleDetection = settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA);
+  const bool enabled = source->nativeDV ? (aml_dv_detect_active_area_enabled() ||
+      (allowSubtitleEstimate && subtitleDetection)) : subtitleDetection;
   // Retention is only set by an explicit pure seek/reset and remains bound to
   // this selection/dimension/native/probe identity, independent of worker state.
   auto accepted = !source->superseded->load() && source->result ?
       source->result : source->retained;
-  // Strict zero is also a result and must override a positive estimate.
-  if (!accepted && allowSubtitleEstimate)
-    accepted = !source->superseded->load() && source->subtitleResult ?
+  // Strict full-frame evidence overrides estimates. A positive native crop
+  // can prove only one axis; adapted text keeps its independently published
+  // envelope on the other axis, including variable framing.
+  if (allowSubtitleEstimate && (!accepted || accepted->top || accepted->bottom ||
+                                accepted->left || accepted->right))
+  {
+    const auto subtitle = !source->superseded->load() && source->subtitleResult ?
         source->subtitleResult : source->retainedSubtitle;
+    if (subtitle)
+      accepted = subtitle;
+  }
   if (!enabled || !source->allowProbe || !accepted ||
       source->width != width || source->height != height)
     return false;
@@ -3463,7 +3492,7 @@ static bool detect_samples_consensus(const uint16_t* top, const uint16_t* bottom
                                     int count, DetectResult& result)
 {
   result = {};
-  if (count < 6 || count > 7)
+  if (count < 6 || count > 14)
     return false;
   uint16_t vertical = 0, horizontal = 0;
   const auto v = detect_axis_consensus(top, bottom, count, vertical);
@@ -3490,6 +3519,271 @@ static bool detect_subtitle_consensus(const uint16_t* top, const uint16_t* botto
     result.bottom = std::min(result.bottom, bottom[i]);
     result.left = std::min(result.left, left[i]);
     result.right = std::min(result.right, right[i]);
+  }
+  return true;
+}
+
+struct DetectSpatialSample
+{
+  uint16_t edge[4] = {UINT16_MAX, UINT16_MAX, UINT16_MAX, UINT16_MAX};
+  bool strong{false};
+  bool window{false}; // proven rectangular inset, adapted text only
+  bool raised{false}; // calibrated flat grey matte, adapted text only
+};
+
+// Distributed probes keep a bright centre or a dark object from defining an
+// entire edge. Values are in the scanner's common eight-bit luma domain.
+template<class Luma>
+static DetectSpatialSample detect_spatial_sample(const Luma& getY, int width, int height)
+{
+  DetectSpatialSample sample;
+  bool strong = true;
+  for (int edge = 0; edge < 4; ++edge)
+  {
+    const bool vertical = edge < 2;
+    const int depth = vertical ? height : width;
+    const int breadth = vertical ? width : height;
+    auto pixel = [&](int row, int lane) {
+      const int cross = breadth / 10 + lane * (breadth - 2 * (breadth / 10) - 1) / 31;
+      const int along = edge % 2 ? depth - row - 1 : row;
+      return vertical ? getY(along, cross) : getY(cross, along);
+    };
+    uint32_t outer[96];
+    for (int row = 0; row < 3; ++row)
+      for (int lane = 0; lane < 32; ++lane)
+        outer[row * 32 + lane] = pixel(row, lane);
+    std::sort(std::begin(outer), std::end(outer));
+    const uint32_t black = outer[85];
+    if (black > 24)
+    {
+      sample.edge[edge] = 0;
+      continue;
+    }
+    int consecutive = 0;
+    int strongConsecutive = 0;
+    for (int row = 0; row < depth / 3 + 2; ++row)
+    {
+      int coverage = 0;
+      for (int lane = 0; lane < 32; ++lane)
+        coverage += pixel(row, lane) > black + 6;
+      consecutive = coverage >= 9 ? consecutive + 1 : 0;
+      strongConsecutive = coverage >= 24 ? strongConsecutive + 1 : 0;
+      if (consecutive >= 3)
+      {
+        sample.edge[edge] = static_cast<uint16_t>(row - 2);
+        if (row > 6 && strongConsecutive < 3)
+          strong = false;
+        break;
+      }
+    }
+    if (sample.edge[edge] == UINT16_MAX)
+      strong = false;
+  }
+  sample.strong = strong;
+  // Some encodes place uniformly raised grey mattes outside the picture.
+  // Accept only paired flat prefixes with matching levels and sustained picture
+  // departures. This calibration protects text and never establishes native L5.
+  for (int axis = 0; axis < 2; ++axis)
+  {
+    const bool vertical = axis == 0;
+    const int depth = vertical ? height : width;
+    const int breadth = vertical ? width : height;
+    uint16_t calibrated[2] = {UINT16_MAX, UINT16_MAX};
+    uint32_t levels[2] = {};
+    for (int side = 0; side < 2; ++side)
+    {
+      auto pixel = [&](int row, int lane) {
+        const int cross = breadth / 10 + lane * (breadth - 2 * (breadth / 10) - 1) / 31;
+        const int along = side ? depth - row - 1 : row;
+        return vertical ? getY(along, cross) : getY(cross, along);
+      };
+      uint32_t outer[96];
+      for (int row = 0; row < 3; ++row)
+        for (int lane = 0; lane < 32; ++lane)
+          outer[row * 32 + lane] = pixel(row, lane);
+      std::sort(std::begin(outer), std::end(outer));
+      const uint32_t black = outer[85];
+      levels[side] = black;
+      if (black <= 24 || black > 48 || outer[95] - outer[0] > 2)
+        continue;
+      int consecutive = 0;
+      for (int row = 0; row < depth / 3 + 2; ++row)
+      {
+        int coverage = 0;
+        for (int lane = 0; lane < 32; ++lane)
+          coverage += pixel(row, lane) > black + 6;
+        consecutive = coverage >= 16 ? consecutive + 1 : 0;
+        if (consecutive >= 3)
+        {
+          calibrated[side] = static_cast<uint16_t>(row - 2);
+          break;
+        }
+      }
+      if (calibrated[side] == UINT16_MAX || calibrated[side] <= 8)
+        continue;
+      for (int row = 0; row < calibrated[side] - 2; ++row)
+      {
+        int coverage = 0;
+        for (int lane = 0; lane < 32; ++lane)
+          coverage += pixel(row, lane) > black + 6;
+        if (coverage > 2)
+        {
+          calibrated[side] = UINT16_MAX;
+          break;
+        }
+      }
+    }
+    if (calibrated[0] != UINT16_MAX && calibrated[1] != UINT16_MAX &&
+        calibrated[0] > 8 && calibrated[1] > 8 &&
+        std::abs(static_cast<int>(calibrated[0]) - calibrated[1]) <= 4 &&
+        std::abs(static_cast<int>(levels[0]) - static_cast<int>(levels[1])) <= 2)
+    {
+      sample.edge[axis * 2] = calibrated[0];
+      sample.edge[axis * 2 + 1] = calibrated[1];
+      sample.raised = true;
+    }
+  }
+  // Orthogonal bars reduce the full-frame departure coverage of a windowbox.
+  // Prove its black prefixes and picture departures within the proposed window
+  // instead. This permits a rare/asymmetric inset for text without giving it
+  // any native crop authority. Two transition rows allow compressed soft edges.
+  const auto* bounds = sample.edge;
+  bool window = std::all_of(bounds, bounds + 4,
+      [](uint16_t value) { return value > 8 && value != UINT16_MAX; }) &&
+      bounds[0] + bounds[1] < height && bounds[2] + bounds[3] < width;
+  for (int edge = 0; window && edge < 4; ++edge)
+  {
+    const bool vertical = edge < 2;
+    const int depth = vertical ? height : width;
+    const int start = vertical ? bounds[2] : bounds[0];
+    const int end = vertical ? width - bounds[3] : height - bounds[1];
+    const int breadth = end - start;
+    auto pixel = [&](int row, int lane) {
+      const int cross = start + breadth / 10 +
+          lane * (breadth - 2 * (breadth / 10) - 1) / 31;
+      const int along = edge % 2 ? depth - row - 1 : row;
+      return vertical ? getY(along, cross) : getY(cross, along);
+    };
+    uint32_t outer[96];
+    for (int row = 0; row < 3; ++row)
+      for (int lane = 0; lane < 32; ++lane)
+        outer[row * 32 + lane] = pixel(row, lane);
+    std::sort(std::begin(outer), std::end(outer));
+    const uint32_t black = outer[85];
+    window = black <= 24;
+    for (int row = 0; window && row < bounds[edge] + 3; ++row)
+    {
+      int coverage = 0;
+      for (int lane = 0; lane < 32; ++lane)
+        coverage += pixel(row, lane) > black + 6;
+      if (row < bounds[edge] - 2)
+        window = coverage <= 2;
+      else if (row >= bounds[edge])
+        window = coverage >= 16;
+    }
+  }
+  sample.window = window;
+  return sample;
+}
+
+// An envelope is only for adapted text. Native cropping additionally needs
+// every sampled scene to support one invariant geometry and the strict path.
+static bool detect_tiered_consensus(const DetectSpatialSample* samples, int count,
+                                    DetectResult& text, bool& invariant)
+{
+  text = {};
+  invariant = count >= 6;
+  bool accepted = false;
+  int firstKnown = -1;
+  int fullEdge[4] = {};
+  for (int i = 0; i < count; ++i)
+  {
+    const auto& sample = samples[i];
+    const auto* p = sample.edge;
+    if (sample.raised)
+      invariant = false;
+    const bool paired = std::all_of(p, p + 4, [](uint16_t v) { return v != UINT16_MAX; }) &&
+        std::abs(static_cast<int>(p[0]) - p[1]) <= 4 &&
+        std::abs(static_cast<int>(p[2]) - p[3]) <= 4;
+    if (sample.window && !paired)
+    {
+      // A spatially proven window may be asymmetric or appear only once.
+      // Its adapted-text envelope never establishes invariant native geometry.
+      invariant = false;
+      accepted = true;
+      text.top = std::max(text.top, p[0]);
+      text.bottom = std::max(text.bottom, p[1]);
+      text.left = std::max(text.left, p[2]);
+      text.right = std::max(text.right, p[3]);
+    }
+    if (!paired)
+    {
+      invariant = false;
+      continue;
+    }
+    if (firstKnown < 0)
+      firstKnown = i;
+    for (int e = 0; e < 4; ++e)
+    {
+      fullEdge[e] += p[e] == 0;
+      if (std::abs(static_cast<int>(p[e]) - samples[firstKnown].edge[e]) > 4)
+        invariant = false;
+    }
+    int support = 0;
+    for (int j = 0; j < count; ++j)
+    {
+      bool match = true;
+      for (int e = 0; e < 4; ++e)
+        match &= samples[j].edge[e] != UINT16_MAX &&
+            std::abs(static_cast<int>(p[e]) - samples[j].edge[e]) <= 4;
+      support += match;
+    }
+    if (!sample.strong && support < 2)
+    {
+      if (!sample.window)
+        continue;
+      invariant = false;
+    }
+    accepted = true;
+    text.top = std::max(text.top, p[0]);
+    text.bottom = std::max(text.bottom, p[1]);
+    text.left = std::max(text.left, p[2]);
+    text.right = std::max(text.right, p[3]);
+  }
+  // A few pixels of intermittent raster/graphic-edge darkness are not a
+  // file-wide border when multiple scenes show picture at that coded edge.
+  // Stable thin bars have no such full-frame observations and remain intact.
+  if (text.top <= 8 && fullEdge[0] >= 2) text.top = 0;
+  if (text.bottom <= 8 && fullEdge[1] >= 2) text.bottom = 0;
+  if (text.left <= 8 && fullEdge[2] >= 2) text.left = 0;
+  if (text.right <= 8 && fullEdge[3] >= 2) text.right = 0;
+  return accepted;
+}
+
+// Cropping one proven axis does not require cropping an unrelated dark edge.
+// Every admitted position must corroborate the positive axis, including the
+// strict proposed-prefix caption checks. Unknown or changing opposite-axis evidence is
+// retained as zero native crop; it still contributes to the text envelope.
+static bool detect_strict_positive_axis(const uint16_t* first, const uint16_t* second,
+                                       const bool* rejected, const DetectSpatialSample* spatial,
+                                       int count, int edge, uint16_t& border)
+{
+  border = 0;
+  if (count < 6 || count > 14 ||
+      std::any_of(rejected, rejected + count, [](bool value) { return value; }) ||
+      detect_axis_consensus(first, second, count, border) != DetectAxisConfidence::STABLE ||
+      border <= 4)
+    return false;
+  for (int i = 0; i < count; ++i)
+  {
+    if (spatial[i].raised)
+      return false;
+    const auto* pair = spatial[i].edge + edge;
+    if (pair[0] == UINT16_MAX || pair[1] == UINT16_MAX ||
+        std::abs(static_cast<int>(pair[0]) - pair[1]) > 4 ||
+        std::abs(static_cast<int>(pair[0]) - border) > 4 ||
+        std::abs(static_cast<int>(pair[1]) - border) > 4)
+      return false;
   }
   return true;
 }
@@ -3610,8 +3904,11 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
 
   for (unsigned i = 0; i < fmtCtx->nb_streams; i++)
   {
-    if (fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+    if (fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+        !(fmtCtx->streams[i]->disposition & AV_DISPOSITION_ATTACHED_PIC))
     {
+      if (source->streamIndex >= 0 && i != static_cast<unsigned>(source->streamIndex))
+        continue;
       // Without a selected-demux-stream identity, multi-video files are ambiguous.
       if (videoIdx >= 0)
       {
@@ -3624,6 +3921,13 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   if (videoIdx < 0)
   {
     CLog::Log(LOGWARNING, "DetectActiveArea: no video stream found");
+    goto cleanup;
+  }
+
+  if (source->codecHint > 0 &&
+      fmtCtx->streams[videoIdx]->codecpar->codec_id != source->codecHint)
+  {
+    s_detectState.store(DV_DETECT_SKIPPED);
     goto cleanup;
   }
 
@@ -3665,22 +3969,27 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
 
   av_init_packet(&pkt);
 
-  /* Sample at 7 spread positions for robustness against fades, title cards,
+  /* Sample at 14 spread positions for robustness against fades, title cards,
    * or dark scenes. If a frame doesn't have enough contrast for reliable
    * border detection, retry at +1% offsets to stay in the same scene.
    * All samples are collected (no early exit) to detect variable AR content. */
   {
-    const int seekPercents[] = {0, 15, 30, 45, 60, 75, 88};
-    const int numSeeks = 7;
+    const int seekPercents[] = {0, 15, 30, 45, 60, 75, 88, 5, 22, 38, 52, 67, 81, 89};
+    const int numSeeks = 14;
     const int maxRetries = 8;
     const uint32_t minContrast = 10; /* minimum border-vs-content difference for detection */
-    uint16_t samples_top[7] = {}, samples_bottom[7] = {};
-    uint16_t samples_left[7] = {}, samples_right[7] = {};
-    bool samples_rejected[7] = {};
-    uint16_t subtitle_top[7] = {}, subtitle_bottom[7] = {};
-    uint16_t subtitle_left[7] = {}, subtitle_right[7] = {};
-    bool subtitle_rejected[7] = {};
+    uint16_t samples_top[14] = {}, samples_bottom[14] = {};
+    uint16_t samples_left[14] = {}, samples_right[14] = {};
+    bool samples_rejected[14] = {};
+    bool vertical_rejected[14] = {}, horizontal_rejected[14] = {};
+    uint16_t guarded_top[14] = {}, guarded_bottom[14] = {};
+    uint16_t guarded_left[14] = {}, guarded_right[14] = {};
+    uint16_t subtitle_top[14] = {}, subtitle_bottom[14] = {};
+    uint16_t subtitle_left[14] = {}, subtitle_right[14] = {};
+    bool subtitle_rejected[14] = {};
+    DetectSpatialSample spatial[14];
     int validSamples = 0;
+    bool authoredPositive = false;
     int lastWidth = 0, lastHeight = 0;
     /* Stale-frame detection: catches broken-seek cases (format-specific
      * quirks beyond the MPEG-TS skip) where the decoder returns the same
@@ -3928,6 +4237,26 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
           detect_refine_edge(getY, lastWidth, lastHeight, true, true, sBottom, foundBottom),
           detect_refine_edge(getY, lastWidth, lastHeight, false, false, sLeft, foundLeft, horizontalEnabled),
           detect_refine_edge(getY, lastWidth, lastHeight, false, true, sRight, foundRight, horizontalEnabled)};
+      spatial[validSamples] = detect_spatial_sample(getY, lastWidth, lastHeight);
+      CLog::Log(LOGINFO, "DetectActiveArea: distributed sample={} seek={}% pts={} "
+                "T={} B={} L={} R={} strong={}", validSamples + 1, measuredSeekPct,
+                frame->best_effort_timestamp, spatial[validSamples].edge[0],
+                spatial[validSamples].edge[1], spatial[validSamples].edge[2],
+                spatial[validSamples].edge[3], spatial[validSamples].strong);
+      // Validate only the proposed black prefix. A legacy centre-line edge
+      // can lie deep inside dark picture, where a return to black is unrelated
+      // to the proposed crop. Reuse the strict caption/spatial guard on every
+      // distributed candidate; content within that prefix still vetoes it.
+      const auto* proposed = spatial[validSamples].edge;
+      const DetectEdgeMeasurement guarded[] = {
+          detect_refine_edge(getY, lastWidth, lastHeight, true, false, proposed[0], proposed[0] != UINT16_MAX),
+          detect_refine_edge(getY, lastWidth, lastHeight, true, true, proposed[1], proposed[1] != UINT16_MAX),
+          detect_refine_edge(getY, lastWidth, lastHeight, false, false, proposed[2], proposed[2] != UINT16_MAX),
+          detect_refine_edge(getY, lastWidth, lastHeight, false, true, proposed[3], proposed[3] != UINT16_MAX)};
+      guarded_top[validSamples] = guarded[0].value;
+      guarded_bottom[validSamples] = guarded[1].value;
+      guarded_left[validSamples] = guarded[2].value;
+      guarded_right[validSamples] = guarded[3].value;
       sTop = measurements[0].value;
       sBottom = measurements[1].value;
       sLeft = measurements[2].value;
@@ -3945,6 +4274,10 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
       samples_left[validSamples] = sLeft;
       samples_right[validSamples] = sRight;
       samples_rejected[validSamples] = rejectedSpatial;
+      vertical_rejected[validSamples] = guarded[0].RejectedSpatialEvidence() ||
+                                       guarded[1].RejectedSpatialEvidence();
+      horizontal_rejected[validSamples] = guarded[2].RejectedSpatialEvidence() ||
+                                         guarded[3].RejectedSpatialEvidence();
       subtitle_top[validSamples] = subtitleMeasurements[0].value;
       subtitle_bottom[validSamples] = subtitleMeasurements[1].value;
       subtitle_left[validSamples] = subtitleMeasurements[2].value;
@@ -3986,21 +4319,24 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
        * Variable AR content (IMAX + scope) needs every sample to detect
        * the full-frame outlier that prevents a false scope crop. */
 
-      /* Check if source L5 appeared during our scan — by now the RPU parser
-       * has had time to process frames from the current playback (no stale
-       * data risk unlike an upfront check).  Abort to avoid wasted I/O. */
+      // Current source metadata keeps native authority. Adapted text still
+      // needs an independent bounded pixel scan when authored offsets are too
+      // small; it cannot replace native L5 or an explicit manual override.
       if (source->nativeDV)
       {
-        auto srcMeta = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
-        if (srcMeta.has_level5_metadata &&
+        const auto srcMeta = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
+        if (srcMeta.has_level5_metadata && !srcMeta.level5_detected &&
             (srcMeta.level5_active_area_top_offset || srcMeta.level5_active_area_bottom_offset ||
              srcMeta.level5_active_area_left_offset || srcMeta.level5_active_area_right_offset))
         {
-          CLog::Log(LOGINFO, "DetectActiveArea: source L5 appeared (T={} B={}) — aborting scan",
-                    srcMeta.level5_active_area_top_offset, srcMeta.level5_active_area_bottom_offset);
-          s_detectState.store(DV_DETECT_SKIPPED);
-          s_detectStable.store(true);
-          goto cleanup;
+          authoredPositive = true;
+          if (!settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA))
+          {
+            CLog::Log(LOGINFO, "DetectActiveArea: source L5 present; subtitle detection disabled");
+            s_detectState.store(DV_DETECT_SKIPPED);
+            s_detectStable.store(true);
+            goto cleanup;
+          }
         }
       }
     }
@@ -4022,7 +4358,11 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     }
 
     DetectResult subtitleConsensus{};
-    if (detect_subtitle_consensus(subtitle_top, subtitle_bottom, subtitle_left, subtitle_right,
+    bool spatialInvariant = false;
+    const bool spatialAccepted = detect_tiered_consensus(spatial, validSamples,
+                                                        subtitleConsensus, spatialInvariant);
+    if (spatialAccepted ||
+        detect_subtitle_consensus(subtitle_top, subtitle_bottom, subtitle_left, subtitle_right,
                                   subtitle_rejected, validSamples, subtitleConsensus))
     {
       detect_publish_subtitle(run, source, subtitleConsensus);
@@ -4030,6 +4370,43 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
                 "({} samples; no native L5 publication)", subtitleConsensus.top,
                 subtitleConsensus.bottom, subtitleConsensus.left, subtitleConsensus.right,
                 validSamples);
+    }
+    if (authoredPositive)
+    {
+      CLog::Log(LOGINFO, "DetectActiveArea: source L5 retained; pixel estimate used only for text");
+      s_detectState.store(DV_DETECT_SKIPPED);
+      s_detectStable.store(true);
+      goto cleanup;
+    }
+
+    bool positiveAxisOnly = false;
+    DetectResult positiveAxes{};
+    if (spatialAccepted)
+    {
+      uint16_t vertical = 0, horizontal = 0;
+      // This recovery requires every requested position, not a majority or a
+      // reduced denominator after rejecting a caption/dark scene.
+      const bool provenVertical = validSamples == numSeeks &&
+          detect_strict_positive_axis(guarded_top, guarded_bottom, vertical_rejected,
+                                      spatial, validSamples, 0, vertical);
+      const bool provenHorizontal = validSamples == numSeeks &&
+          detect_strict_positive_axis(guarded_left, guarded_right, horizontal_rejected,
+                                      spatial, validSamples, 2, horizontal);
+      if (!provenVertical && !provenHorizontal && !spatialInvariant)
+      {
+        CLog::Log(LOGINFO, "DetectActiveArea: variable or incomplete distributed evidence; "
+                  "subtitle envelope only, no native crop");
+        s_detectState.store(DV_DETECT_SKIP_IMAX);
+        goto cleanup;
+      }
+      if (provenVertical || provenHorizontal)
+      {
+        positiveAxes = {provenVertical ? vertical : uint16_t{0},
+                        provenVertical ? vertical : uint16_t{0},
+                        provenHorizontal ? horizontal : uint16_t{0},
+                        provenHorizontal ? horizontal : uint16_t{0}};
+        positiveAxisOnly = true;
+      }
     }
 
     /* Require enough usable samples for confident detection. If too many
@@ -4057,7 +4434,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
 
     // Do not discard a position containing possible caption/framing evidence,
     // shrink the denominator, or let that uncertainty form a full-frame vote.
-    if (std::any_of(samples_rejected, samples_rejected + validSamples,
+    if (!positiveAxisOnly && std::any_of(samples_rejected, samples_rejected + validSamples,
                     [](bool rejected) { return rejected; }))
     {
       CLog::Log(LOGINFO, "DetectActiveArea: rejected spatial evidence among {} positions — "
@@ -4066,8 +4443,8 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
       goto cleanup;
     }
 
-    DetectResult consensus{};
-    if (!detect_samples_consensus(samples_top, samples_bottom, samples_left, samples_right,
+    DetectResult consensus = positiveAxes;
+    if (!positiveAxisOnly && !detect_samples_consensus(samples_top, samples_bottom, samples_left, samples_right,
                                   validSamples, consensus))
     {
       CLog::Log(LOGINFO, "DetectActiveArea: no conservative paired border consensus in {} samples — "
@@ -4079,6 +4456,16 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     detBottom = consensus.bottom;
     detLeft = consensus.left;
     detRight = consensus.right;
+    if (spatialAccepted &&
+        ((subtitleConsensus.top || subtitleConsensus.bottom ||
+          subtitleConsensus.left || subtitleConsensus.right) &&
+         !(detTop || detBottom || detLeft || detRight)))
+    {
+      // A strict zero and a corroborated positive spatial mode disagree.
+      // Keep the text estimate separate instead of making either a native crop.
+      s_detectState.store(DV_DETECT_SKIPPED);
+      goto cleanup;
+    }
     if (!(detTop || detBottom || detLeft || detRight))
     {
       uint16_t unused = 0;
@@ -4131,6 +4518,14 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
                     lastWidth, lastHeight, detTop, detBottom, detLeft, detRight,
                     arX1000 / 1000, arX1000 % 1000, bestAR / 1000, bestAR % 1000,
                     validSamples);
+          if (spatialAccepted)
+          {
+            // Aspect snapping must not move a native boundary into picture.
+            detTop = std::min(detTop, subtitleConsensus.top);
+            detBottom = std::min(detBottom, subtitleConsensus.bottom);
+            detLeft = std::min(detLeft, subtitleConsensus.left);
+            detRight = std::min(detRight, subtitleConsensus.right);
+          }
         }
         else
           detTop = detBottom = detLeft = detRight = 0;
@@ -4138,7 +4533,15 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     }
   }
 
-  detect_publish(run, source, detTop, detBottom, detLeft, detRight);
+  // A coded crop already has separately composed native padding. Scanning its
+  // residual in-picture borders is useful for text, but must not inject a new
+  // absolute native L5 rectangle in the coded coordinate system.
+  if (source->nativeDV &&
+      (std::max(0, (source->width * 9 / 16 - source->height) / 2) > 20 ||
+       std::max(0, (source->height * 16 / 9 - source->width) / 2) > 20))
+    s_detectState.store(DV_DETECT_SKIP_NON16X9);
+  else
+    detect_publish(run, source, detTop, detBottom, detLeft, detRight);
 
 cleanup:
   s_detectThrottleActive.store(false); /* disarm the mid-read guard */
@@ -4208,20 +4611,13 @@ void aml_dv_detect_active_area_start()
   s_detectStable.store(false);
   s_detectState.store(DV_DETECT_FAILED);
   detect_clear_injection(source->nativeDV);
-  const bool enabled = source->nativeDV ? aml_dv_detect_active_area_enabled()
-      : settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA);
+  const bool enabled = settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
+      (source->nativeDV && aml_dv_detect_active_area_enabled());
   if (!enabled || !source->allowProbe || source->superseded->load() ||
       source->width < 64 || source->height < 64 ||
       source->width > 65535 || source->height > 65535 || source->path.empty())
     return;
   // Known player padding is already represented by the renderer video rectangle.
-  const int tbGap = std::max(0, (source->width * 9 / 16 - source->height) / 2);
-  const int lrGap = std::max(0, (source->height * 16 / 9 - source->width) / 2);
-  if (tbGap > 20 || lrGap > 20)
-  {
-    s_detectState.store(DV_DETECT_SKIP_NON16X9);
-    return;
-  }
   s_detectState.store(DV_DETECT_RUNNING);
   s_detectWorker.Start([source](const CAMLNativeWorker::Run& run) {
     std::shared_ptr<const DetectResult> retained;
@@ -4245,7 +4641,9 @@ void aml_dv_detect_active_area_start()
         s_detectState.store(DV_DETECT_SKIPPED); // no conservative/native result
     }
     else
+    {
       DetectActiveAreaFromFile(source, run);
+    }
   }, source->superseded);
 }
 
