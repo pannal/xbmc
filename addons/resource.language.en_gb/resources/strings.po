@@ -26331,7 +26331,7 @@ msgstr ""
 #. "Dolby Vision Detect Active Area Help"
 #: system/settings/settings.xml
 msgctxt "#60195"
-msgid "Scan Dolby Vision files for stable encoded black borders when no nonzero source Level 5 area or explicit override is available. The bounded background scan cannot follow live aspect-ratio changes. Pre-cropped video needs no scan. The selected video stream is matched and attached cover images are ignored. Disc sources, MPEG-TS, unsupported pixel formats, ambiguous stream selection and resolution changes are skipped. Separate reads and software decoding add load; detection I/O throttling is recommended for slow storage. Disable for reference videos with intentionally varying Level 5 metadata."
+msgid "Scan Dolby Vision files for stable encoded black borders. High-confidence detection takes priority over embedded Level 5 areas; explicit Level 5 overrides remain highest priority. The bounded background scan cannot follow live aspect-ratio changes. Pre-cropped video needs no scan. The selected video stream is matched and attached cover images are ignored. Disc sources, MPEG-TS, unsupported pixel formats, ambiguous stream selection and resolution changes are skipped. Separate reads and software decoding add load; detection I/O throttling is recommended for slow storage. Disable for reference videos with intentionally varying Level 5 metadata."
 msgstr ""
 
 #. "Dolby Vision Detect Active Area Throttle Label"

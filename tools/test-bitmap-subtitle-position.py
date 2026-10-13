@@ -38,12 +38,13 @@ struct CServiceBroker {
         code += function(renderer, sig) + '\n'
     code += r'''
 enum class StreamHdrType {HDR_TYPE_NONE,HDR_TYPE_DOLBYVISION};
-bool nativeDV=true,phantom=false,detected=false,overrideActive=false;
+bool nativeDV=true,phantom=false,detected=false,overrideActive=false,highConfidence=false;
 uint16_t detectedTop=140,detectedBottom=140,detectedLeft=0,detectedRight=0;
 bool aml_subtitle_native_dv(){return nativeDV;}
 bool aml_dv_auto_letterbox_active(){return phantom;}
 bool aml_dv_auto_letterbox_additive(){return !phantom;}
 bool aml_dv_get_l5_override(uint16_t&,uint16_t&,uint16_t&,uint16_t&){return overrideActive;}
+bool aml_dv_detect_active_area_override_get(int,int,uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r){if(!highConfidence)return false;t=detectedTop;b=detectedBottom;l=detectedLeft;r=detectedRight;return true;}
 bool aml_subtitle_detect_active_area_get(int,int,uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r,bool allowSubtitleEstimate=false){
   assert(allowSubtitleEstimate);
   if(!detected)return false;t=detectedTop;b=detectedBottom;l=detectedLeft;r=detectedRight;return true;
@@ -94,9 +95,11 @@ int main(){
   assert(cache.requested==123&&manager.m_overlays.m_restrictToActivePicture);
   cache.meta.level5_active_area_top_offset=180;cache.meta.level5_active_area_bottom_offset=180;
   rect(manager.CalcOverlayActiveArea(src,dst,view,true,124),0,180,1920,900);
+  highConfidence=true;
+  rect(manager.CalcOverlayActiveArea(src,dst,view,true,124),0,140,1920,940);
   overrideActive=true; // explicit 0,0,0,0 remains authoritative
   rect(manager.CalcOverlayActiveArea(src,dst,view,true,125),0,0,1920,1080);
-  overrideActive=false;phantom=true;
+  overrideActive=false;highConfidence=false;phantom=true;
   dst=active;
   rect(manager.CalcOverlayActiveArea(src,dst,view,true,125),0,140,1920,940);
   phantom=false;nativeDV=false;manager.m_picture.hdrType=StreamHdrType::HDR_TYPE_NONE;

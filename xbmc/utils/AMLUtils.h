@@ -247,6 +247,9 @@ bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
     uint16_t& bottom, uint16_t& left, uint16_t& right, bool allowSubtitleEstimate = false);
 bool aml_dv_get_l5_override(uint16_t& top, uint16_t& bottom, uint16_t& left, uint16_t& right);
 bool aml_dv_detect_active_area_enabled();
+// Invariant all-scene native detection may supersede authored L5. Manual wins.
+bool aml_dv_detect_active_area_override_get(int width, int height, uint16_t& top,
+    uint16_t& bottom, uint16_t& left, uint16_t& right);
 bool aml_dv_detect_active_area_stable();
 void aml_dv_detect_active_area_get(uint16_t& top, uint16_t& bottom, uint16_t& left, uint16_t& right);
 enum DvDetectState { DV_DETECT_FAILED = 0, DV_DETECT_SKIP_NON16X9 = 1,
@@ -266,7 +269,7 @@ bool aml_dv_l5_override_active();
 
 // Push the L5 active-area override to the amdolby_vision kernel module so
 // the TV sees the override values in the outgoing RPU. Writes the four
-// xbmc_detected_l5_* params plus the xbmc_force_l5_override flag (which
+// xbmc_override_l5_* params plus the xbmc_force_l5_override flag (which
 // makes the kernel substitute regardless of source RPU L5 state). Called
 // from aml_dv_on() at playback start and from CDolbyVisionAML::OnSettingChanged
 // when the override key changes mid-playback.

@@ -81,7 +81,7 @@ def source(aml=None):
         code += '(void)detect_subtitle_consensus;\n'
     code += 'constexpr int numSeeks=7;uint16_t detTop=0,detBottom=0,detLeft=0,detRight=0;{\n'
     if 'struct DetectSpatialSample' in aml:
-        code += '(void)detect_tiered_consensus;constexpr bool spatialAccepted=false;bool nativeHighConfidence=false;DetectResult subtitleConsensus{};\n'
+        code += '(void)detect_tiered_consensus;constexpr bool spatialAccepted=false;constexpr bool spatialInvariant=false,authoredPositive=false;bool nativeHighConfidence=false;bool vertical_rejected[14]{},horizontal_rejected[14]{};DetectResult subtitleConsensus{};\n'
         if 'static bool detect_strict_positive_axis(' in aml:
             code += '(void)detect_strict_positive_axis;constexpr bool positiveAxisOnly=false;DetectResult positiveAxes{};\n'
     code += final + '\n(void)nativeHighConfidence;}result={detTop,detBottom,detLeft,detRight};return true;cleanup:return false;}\n'

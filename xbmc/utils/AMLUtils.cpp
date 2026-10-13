@@ -2713,40 +2713,7 @@ bool aml_dv_auto_letterbox_additive()
   return s_autoLbAdditive.load();
 }
 
-void aml_dv_apply_l5_override_sysfs()
-{
-  uint16_t top = 0, bottom = 0, left = 0, right = 0;
-  bool active = _l5_override_parse(top, bottom, left, right);
 
-  /* No manual override set — fall back to the auto-letterbox geometry for
-   * cropped content. Manual always wins (checked inside the helper too). */
-  bool autoLb = false;
-  if (!active)
-  {
-    autoLb = _auto_letterbox_geometry(top, bottom, left, right);
-    active = autoLb;
-  }
-
-  // xbmc_override_l5_* is the override namespace (kernel commit 61aaaed51c52),
-  // separate from xbmc_detected_l5_* which is owned by the detect thread.
-  // No collision with aml_dv_detect_active_area_stop() zeroing detect paths.
-  // Auto-letterbox values are ADDITIVE: the kernel adds them to each frame's
-  // source L5 so variable in-picture bars compose with the player-added
-  // padding (e.g. 3840x2024 with per-scene RPU L5 0/208 -> emits 68/276).
-  // Unless the plausibility watch found the source L5 already carrying the
-  // crop, in which case composition would double the bars and we replace.
-  // A manual override stays absolute — the user dictates the final value.
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_override_l5_top",    top);
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_override_l5_bottom", bottom);
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_override_l5_left",   left);
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_override_l5_right",  right);
-  const bool additive = autoLb && s_autoLbAdditive.load();
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_l5_override_additive", additive);
-  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_force_l5_override",  active);
-
-  CLog::Log(LOGDEBUG, "AMLUtils::aml_dv_apply_l5_override_sysfs - active={} auto={} additive={} t={} b={} l={} r={}",
-            active, autoLb, additive, top, bottom, left, right);
-}
 
 /* Cached detected values — written by background detection thread,
  * read by CalcOverlayActiveArea on the render thread. */
@@ -2761,6 +2728,7 @@ static CAMLNativeWorker s_detectWorker;
 struct DetectResult
 {
   uint16_t top, bottom, left, right;
+  bool highConfidence{false}; // all requested scenes support invariant native geometry
 };
 struct DetectSource
 {
@@ -2790,6 +2758,55 @@ struct DetectSource
 static std::mutex s_detectSourceMutex;
 static std::shared_ptr<DetectSource> s_detectSource = std::make_shared<DetectSource>("");
 static std::atomic<bool> s_detectInjected{false};
+// Caller holds the source mutex and has entered native admission.
+static void detect_apply_l5_override_locked();
+
+// Requires native admission and s_detectSourceMutex. All users of the force
+// namespace select one owner here, including a legitimate all-zero result.
+static void detect_apply_l5_override_locked()
+{
+  uint16_t top = 0, bottom = 0, left = 0, right = 0;
+  bool active = _l5_override_parse(top, bottom, left, right);
+  bool autoLb = false;
+  bool detected = false;
+  if (!active)
+  {
+    autoLb = _auto_letterbox_geometry(top, bottom, left, right);
+    active = autoLb;
+  }
+  if (!active && aml_dv_detect_active_area_enabled() && s_detectSource->nativeDV &&
+      s_detectSource->allowProbe && !s_detectSource->superseded->load() &&
+      s_detectSource->result && s_detectSource->result->highConfidence)
+  {
+    const auto& result = *s_detectSource->result;
+    top = result.top; bottom = result.bottom;
+    left = result.left; right = result.right;
+    active = detected = true;
+  }
+
+  // The driver only fills an absent/all-zero L5 through xbmc_detected_l5_*.
+  // Its existing absolute override path can also replace authored nonzero L5.
+  // Disable forcing while updating the values; this is not an atomic driver
+  // transaction. Existing OSD/subtitle suppression remains in the driver.
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_force_l5_override", false);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_override_l5_top", top);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_override_l5_bottom", bottom);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_override_l5_left", left);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_override_l5_right", right);
+  const bool additive = autoLb && s_autoLbAdditive.load();
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_l5_override_additive", additive);
+  CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_force_l5_override", active);
+  CLog::Log(LOGDEBUG, "AMLUtils::aml_dv_apply_l5_override_sysfs - active={} auto={} "
+                     "detected={} additive={} t={} b={} l={} r={}",
+            active, autoLb, detected, additive, top, bottom, left, right);
+}
+
+void aml_dv_apply_l5_override_sysfs()
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  detect_apply_l5_override_locked();
+}
+
 
 std::shared_ptr<const void> aml_subtitle_active_area_source()
 {
@@ -2893,6 +2910,23 @@ bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
     return false;
   const auto& result = *accepted;
   top = result.top; bottom = result.bottom; left = result.left; right = result.right;
+  return true;
+}
+
+bool aml_dv_detect_active_area_override_get(int width, int height, uint16_t& top,
+    uint16_t& bottom, uint16_t& left, uint16_t& right)
+{
+  top = bottom = left = right = 0;
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  const auto& source = s_detectSource;
+  const auto accepted = !source->superseded->load() && source->result ?
+      source->result : source->retained;
+  if (!source->nativeDV || !source->allowProbe || !aml_dv_detect_active_area_enabled() ||
+      source->width != width || source->height != height ||
+      !accepted || !accepted->highConfidence)
+    return false;
+  top = accepted->top; bottom = accepted->bottom;
+  left = accepted->left; right = accepted->right;
   return true;
 }
 
@@ -3027,14 +3061,14 @@ static int detect_wait_for_cache(const CAMLNativeWorker::Run& run, int targetPct
 static void detect_publish(const CAMLNativeWorker::Run& run,
                            const std::shared_ptr<DetectSource>& source,
                            uint16_t detTop, uint16_t detBottom,
-                           uint16_t detLeft, uint16_t detRight)
+                           uint16_t detLeft, uint16_t detRight, bool highConfidence = false)
 {
   {
     std::lock_guard<std::mutex> lock(s_detectSourceMutex);
     if (run.Cancelled() || source != s_detectSource || source->superseded->load() ||
         detTop + detBottom >= source->height || detLeft + detRight >= source->width)
       return;
-    source->result = std::make_shared<const DetectResult>(DetectResult{detTop, detBottom, detLeft, detRight});
+    source->result = std::make_shared<const DetectResult>(DetectResult{detTop, detBottom, detLeft, detRight, highConfidence});
     s_detectedTop.store(detTop); s_detectedBottom.store(detBottom);
     s_detectedLeft.store(detLeft); s_detectedRight.store(detRight);
     s_detectState.store(DV_DETECT_OK);
@@ -3051,7 +3085,7 @@ static void detect_publish(const CAMLNativeWorker::Run& run,
       !aml_dv_detect_active_area_enabled())
     return;
   const auto metadata = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
-  if (metadata.has_level5_metadata && !metadata.level5_detected &&
+  if (!highConfidence && metadata.has_level5_metadata && !metadata.level5_detected &&
       (metadata.level5_active_area_top_offset || metadata.level5_active_area_bottom_offset ||
        metadata.level5_active_area_left_offset || metadata.level5_active_area_right_offset))
     return;
@@ -3059,6 +3093,8 @@ static void detect_publish(const CAMLNativeWorker::Run& run,
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_bottom", detBottom);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_left", detLeft);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_right", detRight);
+  if (highConfidence)
+    detect_apply_l5_override_locked();
   s_detectInjected.store(true);
 }
 
@@ -3802,6 +3838,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   const int bufSize = 32768;
   int videoIdx = -1;
   uint16_t detTop = 0, detBottom = 0, detLeft = 0, detRight = 0;
+  bool nativeHighConfidence = false;
   const bool throttle = !source->nativeDV || detect_throttle_enabled();
   if (throttle)
     CLog::Log(LOGDEBUG, "DetectActiveArea: cache-aware I/O throttle enabled");
@@ -4330,7 +4367,8 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
              srcMeta.level5_active_area_left_offset || srcMeta.level5_active_area_right_offset))
         {
           authoredPositive = true;
-          if (!settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA))
+          if (!aml_dv_detect_active_area_enabled() &&
+              !settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA))
           {
             CLog::Log(LOGINFO, "DetectActiveArea: source L5 present; subtitle detection disabled");
             s_detectState.store(DV_DETECT_SKIPPED);
@@ -4371,7 +4409,8 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
                 subtitleConsensus.bottom, subtitleConsensus.left, subtitleConsensus.right,
                 validSamples);
     }
-    if (authoredPositive)
+    if (authoredPositive && (!aml_dv_detect_active_area_enabled() ||
+                             validSamples != numSeeks || !spatialAccepted || !spatialInvariant))
     {
       CLog::Log(LOGINFO, "DetectActiveArea: source L5 retained; pixel estimate used only for text");
       s_detectState.store(DV_DETECT_SKIPPED);
@@ -4450,6 +4489,16 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
       CLog::Log(LOGINFO, "DetectActiveArea: no conservative paired border consensus in {} samples — "
                 "skipping uncertain or variable framing", validSamples);
       s_detectState.store(DV_DETECT_SKIP_IMAX);
+      goto cleanup;
+    }
+    nativeHighConfidence = validSamples == numSeeks && spatialAccepted && spatialInvariant &&
+        !std::any_of(vertical_rejected, vertical_rejected + validSamples,
+                     [](bool rejected) { return rejected; }) &&
+        !std::any_of(horizontal_rejected, horizontal_rejected + validSamples,
+                     [](bool rejected) { return rejected; });
+    if (authoredPositive && !nativeHighConfidence)
+    {
+      s_detectState.store(DV_DETECT_SKIPPED);
       goto cleanup;
     }
     detTop = consensus.top;
@@ -4541,7 +4590,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
        std::max(0, (source->height * 16 / 9 - source->width) / 2) > 20))
     s_detectState.store(DV_DETECT_SKIP_NON16X9);
   else
-    detect_publish(run, source, detTop, detBottom, detLeft, detRight);
+    detect_publish(run, source, detTop, detBottom, detLeft, detRight, nativeHighConfidence);
 
 cleanup:
   s_detectThrottleActive.store(false); /* disarm the mid-read guard */
@@ -4592,6 +4641,7 @@ static void detect_clear_injection(bool nativeSource)
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_bottom", 0);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_left", 0);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_right", 0);
+  aml_dv_apply_l5_override_sysfs(); // restore manual/auto padding or clear stale detected force
 }
 
 void aml_dv_detect_active_area_start()
@@ -4633,7 +4683,7 @@ void aml_dv_detect_active_area_start()
     if (retainedSubtitle)
       detect_publish_subtitle(run, source, *retainedSubtitle);
     if (retained)
-      detect_publish(run, source, retained->top, retained->bottom, retained->left, retained->right);
+      detect_publish(run, source, retained->top, retained->bottom, retained->left, retained->right, retained->highConfidence);
     else if (retainedSubtitle)
     {
       std::lock_guard<std::mutex> lock(s_detectSourceMutex);

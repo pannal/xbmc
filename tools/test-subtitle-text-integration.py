@@ -214,7 +214,7 @@ bool _l5_override_parse(uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r){return 
 bool _auto_letterbox_geometry(uint16_t&,uint16_t&,uint16_t&,uint16_t&){return false;}
 std::atomic<bool> s_autoLbAdditive{false};
 #ifdef FIXTURE_CURRENT
-constexpr int NativeClearWrites=4;
+constexpr int NativeClearWrites=11;
 #else
 constexpr int NativeClearWrites=4;
 #endif
@@ -593,7 +593,34 @@ void softwareRoute(const char* font){
 }
 #endif
 #ifdef FIXTURE_CURRENT
-
+void nativeConfidenceAuthority(){
+ select(true,1920,1080);dvDetection=true;overrideActive=false;phantom=false;
+ cache.meta.has_level5_metadata=true;cache.meta.level5_detected=false;
+ cache.meta.level5_active_area_top_offset=cache.meta.level5_active_area_bottom_offset=7;
+ CAMLNativeWorker::Run run(s_detectSource->superseded);
+ const std::string force="/sys/module/amdolby_vision/parameters/xbmc_force_l5_override";
+ const std::string top="/sys/module/amdolby_vision/parameters/xbmc_override_l5_top";
+ sysfsValues[force]=0;uint16_t t,b,l,r;
+ detect_publish(run,s_detectSource,132,132,0,0,false);
+ assert(!aml_dv_detect_active_area_override_get(1920,1080,t,b,l,r)&&sysfsValues[force]==0);
+ detect_publish(run,s_detectSource,132,132,0,0,true);
+ assert(aml_dv_detect_active_area_override_get(1920,1080,t,b,l,r)&&t==132);
+ assert(sysfsValues[force]==1&&sysfsValues[top]==132);
+ CRenderManager manager;manager.m_picture.iWidth=1920;manager.m_picture.iHeight=1080;
+ manager.m_picture.hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;
+ auto& state=manager.m_overlays.m_rs;state={0,0,1920,1080};
+ rect(manager.CalcPictureActiveArea(state,manager.m_overlays.m_rd,manager.m_overlays.m_rv,500000,false,false),132,948);
+ overrideActive=true;overrideTop=overrideBottom=0;aml_dv_apply_l5_override_sysfs();
+ assert(sysfsValues[force]==1&&sysfsValues[top]==0);
+ rect(manager.CalcPictureActiveArea(state,manager.m_overlays.m_rd,manager.m_overlays.m_rv,500000,false,false),0,1080);
+ overrideActive=false;aml_dv_apply_l5_override_sysfs();assert(sysfsValues[top]==132);
+ // High-confidence full-frame is an explicit override too, never an absent L5.
+ detect_publish(run,s_detectSource,0,0,0,0,true);
+ assert(sysfsValues[force]==1&&sysfsValues[top]==0);
+ rect(manager.CalcPictureActiveArea(state,manager.m_overlays.m_rd,manager.m_overlays.m_rv,500000,false,false),0,1080);
+ Invalidate();aml_dv_apply_l5_override_sysfs();assert(sysfsValues[force]==0);
+ std::cout<<"PASS: native invariant confidence replaces authored L5, manual zero wins, explicit detected zero and stale force retirement\n";
+}
 #endif
 void ownedTranslation(){
  // Independent exact byte/coordinate oracle for the actual owned-header offset.
@@ -617,6 +644,9 @@ int main(int argc,char** argv){assert(argc==2);assert(ass_library_version()==LIB
 #ifdef FIXTURE_CURRENT
  textEnvelopePrecedence();fullFrameConfinement(argv[1]);
  softwareRoute(argv[1]);
+#endif
+ #ifdef FIXTURE_CURRENT
+ nativeConfidenceAuthority();
 #endif
  discovery(argv[1]);lifecycle(argv[1]);nativeExemption(argv[1]);native();s_detectWorker.Stop();
  std::cout<<"PASS: connected production detector→geometry→text conversion→CE libass→owned glyph atlas/vertices→host alpha canvas\n";
@@ -679,6 +709,9 @@ def main():
             ('software to HW retained stale ownership', 'StopSubtitleProbe(); // format renegotiation may change the installed decoder route', '// fixture: retirement omitted'),
             ('software HW acceleration admitted', 'softwareCodec->GetHWAccel() ||', 'false ||'),
             ('software native hint admitted', 'm_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)', 'false)'),
+            ('native confidence force omitted', 'if (highConfidence)\n    detect_apply_l5_override_locked();', '(void)highConfidence;'),
+            ('manual zero loses native priority', 'bool active = _l5_override_parse(top, bottom, left, right);', 'bool active = false;'),
+            ('detected full-frame zero treated as missing', 'active = detected = true;', 'active = detected = (top || bottom || left || right);'),
             ('stale run publishes', 'run.Cancelled() || source != s_detectSource || source->superseded->load() ||', 'false || source != s_detectSource || false ||'),
         ]:
             assert old in code, label
