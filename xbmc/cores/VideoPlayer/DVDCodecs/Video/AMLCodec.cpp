@@ -3130,6 +3130,11 @@ float CAMLCodec::GetBufferLevel()
   return GetBufferLevel(new_chunk, data_len, free_len);
 }
 
+float CAMLCodec::GetDataLevel()
+{
+  return m_opened ? GetBufferLevel() : 0.0f;
+}
+
 float CAMLCodec::GetBufferLevel(int new_chunk, int &data_len, int &free_len)
 {
   struct buf_status bs;

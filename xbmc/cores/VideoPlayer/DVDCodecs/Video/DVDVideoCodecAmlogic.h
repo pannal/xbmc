@@ -115,6 +115,7 @@ public:
   virtual void Abort() override;
   virtual const char* GetName(void) override { return (const char*)m_pFormatName; }
   virtual bool SupportsExtention() { return true; }
+  int GetDataLevel() const override;
 
   // ISettingCallback
   void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;
