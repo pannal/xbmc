@@ -5,10 +5,15 @@
 
 #include "ActiveAreaCache.h"
 
+#include "FileItem.h"
 #include "filesystem/Directory.h"
 #include "filesystem/File.h"
+#include "filesystem/SpecialProtocol.h"
 #include "utils/Digest.h"
+#include "utils/URIUtils.h"
 
+#include <algorithm>
+#include <mutex>
 #include <sstream>
 #include <sys/stat.h>
 
@@ -19,15 +24,72 @@ namespace
 // Bump when detection policy or the meaning of stored geometry changes.
 constexpr int CACHE_VERSION = 2;
 constexpr auto CACHE_DIRECTORY = "special://profile/active-area-cache/";
+std::mutex maintenanceMutex;
 
-std::string Key(const Identity& identity)
+bool ReadVersion(const std::string& path, int& version)
+{
+  XFILE::CFile file;
+  if (!file.Open(path))
+    return false;
+  char buffer[32];
+  const auto length = file.Read(buffer, sizeof(buffer));
+  if (length <= 0)
+    return false;
+  std::istringstream input(std::string(buffer, static_cast<size_t>(length)));
+  return static_cast<bool>(input >> version);
+}
+
+void CleanObsoleteEntries(const std::string& directory)
+{
+  std::lock_guard<std::mutex> lock(maintenanceMutex);
+  const std::string marker = directory + "version";
+  int version;
+  // Resolve the active profile on each call; a process-wide once flag would
+  // miss profile changes. A current marker avoids enumerating its cache again.
+  if (ReadVersion(marker, version) && version == CACHE_VERSION)
+    return;
+  if (!XFILE::CDirectory::Create(directory))
+    return;
+  CFileItemList items;
+  if (!XFILE::CDirectory::GetDirectory(directory, items, ".dat",
+                                       XFILE::DIR_FLAG_NO_FILE_DIRS | XFILE::DIR_FLAG_NO_FILE_INFO |
+                                           XFILE::DIR_FLAG_BYPASS_CACHE))
+    return;
+  bool complete = true;
+  for (const auto& item : items.GetList())
+  {
+    const auto name = URIUtils::GetFileName(item->GetPath());
+    if (item->m_bIsFolder || name.size() != 68 || name.substr(64) != ".dat" ||
+        !std::all_of(
+            name.begin(), name.begin() + 64, [](unsigned char c)
+            { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }))
+      continue;
+    if ((!ReadVersion(item->GetPath(), version) || version != CACHE_VERSION) &&
+        !XFILE::CFile::Delete(item->GetPath()))
+      complete = false;
+  }
+  if (!complete)
+    return; // Leave the old marker so a later cache access retries cleanup.
+
+  const auto temporary = marker + ".tmp";
+  const auto data = std::to_string(CACHE_VERSION) + '\n';
+  XFILE::CFile file;
+  if (!file.OpenForWrite(temporary, true))
+    return;
+  const bool written = file.Write(data.data(), data.size()) == static_cast<ssize_t>(data.size());
+  file.Close();
+  if (!written || !XFILE::CFile::Rename(temporary, marker))
+    XFILE::CFile::Delete(temporary);
+}
+
+std::string Key(const Identity& identity, const std::string& directory)
 {
   // Source URLs may contain credentials. Persist only a digest of the key.
   const auto key = identity.path + '\n' + std::to_string(identity.streamIndex) + '\n' +
                    std::to_string(identity.codec) + '\n' + std::to_string(identity.width) + '\n' +
                    std::to_string(identity.height) + '\n' + std::to_string(identity.nativeDV);
   using KODI::UTILITY::CDigest;
-  return std::string(CACHE_DIRECTORY) + CDigest::Calculate(CDigest::Type::SHA256, key) + ".dat";
+  return directory + CDigest::Calculate(CDigest::Type::SHA256, key) + ".dat";
 }
 
 bool Valid(const Identity& identity, const Record& record)
@@ -73,8 +135,14 @@ bool ReadIdentity(Identity& identity)
 
 bool Load(const Identity& identity, Record& record)
 {
+  // Freeze profile resolution for the entire operation. Directory results and
+  // later deletes/renames must not move to another profile during a switch.
+  const auto directory = CSpecialProtocol::TranslatePath(CACHE_DIRECTORY);
+  if (directory.empty())
+    return false;
+  CleanObsoleteEntries(directory);
   XFILE::CFile file;
-  if (!file.Open(Key(identity)))
+  if (!file.Open(Key(identity, directory)))
     return false;
   const auto length = file.GetLength();
   if (length <= 0 || length > 512)
@@ -107,9 +175,12 @@ bool Load(const Identity& identity, Record& record)
 bool Store(const Identity& identity, const Record& record)
 {
   Identity current = identity;
-  if (!Valid(identity, record) || !ReadIdentity(current) || !(current == identity) ||
-      !XFILE::CDirectory::Create(CACHE_DIRECTORY))
+  if (!Valid(identity, record) || !ReadIdentity(current) || !(current == identity))
     return false;
+  const auto directory = CSpecialProtocol::TranslatePath(CACHE_DIRECTORY);
+  if (directory.empty() || !XFILE::CDirectory::Create(directory))
+    return false;
+  CleanObsoleteEntries(directory);
   std::ostringstream output;
   output << CACHE_VERSION << ' ' << identity.size << ' ' << identity.modified << ' '
          << identity.created << ' ' << identity.device << ' ' << identity.inode << ' '
@@ -121,7 +192,7 @@ bool Store(const Identity& identity, const Record& record)
     output << ' ' << offset;
   output << '\n';
   const auto data = output.str();
-  const auto path = Key(identity);
+  const auto path = Key(identity, directory);
   const auto temporary = path + ".tmp";
   XFILE::CFile file;
   if (!file.OpenForWrite(temporary, true))

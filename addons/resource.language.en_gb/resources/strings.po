@@ -27834,7 +27834,7 @@ msgstr ""
 #. Active picture detection cache
 #: system/settings/settings.xml
 msgctxt "#69371"
-msgid "Save successful active-area detections in the Kodi profile and reuse them without scanning when the file size, timestamps and selected video stream match. Files without usable modification timestamps are scanned again. Cached results are ignored and recalculated on next playback when the detector policy version changes. Applies to subtitle placement and eligible native DV detection. Enabled by default. Changes apply on next playback."
+msgid "Save successful active-area detections in the Kodi profile and reuse them without scanning when the file size, timestamps and selected video stream match. Files without usable modification timestamps are scanned again. When the detector policy version changes, outdated cache files are removed automatically and results are recalculated on next playback. Applies to subtitle placement and eligible native DV detection. Enabled by default. Changes apply on next playback."
 msgstr ""
 
 #. Optional active picture detection CPU isolation

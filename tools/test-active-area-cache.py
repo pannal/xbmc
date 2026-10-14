@@ -24,6 +24,7 @@ FILE_STUB = r'''
 #include <unistd.h>
 #define __stat64 stat
 namespace XFILE {
+inline std::string deniedDelete,switchOnReadPath,nextProfile;inline bool denyMarkerRename=false;
 inline std::string Path(std::string p) {
  const std::string prefix="special://profile/";
  if(p.rfind(prefix,0)==0) return std::string(std::getenv("CACHE_TEST_PROFILE"))+"/"+p.substr(prefix.size());
@@ -33,12 +34,12 @@ class CFile {
  std::fstream file; std::string path;
 public:
  static int Stat(const std::string& p,struct stat* s) {return ::stat(Path(p).c_str(),s);}
- static bool Rename(const std::string& a,const std::string& b) {return ::rename(Path(a).c_str(),Path(b).c_str())==0;}
- static bool Delete(const std::string& p) {return ::unlink(Path(p).c_str())==0;}
+ static bool Rename(const std::string& a,const std::string& b) {if(denyMarkerRename&&b.size()>=7&&b.substr(b.size()-7)=="version")return false;return ::rename(Path(a).c_str(),Path(b).c_str())==0;}
+ static bool Delete(const std::string& p) {if(Path(p)==deniedDelete)return false;return ::unlink(Path(p).c_str())==0;}
  bool Open(const std::string& p) {path=Path(p);file.open(path,std::ios::in|std::ios::binary);return file.is_open();}
  bool OpenForWrite(const std::string& p,bool) {path=Path(p);file.open(path,std::ios::out|std::ios::binary|std::ios::trunc);return file.is_open();}
  int64_t GetLength() {struct stat s{};return ::stat(path.c_str(),&s)==0?s.st_size:-1;}
- ssize_t Read(void* p,size_t n) {file.read(static_cast<char*>(p),n);return file.gcount();}
+ ssize_t Read(void* p,size_t n) {file.read(static_cast<char*>(p),n);const auto got=file.gcount();if(path==switchOnReadPath&&!nextProfile.empty()){setenv("CACHE_TEST_PROFILE",nextProfile.c_str(),1);nextProfile.clear();}return got;}
  ssize_t Write(const void* p,size_t n) {file.write(static_cast<const char*>(p),n);return file?static_cast<ssize_t>(n):-1;}
  void Close() {file.close();}
 };
@@ -48,8 +49,19 @@ DIRECTORY_STUB = r'''
 #pragma once
 #include "File.h"
 #include <filesystem>
-namespace XFILE {class CDirectory {public: static bool Create(const std::string& p) {
- std::error_code e; std::filesystem::create_directories(Path(p),e);return !e;}};}
+#include "FileItem.h"
+namespace XFILE {inline int enumerations=0;inline bool denyEnumeration=false;class CDirectory {public: static bool Create(const std::string& p) {
+ std::error_code e; std::filesystem::create_directories(Path(p),e);return !e;}
+static bool GetDirectory(const std::string& path,CFileItemList& items,const std::string&,int){
+ ++enumerations;if(denyEnumeration)return false;
+ std::error_code error;
+ for(const auto& entry:std::filesystem::directory_iterator(Path(path),error)){
+  auto item=std::make_shared<CFileItem>();item->path=path+entry.path().filename().string();item->m_bIsFolder=entry.is_directory();items.items.push_back(item);
+ }
+ return !error;
+}
+};constexpr int DIR_FLAG_NO_FILE_DIRS=1,DIR_FLAG_NO_FILE_INFO=2,DIR_FLAG_BYPASS_CACHE=4;}
+
 '''
 DIGEST_STUB = r'''
 #pragma once
@@ -104,6 +116,7 @@ int main(int argc,char** argv) {
  auto directory=root+"/active-area-cache";
  std::string entry;
  for(auto const& p:std::filesystem::directory_iterator(directory)) {
+  if(p.path().filename()=="version")continue;
   assert(p.path().extension()==".dat");entry=p.path().string();
   std::ifstream in(entry);std::string data((std::istreambuf_iterator<char>(in)),{});
   assert(data.find(media)==std::string::npos); // source paths are not persisted
@@ -223,9 +236,91 @@ int main(int argc,char** argv){
 }
 '''
 
+UPGRADE_TEST = r'''
+#include "utils/ActiveAreaCache.h"
+#include "filesystem/File.h"
+#include "filesystem/Directory.h"
+#include <cassert>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+using namespace ACTIVE_AREA_CACHE;
+void Write(const std::string& p,const std::string& value){std::ofstream(p,std::ios::binary)<<value;}
+std::string Read(const std::string& p){std::ifstream in(p,std::ios::binary);return std::string((std::istreambuf_iterator<char>(in)),{});}
+int Version(const std::string& p){std::ifstream in(p);int version=-1;in>>version;return version;}
+int main(int argc,char** argv){
+ assert(argc==2);const auto profile=std::string(argv[1])+"/upgrade-profile";
+ std::filesystem::create_directories(profile);setenv("CACHE_TEST_PROFILE",profile.c_str(),1);
+ const auto media=profile+"/identity-only.mkv";Write(media,"fake file identity only");
+ Identity id;id.path=media;id.streamIndex=0;id.codec=173;id.width=1920;id.height=1080;assert(ReadIdentity(id));
+ Record record,loaded;record.state=3;record.hasStrict=true;record.strict={20,20,0,0};
+ assert(Store(id,record));const auto cache=profile+"/active-area-cache/";
+ const auto marker=cache+"version";const int current=Version(marker);assert(current>0);
+ std::string kept;for(const auto& entry:std::filesystem::directory_iterator(cache))
+  if(entry.path().extension()==".dat")kept=entry.path().string();
+ assert(!kept.empty());const auto keptBytes=Read(kept);
+ const auto old=cache+std::string(64,'a')+".dat";
+ const auto corrupt=cache+std::string(64,'b')+".dat";
+ const auto denied=cache+std::string(64,'c')+".dat";
+ const auto folder=cache+std::string(64,'d')+".dat";
+ const auto temporary=cache+std::string(64,'e')+".dat.tmp";
+ const auto unrelated=cache+"notes.dat";
+ const auto outside=profile+"/"+std::string(64,'f')+".dat";
+ const auto obsolete=std::to_string(current-1)+" old geometry";
+ Write(old,obsolete);Write(corrupt,"");Write(denied,obsolete);
+ std::filesystem::create_directory(folder);Write(temporary,obsolete);Write(unrelated,obsolete);Write(outside,obsolete);
+ Write(marker,std::to_string(current-1));XFILE::deniedDelete=denied;
+ assert(Load(id,loaded)&&loaded.strict==record.strict);
+ assert(!std::filesystem::exists(old)&&!std::filesystem::exists(corrupt));
+ assert(std::filesystem::exists(denied)&&Version(marker)==current-1);
+ assert(Read(kept)==keptBytes&&std::filesystem::is_directory(folder));
+ assert(Read(unrelated)==obsolete&&Read(temporary)==obsolete&&Read(outside)==obsolete);
+ XFILE::deniedDelete.clear();const int failedReads=XFILE::enumerations;
+ assert(Load(id,loaded));assert(!std::filesystem::exists(denied));
+ assert(Version(marker)==current&&XFILE::enumerations==failedReads+1);
+ const int completedReads=XFILE::enumerations;
+ assert(Load(id,loaded)&&XFILE::enumerations==completedReads); // normal hits do not rescan directory
+ // Directory errors and a failed atomic marker replacement leave a retry.
+ Write(marker,std::to_string(current-1));Write(old,obsolete);XFILE::denyEnumeration=true;
+ assert(Load(id,loaded));assert(std::filesystem::exists(old)&&Version(marker)==current-1);
+ XFILE::denyEnumeration=false;XFILE::denyMarkerRename=true;
+ assert(Load(id,loaded));assert(!std::filesystem::exists(old)&&Version(marker)==current-1);
+ assert(!std::filesystem::exists(marker+".tmp"));
+ XFILE::denyMarkerRename=false;assert(Load(id,loaded));assert(Version(marker)==current);
+ // Existing installs have no marker; the first updated use must clean them.
+ std::filesystem::remove(marker);Write(old,obsolete);
+ assert(Load(id,loaded)&&!std::filesystem::exists(old)&&Version(marker)==current);
+ // A profile switch in this same process must not inherit another profile's marker.
+ const auto second=std::string(argv[1])+"/second-profile";
+ const auto secondCache=second+"/active-area-cache/";std::filesystem::create_directories(secondCache);
+ const auto secondOld=secondCache+std::string(64,'a')+".dat";Write(secondOld,obsolete);
+ Write(secondCache+"version",std::to_string(current-1));setenv("CACHE_TEST_PROFILE",second.c_str(),1);
+ assert(!Load(id,loaded));assert(!std::filesystem::exists(secondOld)&&Version(secondCache+"version")==current);
+ setenv("CACHE_TEST_PROFILE",profile.c_str(),1);assert(Load(id,loaded));
+ assert(Read(kept)==keptBytes&&Read(unrelated)==obsolete&&Read(outside)==obsolete);
+ // Real special:// directory enumeration returns aliases. Switch active
+ // profiles after reading A's obsolete header but before deleting the record.
+ // A single frozen URI must keep deletion, marker and cache read in A.
+ Write(marker,std::to_string(current-1));Write(old,obsolete);
+ const auto secondSame=secondCache+std::string(64,'a')+".dat";
+ Write(secondSame,std::to_string(current)+" current geometry");
+ const auto untouchedMarker=Read(secondCache+"version");
+ XFILE::switchOnReadPath=old;XFILE::nextProfile=second;
+ assert(Load(id,loaded));assert(std::string(std::getenv("CACHE_TEST_PROFILE"))==second);
+ assert(!std::filesystem::exists(old)&&Read(secondSame)==std::to_string(current)+" current geometry");
+ assert(Version(marker)==current&&Read(secondCache+"version")==untouchedMarker);
+ assert(Read(kept)==keptBytes&&Read(unrelated)==obsolete);
+ XFILE::switchOnReadPath.clear();
+
+ std::cout<<"PASS: policy upgrade cleanup, current data retained, owned paths only, failures retry, marker migration and profile switching\n";
+}
+'''
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cxx', default='g++')
+    parser.add_argument('--negative-controls',action='store_true')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='active-area-cache-test-') as directory:
         work = pathlib.Path(directory)
@@ -233,7 +328,22 @@ def main():
         counted_file = counted_file.replace('return ::stat(Path(p)', '++statCalls;return ::stat(Path(p)')
         counted_file = counted_file.replace('path=Path(p);file.open(path,std::ios::in', '++openCalls;path=Path(p);file.open(path,std::ios::in')
         counted_file = counted_file.replace('path=Path(p);file.open(path,std::ios::out', '++writeCalls;path=Path(p);file.open(path,std::ios::out')
-        for name, text in [('filesystem/File.h', counted_file), ('filesystem/Directory.h', DIRECTORY_STUB), ('utils/Digest.h', DIGEST_STUB)]:
+        file_items = r'''#pragma once
+#include <string>
+#include <memory>
+#include <vector>
+struct CFileItem{std::string path;bool m_bIsFolder=false;const std::string& GetPath() const{return path;}};
+struct CFileItemList{std::vector<std::shared_ptr<CFileItem>> items;const auto& GetList()const{return items;}};
+'''
+        uri = r'''#pragma once
+#include <string>
+struct URIUtils{static std::string GetFileName(const std::string& path){return path.substr(path.find_last_of("/\\")+1);}};
+'''
+        special = r'''#pragma once
+#include "File.h"
+struct CSpecialProtocol{static std::string TranslatePath(const std::string& path){return XFILE::Path(path);}};
+'''
+        for name, text in [('filesystem/SpecialProtocol.h',special),('FileItem.h',file_items),('utils/URIUtils.h',uri),('filesystem/File.h', counted_file), ('filesystem/Directory.h', DIRECTORY_STUB), ('utils/Digest.h', DIGEST_STUB)]:
             path = work / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
@@ -243,6 +353,33 @@ def main():
         # LeakSanitizer cannot inspect threads under the tool's ptrace sandbox.
         subprocess.run([str(work / 'test'), str(work)], check=True,
                        env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'}, timeout=30)
+        (work / 'upgrade.cpp').write_text(UPGRADE_TEST)
+        upgrade_argv = [str(work/'upgrade.cpp') if value==str(work/'test.cpp') else str(work/'upgrade') if value==str(work/'test') else value for value in argv]
+        subprocess.run(upgrade_argv,check=True)
+        subprocess.run([str(work/'upgrade'),str(work)],check=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'},timeout=30)
+        if args.negative_controls:
+            actual=(ROOT/'xbmc/utils/ActiveAreaCache.cpp').read_text()
+            owned_start=actual.index('    if (item->m_bIsFolder')
+            owned_end=actual.index('      continue;',owned_start)+len('      continue;')
+            ownership=actual[owned_start:owned_end]
+            for label,old,new in [
+                ('profile URI not frozen','CSpecialProtocol::TranslatePath(CACHE_DIRECTORY)','std::string(CACHE_DIRECTORY)'),
+                ('cleanup omitted','if (ReadVersion(marker, version) && version == CACHE_VERSION)','if (true || (ReadVersion(marker, version) && version == CACHE_VERSION))'),
+                ('current entries deleted','(!ReadVersion(item->GetPath(), version) || version != CACHE_VERSION)','(!ReadVersion(item->GetPath(), version) || version == CACHE_VERSION)'),
+                ('failed cleanup stamped complete','if (!complete)','if (!complete && false)'),
+                ('unrelated files removed',ownership,'    if (item->m_bIsFolder || name.empty())\n      continue;'),
+                ('directory rescanned on every hit','if (ReadVersion(marker, version) && version == CACHE_VERSION)','if (false && ReadVersion(marker, version) && version == CACHE_VERSION)'),
+            ]:
+                assert old in actual,label
+                broken=work/'broken-cache.cpp';broken.write_text(actual.replace(old,new) if label=='profile URI not frozen' else actual.replace(old,new,1))
+                broken_argv=[str(broken) if value==str(ROOT/'xbmc/utils/ActiveAreaCache.cpp') else value for value in upgrade_argv]
+                broken_argv[1:1]=['-iquote',str(ROOT/'xbmc/utils')]
+                subprocess.run(broken_argv,check=True)
+                target=work/('negative-'+str(len(label)));target.mkdir(exist_ok=True)
+                result=subprocess.run([str(work/'upgrade'),str(target)],text=True,capture_output=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'},timeout=30)
+                assert result.returncode!=0 and 'Assertion' in result.stderr,(label,result.stdout,result.stderr)
+                assert 'AddressSanitizer' not in result.stderr and 'runtime error:' not in result.stderr,result.stderr
+                print('REJECTED:',label)
         extract = runpy.run_path(str(ROOT / 'tools/test-render-slot-publication.py'))['function']
         startup = extract((ROOT / 'xbmc/utils/AMLUtils.cpp').read_text(), 'void aml_dv_detect_active_area_start()')
         (work / 'lifecycle.cpp').write_text(LIFECYCLE + startup + LIFECYCLE_TEST)
