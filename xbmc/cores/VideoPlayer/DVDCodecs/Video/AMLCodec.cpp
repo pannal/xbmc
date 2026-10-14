@@ -2160,7 +2160,8 @@ bool SetMPEG2KeepProgressive(const char* path, bool enabled)
 bool CAMLCodec::OpenDecoderInternal()
 {
   aml_video_fps_reset();
-  m_speed = DVD_PLAYSPEED_NORMAL;
+  // SetSpeed may already have selected buffering pause before the first packet
+  // opens this decoder. Keep that speed through open and reopen.
   m_drain = false;
   m_stream_eof = false;
   m_no_data_since_reset = true;

@@ -3,6 +3,8 @@
 
 Extracts actual public lifecycle methods, full AddData and wrapper Close/reset cleanup;
 uses the real AMLSession and full PollFrame/SetPollDevice and SetSpeed methods.
+The initial speed setup is extracted from real OpenDecoderInternal, so preopen
+pause/trickplay preservation is tested through Open/Reset/Reopen.
 Controlled write callbacks exercise display fencing inside an admitted AddData;
 requested/applied speed and wrapper cleanup are checked across display fencing. The poll syscall
 and sync event are recording stubs. Internal decoder Open/Reset/Close, packet writers,
@@ -40,6 +42,9 @@ def harness():
         'bool CDVDVideoCodecAmlogic::LifecycleFailed()',
         'bool CDVDVideoCodecAmlogic::ContinueLifecycle()', 'void CDVDVideoCodecAmlogic::FinishReset()'])
     prelude = PRELUDE.replace('@FAILED_METHOD@', function(header, 'bool          LifecycleFailed()'))
+    opened = function(codec, 'bool CAMLCodec::OpenDecoderInternal()')
+    setup = opened[opened.index('  aml_video_fps_reset();'):opened.index('  m_drain = false;')]
+    prelude = prelude.replace('@OPEN_SPEED_SETUP@', setup.replace('  aml_video_fps_reset();', ''))
     close = function(codec, 'void CAMLCodec::CloseDecoderInternal()')
     config_free = close[close.index('  free(am_private->vcodec.config);'):close.index('  // return tsync')]
     prelude = prelude.replace('@CONFIG_FREE@', config_free)
@@ -70,6 +75,8 @@ def main():
     source = harness()
     if args.negative_controls:
         controls = [
+            ('open loses preselected pause', '  bool OpenDecoderInternal() {',
+             '  bool OpenDecoderInternal() { m_speed=DVD_PLAYSPEED_NORMAL;'),
             ('speed marks applied before driver update', 'm_requestedSpeed = speed;',
              'm_requestedSpeed = speed; m_speed = speed;'),
             ('decoder ignores closed display admission', 'if (!operation)',
@@ -227,6 +234,7 @@ public:
   }
   ~CAMLCodec() {free(storage.vcodec.config);}
   bool OpenDecoderInternal() {
+    @OPEN_SPEED_SETUP@
     MutationOnly(); trace.push_back("open");
     if(!acquireDevice) return false;
     m_decoderNeedsClose=true;
@@ -315,6 +323,12 @@ void SpeedDuringDisplay() {
   assert(codec.m_speed==DVD_PLAYSPEED_PAUSE && codec.dll.modes.size()==3);
   CAMLCodec unopened; unopened.SetSpeed(2000);
   assert(unopened.m_speed==2000 && !unopened.m_speedPending && unopened.dll.modes.empty());
+  assert(unopened.OpenDecoder()); assert(unopened.m_speed==2000);
+  assert(unopened.ReopenDecoder()); assert(unopened.m_speed==2000);
+  CAMLCodec paused; paused.SetSpeed(DVD_PLAYSPEED_PAUSE);
+  assert(paused.OpenDecoder()); assert(paused.m_speed==DVD_PLAYSPEED_PAUSE);
+  assert(paused.Reset()); assert(paused.m_speed==DVD_PLAYSPEED_PAUSE);
+  assert(paused.ReopenDecoder()); assert(paused.m_speed==DVD_PLAYSPEED_PAUSE);
 }
 void DecoderDisplayAdmission() {
   CAMLCodec codec; assert(codec.OpenDecoder());
