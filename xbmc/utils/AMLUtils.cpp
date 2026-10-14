@@ -2333,7 +2333,14 @@ void aml_dv_set_xbmc_osd()
                  (!skinHandlesOsd && CServiceBroker::GetDataCacheCore().GetAVChangeExtended());
   }
 
-  int val = (osd_active || s_discMenuVisible.load(std::memory_order_relaxed)) ? 1 : 0;
+  // Startup detection uses a native modeless dialog, including during PM4K
+  // playback where the addon's OSD property otherwise overrides native dialogs.
+  const CGUIWindow* progress = wm.GetWindow(WINDOW_DIALOG_EXT_PROGRESS);
+  const bool detectorProgressVisible =
+      progress && wm.IsWindowVisible(WINDOW_DIALOG_EXT_PROGRESS) &&
+      !progress->GetProperty("activeareastartup").asString().empty();
+  int val = (osd_active || detectorProgressVisible ||
+             s_discMenuVisible.load(std::memory_order_relaxed)) ? 1 : 0;
   if (val != s_lastOsd)
   {
     CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_xbmc_osd", val);

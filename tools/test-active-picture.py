@@ -119,12 +119,17 @@ struct CGraphicContext {
   void GetGUIScaling(const RESOLUTION_INFO&,float&,float&,TransformMatrix*);
 } graphics;
 struct WinSystem {CGraphicContext& GetGfxContext(){return graphics;}} win;
-constexpr int WINDOW_HOME=10000,WINDOW_VIDEO_MENU=12901;
+constexpr int WINDOW_HOME=10000,WINDOW_VIDEO_MENU=12901,WINDOW_DIALOG_EXT_PROGRESS=10151;
 struct Property {std::string value="0";std::string asString(){return value;}} osdProperty;
-struct CGUIWindow {Property GetProperty(const char*){return osdProperty;}} home;
+struct CGUIWindow {
+  bool progress=false;Property marker;
+  Property GetProperty(const char*) const {return progress?marker:osdProperty;}
+} home,progress;
 struct WindowManager {
-  CGUIWindow* GetWindow(int){return &home;}
-  bool HasVisibleDialog(){return false;} bool IsWindowVisible(int){return false;}
+  bool progressVisible=false,progressPresent=true;
+  CGUIWindow* GetWindow(int id){return id==WINDOW_DIALOG_EXT_PROGRESS?(progressPresent?&progress:nullptr):&home;}
+  bool HasVisibleDialog(){return false;}
+  bool IsWindowVisible(int id){return id==WINDOW_DIALOG_EXT_PROGRESS&&progressVisible;}
 } wm;
 struct GUI {WindowManager& GetWindowManager(){return wm;}} gui;
 struct CServiceBroker {
@@ -210,6 +215,23 @@ int main(){
   for(bool signal:{false,true,false}){
     osdProperty.value=signal?"1":"0";aml_dv_set_xbmc_osd();assert(emittedOsd==signal);check(0,140,1920,940);
   }
+  // Native detector progress must signal OSD even when PM4K reports none.
+  progress.progress=true;osdProperty.value="0";
+  for(bool pm4k:{true,false}){
+    s_pm4kActive=pm4k;wm.progressVisible=true;progress.marker.value="";
+    aml_dv_set_xbmc_osd();assert(emittedOsd==0); // unrelated progress
+    progress.marker.value="true";
+    aml_dv_set_xbmc_osd();assert(emittedOsd==1);check(0,140,1920,940);
+    wm.progressVisible=false;
+    aml_dv_set_xbmc_osd();assert(emittedOsd==0); // pending/hidden dialog
+    wm.progressVisible=true;wm.progressPresent=false;
+    aml_dv_set_xbmc_osd();assert(emittedOsd==0); // absent dialog
+    wm.progressPresent=true;progress.marker.value="";
+    aml_dv_set_xbmc_osd();assert(emittedOsd==0); // completion/abort clears marker
+  }
+  s_pm4kActive=true;wm.progressVisible=false;
+  s_discMenuVisible=true;aml_dv_set_xbmc_osd();assert(emittedOsd==1);
+  s_discMenuVisible=false;aml_dv_set_xbmc_osd();assert(emittedOsd==0);
   cache.meta={};detected=true;dt=db=120;check(0,120,1920,960);
   cache.meta.has_level5_metadata=true;cache.meta.level5_active_area_top_offset=140;cache.meta.level5_active_area_bottom_offset=140;
   check(0,140,1920,940); // authored beats detector

@@ -61,17 +61,25 @@ PRELUDE = r'''
 #include <string>
 #include <thread>
 #include <type_traits>
-constexpr int WINDOW_HOME=10000, WINDOW_VIDEO_MENU=12901;
+constexpr int WINDOW_HOME=10000, WINDOW_VIDEO_MENU=12901, WINDOW_DIALOG_EXT_PROGRESS=10151;
 struct Property {std::string text;std::string asString() const {return text;}};
 struct CGUIWindow {
   std::map<std::string,std::string> values;
-  Property GetProperty(const char* name) {return {values[name]};}
-} ownedHome;
+  Property GetProperty(const char* name) const {
+    const auto entry=values.find(name);return {entry==values.end()?"":entry->second};
+  }
+} ownedHome,ownedProgress;
 struct WindowManager {
   CGUIWindow* currentHome=&ownedHome;bool dialogs=false,videoMenu=false;
-  CGUIWindow* GetWindow(int id) {assert(id==WINDOW_HOME);return currentHome;}
+  CGUIWindow* GetWindow(int id) {
+    if(id==WINDOW_DIALOG_EXT_PROGRESS)return &ownedProgress;
+    assert(id==WINDOW_HOME);return currentHome;
+  }
   bool HasVisibleDialog() const {return dialogs;}
-  bool IsWindowVisible(int id) const {assert(id==WINDOW_VIDEO_MENU);return videoMenu;}
+  bool IsWindowVisible(int id) const {
+    if(id==WINDOW_DIALOG_EXT_PROGRESS)return false;
+    assert(id==WINDOW_VIDEO_MENU);return videoMenu;
+  }
 } wm;
 struct GUI {WindowManager& GetWindowManager(){return wm;}} gui;
 struct Cache {bool avChange=false;bool GetAVChangeExtended()const{return avChange;}} cache;
