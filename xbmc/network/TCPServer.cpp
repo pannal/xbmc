@@ -564,10 +564,15 @@ void CTCPServer::CTCPClient::Send(const char *data, unsigned int size)
   {
     std::unique_lock<CCriticalSection> lock(m_critSection);
     const ssize_t result = send(m_socket, data + sent, size - sent, 0);
-    // An interrupted send moved no data; retry at the same offset. Any other
-    // failure, or a send to a disconnected client (INVALID_SOCKET), ends the message.
+#ifndef TARGET_WINDOWS
+    // A send interrupted by a signal moved no data; retry at the same offset.
+    // Windows reports socket errors through WSAGetLastError rather than errno,
+    // and an interrupted Windows call means a blocking-call cancellation, so a
+    // retry belongs to POSIX only. Any other failure, or a send to a
+    // disconnected client (INVALID_SOCKET), ends the message.
     if (result < 0 && errno == EINTR)
       continue;
+#endif
     if (result <= 0)
       return;
     sent += static_cast<unsigned int>(result);
