@@ -90,7 +90,6 @@ public:
     laterRequestStarted.Reset();
     stoppedFromRequest.Reset();
 
-    CJSONRPC::Initialize();
     m_added = CJSONServiceDescription::AddMethod(Schema("Test.Block"), Block) &&
               CJSONServiceDescription::AddMethod(Schema("Test.Record"), Record) &&
               CJSONServiceDescription::AddMethod(Schema("Test.Stop"), Stop);
@@ -99,7 +98,6 @@ public:
   ~CTestMethods()
   {
     releaseRequest.Set();
-    CJSONRPC::Cleanup();
   }
 
   bool Added() const { return m_added; }
@@ -120,6 +118,12 @@ class TestTCPServer : public testing::Test
 protected:
   void SetUp() override
   {
+    // Omega's basic test environment does not register an announcement manager.
+    m_previousAnnouncementManager = CServiceBroker::GetAnnouncementManager();
+    CServiceBroker::RegisterAnnouncementManager(
+        std::make_shared<ANNOUNCEMENT::CAnnouncementManager>());
+    CJSONRPC::Initialize();
+
 #if defined(TARGET_WINDOWS)
     WSADATA wsaData;
     ASSERT_EQ(0, WSAStartup(MAKEWORD(2, 2), &wsaData));
@@ -140,6 +144,8 @@ protected:
     for (SOCKET client : m_clients)
       closesocket(client);
     CTCPServer::StopServer(true);
+    CJSONRPC::Cleanup();
+    CServiceBroker::RegisterAnnouncementManager(m_previousAnnouncementManager);
 #if defined(TARGET_WINDOWS)
     WSACleanup();
 #endif
@@ -220,6 +226,7 @@ protected:
     return false;
   }
 
+  std::shared_ptr<ANNOUNCEMENT::CAnnouncementManager> m_previousAnnouncementManager;
   int m_port{0};
   std::vector<SOCKET> m_clients;
 };
@@ -284,7 +291,8 @@ TEST_F(TestTCPServer, APeerThatStopsReadingHoldsUpNoAnnouncement)
   const CVariant data(std::string(60000, 'x'));
   for (int i = 0; i < 400; ++i)
     manager->Announce(ANNOUNCEMENT::Other, "test", "flood", data);
-  manager->Announce(ANNOUNCEMENT::Info, "test", "marker", CVariant{});
+  // Info notifications are not exposed through Omega's JSON-RPC configuration.
+  manager->Announce(ANNOUNCEMENT::System, "test", "marker", CVariant{});
 
   const bool delivered = ReadUntil(listener, "marker", 5s);
 
