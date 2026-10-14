@@ -22,7 +22,13 @@
 
 precision mediump float;
 uniform sampler2D m_samp0;
-varying vec4 m_cord0;
+// Large, changing glyph atlases need precise coordinates to keep stationary
+// subtitle edges stable. Leave color arithmetic at its existing precision.
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+varying highp vec4 m_cord0;
+#else
+varying mediump vec4 m_cord0;
+#endif
 varying lowp vec4 m_colour;
 uniform float m_sdrPeak;
 
