@@ -157,6 +157,7 @@ set(HEADERS PlaybackDiagnostics.h
             MovingSpeed.h
             Observer.h
             params_check_macros.h
+            PM4KStartup.h
             POUtils.h
             PlayerUtils.h
             ProgressJob.h

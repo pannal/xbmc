@@ -23,6 +23,7 @@
 #include "guilib/GUIWindowManager.h"
 #include "messaging/ApplicationMessenger.h"
 #include "settings/MediaSettings.h"
+#include "utils/PM4KStartup.h"
 
 namespace
 {
@@ -89,6 +90,9 @@ namespace XBMCAddon
     void Player::playStream(const String& item, const xbmcgui::ListItem* plistitem, bool windowed)
     {
       XBMC_TRACE;
+      // GetAddonId uses Python APIs; capture before DelayedCallGuard releases
+      // the interpreter. Never infer ownership from a stale global property.
+      const auto startupToken = PM4K_STARTUP::Capture(languageHook ? languageHook->GetAddonId() : "");
       DelayedCallGuard dc(languageHook);
       if (!item.empty())
       {
@@ -101,13 +105,17 @@ namespace XBMCAddon
         {
           // set m_strPath to the passed url
           listitem->item->SetPath(item.c_str());
-          CServiceBroker::GetAppMessenger()->PostMsg(
-              TMSG_MEDIA_PLAY, 0, 0, static_cast<void*>(new CFileItem(*listitem->item)));
+          auto* file = new CFileItem(*listitem->item);
+          file->SetProperty(PM4K_STARTUP::ITEM_TOKEN, CVariant(startupToken));
+          CServiceBroker::GetAppMessenger()->PostMsg(TMSG_MEDIA_PLAY, 0, 0,
+                                                   static_cast<void*>(file));
         }
         else
         {
           CFileItemList *l = new CFileItemList; //don't delete,
-          l->Add(std::make_shared<CFileItem>(item, false));
+          auto file = std::make_shared<CFileItem>(item, false);
+          file->SetProperty(PM4K_STARTUP::ITEM_TOKEN, CVariant(startupToken));
+          l->Add(file);
           CServiceBroker::GetAppMessenger()->PostMsg(TMSG_MEDIA_PLAY, -1, -1,
                                                      static_cast<void*>(l));
         }

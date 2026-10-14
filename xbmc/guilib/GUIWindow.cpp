@@ -26,6 +26,7 @@
 #include "settings/SettingsComponent.h"
 #include "threads/SingleLock.h"
 #include "utils/ColorUtils.h"
+#include "utils/PM4KStartup.h"
 #include "utils/StringUtils.h"
 #include "utils/TimeUtils.h"
 #include "utils/Variant.h"
@@ -1050,6 +1051,9 @@ void CGUIWindow::SetProperty(const std::string &strKey, const CVariant &value)
 {
   std::unique_lock<CCriticalSection> lock(*this);
   m_mapProperties[strKey] = value;
+  if (GetID() == WINDOW_HOME &&
+      StringUtils::EqualsNoCase(strKey, "script.plex.playback_initializing"))
+    PM4K_STARTUP::Publish(value.asString() == "1");
 }
 
 CVariant CGUIWindow::GetProperty(const std::string &strKey) const
@@ -1066,6 +1070,8 @@ void CGUIWindow::ClearProperties()
 {
   std::unique_lock<CCriticalSection> lock(*this);
   m_mapProperties.clear();
+  if (GetID() == WINDOW_HOME)
+    PM4K_STARTUP::Publish(false);
 }
 
 void CGUIWindow::SetRunActionsManually()
