@@ -38,6 +38,8 @@
 #include <utility>
 #include <vector>
 
+class CGUIDialogProgressBarHandle;
+
 struct SPlayerState
 {
   SPlayerState() { Clear(); }
@@ -471,8 +473,9 @@ protected:
 
   void SetCaching(ECacheState state);
   bool WaitForActiveAreaDetection();
+  void FinishActiveAreaProgress();
   std::chrono::steady_clock::time_point m_activeAreaWaitStart;
-  bool m_activeAreaWaitNotified{false};
+  CGUIDialogProgressBarHandle* m_activeAreaProgress{nullptr}; // dialog owns the handle
 
   double GetQueueTime();
   CacheInfo GetCachingTimes();

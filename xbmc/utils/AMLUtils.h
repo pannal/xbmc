@@ -261,6 +261,8 @@ void aml_dv_detect_set_file(const std::string& path);
 // Startup hold is selection-bound and independent of the DV-only status label.
 void aml_subtitle_active_area_startup_begin();
 bool aml_subtitle_active_area_startup_pending(const std::shared_ptr<const void>& expectedSource);
+bool aml_subtitle_active_area_startup_progress(const std::shared_ptr<const void>& expectedSource,
+                                             int& completed, int& total);
 void aml_subtitle_active_area_startup_complete(const std::shared_ptr<const void>& expectedSource);
 void aml_dv_detect_active_area_start();
 void aml_dv_detect_active_area_stop();

@@ -23,18 +23,24 @@ int main() {
   select("startup",false);aml_subtitle_active_area_startup_begin();
   auto selected=aml_subtitle_active_area_source();
   std::promise<void> entered,finish;auto gate=finish.get_future();
-  scanHook=[&](const auto&,const CAMLNativeWorker::Run& state){
+  scanHook=[&](const auto& source,const CAMLNativeWorker::Run& state){
    assert(detect_startup_wait_active(state));
    assert(detect_wait_for_cache(state,80,0)==100); // fake player cache is only10%
    s_detectThrottleActive=true;s_detectLastCacheCheckMs=0;
    assert(detect_interrupt_cb(const_cast<CAMLNativeWorker::Run*>(&state))==0);
    assert(!s_detectCacheStarved);
+   for(int position=1;position<=3;++position){
+    DetectPositionProgress progress{source->completedPositions,position};
+   }
    entered.set_value();gate.wait();
    if(outcome==1)throw std::runtime_error("scanner exception");
    s_detectState=outcome==2?DV_DETECT_SKIPPED:DV_DETECT_OK;
   };
   aml_dv_detect_active_area_start();entered.get_future().wait();
   assert(aml_subtitle_active_area_startup_pending(selected));
+  int completed,total;
+  assert(aml_subtitle_active_area_startup_progress(selected,completed,total));
+  assert(completed==3&&total==14);
   assert(!aml_subtitle_active_area_startup_pending(std::make_shared<int>(1)));
   finish.set_value();s_detectWorker.Stop();
   assert(!aml_subtitle_active_area_startup_pending(selected));
@@ -109,8 +115,15 @@ int main(){
  p.m_activeAreaWaitStart=std::chrono::steady_clock::now()-600ms;
  assert(p.WaitForActiveAreaDetection());assert(p.WaitForActiveAreaDetection());
  assert(notifications==1);
+ auto* progress=p.m_activeAreaProgress;
+ assert(progress&&progress->completed==0&&progress->total==14);
+ assert(progressDialog.startup);
+ progressPosition=7;assert(p.WaitForActiveAreaDetection());
+ assert(progress->completed==7&&progress->text=="7/14"&&notifications==1);
  startupPending=false;p.SynchronizeStreams(false);
  assert(p.m_State.streamsReady&&p.m_callback.starts==1&&p.m_clock.anchors==1);
+ assert(progress->finished&&!p.m_activeAreaProgress);
+ assert(!progressDialog.startup);
  assert(p.m_clock.speed==0&&p.audio.speed==0&&video.appliedSpeed==0);
  p.HoldStep();assert(p.normalSteps==1);
  // A later scan cannot introduce another startup hold after AVStarted.
@@ -126,6 +139,12 @@ int main(){
  audioOnly.m_CurrentAudio.packets=21;audioOnly.m_CurrentAudio.starttime=1000000;
  audioOnly.SynchronizeStreams(false);assert(audioOnly.m_State.streamsReady);
  assert(startupCompletions.back()==aml_subtitle_active_area_source());
+ Parent stopped(video);startupPending=true;
+ stopped.m_activeAreaWaitStart=std::chrono::steady_clock::now()-600ms;
+ assert(stopped.WaitForActiveAreaDetection());auto* stoppedProgress=stopped.m_activeAreaProgress;
+ stopped.m_bAbortRequest=true;assert(!stopped.WaitForActiveAreaDetection());
+ assert(stoppedProgress->finished&&!stopped.m_activeAreaProgress);
+ assert(!progressDialog.startup);
  std::cout<<"PASS: production startup sync/cache/user-speed hold, notification, pause preservation and instant/no-scan release\n";
 }
 '''
@@ -133,7 +152,11 @@ int main(){
 
 def native_source():
     code = NATIVE['source']()
-    return code.replace(function(code, 'int main()'), NATIVE_TEST)
+    aml=(ROOT/'xbmc/utils/AMLUtils.cpp').read_text()
+    progress=function(aml,'struct DetectPositionProgress')+';\n'
+    assert 'DetectPositionProgress progress{source->completedPositions, s + 1};' in aml
+    assert 'const int numSeeks = 14;' in aml
+    return code.replace(function(code, 'int main()'), progress+NATIVE_TEST)
 
 
 def player_source():
@@ -144,16 +167,32 @@ def player_source():
     code = code.replace('using namespace std::chrono_literals;',
                         '#include <iostream>\nusing namespace std::chrono_literals;')
     code = code.replace('CACHESTATE_INIT=5;', 'CACHESTATE_INIT=5,CACHESTATE_FULL=6,CACHESTATE_PLAY=7;')
-    code = code.replace('struct Parent {', r'''
-bool startupPending=false;int notifications=0;
-bool aml_subtitle_active_area_startup_pending(const std::shared_ptr<const void>&){return startupPending;}
+    code = code.replace('struct CServiceBroker {', r'''
+bool startupPending=false;int notifications=0,progressPosition=0;
+bool aml_subtitle_active_area_startup_progress(const std::shared_ptr<const void>&,int& completed,int& total){completed=progressPosition;total=14;return startupPending;}
 struct Localize{std::string Get(int){return "detecting";}} g_localizeStrings;
-struct CGUIDialogKaiToast{static void QueueNotification(const std::string&,const std::string&){++notifications;}};
-struct Parent {''')
+struct StringUtils{static std::string Format(const std::string&,int a,int b){return std::to_string(a)+"/"+std::to_string(b);}};
+struct CGUIDialogProgressBarHandle{
+ bool finished=false;int completed=-1,total=0;std::string text;
+ void SetText(const std::string& value){assert(!finished);text=value;}
+ void SetProgress(int value,int count){assert(!finished);completed=value;total=count;}
+ void MarkFinished(){assert(!finished);finished=true;}
+};
+struct CGUIDialogExtendedProgressBar{
+ bool startup=false;void SetProperty(const std::string&,bool v){startup=v;}
+ void SetProperty(const std::string&,const char* v){startup=std::string(v)!="";}
+ std::vector<std::unique_ptr<CGUIDialogProgressBarHandle>> handles;
+ auto GetHandle(const std::string&){++notifications;handles.emplace_back(std::make_unique<CGUIDialogProgressBarHandle>());return handles.back().get();}
+} progressDialog;
+constexpr int WINDOW_DIALOG_EXT_PROGRESS=1;
+struct GUI{GUI&GetWindowManager(){return *this;}template<class T>T*GetWindow(int){return &progressDialog;}} gui;
+struct CServiceBroker {static GUI* GetGUI(){return &gui;}
+''')
     code = code.replace('bool WaitForActiveAreaDetection(){return false;}', r'''
-bool WaitForActiveAreaDetection();void RequestedSpeed(int speed);void HoldStep();
+bool WaitForActiveAreaDetection();void FinishActiveAreaProgress();void RequestedSpeed(int speed);void HoldStep();
 std::chrono::steady_clock::time_point m_activeAreaWaitStart,m_brokenFileStallStart;
-bool m_activeAreaWaitNotified=false,m_brokenFileStallStarveLogged=false;
+CGUIDialogProgressBarHandle* m_activeAreaProgress=nullptr;
+bool m_brokenFileStallStarveLogged=false;
 double m_videoWedgePts=DVD_NOPTS_VALUE;int64_t m_brokenFileStallBytes=-1;int normalSteps=0;
 struct CacheInfo{bool valid=false;};CacheInfo GetCachingTimes(){return {};}
 int m_caching=CACHESTATE_DONE,m_streamPlayerSpeed=DVD_PLAYSPEED_NORMAL;
@@ -169,6 +208,7 @@ struct CacheTimer{void Set(std::chrono::milliseconds){}} m_cachingTimer;
     assert marker in code
     code = code.replace(marker, marker+'\npublic: int appliedSpeed=1000;void SetSpeed(int v){appliedSpeed=v;}')
     methods = function(source, 'bool CVideoPlayer::WaitForActiveAreaDetection()')
+    methods += '\n' + function(source, 'void CVideoPlayer::FinishActiveAreaProgress()')
     methods += '\n' + function(source, 'void CVideoPlayer::SetCaching(').replace('ECacheState', 'int')
     speed = function(source, 'else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))')
     methods += '\nvoid Parent::RequestedSpeed(int speed){' + speed[speed.index('      m_playSpeed = speed;'):-1] + '}\n'
@@ -180,6 +220,9 @@ struct CacheTimer{void Set(std::chrono::milliseconds){}} m_cachingTimer;
     # These call sites are essential: decoding/configuration must remain active.
     open_file = function(source, 'bool CVideoPlayer::OpenFile(')
     assert open_file.index('aml_dv_detect_set_file(') < open_file.index('aml_subtitle_active_area_startup_begin();')
+    assert 'FinishActiveAreaProgress();' in function(source,'void CVideoPlayer::OnExit()')
+    assert 'aml_subtitle_active_area_startup_complete(' in function(source,'void CVideoPlayer::OnExit()')
+    assert 'FinishActiveAreaProgress();' in function(source,'CVideoPlayer::~CVideoPlayer()')
     assert function(source, 'void CVideoPlayer::HandlePlaySpeed()').index('if (WaitForActiveAreaDetection())') < handle.index('const bool isInMenu')
     return code
 
@@ -208,13 +251,15 @@ int main(){ready();CAMLSession value;init(value);settingsValue.wait=true;
             (native,'lost completion','source->pending.store(false);','/* completion lost */'),
             (native,'throttle waits on held playback','if (detect_startup_wait_active(run))\n      return 100;','/* no startup bypass */'),
             (native,'low-buffer abort during hold',' && !detect_startup_wait_active(*run)',''),
-            (native,'stale selection wait','expectedSource == s_detectSource->selection &&','true &&'),
-            (native,'cancelled source wait','!s_detectSource->superseded->load() && s_detectSource->startupWait->load() &&','s_detectSource->startupWait->load() &&'),
+            (native,'stale selection wait','expectedSource != s_detectSource->selection ||','false ||'),
+            (native,'cancelled source wait','s_detectSource->superseded->load() || !s_detectSource->startupWait->load() ||','!s_detectSource->startupWait->load() ||'),
             (player,'premature startup sync','if (WaitForActiveAreaDetection())\n  {\n    SetCaching(CACHESTATE_INIT);\n    return;\n  }','/* startup guard lost */'),
             (player,'buffer timeout resumes during hold','if ((state == CACHESTATE_PLAY || state == CACHESTATE_DONE) && WaitForActiveAreaDetection())','if (false)'),
             (player,'force resume after user pause','m_clock.SetSpeed(m_playSpeed);','m_clock.SetSpeed(DVD_PLAYSPEED_NORMAL);'),
             (player,'user resume bypasses hold','if (WaitForActiveAreaDetection())\n        SetCaching(CACHESTATE_INIT);','if (false)\n        SetCaching(CACHESTATE_INIT);'),
             (player,'audio-only startup ownership leaked','m_CurrentVideo.id >= 0 ? m_CurrentVideo.hint.subtitleProbeSource\n                                   : aml_subtitle_active_area_source()','m_CurrentVideo.hint.subtitleProbeSource'),
+            (native,'progress counter discarded','completed = std::clamp(s_detectSource->completedPositions.load(), 0, total);','completed = 0;'),
+            (player,'finished progress handle leaked','m_activeAreaProgress->MarkFinished();','/* leaked */'),
         ]:
             assert old in code,label
             run(code.replace(old,new),negative=True);print('REJECTED:',label)

@@ -20607,3 +20607,9 @@ msgstr "Den Wiedergabestart zurückhalten, bis die aktivierte Erkennung schwarze
 msgctxt "#69376"
 msgid "Detecting black borders..."
 msgstr "Schwarze Balken werden erkannt..."
+
+#. Completed sample positions in black-border detection
+#: xbmc/cores/VideoPlayer/VideoPlayer.cpp
+msgctxt "#69377"
+msgid "Positions checked: {}/{}"
+msgstr "Geprüfte Positionen: {}/{}"

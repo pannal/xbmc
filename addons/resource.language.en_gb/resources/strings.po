@@ -27866,3 +27866,9 @@ msgstr ""
 msgctxt "#69376"
 msgid "Detecting black borders..."
 msgstr ""
+
+#. Completed sample positions in black-border detection
+#: xbmc/cores/VideoPlayer/VideoPlayer.cpp
+msgctxt "#69377"
+msgid "Positions checked: {}/{}"
+msgstr ""

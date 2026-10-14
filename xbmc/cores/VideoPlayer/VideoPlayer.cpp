@@ -40,6 +40,7 @@
 #include "cores/VideoPlayer/Process/ProcessInfo.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
 #include "dialogs/GUIDialogKaiToast.h"
+#include "dialogs/GUIDialogExtendedProgressBar.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
 #include "guilib/LocalizeStrings.h"
@@ -811,6 +812,7 @@ CVideoPlayer::~CVideoPlayer()
   // renderer retirement and decode join have actually completed.
   while (!CloseFile())
     CThread::Sleep(10ms);
+  FinishActiveAreaProgress();
   DestroyPlayers();
 
   while (m_outboundEvents->IsProcessing())
@@ -846,12 +848,12 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   m_item = file;
   m_playerOptions = options;
   m_processInfo->SetFullscreen(options.fullscreen);
+  FinishActiveAreaProgress();
   aml_dv_detect_set_file(file.GetDynPath());
 #if defined(HAS_LIBAMCODEC)
   aml_subtitle_active_area_startup_begin();
 #endif
   m_activeAreaWaitStart = {};
-  m_activeAreaWaitNotified = false;
 
   m_processInfo->SetPlayTimes(0,0,0,0);
   m_bAbortRequest = false;
@@ -3748,8 +3750,15 @@ void CVideoPlayer::OnExit()
   CancelParentLifecycle();
   CLog::Log(LOGINFO, "CVideoPlayer::OnExit()");
 
+#if defined(HAS_LIBAMCODEC)
+  aml_subtitle_active_area_startup_complete(
+      m_CurrentVideo.id >= 0 ? m_CurrentVideo.hint.subtitleProbeSource
+                             : aml_subtitle_active_area_source());
+#endif
   // set event to inform openfile something went wrong in case openfile is still waiting for this event
   SetCaching(CACHESTATE_DONE);
+
+  FinishActiveAreaProgress();
 
   // close each stream
   if (!m_bAbortRequest)
@@ -4611,22 +4620,51 @@ void CVideoPlayer::QueueAudioRecoverySeek()
 bool CVideoPlayer::WaitForActiveAreaDetection()
 {
 #if defined(HAS_LIBAMCODEC)
-  if (!m_State.streamsReady && m_CurrentVideo.id >= 0 &&
-      aml_subtitle_active_area_startup_pending(m_CurrentVideo.hint.subtitleProbeSource))
+  int completed, total;
+  if (!m_bAbortRequest && !m_bStop && !m_State.streamsReady && m_CurrentVideo.id >= 0 &&
+      aml_subtitle_active_area_startup_progress(m_CurrentVideo.hint.subtitleProbeSource,
+                                              completed, total))
   {
     const auto now = std::chrono::steady_clock::now();
     if (m_activeAreaWaitStart == std::chrono::steady_clock::time_point{})
       m_activeAreaWaitStart = now;
     // Cached/immediate outcomes should not flash a notification.
-    if (!m_activeAreaWaitNotified && now - m_activeAreaWaitStart >= 500ms)
+    if (!m_activeAreaProgress && now - m_activeAreaWaitStart >= 500ms)
     {
-      CGUIDialogKaiToast::QueueNotification(g_localizeStrings.Get(69376), "");
-      m_activeAreaWaitNotified = true;
+      auto* gui = CServiceBroker::GetGUI();
+      auto* dialog = gui ? gui->GetWindowManager().GetWindow<CGUIDialogExtendedProgressBar>(
+                              WINDOW_DIALOG_EXT_PROGRESS) : nullptr;
+      if (dialog)
+      {
+        m_activeAreaProgress = dialog->GetHandle(g_localizeStrings.Get(69376));
+        dialog->SetProperty("activeareastartup", true);
+      }
+    }
+    if (m_activeAreaProgress)
+    {
+      m_activeAreaProgress->SetText(
+          StringUtils::Format(g_localizeStrings.Get(69377), completed, total));
+      m_activeAreaProgress->SetProgress(completed, total);
     }
     return true;
   }
 #endif
+  FinishActiveAreaProgress();
   return false;
+}
+
+void CVideoPlayer::FinishActiveAreaProgress()
+{
+  if (m_activeAreaProgress)
+  {
+    m_activeAreaProgress->MarkFinished();
+    m_activeAreaProgress = nullptr;
+    auto* gui = CServiceBroker::GetGUI();
+    auto* dialog = gui ? gui->GetWindowManager().GetWindow<CGUIDialogExtendedProgressBar>(
+                            WINDOW_DIALOG_EXT_PROGRESS) : nullptr;
+    if (dialog)
+      dialog->SetProperty("activeareastartup", "");
+  }
 }
 
 void CVideoPlayer::SetCaching(ECacheState state)

@@ -2747,6 +2747,7 @@ struct DetectSource
   const int codecHint;
   const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
   std::atomic<bool> pending{false};
+  std::atomic<int> completedPositions{0};
   // Shared across configuration of the same startup selection, never a new file.
   std::shared_ptr<std::atomic<bool>> startupWait{std::make_shared<std::atomic<bool>>(false)};
   std::shared_ptr<const DetectResult> result; // protected by s_detectSourceMutex
@@ -2893,12 +2894,24 @@ void aml_subtitle_active_area_startup_begin()
       settings()->GetBool(CSettings::SETTING_SUBTITLES_WAITACTIVEAREA));
 }
 
-bool aml_subtitle_active_area_startup_pending(const std::shared_ptr<const void>& expectedSource)
+bool aml_subtitle_active_area_startup_progress(const std::shared_ptr<const void>& expectedSource,
+                                             int& completed, int& total)
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
-  return expectedSource && expectedSource == s_detectSource->selection &&
-         !s_detectSource->superseded->load() && s_detectSource->startupWait->load() &&
-         s_detectSource->pending.load();
+  completed = total = 0;
+  if (!expectedSource || expectedSource != s_detectSource->selection ||
+      s_detectSource->superseded->load() || !s_detectSource->startupWait->load() ||
+      !s_detectSource->pending.load())
+    return false;
+  total = 14; // the scanner's fixed sample-position policy
+  completed = std::clamp(s_detectSource->completedPositions.load(), 0, total);
+  return true;
+}
+
+bool aml_subtitle_active_area_startup_pending(const std::shared_ptr<const void>& expectedSource)
+{
+  int completed, total;
+  return aml_subtitle_active_area_startup_progress(expectedSource, completed, total);
 }
 
 void aml_subtitle_active_area_startup_complete(const std::shared_ptr<const void>& expectedSource)
@@ -3863,6 +3876,13 @@ static bool detect_strict_positive_axis(const uint16_t* first, const uint16_t* s
   return true;
 }
 
+struct DetectPositionProgress
+{
+  std::atomic<int>& completed;
+  const int position;
+  ~DetectPositionProgress() { completed.store(position); }
+};
+
 static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source,
                                      const CAMLNativeWorker::Run& run)
 {
@@ -4080,6 +4100,8 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     {
       if (run.Cancelled() || s_detectCacheStarved.load())
         break;
+      // Retries and unusable frames still complete one requested position.
+      DetectPositionProgress progress{source->completedPositions, s + 1};
 
       /* Cache-aware throttle: before each seek, wait for the player buffer to
        * refill so our reads don't drain it below empty.  Replaces the old fixed
@@ -4694,6 +4716,7 @@ void aml_dv_detect_active_area_start()
     source = s_detectSource;
     source->result.reset();
     source->subtitleResult.reset();
+    source->completedPositions.store(0);
   }
   s_detectThrottleActive.store(false);
   s_detectCacheStarved.store(false);
