@@ -2010,7 +2010,8 @@ bool CAMLCodec::BeginLifecycle(Lifecycle operation, std::function<void()> before
   }
   if (m_lifecycle != operation)
   {
-    aml_subtitle_active_area_invalidate(operation == Lifecycle::RESET);
+    aml_subtitle_active_area_invalidate(operation == Lifecycle::RESET,
+                                        operation != Lifecycle::CLOSE);
     aml_dv_backend_invalidate(m_dvSession);
     if (operation == Lifecycle::CLOSE || operation == Lifecycle::REOPEN)
       aml_dv_cancel_deferred_session(m_dvSession);

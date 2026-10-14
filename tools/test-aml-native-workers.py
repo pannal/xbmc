@@ -36,8 +36,8 @@ std::function<void()> writeHook;
 struct CSysfsPath{CSysfsPath(const char*,int){assert(session&&!session->AcquireDecoder());++writes;if(writeHook)writeHook();}};
 void aml_dv_apply_l5_override_sysfs(){assert(session&&!session->AcquireDecoder());++watchWrites;if(writeHook)writeHook();}
 @AUTO_GLOBALS@
-struct CSettings {static constexpr int SETTING_COREELEC_AMLOGIC_DV_L5_AUTO_LETTERBOX=1,SETTING_SUBTITLES_DETECTACTIVEAREA=2,SETTING_SUBTITLES_CACHEACTIVEAREA=3,SETTING_SUBTITLES_ISOLATEACTIVEAREA=4,SETTING_SUBTITLES_WAITACTIVEAREA=5;};
-struct Settings {bool detect=true,wait=false;bool GetBool(int id){return id==5?wait:id==2?detect:id<3;}} settingsValue;
+struct CSettings {static constexpr int SETTING_COREELEC_AMLOGIC_DV_L5_AUTO_LETTERBOX=1,SETTING_SUBTITLES_DETECTACTIVEAREA=2,SETTING_SUBTITLES_CACHEACTIVEAREA=3,SETTING_SUBTITLES_ISOLATEACTIVEAREA=4,SETTING_SUBTITLES_WAITACTIVEAREA=5,SETTING_COREELEC_AMLOGIC_DV_LEVEL5=6,SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA=7;};
+struct Settings {bool detect=true,wait=false,dvRequested=true;bool GetBool(int id){return id==5?wait:id==2?detect:(id>=6?dvRequested:id<3);}} settingsValue;
 Settings* settings(){return &settingsValue;}
 bool aml_dv_l5_override_active(){return false;}
 @CONSTANTS@
@@ -56,7 +56,7 @@ std::atomic<int64_t> s_detectLastCacheCheckMs{0};
 @PUBLISH@
 std::function<void(const std::shared_ptr<DetectSource>&,const CAMLNativeWorker::Run&)> scanHook;
 void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source,const CAMLNativeWorker::Run& state){assert(scanHook);scanHook(source,state);}
-void aml_subtitle_active_area_invalidate(bool preserveGeometry = false);
+void aml_subtitle_active_area_invalidate(bool preserveGeometry = false, bool restartProbe = false);
 void aml_dv_detect_set_file(const std::string&);
 void select(const std::string& path,bool native=true,int w=1920,int h=1080){
   aml_dv_detect_set_file(path);assert(aml_subtitle_active_area_configure(w,h,native,true,aml_subtitle_active_area_source()));

@@ -39,9 +39,9 @@ def source(path, baseline=None):
 def generate(baseline=None):
     # Numeric states cross the persistent-cache and report boundaries too.
     actual = {name: int(value) for name, value in re.findall(
-        r'(DV_DETECT_\w+)\s*=\s*(\d+)', source('xbmc/utils/AMLUtils.h', baseline))}
+        r'\b(DV_DETECT_\w+)\s*=\s*(\d+)', source('xbmc/utils/AMLUtils.h', baseline))}
     fixture = {name: int(value) for name, value in re.findall(
-        r'(DV_DETECT_\w+)\s*=\s*(\d+)', PREFIX)}
+        r'\b(DV_DETECT_\w+)\s*=\s*(\d+)', PREFIX)}
     assert fixture == actual, (fixture, actual)
     aml, libass, renderer = (source(path, baseline) for path in (AML, LIBASS, RENDERER))
     header, gles, gles_header = (source(path, baseline) for path in (RENDERHEADER, GLES, GLESHEADER))
@@ -51,7 +51,7 @@ def generate(baseline=None):
     code = code.replace('@FIELDS@', fields).replace('@GEOMETRY@', FUNCTION(header, 'struct SRenderGeometry') + ';')
     code = code.replace('@VERTEX@', FUNCTION(gles_header, 'struct VERTEX') + ';')
     code = code.replace('@PAGE@', FUNCTION(gles_header, 'struct Page') + ';')
-    code += '\nvoid aml_subtitle_active_area_invalidate(' + ('' if baseline else 'bool preserveGeometry=false') + ');\n'
+    code += '\nvoid aml_subtitle_active_area_invalidate(' + ('' if baseline else 'bool preserveGeometry=false, bool restartProbe=false') + ');\n'
     if 'bool allowSubtitleEstimate' in aml:
         declaration = source('xbmc/utils/AMLUtils.h', baseline).split('bool aml_subtitle_detect_active_area_get(', 1)[1].split(';', 1)[0]
         code += '\nbool aml_subtitle_detect_active_area_get(' + declaration + ';\n'
@@ -89,10 +89,10 @@ def generate(baseline=None):
         # Real call-site contracts; execution below covers the called policies.
         player = source(VIDEO + 'VideoPlayer.cpp')
         codec = source(VIDEO + 'DVDCodecs/Video/AMLCodec.cpp')
-        assert 'aml_subtitle_active_area_invalidate(preserveSubtitleGeometry);' in FUNCTION(player, 'void CVideoPlayer::FlushBuffers(')
+        assert 'aml_subtitle_active_area_invalidate(preserveSubtitleGeometry, true);' in FUNCTION(player, 'void CVideoPlayer::FlushBuffers(')
         assert 'deferred.preserveSubtitleGeometry' in player
         assert 'bool preserveSubtitleGeometry = false' in source(VIDEO + 'VideoPlayer.h')
-        assert 'aml_subtitle_active_area_invalidate(operation == Lifecycle::RESET);' in FUNCTION(codec, 'bool CAMLCodec::BeginLifecycle(')
+        assert 'aml_subtitle_active_area_invalidate(operation == Lifecycle::RESET,\n                                        operation != Lifecycle::CLOSE);' in FUNCTION(codec, 'bool CAMLCodec::BeginLifecycle(')
     if not baseline:
         owner = source(VIDEO + 'VideoPlayerVideo.cpp')
         output = FUNCTION(owner, 'CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(')
@@ -172,12 +172,13 @@ struct Cache {
 struct CSettings{static constexpr int SETTING_SUBTITLES_DETECTACTIVEAREA=1,
  SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_USER_POS=2,SETTING_SUBTITLES_BITMAPZOOM=3,
  SETTING_COREELEC_AMLOGIC_DV_LEVEL5=4,SETTING_SUBTITLES_CACHEACTIVEAREA=6,
- SETTING_SUBTITLES_WAITACTIVEAREA=7;};
+ SETTING_SUBTITLES_WAITACTIVEAREA=7,SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA=8;};
 struct Settings{
  bool detect=true,applyMargin=false;int zoom=100;
  bool GetBool(int id){return id==6?false:(id==1?detect:applyMargin);}int GetInt(int){return zoom;}
 } settingsValue;
 Settings* settings(){return &settingsValue;}
+bool aml_dv_l5_override_active(){return false;}
 struct RESOLUTION_INFO{int iSubtitles=1080,iHeight=1080;float fPixelRatio=1;struct{int top=0;}Overscan;};
 struct Window {
  RESOLUTION_INFO info;int stereo=0;float textMargin=1;

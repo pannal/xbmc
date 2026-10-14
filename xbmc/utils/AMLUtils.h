@@ -238,8 +238,12 @@ std::shared_ptr<const void> aml_subtitle_active_area_source();
 std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int codec);
 bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bool allowProbe,
                                       const std::shared_ptr<const void>& expectedSource);
+// The serialized software reset has retired the old decode call; its next
+// output (including EOF) now belongs to a fresh route with the same geometry.
+void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedSource);
 // CPU-only cancellation; pure same-source seek/reset may retain accepted file geometry.
-void aml_subtitle_active_area_invalidate(bool preserveGeometry = false);
+// restartProbe preserves a startup hold until the replacement route is admitted.
+void aml_subtitle_active_area_invalidate(bool preserveGeometry = false, bool restartProbe = false);
 bool aml_subtitle_native_dv();
 // The default exposes only conservative geometry. Only subtitle placement may
 // opt into the separate estimate; it is never evidence for native L5 or cropping.
@@ -260,6 +264,8 @@ int aml_dv_detect_active_area_state();
 void aml_dv_detect_set_file(const std::string& path);
 // Startup hold is selection-bound and independent of the DV-only status label.
 void aml_subtitle_active_area_startup_begin();
+// Resolve a route that cannot start a probe; a running scan keeps its hold.
+void aml_subtitle_active_area_startup_admitted(const std::shared_ptr<const void>& expectedSource);
 bool aml_subtitle_active_area_startup_pending(const std::shared_ptr<const void>& expectedSource);
 bool aml_subtitle_active_area_startup_progress(const std::shared_ptr<const void>& expectedSource,
                                              int& completed, int& total);

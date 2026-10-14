@@ -76,7 +76,7 @@ def main():
     source += '\n' + function(ov, 'void CRenderer::Release(int idx)')
     source += '\n' + function(gles, 'void CLinuxRendererGLES::AddVideoPicture(')
     source += '\n' + function(gles, 'void CLinuxRendererGLES::ReleaseBuffer(')
-    source += '\n' + function(vp, 'OVERLAY::CRenderer::OverlayBatch CVideoPlayerVideo::ProcessOverlays(')
+    source += '\n' + function(vp, 'OVERLAY::CRenderer::OverlayBatch CVideoPlayerVideo::ProcessOverlays(').replace('#if defined(HAS_LIBAMCODEC)', '#if 1')
     container = (path / 'DVDOverlayContainer.cpp').read_text()
     for name in ('bool CDVDOverlayContainer::IsDiscMenuDue(',
                  'std::shared_ptr<CDVDOverlay> CDVDOverlayContainer::GetDueDiscMenu('):
@@ -259,7 +259,11 @@ struct OverlayContainer : CCriticalSection {
   static bool IsDiscMenuDue(const CDVDOverlay& overlay, double pts);
 };
 struct IDVDStreamPlayer {enum {SYNC_INSYNC};};
+std::shared_ptr<const void> startupWaitingSource;
+bool aml_subtitle_active_area_startup_pending(const std::shared_ptr<const void>& source)
+{return source && source==startupWaitingSource;}
 struct CVideoPlayerVideo {
+  struct {std::shared_ptr<const void> subtitleProbeSource=std::make_shared<int>(0);} m_hints;
   double m_iSubtitleDelay=0;bool m_bRenderSubs=false;
   int m_syncState=IDVDStreamPlayer::SYNC_INSYNC;
   OverlayContainer container;OverlayContainer* m_pOverlayContainer=&container;
@@ -417,7 +421,15 @@ int main() {
    p.m_3dSubtitleDepth=-3;auto depthB=v.ProcessOverlays(&p,110);
    assert(depthA[0].subtitleDepth==7&&depthB[0].subtitleDepth==-3);
    assert(depthA[0].overlay_dvd==depthB[0].overlay_dvd);
-   sub->bForced=true;sub->PublishRenderContent();b=v.ProcessOverlays(&p,110);assert(b.size()==1&&b[0].pts==110);}
+   startupWaitingSource=v.m_hints.subtitleProbeSource;
+   assert(v.ProcessOverlays(&p,110).empty()); // no misplaced startup subtitles on the still frame
+   sub->bForced=true;sub->PublishRenderContent();assert(v.ProcessOverlays(&p,110).empty());
+   auto discMenu=menu(false,0xff101010);v.container.items.push_back(discMenu);
+   b=v.ProcessOverlays(&p,110);assert(b.size()==1&&b[0].overlay_dvd==discMenu->GetPublishedRenderContent());
+   v.container.items={sub};startupWaitingSource=std::make_shared<int>(1);
+   b=v.ProcessOverlays(&p,110);assert(b.size()==1); // a stale selection cannot hide current text
+   startupWaitingSource.reset();
+   b=v.ProcessOverlays(&p,110);assert(b.size()==1&&b[0].pts==110);}
 }
 '''
 

@@ -136,13 +136,14 @@ LIFECYCLE = r'''
 #include <mutex>
 enum {DV_DETECT_FAILED=0,DV_DETECT_SKIP_NON16X9=1,DV_DETECT_SKIP_IMAX=2,
  DV_DETECT_OK=3,DV_DETECT_SKIPPED=4,DV_DETECT_INACTIVE=5,DV_DETECT_RUNNING=6,
- LOGDEBUG=0,LOGERROR=1};
+ LOGDEBUG=0,LOGERROR=1,LOGINFO=2};
 namespace PERFORMANCE_CORES {bool allowed=true;bool ApplyDetectionCurrentThread(){return allowed;}}
 struct DetectResult {uint16_t top,bottom,left,right;bool highConfidence=false;};
 struct DetectSource {
  std::string path;int streamIndex=0,codecHint=173,width=1920,height=1080;
  bool nativeDV=false,allowProbe=true;
  std::atomic<bool> pending{false};
+ std::shared_ptr<std::atomic<bool>> startupWait=std::make_shared<std::atomic<bool>>(false),startupAdmission=std::make_shared<std::atomic<bool>>(false);
  std::atomic<int> completedPositions{0};
  std::shared_ptr<std::atomic<bool>> superseded=std::make_shared<std::atomic<bool>>(false);
  std::shared_ptr<const DetectResult> result,subtitleResult,retained,retainedSubtitle;

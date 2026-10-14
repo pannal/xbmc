@@ -850,9 +850,6 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   m_processInfo->SetFullscreen(options.fullscreen);
   FinishActiveAreaProgress();
   aml_dv_detect_set_file(file.GetDynPath());
-#if defined(HAS_LIBAMCODEC)
-  aml_subtitle_active_area_startup_begin();
-#endif
   m_activeAreaWaitStart = {};
 
   m_processInfo->SetPlayTimes(0,0,0,0);
@@ -1700,6 +1697,12 @@ void CVideoPlayer::Prepare()
   m_processInfo->SetTempo(1.0);
   m_processInfo->SetFrameAdvance(false);
   m_State.Clear();
+#if defined(HAS_LIBAMCODEC)
+  // Prepare is shared by fresh opens and PLAYER_OPENFILE replacements.
+  FinishActiveAreaProgress();
+  m_activeAreaWaitStart = {};
+  aml_subtitle_active_area_startup_begin();
+#endif
   m_chapterSeekTarget = 0;
   m_CurrentVideo.hint.Clear();
   m_CurrentAudio.hint.Clear();
@@ -4626,10 +4629,10 @@ bool CVideoPlayer::WaitForActiveAreaDetection()
                                               completed, total))
   {
     const auto now = std::chrono::steady_clock::now();
-    if (m_activeAreaWaitStart == std::chrono::steady_clock::time_point{})
+    if (total > 0 && m_activeAreaWaitStart == std::chrono::steady_clock::time_point{})
       m_activeAreaWaitStart = now;
     // Cached/immediate outcomes should not flash a notification.
-    if (!m_activeAreaProgress && now - m_activeAreaWaitStart >= 500ms)
+    if (total > 0 && !m_activeAreaProgress && now - m_activeAreaWaitStart >= 500ms)
     {
       auto* gui = CServiceBroker::GetGUI();
       auto* dialog = gui ? gui->GetWindowManager().GetWindow<CGUIDialogExtendedProgressBar>(
@@ -4642,9 +4645,17 @@ bool CVideoPlayer::WaitForActiveAreaDetection()
     }
     if (m_activeAreaProgress)
     {
-      m_activeAreaProgress->SetText(
-          StringUtils::Format(g_localizeStrings.Get(69377), completed, total));
-      m_activeAreaProgress->SetProgress(completed, total);
+      if (total > 0)
+      {
+        m_activeAreaProgress->SetText(
+            StringUtils::Format(g_localizeStrings.Get(69377), completed, total));
+        m_activeAreaProgress->SetProgress(completed, total);
+      }
+      else
+      {
+        m_activeAreaProgress->SetText(g_localizeStrings.Get(69376));
+        m_activeAreaProgress->SetPercentage(0.0f);
+      }
     }
     return true;
   }
@@ -5799,7 +5810,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::funct
                                bool preserveSubtitleGeometry)
 {
 #if defined(HAS_LIBAMCODEC)
-  aml_subtitle_active_area_invalidate(preserveSubtitleGeometry);
+  aml_subtitle_active_area_invalidate(preserveSubtitleGeometry, true);
 #endif
   m_vs10Action.Suspend();
   if (m_pendingFlush)

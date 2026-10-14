@@ -50,7 +50,7 @@ PREFIX = r'''
 #include <string>
 #include <vector>
 std::vector<bool> subtitleInvalidations;
-void aml_subtitle_active_area_invalidate(bool preserve) { subtitleInvalidations.push_back(preserve); }
+void aml_subtitle_active_area_invalidate(bool preserve, bool restart) { assert(restart); subtitleInvalidations.push_back(preserve); }
 std::vector<std::shared_ptr<const void>> startupCompletions;
 void aml_subtitle_active_area_startup_complete(const std::shared_ptr<const void>& source) {startupCompletions.push_back(source);}
 std::shared_ptr<const void> aml_subtitle_active_area_source(){static auto source=std::make_shared<int>(0);return source;}

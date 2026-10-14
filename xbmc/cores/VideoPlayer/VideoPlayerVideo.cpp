@@ -1058,6 +1058,10 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 
   if (decoderState == CDVDVideoCodec::VC_EOF)
   {
+#if defined(HAS_LIBAMCODEC)
+    // No picture may have reached route admission. Do not hold an empty stream.
+    aml_subtitle_active_area_startup_admitted(m_hints.subtitleProbeSource);
+#endif
     m_mpeg2Cadence.Drain();
     m_isEOS = true;
     if (m_syncState == IDVDStreamPlayer::SYNC_STARTING)
@@ -1346,6 +1350,12 @@ OVERLAY::CRenderer::OverlayBatch CVideoPlayerVideo::ProcessOverlays(const VideoP
   OVERLAY::CRenderer::OverlayBatch batch;
 
   double subsPts = pts - m_iSubtitleDelay;
+#if defined(HAS_LIBAMCODEC)
+  const bool waitForActiveArea =
+      aml_subtitle_active_area_startup_pending(m_hints.subtitleProbeSource);
+#else
+  const bool waitForActiveArea = false;
+#endif
 
   // remove any overlays that are out of time
   if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
@@ -1368,6 +1378,8 @@ OVERLAY::CRenderer::OverlayBatch CVideoPlayerVideo::ProcessOverlays(const VideoP
     {
       std::shared_ptr<CDVDOverlay>& pOverlay = *it++;
       if (pOverlay->IsDiscMenuOverlay() && pOverlay != discMenu)
+        continue;
+      if (!pOverlay->IsDiscMenuOverlay() && waitForActiveArea)
         continue;
       if (!pOverlay->IsDiscMenuOverlay() && !pOverlay->bForced && !m_bRenderSubs)
         continue;
@@ -1414,6 +1426,7 @@ void CVideoPlayerVideo::UpdateSubtitleProbe(const VideoPicture& picture)
       m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
   {
     StopSubtitleProbe(); // format renegotiation may change the installed decoder route
+    aml_subtitle_active_area_startup_admitted(m_hints.subtitleProbeSource);
     return;
   }
   if (m_subtitleProbeSource == m_hints.subtitleProbeSource &&
@@ -1430,8 +1443,17 @@ void CVideoPlayerVideo::UpdateSubtitleProbe(const VideoPicture& picture)
 
 void CVideoPlayerVideo::ResetSubtitleProbe()
 {
-  if (m_subtitleProbeSource && m_subtitleProbeSource == aml_subtitle_active_area_source())
-    aml_subtitle_active_area_invalidate(true);
+  auto* softwareCodec = dynamic_cast<CDVDVideoCodecFFmpeg*>(m_pVideoCodec.get());
+  const auto& source = m_hints.subtitleProbeSource;
+  if (softwareCodec && !softwareCodec->GetHWAccel() &&
+      m_hints.hdrType != StreamHdrType::HDR_TYPE_DOLBYVISION &&
+      source && source == aml_subtitle_active_area_source())
+  {
+    aml_subtitle_active_area_invalidate(true, true);
+    // Reset has retired the old decode call. Renew its source now, so an EOF
+    // before the next picture can resolve admission without reviving that run.
+    aml_subtitle_active_area_reset(source);
+  }
   // The next configured decoded picture must restart a cancelled run, including
   // when a flush arrived before any file-wide geometry had been accepted.
   m_subtitleProbeWidth = 0;
@@ -1482,6 +1504,9 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
                                 m_pVideoCodec->GetAllowedReferences()))
   {
     CLog::Log(LOGERROR, "{} - failed to configure renderer", __FUNCTION__);
+#if defined(HAS_LIBAMCODEC)
+    aml_subtitle_active_area_startup_admitted(m_hints.subtitleProbeSource);
+#endif
     return OUTPUT_ABORT;
   }
 

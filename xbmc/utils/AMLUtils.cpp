@@ -2750,6 +2750,7 @@ struct DetectSource
   std::atomic<int> completedPositions{0};
   // Shared across configuration of the same startup selection, never a new file.
   std::shared_ptr<std::atomic<bool>> startupWait{std::make_shared<std::atomic<bool>>(false)};
+  std::shared_ptr<std::atomic<bool>> startupAdmission{std::make_shared<std::atomic<bool>>(false)};
   std::shared_ptr<const DetectResult> result; // protected by s_detectSourceMutex
   // Accepted file-wide geometry may outlive a cancelled probe, never its admission.
   std::shared_ptr<const DetectResult> retained;
@@ -2826,10 +2827,13 @@ std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int
       s_detectSource->codecHint != codec)
   {
     const auto startupWait = s_detectSource->startupWait;
+    const auto startupAdmission = s_detectSource->startupAdmission;
+    startupAdmission->store(startupWait->load());
     s_detectSource->superseded->store(true);
     s_detectSource = std::make_shared<DetectSource>(s_detectSource->path, 0, 0, false, false,
                                                    std::shared_ptr<const void>{}, streamIndex, codec);
     s_detectSource->startupWait = startupWait;
+    s_detectSource->startupAdmission = startupAdmission;
     s_detectStable.store(false);
     CServiceBroker::GetDataCacheCore().ClearVideoDoViFrameMetadata();
   }
@@ -2848,6 +2852,7 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
                                                  nativeDV, allowProbe, expectedSource,
                                                  previous->streamIndex, previous->codecHint);
   s_detectSource->startupWait = previous->startupWait;
+  s_detectSource->startupAdmission = previous->startupAdmission;
   if (allowProbe && previous->width == width && previous->height == height &&
       previous->nativeDV == nativeDV && previous->allowProbe == allowProbe)
   {
@@ -2858,10 +2863,28 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
   return true;
 }
 
-void aml_subtitle_active_area_invalidate(bool preserveGeometry)
+void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedSource)
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  if (!expectedSource || expectedSource != s_detectSource->selection)
+    return;
+  const auto previous = s_detectSource;
+  previous->superseded->store(true);
+  s_detectSource = std::make_shared<DetectSource>(previous->path, previous->width, previous->height,
+      previous->nativeDV, previous->allowProbe, expectedSource,
+      previous->streamIndex, previous->codecHint);
+  s_detectSource->startupWait = previous->startupWait;
+  s_detectSource->startupAdmission = previous->startupAdmission;
+  s_detectSource->retained = previous->retained;
+  s_detectSource->retainedSubtitle = previous->retainedSubtitle;
+}
+
+void aml_subtitle_active_area_invalidate(bool preserveGeometry, bool restartProbe)
 {
   // No join, I/O or native admission on the seek/lifecycle request thread.
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  if (restartProbe && s_detectSource->startupWait->load())
+    s_detectSource->startupAdmission->store(true);
   if (preserveGeometry)
   {
     if (!s_detectSource->superseded->load() && s_detectSource->result)
@@ -2890,8 +2913,23 @@ bool aml_subtitle_native_dv()
 void aml_subtitle_active_area_startup_begin()
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
-  s_detectSource->startupWait->store(
-      settings()->GetBool(CSettings::SETTING_SUBTITLES_WAITACTIVEAREA));
+  // Native mode is resolved later by decoder open; do not use its cached mode
+  // to decide whether startup must wait for admission.
+  const bool requested = settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
+      (settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) &&
+       settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA) &&
+       !aml_dv_l5_override_active());
+  const bool wait = requested && settings()->GetBool(CSettings::SETTING_SUBTITLES_WAITACTIVEAREA);
+  s_detectSource->startupWait->store(wait);
+  s_detectSource->startupAdmission->store(wait);
+}
+
+void aml_subtitle_active_area_startup_admitted(const std::shared_ptr<const void>& expectedSource)
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  if (expectedSource && expectedSource == s_detectSource->selection &&
+      !s_detectSource->superseded->load())
+    s_detectSource->startupAdmission->store(false);
 }
 
 bool aml_subtitle_active_area_startup_progress(const std::shared_ptr<const void>& expectedSource,
@@ -2900,8 +2938,13 @@ bool aml_subtitle_active_area_startup_progress(const std::shared_ptr<const void>
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   completed = total = 0;
   if (!expectedSource || expectedSource != s_detectSource->selection ||
-      s_detectSource->superseded->load() || !s_detectSource->startupWait->load() ||
-      !s_detectSource->pending.load())
+      !s_detectSource->startupWait->load())
+    return false;
+  // Cancelling one run for a seek is not completion of the startup selection.
+  // total=0 distinguishes deferred admission from an actual 14-position scan.
+  if (s_detectSource->startupAdmission->load())
+    return true;
+  if (s_detectSource->superseded->load() || !s_detectSource->pending.load())
     return false;
   total = 14; // the scanner's fixed sample-position policy
   completed = std::clamp(s_detectSource->completedPositions.load(), 0, total);
@@ -4708,16 +4751,30 @@ static void detect_clear_injection(bool nativeSource)
 void aml_dv_detect_active_area_start()
 {
   s_detectWorker.Stop(); // cancel/join before shared scanner state is reused
-  if (s_detectWorker.Closed())
-    return;
   std::shared_ptr<DetectSource> source;
+  std::shared_ptr<const void> completion;
   {
     std::lock_guard<std::mutex> lock(s_detectSourceMutex);
     source = s_detectSource;
+    if (source->superseded->load())
+      return; // only its replacement may resolve a restarting admission
+    // Keep the admission-to-worker handoff atomic for the player's query.
+    // The guard also releases synchronous skips and failed thread launches.
+    completion = std::shared_ptr<const void>(nullptr, [source](const void*) {
+      source->pending.store(false);
+      if (source->startupWait->load())
+        CLog::Log(LOGINFO, "DetectActiveArea: startup attempt ended positions={}/14 state={} "
+                          "superseded={} restart_pending={}", source->completedPositions.load(),
+                  s_detectState.load(), source->superseded->load(), source->startupAdmission->load());
+    });
+    source->pending.store(true);
+    source->startupAdmission->store(false);
     source->result.reset();
     source->subtitleResult.reset();
     source->completedPositions.store(0);
   }
+  if (s_detectWorker.Closed())
+    return;
   s_detectThrottleActive.store(false);
   s_detectCacheStarved.store(false);
   s_detectStable.store(false);
@@ -4732,12 +4789,6 @@ void aml_dv_detect_active_area_start()
   // Known player padding is already represented by the renderer video rectangle.
   s_detectState.store(DV_DETECT_RUNNING);
   const bool cacheEnabled = settings()->GetBool(CSettings::SETTING_SUBTITLES_CACHEACTIVEAREA);
-  // The captured guard also releases on early return, worker exception, failed
-  // launch and cancellation; a stale global RUNNING state cannot hold playback.
-  auto completion = std::shared_ptr<const void>(nullptr, [source](const void*) {
-    source->pending.store(false);
-  });
-  source->pending.store(true);
   s_detectWorker.Start([source, cacheEnabled, completion](const CAMLNativeWorker::Run& run) {
     ACTIVE_AREA_CACHE::Identity identity;
     identity.path = source->path;
