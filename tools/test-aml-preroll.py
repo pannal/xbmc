@@ -94,6 +94,9 @@ struct ProcessInfo
   auto& GetVideoSettings() { return settings; }
 };
 void aml_dv_backend_sample(std::shared_ptr<const void>&, uint64_t&, uint64_t&) {}
+bool activeAreaPending=false;
+bool aml_subtitle_active_area_startup_pending(const std::shared_ptr<const void>&){return activeAreaPending;}
+void aml_subtitle_active_area_startup_admitted(const std::shared_ptr<const void>&){activeAreaPending=false;}
 struct Session { bool AcquireDecoder() { return true; } };
 class CAMLCodec
 {
@@ -108,7 +111,8 @@ public:
   ProcessInfo m_processInfo;
   Session m_session;
   struct { bool stills = false; int codec = AV_CODEC_ID_HEVC;
-           double aspect = 1.78; std::string stereo_mode; } m_hints;
+           double aspect = 1.78; std::string stereo_mode;
+           std::shared_ptr<const void> subtitleProbeSource; } m_hints;
   struct { bool pictureEmitted = false; } m_stillFrameDrain;
   bool m_opened = true, m_dvBackendPaused = false, m_stream_eof = false;
   bool m_drain = false, m_no_data_since_reset = false, m_buffer_level_ready = true;
@@ -171,8 +175,8 @@ struct CSysfsPath {explicit CSysfsPath(const char*){}bool Exists(){return false;
 struct IDVDStreamPlayer {enum ESyncState {SYNC_STARTING,SYNC_WAITSYNC,SYNC_INSYNC};};
 struct CRenderManager {
   struct BufferReservation {};
-  int published=0,waits=0;
-  bool Configure(const VideoPicture&,float,int,int,unsigned){return true;}
+  int published=0,waits=0;bool configureOK=true;
+  bool Configure(const VideoPicture&,float,int,int,unsigned){return configureOK;}
   int WaitForBuffer(BufferReservation&,bool&,std::chrono::milliseconds){++waits;return 1;}
   bool AddVideoPicture(BufferReservation&,const VideoPicture&,int,bool&,EINTERLACEMETHOD,bool){++published;return true;}
   double GetDelay(){return 0;}
@@ -192,7 +196,8 @@ struct CVideoPlayerVideo:IDVDStreamPlayer {
     bool Supports(EINTERLACEMETHOD){return true;}
     EINTERLACEMETHOD GetDeinterlacingMethodDefault(){return EINTERLACEMETHOD::VS_INTERLACEMETHOD_NONE;}
   } m_processInfo;
-  struct {int orientation=0,hdrType=0,codec=AV_CODEC_ID_HEVC,codecOptions=0;}m_hints;
+  struct {int orientation=0,hdrType=0,codec=AV_CODEC_ID_HEVC,codecOptions=0;
+          std::shared_ptr<const void> subtitleProbeSource;}m_hints;
   struct Codec {unsigned GetAllowedReferences(){return 0;}}codec;
   Codec* m_pVideoCodec=&codec;
   struct {void Add(double){}}m_ptsTracker;
@@ -203,6 +208,7 @@ struct CVideoPlayerVideo:IDVDStreamPlayer {
   struct Parent {int starts=0;void Put(std::shared_ptr<CDVDMsg> msg){if(auto p=std::dynamic_pointer_cast<CDVDMsgType<SStartMsg>>(msg)){++starts;assert(p->value.epoch==7);}}}m_messageParent;
   CRenderManager m_renderManager;
   void CalcFrameRate(){}int ProcessOverlays(const VideoPicture*,double){return 0;}
+  void UpdateSubtitleProbe(const VideoPicture&){}
   void LogSyncTransition(const char*,double){}
   EOutputState OutputPicture(const VideoPicture*);
   void Accept(const VideoPicture& p) {
@@ -303,6 +309,26 @@ int main(int argc, char**)
     require(!(p.iFlags & DVP_FLAG_DROPPED), "no_target_means_no_preroll_drop");
     require(p.iFlags & DVP_FLAG_INTERLACED, "interlace_flag_preserved");
     require(ordinary.holdDecodedPts.size() == 1, "ordinary_hold_admission_preserved");
+    // A detector-owned pause can last longer than the five-second watchdog.
+    CAMLCodec waiting;waiting.m_speed=DVD_PLAYSPEED_PAUSE;activeAreaPending=true;
+    for(int i=0;i<3;++i){
+      waiting.m_tp_last_frame=std::chrono::system_clock::now()-std::chrono::seconds(10);
+      const auto result=waiting.GetPicture(p);
+      require(result!=CDVDVideoCodec::VC_FLUSHED_TIMEOUT,"startup_wait_is_not_decoder_stall");
+    }
+    waiting.incoming={{77,1,false}};
+    require(waiting.GetPicture(p)==CDVDVideoCodec::VC_PICTURE,"startup_wait_allows_first_decode");
+    activeAreaPending=false;
+    CVideoPlayerVideo failedRenderer;failedRenderer.m_renderManager.configureOK=false;
+    activeAreaPending=true;
+    require(failedRenderer.OutputPicture(&p)==CVideoPlayerVideo::OUTPUT_ABORT,"failed_config_aborts_output");
+    require(!activeAreaPending,"failed_config_resolves_probe_admission");
+    waiting.m_tp_last_frame=std::chrono::system_clock::now()-std::chrono::seconds(10);
+    require(waiting.GetPicture(p)==CDVDVideoCodec::VC_FLUSHED_TIMEOUT,"watchdog_returns_after_wait");
+    activeAreaPending=true;waiting.m_speed=DVD_PLAYSPEED_NORMAL;
+    waiting.m_tp_last_frame=std::chrono::system_clock::now()-std::chrono::seconds(10);
+    require(waiting.GetPicture(p)==CDVDVideoCodec::VC_FLUSHED_TIMEOUT,"normal_speed_watchdog_preserved");
+    activeAreaPending=false;
   }
   std::cout << (observeOriginal ? "ORIGINAL BAD BOUNDARY REPRODUCED" : "NATIVE GETPICTURE PREROLL CHECKS PASS") << std::endl;
 }
@@ -317,7 +343,7 @@ def run(actual, setter, admission, observe=False, reject=False):
         subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++17', '-Wall', '-Wextra', '-Werror',
                         '-g', '-O1', '-fno-omit-frame-pointer', '-no-pie',
                         '-fsanitize=address,undefined', '-I'+str(ROOT / 'xbmc'), str(cpp), '-o', str(binary)], check=True)
-        env = dict(os.environ, ASAN_OPTIONS='detect_leaks=1:halt_on_error=1',
+        env = dict(os.environ, ASAN_OPTIONS=os.environ.get('ASAN_OPTIONS', 'detect_leaks=1:halt_on_error=1'),
                    UBSAN_OPTIONS='halt_on_error=1:print_stacktrace=1')
         result = subprocess.run([str(binary)] + (['observe-original'] if observe else []),
                                 env=env, capture_output=True, text=True, timeout=20)
@@ -350,7 +376,7 @@ def main():
     owner=(ROOT / 'xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp').read_text()
     start=extract(owner, 'if (m_syncState == IDVDStreamPlayer::SYNC_STARTING &&')
     output=extract(owner, 'CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(')
-    admission=ADMISSION.replace('@START@',start).replace('@OUTPUT@',output)
+    admission=ADMISSION.replace('@START@',start).replace('@OUTPUT@',output.replace('#if defined(HAS_LIBAMCODEC)', '#if 1'))
     run(actual, setter, admission, observe=args.observe_original, reject=bool(args.baseline) and not args.observe_original)
     if args.negative_controls:
         controls = [
