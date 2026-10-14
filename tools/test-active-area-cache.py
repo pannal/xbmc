@@ -155,7 +155,7 @@ struct DetectResult {uint16_t top,bottom,left,right;bool highConfidence=false;};
 struct DetectSource {
  std::string path;int streamIndex=0,codecHint=173,width=1920,height=1080;
  bool nativeDV=false,allowProbe=true;
- std::atomic<bool> pending{false};
+ std::atomic<bool> pending{false};bool startupScan=false;
  std::shared_ptr<std::atomic<bool>> startupWait=std::make_shared<std::atomic<bool>>(false),startupAdmission=std::make_shared<std::atomic<bool>>(false);
  std::atomic<int> completedPositions{0};
  std::shared_ptr<std::atomic<bool>> superseded=std::make_shared<std::atomic<bool>>(false);

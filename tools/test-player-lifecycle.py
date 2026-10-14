@@ -209,7 +209,7 @@ struct CVideoPlayerVideo {
   std::shared_ptr<FakeCodec> m_pVideoCodec=std::make_shared<FakeCodec>();
   Renderer m_renderManager; CDVDMessageQueue m_messageQueue,m_messageParent;
   std::shared_ptr<CDVDMsg> m_pendingResetMessage;
-  bool m_pendingRecoveryDiscard=false,m_isEOS=false,m_rewindStalled=true,m_stalled=false,m_bAbortOutput=false;
+  bool m_pendingRecoveryDiscard=false,m_isEOS=false,m_inputEnded=false,m_rewindStalled=true,m_stalled=false,m_bAbortOutput=false;
   bool aborted=false; int m_syncState=IDVDStreamPlayer::SYNC_INSYNC;
   struct { VideoBuffer* videoBuffer=nullptr; } m_picture;
   std::list<DVDMessageListItem> m_packets; Stats m_droppingStats,m_ptsTracker;

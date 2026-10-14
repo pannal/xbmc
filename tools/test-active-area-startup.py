@@ -477,7 +477,14 @@ int main(){ready();CAMLSession value;init(value);settingsValue.wait=true;
             (player,'finished progress handle leaked','m_activeAreaProgress->MarkFinished();','/* leaked */'),
         ]:
             assert old in code,label
-            run(code.replace(old,new),negative=True);print('REJECTED:',label)
+            mutant = code.replace(old,new)
+            # Admission now rechecks hold state after querying the cache.
+            # Remove both bypasses to model the same broken held-scan policy.
+            if label == 'throttle waits on held playback':
+                mutant = mutant.replace('return detect_startup_wait_active(run) ? 100 : level;', 'return level;')
+            elif label == 'low-buffer abort during hold':
+                mutant = mutant.replace('if (detect_startup_wait_active(*run))\n          return 0;', '/* late hold protection lost */')
+            run(mutant,negative=True);print('REJECTED:',label)
 
 
 if __name__=='__main__':main()

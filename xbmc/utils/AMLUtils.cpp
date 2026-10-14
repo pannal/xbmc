@@ -2754,6 +2754,7 @@ struct DetectSource
   const int codecHint;
   const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
   std::atomic<bool> pending{false};
+  bool startupScan{false}; // captured before worker launch; unchanged until join
   std::atomic<int> completedPositions{0};
   // Shared across configuration of the same startup selection, never a new file.
   std::shared_ptr<std::atomic<bool>> startupWait{std::make_shared<std::atomic<bool>>(false)};
@@ -3003,6 +3004,28 @@ static bool detect_startup_wait_active(const CAMLNativeWorker::Run& run)
          s_detectSource->pending.load();
 }
 
+static bool detect_wait_for_startup_hold(const CAMLNativeWorker::Run& run)
+{
+  for (;;)
+  {
+    {
+      std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+      if (run.Cancelled())
+        return false;
+      if (!s_detectSource->startupScan)
+        return true; // ordinary background detection keeps its buffer protection
+      if (!s_detectSource->startupWait->load())
+        return false; // playback ended before this startup scan could proceed
+      if (s_detectSource->startupHeld->load())
+        return true;
+    }
+    // Only the scanner waits. Decoder/player/native owners must be able to
+    // finish synchronization or cancel and join this run without waiting for it.
+    if (!run.WaitFor(std::chrono::milliseconds(10)))
+      return false;
+  }
+}
+
 bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
     uint16_t& bottom, uint16_t& left, uint16_t& right, bool allowSubtitleEstimate)
 {
@@ -3097,7 +3120,7 @@ static int64_t detect_steady_ms()
 static int detect_interrupt_cb(void *opaque)
 {
   const auto* run = static_cast<const CAMLNativeWorker::Run*>(opaque);
-  if (!run || run->Cancelled())
+  if (!run || !detect_wait_for_startup_hold(*run))
     return 1;
   /* Abort the in-flight read if playback's buffer goes critical.  Rate-limited:
    * the interrupt callback is polled in tight I/O loops, and the cache query
@@ -3113,6 +3136,12 @@ static int detect_interrupt_cb(void *opaque)
       if (appPlayer && appPlayer->IsPlaying() &&
           appPlayer->GetCacheLevel() < kDetectCacheCriticalPct)
       {
+        // A hold can be lost between the admission check and cache query.
+        // Wait for resynchronization instead of terminating startup detection.
+        if (!detect_wait_for_startup_hold(*run))
+          return 1;
+        if (detect_startup_wait_active(*run))
+          return 0;
         s_detectCacheStarved.store(true);
         return 1;
       }
@@ -3122,19 +3151,29 @@ static int detect_interrupt_cb(void *opaque)
 }
 
 /* AVIO callbacks for reading through Kodi's VFS (handles nfs://, smb://, etc.) */
+struct DetectInput
+{
+  XFILE::CFile& file;
+  const CAMLNativeWorker::Run& run;
+};
+
 static int detect_avio_read(void *opaque, uint8_t *buf, int size)
 {
-  auto* file = static_cast<XFILE::CFile*>(opaque);
-  int ret = file->Read(buf, size);
+  auto& input = *static_cast<DetectInput*>(opaque);
+  if (detect_interrupt_cb(const_cast<CAMLNativeWorker::Run*>(&input.run)))
+    return AVERROR_EXIT;
+  int ret = input.file.Read(buf, size);
   return (ret == 0) ? AVERROR_EOF : ret;
 }
 
 static int64_t detect_avio_seek(void *opaque, int64_t pos, int whence)
 {
-  auto* file = static_cast<XFILE::CFile*>(opaque);
+  auto& input = *static_cast<DetectInput*>(opaque);
+  if (detect_interrupt_cb(const_cast<CAMLNativeWorker::Run*>(&input.run)))
+    return AVERROR_EXIT;
   if (whence == AVSEEK_SIZE)
-    return file->GetLength();
-  return file->Seek(pos, whence & ~AVSEEK_FORCE);
+    return input.file.GetLength();
+  return input.file.Seek(pos, whence & ~AVSEEK_FORCE);
 }
 
 static bool detect_throttle_enabled()
@@ -3166,7 +3205,7 @@ static int detect_wait_for_cache(const CAMLNativeWorker::Run& run, int targetPct
   int waited = 0;
   for (;;)
   {
-    if (run.Cancelled())
+    if (!detect_wait_for_startup_hold(run))
       return -1;
     // Startup holds the clock/A/V, so there is no draining playback to protect.
     if (detect_startup_wait_active(run))
@@ -3176,7 +3215,11 @@ static int detect_wait_for_cache(const CAMLNativeWorker::Run& run, int targetPct
       return 100;
     const int level = appPlayer->GetCacheLevel();
     if (level >= targetPct || waited >= maxWaitMs)
-      return level;
+    {
+      if (!detect_wait_for_startup_hold(run))
+        return -1;
+      return detect_startup_wait_active(run) ? 100 : level;
+    }
     if (!run.WaitFor(std::chrono::milliseconds(step)))
       return -1;
     waited += step;
@@ -3966,6 +4009,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   AVPacket pkt;
   AVIOContext* avioCtx = nullptr;
   XFILE::CFile file;
+  DetectInput input{file, run};
   uint8_t* avioBuf = nullptr;
   const int bufSize = 32768;
   int videoIdx = -1;
@@ -3986,6 +4030,9 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     s_detectState.store(DV_DETECT_SKIPPED);
     goto cleanup;
   }
+
+  if (!detect_wait_for_startup_hold(run))
+    goto cleanup;
 
   /* Cache-aware throttle: wait for playback to build a safety margin before we
    * start competing for the device.  If the cache can't even reach the floor
@@ -4012,6 +4059,8 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   s_detectThrottleActive.store(throttle);
 
   /* Open through Kodi VFS — supports nfs://, smb://, local paths, etc. */
+  if (detect_interrupt_cb(const_cast<CAMLNativeWorker::Run*>(&run)))
+    goto cleanup;
   if (!file.Open(filePath, XFILE::READ_NO_CACHE))
   {
     CLog::Log(LOGWARNING, "DetectActiveArea: failed to open {}", filePath);
@@ -4022,7 +4071,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   if (!avioBuf)
     goto cleanup;
 
-  avioCtx = avio_alloc_context(avioBuf, bufSize, 0, &file,
+  avioCtx = avio_alloc_context(avioBuf, bufSize, 0, &input,
                                detect_avio_read, nullptr, detect_avio_seek);
   if (!avioCtx)
   {
@@ -4037,7 +4086,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   /* avformat_open_input sets this itself when pb is pre-supplied, but the
    * cancel check below can reach avformat_close_input on a never-opened
    * context — without the flag that path frees our custom pb (and hands the
-   * stack CFile to ffurl_close).  Set it explicitly so we own avioCtx on
+   * stack VFS context to ffurl_close).  Set it explicitly so we own avioCtx on
    * every exit path. */
   fmtCtx->flags |= AVFMT_FLAG_CUSTOM_IO;
   fmtCtx->interrupt_callback.callback = detect_interrupt_cb;
@@ -4798,6 +4847,7 @@ void aml_dv_detect_active_area_start()
                   s_detectState.load(), source->superseded->load(), source->startupAdmission->load());
     });
     source->pending.store(true);
+    source->startupScan = source->startupWait->load();
     source->startupAdmission->store(false);
     source->result.reset();
     source->subtitleResult.reset();

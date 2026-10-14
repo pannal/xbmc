@@ -297,6 +297,7 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint,
   m_mpeg2RateChanged = false;
   ResetMPEG2Cadence();
   m_isEOS = false;
+  m_inputEnded = false;
   m_recoveryGeneration.AdvanceTo(recoveryGeneration);
   m_stalled = m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET) == 0;
   m_rewindStalled = false;
@@ -597,6 +598,7 @@ void CVideoPlayerVideo::Process()
       // The parent advanced the generation before queueing the reset.
       m_recoveryGeneration.AdvanceTo(m_nextRecoveryGeneration.load());
       m_isEOS = false;
+      m_inputEnded = false;
       if (m_pVideoCodec && !continuingReset)
       {
 #if defined(HAS_LIBAMCODEC)
@@ -631,6 +633,7 @@ void CVideoPlayerVideo::Process()
       m_recoveryGeneration.AdvanceTo(
           std::static_pointer_cast<CDVDMsgVideoFlush>(pMsg)->recoveryGeneration);
       m_isEOS = false;
+      m_inputEnded = false;
       m_messageQueue.Flush(CDVDMsg::VIDEO_DRAIN);
       m_syncEpoch = std::static_pointer_cast<CDVDMsgStreamFlush>(pMsg)->epoch;
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
@@ -720,6 +723,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::VIDEO_DRAIN))
     {
+      m_inputEnded = true;
       // The tail is decoded as is; the parent also rejects recovery at end of stream.
       m_decoderFlushRecovery.OnStreamFlush();
       m_pendingNoOutputRecovery.reset();
@@ -750,6 +754,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::DEMUXER_PACKET))
     {
+      m_inputEnded = false;
       m_isEOS = false;
       DemuxPacket* pPacket = std::static_pointer_cast<CDVDMsgDemuxerPacket>(pMsg)->GetPacket();
       bool bPacketDrop = std::static_pointer_cast<CDVDMsgDemuxerPacket>(pMsg)->GetPacketDrop();
@@ -1061,6 +1066,8 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 #if defined(HAS_LIBAMCODEC)
     // No picture may have reached route admission. Do not hold an empty stream.
     aml_subtitle_active_area_startup_admitted(m_hints.subtitleProbeSource);
+    if (m_inputEnded && m_syncState == IDVDStreamPlayer::SYNC_STARTING)
+      aml_subtitle_active_area_startup_complete(m_hints.subtitleProbeSource);
 #endif
     m_mpeg2Cadence.Drain();
     m_isEOS = true;
@@ -1506,6 +1513,7 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     CLog::Log(LOGERROR, "{} - failed to configure renderer", __FUNCTION__);
 #if defined(HAS_LIBAMCODEC)
     aml_subtitle_active_area_startup_admitted(m_hints.subtitleProbeSource);
+    aml_subtitle_active_area_startup_complete(m_hints.subtitleProbeSource);
 #endif
     return OUTPUT_ABORT;
   }

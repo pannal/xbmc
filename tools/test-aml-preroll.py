@@ -97,6 +97,7 @@ void aml_dv_backend_sample(std::shared_ptr<const void>&, uint64_t&, uint64_t&) {
 bool activeAreaPending=false,activeAreaHeld=false;
 bool aml_subtitle_active_area_startup_held(const std::shared_ptr<const void>&){return activeAreaHeld;}
 void aml_subtitle_active_area_startup_admitted(const std::shared_ptr<const void>&){activeAreaPending=false;}
+void aml_subtitle_active_area_startup_complete(const std::shared_ptr<const void>&){activeAreaPending=false;activeAreaHeld=false;}
 struct Session { bool AcquireDecoder() { return true; } };
 class CAMLCodec
 {

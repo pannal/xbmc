@@ -109,6 +109,7 @@ public:
 
 protected:
   std::atomic_bool m_isEOS{false};
+  bool m_inputEnded{false}; // explicit drain, not a temporary decoder EOF during reset
 
   enum EOutputState
   {

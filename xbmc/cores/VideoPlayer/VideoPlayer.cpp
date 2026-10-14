@@ -4632,9 +4632,11 @@ bool CVideoPlayer::WaitForActiveAreaDetection()
   // audio-first/full-queue fallback must still be able to feed video a keyframe.
   const bool held = pending && m_State.streamsReady && m_activeAreaVideoReady &&
                     m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC;
-  aml_subtitle_active_area_startup_set_held(m_CurrentVideo.hint.subtitleProbeSource, held);
   if (held)
   {
+    // Release scanner I/O only after the clock and stream speeds are paused.
+    SetCaching(CACHESTATE_INIT);
+    aml_subtitle_active_area_startup_set_held(m_CurrentVideo.hint.subtitleProbeSource, true);
     const auto now = std::chrono::steady_clock::now();
     if (total > 0 && m_activeAreaWaitStart == std::chrono::steady_clock::time_point{})
       m_activeAreaWaitStart = now;
@@ -4666,6 +4668,7 @@ bool CVideoPlayer::WaitForActiveAreaDetection()
     }
     return true;
   }
+  aml_subtitle_active_area_startup_set_held(m_CurrentVideo.hint.subtitleProbeSource, false);
   if (!pending && m_State.streamsReady)
     aml_subtitle_active_area_startup_complete(m_CurrentVideo.hint.subtitleProbeSource);
 #endif
