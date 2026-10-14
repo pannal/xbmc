@@ -20599,8 +20599,8 @@ msgstr "Vor der Wiedergabe auf die Erkennung schwarzer Balken warten"
 #. Optional startup wait for black-border detection
 #: system/settings/settings.xml
 msgctxt "#69375"
-msgid "Hold playback at startup until enabled black-border detection finishes, fails or is skipped. A still frame may be visible while waiting. Cached results avoid a new scan. While waiting, detection runs without the playback I/O throttle. A pause you request is preserved. Enabled by default. Changes apply on next playback."
-msgstr "Den Wiedergabestart zurückhalten, bis die aktivierte Erkennung schwarzer Balken abgeschlossen, fehlgeschlagen oder übersprungen ist. Während des Wartens kann ein Standbild sichtbar sein. Zwischengespeicherte Ergebnisse vermeiden eine erneute Analyse. Während des Wartens läuft die Erkennung ohne die E/A-Drosselung zum Schutz der Wiedergabe. Eine selbst angeforderte Pause bleibt erhalten. Standardmäßig aktiviert. Änderungen gelten bei der nächsten Wiedergabe."
+msgid "Hold playback at startup until enabled black-border detection finishes, fails or is skipped. Applies to both subtitle black-border detection and native Dolby Vision L5 detection, when enabled. A still frame may be visible while waiting. Cached results avoid a new scan. While waiting, detection runs without the playback I/O throttle. A pause you request is preserved. Enabled by default. Changes apply on next playback."
+msgstr "Den Wiedergabestart zurückhalten, bis die aktivierte Erkennung schwarzer Balken abgeschlossen, fehlgeschlagen oder übersprungen ist. Gilt für die Untertitel-Balkenerkennung und die native Dolby-Vision-L5-Erkennung, sofern die jeweilige Erkennung aktiviert ist. Während des Wartens kann ein Standbild sichtbar sein. Zwischengespeicherte Ergebnisse vermeiden eine erneute Analyse. Während des Wartens läuft die Erkennung ohne die E/A-Drosselung zum Schutz der Wiedergabe. Eine selbst angeforderte Pause bleibt erhalten. Standardmäßig aktiviert. Änderungen gelten bei der nächsten Wiedergabe."
 
 #. Optional startup wait for black-border detection
 #: system/settings/settings.xml

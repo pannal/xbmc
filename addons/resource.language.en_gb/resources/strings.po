@@ -27858,7 +27858,7 @@ msgstr ""
 #. Optional startup wait for black-border detection
 #: system/settings/settings.xml
 msgctxt "#69375"
-msgid "Hold playback at startup until enabled black-border detection finishes, fails or is skipped. A still frame may be visible while waiting. Cached results avoid a new scan. While waiting, detection runs without the playback I/O throttle. A pause you request is preserved. Enabled by default. Changes apply on next playback."
+msgid "Hold playback at startup until enabled black-border detection finishes, fails or is skipped. Applies to both subtitle black-border detection and native Dolby Vision L5 detection, when enabled. A still frame may be visible while waiting. Cached results avoid a new scan. While waiting, detection runs without the playback I/O throttle. A pause you request is preserved. Enabled by default. Changes apply on next playback."
 msgstr ""
 
 #. Optional startup wait for black-border detection
