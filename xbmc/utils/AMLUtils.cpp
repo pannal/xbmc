@@ -24,6 +24,7 @@
 #include <thread>
 
 #include "AMLUtils.h"
+#include "PM4KStartup.h"
 #include "ActiveAreaCache.h"
 #include "DVBackendState.h"
 #include "utils/PlaybackDiagnostics.h"
@@ -2754,6 +2755,8 @@ struct DetectSource
   const int codecHint;
   const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
   std::atomic<bool> pending{false};
+  bool startupVideoReady{false}; // current epoch, protected by s_detectSourceMutex
+  uint64_t pm4kStartupToken{0}; // immutable after worker launch
   bool startupScan{false}; // captured before worker launch; unchanged until join
   std::atomic<int> completedPositions{0};
   // Shared across configuration of the same startup selection, never a new file.
@@ -2835,12 +2838,14 @@ std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int
   if (streamIndex < 0 || s_detectSource->streamIndex != streamIndex ||
       s_detectSource->codecHint != codec)
   {
+    const auto pm4kStartupToken = s_detectSource->pm4kStartupToken;
     const auto startupWait = s_detectSource->startupWait;
     const auto startupAdmission = s_detectSource->startupAdmission;
     startupAdmission->store(startupWait->load());
     s_detectSource->superseded->store(true);
     s_detectSource = std::make_shared<DetectSource>(s_detectSource->path, 0, 0, false, false,
                                                    std::shared_ptr<const void>{}, streamIndex, codec);
+    s_detectSource->pm4kStartupToken = pm4kStartupToken;
     s_detectSource->startupWait = startupWait;
     s_detectSource->startupAdmission = startupAdmission;
     s_detectStable.store(false);
@@ -2860,6 +2865,8 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
   s_detectSource = std::make_shared<DetectSource>(previous->path, width, height,
                                                  nativeDV, allowProbe, expectedSource,
                                                  previous->streamIndex, previous->codecHint);
+  s_detectSource->startupVideoReady = previous->startupVideoReady;
+  s_detectSource->pm4kStartupToken = previous->pm4kStartupToken;
   s_detectSource->startupWait = previous->startupWait;
   s_detectSource->startupHeld = previous->startupHeld;
   s_detectSource->startupAdmission = previous->startupAdmission;
@@ -2883,6 +2890,8 @@ void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedS
   s_detectSource = std::make_shared<DetectSource>(previous->path, previous->width, previous->height,
       previous->nativeDV, previous->allowProbe, expectedSource,
       previous->streamIndex, previous->codecHint);
+  s_detectSource->startupVideoReady = previous->startupVideoReady;
+  s_detectSource->pm4kStartupToken = previous->pm4kStartupToken;
   s_detectSource->startupWait = previous->startupWait;
   s_detectSource->startupHeld = previous->startupHeld;
   s_detectSource->startupAdmission = previous->startupAdmission;
@@ -2894,6 +2903,7 @@ void aml_subtitle_active_area_invalidate(bool preserveGeometry, bool restartProb
 {
   // No join, I/O or native admission on the seek/lifecycle request thread.
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  s_detectSource->startupVideoReady = false;
   s_detectSource->startupHeld->store(false);
   if (restartProbe && s_detectSource->startupWait->load())
     s_detectSource->startupAdmission->store(true);
@@ -2922,9 +2932,11 @@ bool aml_subtitle_native_dv()
   return s_detectSource->nativeDV && s_detectSource->width > 0 && s_detectSource->height > 0;
 }
 
-void aml_subtitle_active_area_startup_begin()
+void aml_subtitle_active_area_startup_begin(uint64_t pm4kStartupToken)
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  s_detectSource->pm4kStartupToken = PM4K_STARTUP::Claim(pm4kStartupToken);
+  s_detectSource->startupVideoReady = false;
   // Native mode is resolved later by decoder open; do not use its cached mode
   // to decide whether startup must wait for admission.
   const bool requested = settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
@@ -2935,6 +2947,21 @@ void aml_subtitle_active_area_startup_begin()
   s_detectSource->startupWait->store(wait);
   s_detectSource->startupHeld->store(false);
   s_detectSource->startupAdmission->store(wait);
+}
+
+void aml_subtitle_active_area_startup_set_video_ready(const std::shared_ptr<const void>& expectedSource,
+                                                     bool ready)
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  if (expectedSource && expectedSource == s_detectSource->selection)
+    s_detectSource->startupVideoReady = ready;
+}
+
+bool aml_subtitle_active_area_startup_external_pending(const std::shared_ptr<const void>& expectedSource)
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  return expectedSource && expectedSource == s_detectSource->selection &&
+         PM4K_STARTUP::Pending(s_detectSource->pm4kStartupToken);
 }
 
 void aml_subtitle_active_area_startup_set_held(const std::shared_ptr<const void>& expectedSource,
@@ -3012,12 +3039,18 @@ static bool detect_wait_for_startup_hold(const CAMLNativeWorker::Run& run)
       std::lock_guard<std::mutex> lock(s_detectSourceMutex);
       if (run.Cancelled())
         return false;
-      if (!s_detectSource->startupScan)
-        return true; // ordinary background detection keeps its buffer protection
-      if (!s_detectSource->startupWait->load())
-        return false; // playback ended before this startup scan could proceed
-      if (s_detectSource->startupHeld->load())
-        return true;
+      if (s_detectSource->startupScan && !s_detectSource->startupWait->load())
+        return false; // terminal playback retires even an orphaned addon signal
+      if (!PM4K_STARTUP::Pending(s_detectSource->pm4kStartupToken) &&
+          (!s_detectSource->pm4kStartupToken || s_detectSource->startupVideoReady))
+      {
+        if (!s_detectSource->startupScan)
+          return true; // ordinary background detection keeps its buffer protection
+        if (s_detectSource->startupHeld->load())
+          return true;
+      }
+      // PM4K must reach AVStarted and finish its startup seeks without a
+      // detector pause or competing media I/O, including background mode.
     }
     // Only the scanner waits. Decoder/player/native owners must be able to
     // finish synchronization or cancel and join this run without waiting for it.

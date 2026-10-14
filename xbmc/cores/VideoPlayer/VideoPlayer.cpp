@@ -54,6 +54,7 @@
 #include "settings/SettingsComponent.h"
 #include "threads/SingleLock.h"
 #include "utils/AMLUtils.h"
+#include "utils/PM4KStartup.h"
 #include "utils/FontUtils.h"
 #include "utils/JobManager.h"
 #include "utils/LangCodeExpander.h"
@@ -1702,7 +1703,8 @@ void CVideoPlayer::Prepare()
   FinishActiveAreaProgress();
   m_activeAreaWaitStart = {};
   m_activeAreaVideoReady = false;
-  aml_subtitle_active_area_startup_begin();
+  aml_subtitle_active_area_startup_begin(
+      m_item.GetProperty(PM4K_STARTUP::ITEM_TOKEN).asUnsignedInteger());
 #endif
   m_chapterSeekTarget = 0;
   m_CurrentVideo.hint.Clear();
@@ -4624,14 +4626,19 @@ void CVideoPlayer::QueueAudioRecoverySeek()
 bool CVideoPlayer::WaitForActiveAreaDetection()
 {
 #if defined(HAS_LIBAMCODEC)
+  const bool videoReady = !m_bAbortRequest && !m_bStop && m_State.streamsReady &&
+                          m_activeAreaVideoReady &&
+                          m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC;
+  aml_subtitle_active_area_startup_set_video_ready(m_CurrentVideo.hint.subtitleProbeSource, videoReady);
   int completed, total;
   const bool pending = !m_bAbortRequest && !m_bStop && m_CurrentVideo.id >= 0 &&
       aml_subtitle_active_area_startup_progress(m_CurrentVideo.hint.subtitleProbeSource,
                                               completed, total);
   // Initial decode and A/V resync must run before pausing. In particular, an
   // audio-first/full-queue fallback must still be able to feed video a keyframe.
-  const bool held = pending && m_State.streamsReady && m_activeAreaVideoReady &&
-                    m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC;
+  const bool held = pending &&
+                    !aml_subtitle_active_area_startup_external_pending(m_CurrentVideo.hint.subtitleProbeSource) &&
+                    videoReady;
   if (held)
   {
     // Release scanner I/O only after the clock and stream speeds are paused.

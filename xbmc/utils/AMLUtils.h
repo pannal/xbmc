@@ -263,7 +263,10 @@ enum DvDetectState { DV_DETECT_FAILED = 0, DV_DETECT_SKIP_NON16X9 = 1,
 int aml_dv_detect_active_area_state();
 void aml_dv_detect_set_file(const std::string& path);
 // Startup hold is selection-bound and independent of the DV-only status label.
-void aml_subtitle_active_area_startup_begin();
+void aml_subtitle_active_area_startup_begin(uint64_t pm4kStartupToken = 0);
+void aml_subtitle_active_area_startup_set_video_ready(const std::shared_ptr<const void>& expectedSource,
+                                                    bool ready);
+bool aml_subtitle_active_area_startup_external_pending(const std::shared_ptr<const void>& expectedSource);
 // Requested waiting is distinct from the pause after initial video synchronization.
 void aml_subtitle_active_area_startup_set_held(const std::shared_ptr<const void>& expectedSource,
                                              bool held);

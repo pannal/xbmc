@@ -209,7 +209,7 @@ def main():
     code=source();run(code)
     if args.negative_controls:
         for label,old,new in [
-            ('no startup I/O deferral','if (s_detectSource->startupHeld->load())\n        return true;','if (true)\n        return true;'),
+            ('no startup I/O deferral','if (s_detectSource->startupHeld->load())\n          return true;','if (true)\n          return true;'),
             ('temporary EOF cancels replacement','if (m_inputEnded && m_syncState == IDVDStreamPlayer::SYNC_STARTING)','if ((m_inputEnded || true) && m_syncState == IDVDStreamPlayer::SYNC_STARTING)'),
             ('hold published before pause','SetCaching(CACHESTATE_INIT);\n    aml_subtitle_active_area_startup_set_held(m_CurrentVideo.hint.subtitleProbeSource, true);','aml_subtitle_active_area_startup_set_held(m_CurrentVideo.hint.subtitleProbeSource, true);\n    SetCaching(CACHESTATE_INIT);'),
             ('waitOFF loses buffer protection','if (s_detectThrottleActive.load() && !detect_startup_wait_active(*run))','if (false)'),

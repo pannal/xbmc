@@ -13,6 +13,8 @@ fixture=runpy.run_path(str(ROOT/'tools/test-aml-native-continuation.py'))
 function,run=fixture['function'],fixture['run']
 PREFIX=r'''
 #include "utils/AMLNativeWorker.h"
+#include "utils/PM4KStartup.h"
+void aml_subtitle_active_area_startup_begin(uint64_t pm4kStartupToken = 0);
 @CACHE_HEADER@
 #include "windowing/amlogic/AMLDisplayLifecycle.h"
 #include <cassert>

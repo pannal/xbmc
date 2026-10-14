@@ -194,6 +194,9 @@ def player_source():
                         '#include <iostream>\nusing namespace std::chrono_literals;')
     code = code.replace('CACHESTATE_INIT=5;', 'CACHESTATE_INIT=5,CACHESTATE_FULL=6,CACHESTATE_PLAY=7;')
     code = code.replace('struct CServiceBroker {', r'''
+bool externalPending=false;
+void aml_subtitle_active_area_startup_set_video_ready(const std::shared_ptr<const void>&,bool){}
+bool aml_subtitle_active_area_startup_external_pending(const std::shared_ptr<const void>&){return externalPending;}
 bool startupPending=false,heldStatus=false;int notifications=0,progressPosition=0;
 void aml_subtitle_active_area_startup_set_held(const std::shared_ptr<const void>&,bool held){heldStatus=held;}
 int progressTotal=14;
@@ -250,7 +253,7 @@ struct CacheTimer{void Set(std::chrono::milliseconds){} bool IsTimePast()const{r
     open_file = function(source, 'bool CVideoPlayer::OpenFile(')
     assert 'aml_dv_detect_set_file(' in open_file
     prepare = function(source, 'void CVideoPlayer::Prepare()')
-    assert prepare.index('m_State.Clear();') < prepare.index('aml_subtitle_active_area_startup_begin();')
+    assert prepare.index('m_State.Clear();') < prepare.index('aml_subtitle_active_area_startup_begin(')
     assert 'Prepare();' in function(source, 'void CVideoPlayer::CompleteFileReplacement()')
     assert 'FinishActiveAreaProgress();' in function(source,'void CVideoPlayer::OnExit()')
     assert 'aml_subtitle_active_area_startup_complete(' in function(source,'void CVideoPlayer::OnExit()')
@@ -266,6 +269,10 @@ def connected_source():
     native = native.replace(function(native, 'int main()'), '')
     player = player_source()
     player = player.replace(function(player, 'int main()'), '')
+    player = player.replace(function(player, 'void aml_subtitle_active_area_startup_set_video_ready('),
+        'void aml_subtitle_active_area_startup_set_video_ready(const std::shared_ptr<const void>& selected,bool ready){::aml_subtitle_active_area_startup_set_video_ready(selected,ready);}')
+    player = player.replace(function(player, 'bool aml_subtitle_active_area_startup_external_pending('),
+        'bool aml_subtitle_active_area_startup_external_pending(const std::shared_ptr<const void>& selected){return ::aml_subtitle_active_area_startup_external_pending(selected);}')
     player = player.replace(function(player, 'bool aml_subtitle_active_area_startup_progress('),
         'bool aml_subtitle_active_area_startup_progress(const std::shared_ptr<const void>& selected,int& n,int& total){return ::aml_subtitle_active_area_startup_progress(selected,n,total);}')
     player = player.replace(function(player, 'void aml_subtitle_active_area_startup_complete('),
@@ -458,7 +465,7 @@ int main(){ready();CAMLSession value;init(value);settingsValue.wait=true;
             assert old in connected,label
             run(connected.replace(old,new),negative=True);print('REJECTED:',label)
         for code,label,old,new in [
-            (connected,'hold before initial video/sync','pending && m_State.streamsReady && m_activeAreaVideoReady &&','pending &&'),
+            (connected,'hold before initial video/sync','                    videoReady;','                    true;'),
             (connected,'retire wait at AVStarted','if (m_CurrentVideo.id < 0)\n          aml_subtitle_active_area_startup_complete(aml_subtitle_active_area_source());','aml_subtitle_active_area_startup_complete(aml_subtitle_active_area_source());'),
             (native,'requested wait bypasses I/O before held','s_detectSource->startupHeld->load() &&\n         s_detectSource->pending.load()','s_detectSource->startupWait->load() &&\n         s_detectSource->pending.load()'),
             (player,'flush retains obsolete picture readiness','if (sync)\n  {\n    m_activeAreaVideoReady = false;','if (sync)\n  {'),
@@ -468,7 +475,7 @@ int main(){ready();CAMLSession value;init(value);settingsValue.wait=true;
             (native,'stale selection wait','expectedSource != s_detectSource->selection ||','false ||'),
             (native,'cancelled source wait','if (s_detectSource->superseded->load() || !s_detectSource->pending.load())','if (!s_detectSource->pending.load())'),
             # The old pre-sync guard mutant is redundant after post-sync admission.
-            (connected,'audio fallback counts as first picture',' && m_activeAreaVideoReady',''),
+            (connected,'audio fallback counts as first picture','                          m_activeAreaVideoReady &&',''),
             (player,'buffer timeout resumes during hold','if ((state == CACHESTATE_PLAY || state == CACHESTATE_DONE) && WaitForActiveAreaDetection())','if (false)'),
             (player,'force resume after user pause','m_clock.SetSpeed(m_playSpeed);','m_clock.SetSpeed(DVD_PLAYSPEED_NORMAL);'),
             (player,'user resume bypasses hold','if (WaitForActiveAreaDetection())\n        SetCaching(CACHESTATE_INIT);','if (false)\n        SetCaching(CACHESTATE_INIT);'),
