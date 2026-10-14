@@ -44,6 +44,7 @@ constexpr float MIN_WATER_LEVEL = 0.02f; // min buffer time to prevent underrun
 constexpr float MIN_WATER_LEVEL_RESAMPLE = 0.1f; // min buffer time in resample mode
 constexpr float BUFFER_LEVEL_INCREMENT = 0.0001f; // increment step for ramp-up
 constexpr double MAX_BUFFER_TIME = 0.1; // max time of a buffer in seconds;
+constexpr double TRUEHD_SYNC_ERROR_SCALE = 0.45;
 } // unnamed namespace
 
 void CEngineStats::Reset(unsigned int sampleRate, bool pcm)
@@ -2082,7 +2083,7 @@ bool CActiveAE::RunStages()
         // underestimate error for TrueHD passthrough
         // oscillations should be less than frametime 40ms to avoid unnecessary a/v sync corrections
         if (isTrueHDPassthrough)
-          error *= 0.45;
+          error *= TRUEHD_SYNC_ERROR_SCALE;
 
         if (error > maxError)
         {
@@ -2474,6 +2475,11 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
   if (!stream->m_pClock)
     return ret;
 
+  // Corrections must use the same units as the error sampled in RunStages.
+  const double syncErrorScale =
+      (m_mode == MODE_RAW && m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
+          ? TRUEHD_SYNC_ERROR_SCALE : 1.0;
+
   if (stream->m_syncState == CAESyncInfo::AESyncState::SYNC_START)
   {
     stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
@@ -2560,8 +2566,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
           if (error > stream->m_format.m_streamInfo.GetDuration())
             ret->pkt->pause_burst_ms = stream->m_format.m_streamInfo.GetDuration();
 
-          stream->m_syncError.Correction(-ret->pkt->pause_burst_ms);
-          error -= ret->pkt->pause_burst_ms;
+          const double correction = ret->pkt->pause_burst_ms * syncErrorScale;
+          stream->m_syncError.Correction(-correction);
+          error -= correction;
         }
         else
         {
@@ -2598,8 +2605,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       {
         if (-error > stream->m_format.m_streamInfo.GetDuration() / 2)
         {
-          stream->m_syncError.Correction(stream->m_format.m_streamInfo.GetDuration());
-          error += stream->m_format.m_streamInfo.GetDuration();
+          const double correction = stream->m_format.m_streamInfo.GetDuration() * syncErrorScale;
+          stream->m_syncError.Correction(correction);
+          error += correction;
           buf->pkt->nb_samples = 0;
         }
       }

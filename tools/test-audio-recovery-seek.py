@@ -226,6 +226,8 @@ with tempfile.TemporaryDirectory(prefix='audio-recovery-seek-') as tmp:
       m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));''')
     assert old != source
     f.run(old,Path(tmp),'old-audio-enqueue',expect_failure=True)
-    lost=source.replace('if (sync)\n  {\n    m_audioRecoveryPending = false;', 'if (sync)\n  {')
+    flush=f.block(source, 'void Parent::FlushBuffers(')
+    assert flush.count('    m_audioRecoveryPending = false;') == 1
+    lost=source.replace(flush, flush.replace('    m_audioRecoveryPending = false;\n', '', 1))
     assert lost != source
     f.run(lost,Path(tmp),'recovery-not-fulfilled',expect_failure=True)
