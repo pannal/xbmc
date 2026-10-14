@@ -136,6 +136,7 @@ public:
   static float  OMXPtsToSeconds(int omxpts);
   static int    OMXDurationToNs(int duration);
   int           GetAmlDuration() const;
+  float         GetDataLevel() const;
   int           ReleaseFrame(const uint32_t index, uint64_t generation, const CAMLSession::Permit& permit, bool bDrop = false);
   uint64_t      GetPresentationGeneration();
 
@@ -324,6 +325,8 @@ private:
 
   bool            m_buffer_level_ready;
   float           m_minimum_buffer_level;
+  // Input buffer level sampled by an admitted GetPicture(); GetDataLevel() never touches the device.
+  std::atomic<float> m_dataLevel{0.0f};
   bool            m_dvOpened = false;
   std::atomic_bool m_abort{false};
 };
