@@ -11,6 +11,7 @@
 #include "interfaces/generic/ILanguageInvoker.h"
 #include "interfaces/legacy/Addon.h"
 #include "interfaces/python/LanguageHook.h"
+#include "threads/Condition.h"
 #include "threads/CriticalSection.h"
 #include "threads/Event.h"
 
@@ -59,14 +60,20 @@ private:
   void getAddonModuleDeps(const ADDON::AddonPtr& addon, std::set<std::string>& paths);
   bool execute(const std::string& script, std::vector<std::wstring>& arguments);
   FILE* PyFile_AsFileWithMode(PyObject* py_file, const char* mode);
+  void StopThreadStateDone();
 
   PyThreadState* m_threadState;
   PyThreadState* m_mainThreadState{nullptr};
   bool m_stop = false;
   CEvent m_stoppedEvent;
+  // Thread states stop() holds on the interpreter, guarded by m_critical
+  int m_stopThreadStates = 0;
+  XbmcThreads::ConditionVariable m_stopThreadStatesDone;
 
   XBMCAddon::AddonClass::Ref<XBMCAddon::Python::PythonLanguageHook> m_languageHook;
   bool m_systemExitThrown = false;
+  // onExecutionInitialized() succeeded; the destructor finalizes only then
+  bool m_initialized = false;
 
   static CCriticalSection s_critical;
 

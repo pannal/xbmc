@@ -25,6 +25,7 @@
 #include "settings/SettingsComponent.h"
 #include "settings/lib/Setting.h"
 #include "settings/lib/SettingDefinitions.h"
+#include "threads/CriticalSection.h"
 #include "threads/Timer.h"
 #include "utils/FileUtils.h"
 #include "utils/StringUtils.h"
@@ -33,8 +34,10 @@
 #include "utils/XMLUtils.h"
 #include "utils/log.h"
 
+#include <atomic>
 #include <charconv>
 #include <memory>
+#include <mutex>
 
 #define XML_SETTINGS      "settings"
 #define XML_SETTING       "setting"
@@ -67,8 +70,13 @@ public:
 
   void OnTimeout() override;
   void TriggerSave();
+  void Close();
 private:
   CAddon &m_addon;
+  CCriticalSection m_critical;
+  bool m_closed{false};
+  // a change not saved yet; the timer callback and Close() take it
+  std::atomic<bool> m_pending{false};
   CTimer m_timer;
 };
 
@@ -422,6 +430,16 @@ void CSkinInfo::OnPostInstall(bool update, bool modal)
 void CSkinInfo::Unload()
 {
   m_skinTimerManager->Stop();
+}
+
+void CSkinInfo::FlushSettings()
+{
+  m_settingsUpdateHandler->Close();
+}
+
+void CSkinInfo::SettingChanged()
+{
+  m_settingsUpdateHandler->TriggerSave();
 }
 
 bool CSkinInfo::TimerIsRunning(const std::string& timer) const
@@ -790,7 +808,9 @@ void CSkinInfo::Reset()
   for (auto& it : m_strings)
     it.second->value.clear();
 
-  m_settingsUpdateHandler->TriggerSave();
+  // nothing to save without settings; a save would fail
+  if (SettingsLoaded())
+    m_settingsUpdateHandler->TriggerSave();
 }
 
 std::set<CSkinSettingPtr> CSkinInfo::ParseSettings(const TiXmlElement* rootElement)
@@ -911,15 +931,38 @@ bool CSkinInfo::SettingsToXML(CXBMCTinyXML& doc, AddonInstanceId id /* = ADDON_S
 
 void CSkinSettingUpdateHandler::OnTimeout()
 {
-  m_addon.SaveSettings();
+  // a failed save stays pending, so the next timer or Close() retries it
+  if (m_pending.exchange(false) && !m_addon.SaveSettings())
+    m_pending = true;
 }
 
 void CSkinSettingUpdateHandler::TriggerSave()
 {
-  if (m_timer.IsRunning())
-    m_timer.Restart();
-  else
+  std::unique_lock<CCriticalSection> lock(m_critical);
+  if (m_closed)
+  {
+    CLog::LogF(LOGDEBUG, "ignoring skin setting change during shutdown");
+    return;
+  }
+
+  m_pending = true;
+  // Restart() fails if the timer finished since we last looked; start it then
+  if (!m_timer.Restart())
     m_timer.Start(DELAY);
+}
+
+void CSkinSettingUpdateHandler::Close()
+{
+  {
+    std::unique_lock<CCriticalSection> lock(m_critical);
+    m_closed = true;
+  }
+
+  // Waits for a save that is already running. One that hasn't fired yet is
+  // done here, while the add-on manager it notifies still exists.
+  m_timer.Stop(true);
+  if (m_pending.exchange(false) && !m_addon.SaveSettings())
+    CLog::LogF(LOGERROR, "failed to save skin settings");
 }
 
 } /*namespace ADDON*/

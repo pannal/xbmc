@@ -104,7 +104,8 @@ CPythonInvoker::~CPythonInvoker()
   Stop(true);
   pulseGlobalEvent();
 
-  onExecutionFinalized();
+  if (m_initialized)
+    onExecutionFinalized();
 }
 
 bool CPythonInvoker::Execute(
@@ -121,8 +122,10 @@ bool CPythonInvoker::Execute(
     return false;
   }
 
-  if (!onExecutionInitialized())
+  // once per invoker: the destructor finalizes once, however often it ran
+  if (!m_initialized && !onExecutionInitialized())
     return false;
+  m_initialized = true;
 
   return ILanguageInvoker::Execute(script, arguments);
 }
@@ -387,6 +390,10 @@ bool CPythonInvoker::execute(const std::string& script, std::vector<std::wstring
   // no need to do anything else because the script has already stopped
   if (failed)
   {
+    // but clean up and release the GIL like below: onExecutionDone() takes it
+    // again, and stop() may be waiting for it
+    XBMCAddon::RetardedAsyncCallbackHandler::clearPendingCalls(m_threadState);
+    PyEval_ReleaseThread(m_threadState);
     setState(stateToSet);
     return true;
   }
@@ -472,14 +479,17 @@ bool CPythonInvoker::stop(bool abort)
     if (IsRunning())
     {
       setState(InvokerStateStopping);
-      lock.unlock();
 
+      // Create the thread state while holding m_critical, the interpreter is
+      // only ended under it, and register it so onExecutionDone() waits for it.
       PyThreadState* ts = PyThreadState_New(m_threadState->interp);
       if (ts == nullptr)
       {
         CLog::LogF(LOGERROR, "({}, {}) PyThreadState_New failed", GetId(), m_sourceFile);
         return false;
       }
+      ++m_stopThreadStates;
+      lock.unlock();
 
       PyEval_RestoreThread(ts);
 
@@ -493,6 +503,10 @@ bool CPythonInvoker::stop(bool abort)
 
       PyThreadState_Clear(ts);
       PyThreadState_DeleteCurrent();
+
+      lock.lock();
+      StopThreadStateDone();
+      lock.unlock();
     }
     else
       //Release the lock while waiting for threads to finish
@@ -540,6 +554,8 @@ bool CPythonInvoker::stop(bool abort)
         CLog::LogF(LOGERROR, "({}, {}) PyThreadState_New failed", GetId(), m_sourceFile);
         return false;
       }
+      // m_critical is released below; keep the interpreter alive until ts is gone
+      ++m_stopThreadStates;
 
       {
         // grabbing the PyLock while holding the m_critical is asking for a deadlock
@@ -563,6 +579,7 @@ bool CPythonInvoker::stop(bool abort)
 
       PyThreadState_Clear(ts);
       PyThreadState_DeleteCurrent();
+      StopThreadStateDone();
     }
     lock.unlock();
 
@@ -572,10 +589,23 @@ bool CPythonInvoker::stop(bool abort)
   return true;
 }
 
+void CPythonInvoker::StopThreadStateDone()
+{
+  --m_stopThreadStates;
+  m_stopThreadStatesDone.notifyAll();
+}
+
 // Always called from Invoker thread
 void CPythonInvoker::onExecutionDone()
 {
   std::unique_lock<CCriticalSection> lock(m_critical);
+
+  // stop() may be waiting for the GIL with its own thread state on this
+  // interpreter. Ending the interpreter now would free that thread state under
+  // it, so wait until stop() has deleted it. stop() never waits for this
+  // function while it holds one.
+  m_stopThreadStatesDone.wait(lock, [this] { return m_stopThreadStates == 0; });
+
   if (m_threadState != NULL)
   {
     CLog::Log(LOGDEBUG, "{}({}, {})", __FUNCTION__, GetId(), m_sourceFile);

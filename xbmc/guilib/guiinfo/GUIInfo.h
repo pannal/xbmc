@@ -77,7 +77,7 @@ public:
   }
 
   CGUIInfo(int info, const std::string& data3, const std::string& data5)
-    : m_info(info), m_data1(0), m_data3(data3), m_data4(0), m_data5(data5)
+    : m_info(info), m_data1(0), m_data2(0), m_data3(data3), m_data4(0), m_data5(data5)
   {
   }
 

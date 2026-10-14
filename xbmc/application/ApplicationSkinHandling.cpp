@@ -227,11 +227,6 @@ bool CApplicationSkinHandling::LoadSkin(const std::string& skinID)
 
 void CApplicationSkinHandling::UnloadSkin()
 {
-  if (g_SkinInfo != nullptr && m_saveSkinOnUnloading)
-    g_SkinInfo->SaveSettings();
-  else if (!m_saveSkinOnUnloading)
-    m_saveSkinOnUnloading = true;
-
   if (g_SkinInfo)
     g_SkinInfo->Unload();
 
@@ -256,6 +251,12 @@ void CApplicationSkinHandling::UnloadSkin()
 
     gui->GetInfoManager().Clear();
   }
+
+  // after the windows' onunload actions, which may change skin settings
+  if (g_SkinInfo != nullptr && m_saveSkinOnUnloading)
+    g_SkinInfo->SaveSettings();
+  else if (!m_saveSkinOnUnloading)
+    m_saveSkinOnUnloading = true;
 
   //  The g_SkinInfo shared_ptr ought to be reset here
   // but there are too many places it's used without checking for nullptr
