@@ -474,6 +474,7 @@ protected:
   void SetCaching(ECacheState state);
   bool WaitForActiveAreaDetection();
   void FinishActiveAreaProgress();
+  bool m_activeAreaVideoReady{false};
   std::chrono::steady_clock::time_point m_activeAreaWaitStart;
   CGUIDialogProgressBarHandle* m_activeAreaProgress{nullptr}; // dialog owns the handle
 

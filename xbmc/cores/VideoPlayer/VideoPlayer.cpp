@@ -1701,6 +1701,7 @@ void CVideoPlayer::Prepare()
   // Prepare is shared by fresh opens and PLAYER_OPENFILE replacements.
   FinishActiveAreaProgress();
   m_activeAreaWaitStart = {};
+  m_activeAreaVideoReady = false;
   aml_subtitle_active_area_startup_begin();
 #endif
   m_chapterSeekTarget = 0;
@@ -2995,9 +2996,8 @@ void CVideoPlayer::SynchronizeStreams(bool allowRecovery)
 #if defined(HAS_LIBAMCODEC)
         // Audio-only startup has no video hint; retire the file's hold as well
         // so a video stream added later retains normal playback I/O protection.
-        aml_subtitle_active_area_startup_complete(
-            m_CurrentVideo.id >= 0 ? m_CurrentVideo.hint.subtitleProbeSource
-                                   : aml_subtitle_active_area_source());
+        if (m_CurrentVideo.id < 0)
+          aml_subtitle_active_area_startup_complete(aml_subtitle_active_area_source());
 #endif
       }
     }
@@ -4535,6 +4535,7 @@ void CVideoPlayer::HandleMessages()
       }
       if (msg.player == VideoPlayer_VIDEO)
       {
+        m_activeAreaVideoReady = true;
         m_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_WAITSYNC;
         m_CurrentVideo.cachetime = msg.cachetime;
         m_CurrentVideo.cachetotal = msg.cachetotal;
@@ -4624,9 +4625,15 @@ bool CVideoPlayer::WaitForActiveAreaDetection()
 {
 #if defined(HAS_LIBAMCODEC)
   int completed, total;
-  if (!m_bAbortRequest && !m_bStop && !m_State.streamsReady && m_CurrentVideo.id >= 0 &&
+  const bool pending = !m_bAbortRequest && !m_bStop && m_CurrentVideo.id >= 0 &&
       aml_subtitle_active_area_startup_progress(m_CurrentVideo.hint.subtitleProbeSource,
-                                              completed, total))
+                                              completed, total);
+  // Initial decode and A/V resync must run before pausing. In particular, an
+  // audio-first/full-queue fallback must still be able to feed video a keyframe.
+  const bool held = pending && m_State.streamsReady && m_activeAreaVideoReady &&
+                    m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC;
+  aml_subtitle_active_area_startup_set_held(m_CurrentVideo.hint.subtitleProbeSource, held);
+  if (held)
   {
     const auto now = std::chrono::steady_clock::now();
     if (total > 0 && m_activeAreaWaitStart == std::chrono::steady_clock::time_point{})
@@ -4659,6 +4666,8 @@ bool CVideoPlayer::WaitForActiveAreaDetection()
     }
     return true;
   }
+  if (!pending && m_State.streamsReady)
+    aml_subtitle_active_area_startup_complete(m_CurrentVideo.hint.subtitleProbeSource);
 #endif
   FinishActiveAreaProgress();
   return false;
@@ -5604,6 +5613,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
       videoPlayer->SetRecoveryGeneration(previousGeneration);
       return false;
     }
+    m_activeAreaVideoReady = false;
 
     // A replacement stream gets its own recovery budget; seeks/flushes keep their cooldown.
     // Changed hints on the same stream (e.g. revealed by post-seek packets) only cancel
@@ -5842,6 +5852,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::funct
 
   if (sync)
   {
+    m_activeAreaVideoReady = false;
     m_audioRecoveryPending = false;
     m_CurrentAudio.inited = false;
     m_CurrentAudio.avsync = CCurrentStream::AV_SYNC_FORCE;

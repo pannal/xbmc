@@ -264,6 +264,10 @@ int aml_dv_detect_active_area_state();
 void aml_dv_detect_set_file(const std::string& path);
 // Startup hold is selection-bound and independent of the DV-only status label.
 void aml_subtitle_active_area_startup_begin();
+// Requested waiting is distinct from the pause after initial video synchronization.
+void aml_subtitle_active_area_startup_set_held(const std::shared_ptr<const void>& expectedSource,
+                                             bool held);
+bool aml_subtitle_active_area_startup_held(const std::shared_ptr<const void>& expectedSource);
 // Resolve a route that cannot start a probe; a running scan keeps its hold.
 void aml_subtitle_active_area_startup_admitted(const std::shared_ptr<const void>& expectedSource);
 bool aml_subtitle_active_area_startup_pending(const std::shared_ptr<const void>& expectedSource);

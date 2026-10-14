@@ -291,6 +291,7 @@ struct Parent {
   struct { void Suspend() {} } m_vs10Action;
   void FlushBuffers(double pts, bool accurate, bool sync, std::function<void()> complete={},bool preserveSubtitleGeometry=false);
   void CancelParentLifecycle(); bool ContinueParentLifecycle(); void SynchronizeStreams(bool);
+  bool m_activeAreaVideoReady=false;
   bool WaitForActiveAreaDetection(){return false;}
   void HandleMessages() {
     std::shared_ptr<CDVDMsg> pMsg; int priority=0;

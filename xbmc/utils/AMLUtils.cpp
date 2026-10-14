@@ -2750,6 +2750,7 @@ struct DetectSource
   std::atomic<int> completedPositions{0};
   // Shared across configuration of the same startup selection, never a new file.
   std::shared_ptr<std::atomic<bool>> startupWait{std::make_shared<std::atomic<bool>>(false)};
+  std::shared_ptr<std::atomic<bool>> startupHeld{std::make_shared<std::atomic<bool>>(false)};
   std::shared_ptr<std::atomic<bool>> startupAdmission{std::make_shared<std::atomic<bool>>(false)};
   std::shared_ptr<const DetectResult> result; // protected by s_detectSourceMutex
   // Accepted file-wide geometry may outlive a cancelled probe, never its admission.
@@ -2852,6 +2853,7 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
                                                  nativeDV, allowProbe, expectedSource,
                                                  previous->streamIndex, previous->codecHint);
   s_detectSource->startupWait = previous->startupWait;
+  s_detectSource->startupHeld = previous->startupHeld;
   s_detectSource->startupAdmission = previous->startupAdmission;
   if (allowProbe && previous->width == width && previous->height == height &&
       previous->nativeDV == nativeDV && previous->allowProbe == allowProbe)
@@ -2874,6 +2876,7 @@ void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedS
       previous->nativeDV, previous->allowProbe, expectedSource,
       previous->streamIndex, previous->codecHint);
   s_detectSource->startupWait = previous->startupWait;
+  s_detectSource->startupHeld = previous->startupHeld;
   s_detectSource->startupAdmission = previous->startupAdmission;
   s_detectSource->retained = previous->retained;
   s_detectSource->retainedSubtitle = previous->retainedSubtitle;
@@ -2883,6 +2886,7 @@ void aml_subtitle_active_area_invalidate(bool preserveGeometry, bool restartProb
 {
   // No join, I/O or native admission on the seek/lifecycle request thread.
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  s_detectSource->startupHeld->store(false);
   if (restartProbe && s_detectSource->startupWait->load())
     s_detectSource->startupAdmission->store(true);
   if (preserveGeometry)
@@ -2921,7 +2925,23 @@ void aml_subtitle_active_area_startup_begin()
        !aml_dv_l5_override_active());
   const bool wait = requested && settings()->GetBool(CSettings::SETTING_SUBTITLES_WAITACTIVEAREA);
   s_detectSource->startupWait->store(wait);
+  s_detectSource->startupHeld->store(false);
   s_detectSource->startupAdmission->store(wait);
+}
+
+void aml_subtitle_active_area_startup_set_held(const std::shared_ptr<const void>& expectedSource,
+                                              bool held)
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  if (expectedSource && expectedSource == s_detectSource->selection)
+    s_detectSource->startupHeld->store(held && s_detectSource->startupWait->load());
+}
+
+bool aml_subtitle_active_area_startup_held(const std::shared_ptr<const void>& expectedSource)
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  return expectedSource && expectedSource == s_detectSource->selection &&
+         s_detectSource->startupWait->load() && s_detectSource->startupHeld->load();
 }
 
 void aml_subtitle_active_area_startup_admitted(const std::shared_ptr<const void>& expectedSource)
@@ -2961,7 +2981,10 @@ void aml_subtitle_active_area_startup_complete(const std::shared_ptr<const void>
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   if (expectedSource && expectedSource == s_detectSource->selection)
+  {
     s_detectSource->startupWait->store(false);
+    s_detectSource->startupHeld->store(false);
+  }
 }
 
 static bool detect_startup_wait_active(const CAMLNativeWorker::Run& run)
@@ -2969,7 +2992,7 @@ static bool detect_startup_wait_active(const CAMLNativeWorker::Run& run)
   if (run.Cancelled())
     return false;
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
-  return !s_detectSource->superseded->load() && s_detectSource->startupWait->load() &&
+  return !s_detectSource->superseded->load() && s_detectSource->startupHeld->load() &&
          s_detectSource->pending.load();
 }
 

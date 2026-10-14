@@ -3273,7 +3273,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
   // Startup detection intentionally stops presentation after the first picture.
   // Keep decoding admitted, but do not mistake that pause for a decoder stall.
   if (m_speed == DVD_PLAYSPEED_PAUSE &&
-      aml_subtitle_active_area_startup_pending(m_hints.subtitleProbeSource))
+      aml_subtitle_active_area_startup_held(m_hints.subtitleProbeSource))
     m_tp_last_frame = std::chrono::system_clock::now();
   std::chrono::milliseconds elapsed_since_last_frame(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()
     - m_tp_last_frame).count());

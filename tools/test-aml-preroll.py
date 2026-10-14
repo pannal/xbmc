@@ -94,8 +94,8 @@ struct ProcessInfo
   auto& GetVideoSettings() { return settings; }
 };
 void aml_dv_backend_sample(std::shared_ptr<const void>&, uint64_t&, uint64_t&) {}
-bool activeAreaPending=false;
-bool aml_subtitle_active_area_startup_pending(const std::shared_ptr<const void>&){return activeAreaPending;}
+bool activeAreaPending=false,activeAreaHeld=false;
+bool aml_subtitle_active_area_startup_held(const std::shared_ptr<const void>&){return activeAreaHeld;}
 void aml_subtitle_active_area_startup_admitted(const std::shared_ptr<const void>&){activeAreaPending=false;}
 struct Session { bool AcquireDecoder() { return true; } };
 class CAMLCodec
@@ -310,7 +310,7 @@ int main(int argc, char**)
     require(p.iFlags & DVP_FLAG_INTERLACED, "interlace_flag_preserved");
     require(ordinary.holdDecodedPts.size() == 1, "ordinary_hold_admission_preserved");
     // A detector-owned pause can last longer than the five-second watchdog.
-    CAMLCodec waiting;waiting.m_speed=DVD_PLAYSPEED_PAUSE;activeAreaPending=true;
+    CAMLCodec waiting;waiting.m_speed=DVD_PLAYSPEED_PAUSE;activeAreaPending=true;activeAreaHeld=true;
     for(int i=0;i<3;++i){
       waiting.m_tp_last_frame=std::chrono::system_clock::now()-std::chrono::seconds(10);
       const auto result=waiting.GetPicture(p);
@@ -318,14 +318,17 @@ int main(int argc, char**)
     }
     waiting.incoming={{77,1,false}};
     require(waiting.GetPicture(p)==CDVDVideoCodec::VC_PICTURE,"startup_wait_allows_first_decode");
-    activeAreaPending=false;
+    activeAreaPending=false;activeAreaHeld=false;
     CVideoPlayerVideo failedRenderer;failedRenderer.m_renderManager.configureOK=false;
     activeAreaPending=true;
     require(failedRenderer.OutputPicture(&p)==CVideoPlayerVideo::OUTPUT_ABORT,"failed_config_aborts_output");
     require(!activeAreaPending,"failed_config_resolves_probe_admission");
     waiting.m_tp_last_frame=std::chrono::system_clock::now()-std::chrono::seconds(10);
     require(waiting.GetPicture(p)==CDVDVideoCodec::VC_FLUSHED_TIMEOUT,"watchdog_returns_after_wait");
-    activeAreaPending=true;waiting.m_speed=DVD_PLAYSPEED_NORMAL;
+    activeAreaPending=true;activeAreaHeld=false;
+    waiting.m_tp_last_frame=std::chrono::system_clock::now()-std::chrono::seconds(10);
+    require(waiting.GetPicture(p)==CDVDVideoCodec::VC_FLUSHED_TIMEOUT,"unheld_admission_keeps_recovery");
+    activeAreaHeld=true;waiting.m_speed=DVD_PLAYSPEED_NORMAL;
     waiting.m_tp_last_frame=std::chrono::system_clock::now()-std::chrono::seconds(10);
     require(waiting.GetPicture(p)==CDVDVideoCodec::VC_FLUSHED_TIMEOUT,"normal_speed_watchdog_preserved");
     activeAreaPending=false;
