@@ -91,6 +91,8 @@ private:
 
   std::shared_ptr<CGLESTextureResources> m_textureResources;
   std::vector<Page> m_pages;
+  float m_rasterWidth{0.0f};
+  float m_rasterHeight{0.0f};
   bool m_uploadFailed{false};
 };
 

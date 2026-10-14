@@ -9,6 +9,7 @@
 
 #include "OverlayRendererGLES.h"
 
+#include "GlyphPixelAlignment.h"
 #include "LinuxRendererGLES.h"
 #include "OverlayRenderer.h"
 #include "OverlayRendererUtil.h"
@@ -26,6 +27,7 @@
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <utility>
@@ -418,6 +420,8 @@ COverlayGlyphGLES::COverlayGlyphGLES(ASS_Image* images, float width, float heigh
 
   const float scale_x = 1.0f / width;
   const float scale_y = 1.0f / height;
+  m_rasterWidth = width;
+  m_rasterHeight = height;
 
   m_pages.reserve(pages.size());
 
@@ -528,6 +532,22 @@ void COverlayGlyphGLES::Render(SRenderState& state)
 
   glUniform1f(depthLoc, -1.0f);
 
+  GLint viewport[4]{};
+  glGetIntegerv(GL_VIEWPORT, viewport);
+  GLint coordinateRange[2]{};
+  GLint coordinatePrecision = 0;
+  glGetShaderPrecisionFormat(GL_FRAGMENT_SHADER, GL_HIGH_FLOAT, coordinateRange,
+                            &coordinatePrecision);
+  GLint positionRange[2]{};
+  GLint positionPrecision = 0;
+  glGetShaderPrecisionFormat(GL_VERTEX_SHADER, GL_HIGH_FLOAT, positionRange, &positionPrecision);
+  // The pixel-grid proof also relies on precise atlas coordinates. Retain
+  // filtering when the shader's highp path cannot provide float precision.
+  const bool pixelAligned = coordinatePrecision >= 23 && positionPrecision >= 23 &&
+                            coordinateRange[0] >= 62 && coordinateRange[1] >= 62 &&
+                            positionRange[0] >= 62 && positionRange[1] >= 62 &&
+                            IsGlyphPixelAligned(matrix, viewport, m_rasterWidth, m_rasterHeight);
+
   // Draw the atlas pages in order to preserve the blend order.
   for (const Page& page : m_pages)
   {
@@ -535,10 +555,15 @@ void COverlayGlyphGLES::Render(SRenderState& state)
       continue;
 
     glBindTexture(GL_TEXTURE_2D, page.texture);
+    const bool verticesAligned =
+        pixelAligned &&
+        std::all_of(page.vertex.begin(), page.vertex.end(), [this](const VERTEX& v)
+                    { return IsGlyphVertexOnRasterGrid(v.x, v.y, m_rasterWidth, m_rasterHeight); });
+    const GLint filter = verticesAligned ? GL_NEAREST : GL_LINEAR;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
 
     // stack object until VBOs will be used
     std::vector<VERTEX> vecVertices(6 * page.vertex.size() / 4);
