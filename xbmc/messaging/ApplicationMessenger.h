@@ -420,7 +420,7 @@ public:
   /*
    * \brief Signals the shutdown of the application and message processing
    */
-  void Stop() { m_bStop = true; }
+  void Stop();
 
   //! \brief Returns true if this is the process / app loop thread.
   bool IsProcessThread() const;
