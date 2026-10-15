@@ -363,17 +363,18 @@ bool CPlayListPlayer::Play(int iSong,
   bool ret = g_application.PlayFile(*item, player, bAutoPlay);
   // OpenFile can release GUI ownership while Python changes the playlist.
   const auto selectionIsCurrent = [&]() {
-    return m_iCurrentPlayList.load() == playlistId && m_iCurrentSong.load() == iSong &&
-           playlist.TryGet(iSong) == item;
+    return m_iCurrentPlayList.load() == playlistId &&
+           playlist.TryGet(m_iCurrentSong.load()) == item;
   };
-  if (!selectionIsCurrent())
-    return ret;
-
   if (!ret)
   {
-    CLog::Log(LOGERROR, "Playlist Player: skipping unplayable item: {}, path [{}]", iSong,
+    if (!selectionIsCurrent())
+      return false;
+
+    const int currentSong = m_iCurrentSong.load();
+    CLog::Log(LOGERROR, "Playlist Player: skipping unplayable item: {}, path [{}]", currentSong,
               CURL::GetRedacted(item->GetDynPath()));
-    playlist.SetUnPlayable(iSong);
+    playlist.SetUnPlayable(currentSong);
 
     // abort on 100 failed CONSECUTIVE songs
     if (!m_iFailedSongs)
@@ -397,7 +398,7 @@ bool CPlayListPlayer::Play(int iSong,
       if (!selectionIsCurrent())
         return false;
 
-      CGUIMessage msg(GUI_MSG_PLAYLISTPLAYER_STOPPED, 0, 0, playlistId, iSong);
+      CGUIMessage msg(GUI_MSG_PLAYLISTPLAYER_STOPPED, 0, 0, playlistId, m_iCurrentSong.load());
       CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
       Reset();
       GetPlaylist(playlistId).Clear();
@@ -416,7 +417,7 @@ bool CPlayListPlayer::Play(int iSong,
     else
     {
       CLog::Log(LOGDEBUG,"Playlist Player: no more playable items... aborting playback");
-      CGUIMessage msg(GUI_MSG_PLAYLISTPLAYER_STOPPED, 0, 0, playlistId, iSong);
+      CGUIMessage msg(GUI_MSG_PLAYLISTPLAYER_STOPPED, 0, 0, playlistId, currentSong);
       CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
       Reset();
       m_iCurrentPlayList = TYPE_NONE;
