@@ -4639,13 +4639,12 @@ bool CVideoPlayer::WaitForActiveAreaDetection()
   const bool held = pending &&
                     !aml_subtitle_active_area_startup_external_pending(m_CurrentVideo.hint.subtitleProbeSource) &&
                     videoReady;
-  if (held)
+  if (held && aml_subtitle_active_area_startup_try_hold(
+                  m_CurrentVideo.hint.subtitleProbeSource, [this] { SetCaching(CACHESTATE_INIT); }))
   {
     const int modes = aml_subtitle_active_area_startup_modes(m_CurrentVideo.hint.subtitleProbeSource);
     const int title = modes == 2 ? 69378 : (modes == 3 ? 69379 : 69376);
-    // Release scanner I/O only after the clock and stream speeds are paused.
-    SetCaching(CACHESTATE_INIT);
-    aml_subtitle_active_area_startup_set_held(m_CurrentVideo.hint.subtitleProbeSource, true);
+    // Admission applied the buffering pause before releasing scanner I/O.
     const auto now = std::chrono::steady_clock::now();
     if (total > 0 && m_activeAreaWaitStart == std::chrono::steady_clock::time_point{})
       m_activeAreaWaitStart = now;

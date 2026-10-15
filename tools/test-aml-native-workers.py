@@ -189,8 +189,8 @@ void generic_detector(){
  detect_publish(current,oldSource,300,300,0,0);assert(!s_detectSource->result);
  assert(writes==count);
  // The default getter deliberately withholds subtitle-only estimates.
- // Coded crops can retain in-picture borders for text. They do not count as
- // uncropped corpus inputs, and subtitle-only publication never writes sysfs.
+ // Missing aspect metadata is not proof of a coded crop. The normal text
+ // detection path remains eligible and subtitle-only publication never writes sysfs.
  std::promise<void> cropFinished;auto cropDone=cropFinished.get_future();
  scanHook=[&](const auto& source,const CAMLNativeWorker::Run& state){
    assert(source->path=="crop"&&!source->nativeDV&&source->width==1920&&source->height==800);
@@ -217,6 +217,8 @@ def source():
     detector=aml[aml.index('static CAMLNativeWorker s_detectWorker;'):aml.index('/* Mid-read cache guard.')]
     declaration=(ROOT/'xbmc/utils/AMLUtils.h').read_text().split('bool aml_subtitle_detect_active_area_get(',1)[1].split(';',1)[0]
     detector='bool aml_subtitle_detect_active_area_get('+declaration+';\n'+detector
+    configure=(ROOT/'xbmc/utils/AMLUtils.h').read_text().split('bool aml_subtitle_active_area_configure(',1)[1].split(';',1)[0]
+    detector='bool aml_subtitle_active_area_configure('+configure+';\n'+detector
     # Force ownership is covered by test-active-area-l5-override.py; this fixture
     # controls sysfs while exercising real worker joins and admission.
     if 'static void detect_apply_l5_override_locked()\n{' in detector:

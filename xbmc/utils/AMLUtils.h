@@ -15,6 +15,7 @@ extern "C" {
 #include <libavutil/pixfmt.h>
 }
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -237,7 +238,8 @@ std::shared_ptr<const void> aml_subtitle_active_area_source();
 // Only FFmpeg demux stream indexes can be matched by the file scanner.
 std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int codec);
 bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bool allowProbe,
-                                      const std::shared_ptr<const void>& expectedSource);
+                                      const std::shared_ptr<const void>& expectedSource,
+                                      double displayAspect = 0.0);
 // The serialized software reset has retired the old decode call; its next
 // output (including EOF) now belongs to a fresh route with the same geometry.
 void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedSource);
@@ -273,6 +275,10 @@ bool aml_subtitle_active_area_startup_external_pending(const std::shared_ptr<con
 // Requested waiting is distinct from the pause after initial video synchronization.
 void aml_subtitle_active_area_startup_set_held(const std::shared_ptr<const void>& expectedSource,
                                              bool held);
+// The callback only applies the player's buffering pause (no GUI/I/O/native
+// admission). Eligibility and held publication share the source lock.
+bool aml_subtitle_active_area_startup_try_hold(const std::shared_ptr<const void>& expectedSource,
+                                             const std::function<void()>& pause);
 bool aml_subtitle_active_area_startup_held(const std::shared_ptr<const void>& expectedSource);
 // Resolve a route that cannot start a probe; a running scan keeps its hold.
 void aml_subtitle_active_area_startup_admitted(const std::shared_ptr<const void>& expectedSource);

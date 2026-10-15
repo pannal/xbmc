@@ -2428,7 +2428,7 @@ bool CAMLCodec::OpenDecoderInternal()
                         m_originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
   if (aml_subtitle_active_area_configure(hints.width, hints.height, nativeDV,
                                         !nativeDV || hints.dovi.dv_profile != 9,
-                                        hints.subtitleProbeSource))
+                                        hints.subtitleProbeSource, hints.aspect))
     aml_dv_detect_active_area_start(); // separately selected DV injection / non-DV geometry
 
   // Now have the HDRType resolved, ok to set the transfer pq - so renderer can set the shaders as needed.
@@ -2818,7 +2818,7 @@ void CAMLCodec::ResetInternal()
                         m_originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
   if (aml_subtitle_active_area_configure(m_hints.width, m_hints.height, nativeDV,
                                         !nativeDV || m_hints.dovi.dv_profile != 9,
-                                        m_hints.subtitleProbeSource))
+                                        m_hints.subtitleProbeSource, m_hints.aspect))
     aml_dv_detect_active_area_start();
 
   // The no-output watchdog measures from the completed reset: time spent in the

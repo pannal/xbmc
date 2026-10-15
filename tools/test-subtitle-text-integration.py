@@ -55,6 +55,9 @@ def generate(baseline=None):
     if 'bool allowSubtitleEstimate' in aml:
         declaration = source('xbmc/utils/AMLUtils.h', baseline).split('bool aml_subtitle_detect_active_area_get(', 1)[1].split(';', 1)[0]
         code += '\nbool aml_subtitle_detect_active_area_get(' + declaration + ';\n'
+    if not baseline:
+        declaration=source('xbmc/utils/AMLUtils.h').split('bool aml_subtitle_active_area_configure(',1)[1].split(';',1)[0]
+        code += '\nbool aml_subtitle_active_area_configure('+declaration+';\n'
     code += '\n' + aml[aml.index('static CAMLNativeWorker s_detectWorker;'):aml.index('/* Mid-read cache guard.')]
     for sig in ['static void detect_publish(', 'void aml_dv_detect_set_file(', 'static void detect_clear_injection(',
                 'void aml_dv_detect_active_area_start()', 'void aml_dv_detect_active_area_stop()']:
@@ -101,7 +104,7 @@ def generate(baseline=None):
         code += SOFTWARE_ADAPTERS
         for signature in ('void CVideoPlayerVideo::UpdateSubtitleProbe(', 'void CVideoPlayerVideo::ResetSubtitleProbe()', 'void CVideoPlayerVideo::StopSubtitleProbe()'):
             code += '\n' + FUNCTION(owner, signature)
-    startup_check = 'assert(!detect_startup_wait_active(run));' if 'static bool detect_startup_wait_active(' in aml else ''
+    startup_check = 'assert(!detect_startup_wait_active(run));assert(detect_wait_for_startup_hold(run));' if 'static bool detect_wait_for_startup_hold(' in aml else ''
     code += '\nvoid DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& value,const CAMLNativeWorker::Run& run){' + startup_check + '++scans;const uint16_t border=value->width==1920?132:263;detect_publish(run,value,border,border,0,0);}\n'
     return code + TESTS
 
@@ -128,6 +131,7 @@ PREFIX = r'''
 #include <vector>
 #include <ass/ass.h>
 #include "utils/AMLNativeWorker.h"
+#include "utils/PM4KStartup.h"
 #include "utils/ActiveAreaCache.h"
 #include "utils/Geometry.h"
 #include "cores/VideoPlayer/DVDSubtitles/DVDSubtitlesLibassRenderResult.h"
@@ -270,6 +274,7 @@ public:
 };
 class COverlayGlyphGLES:public COverlay{
 public:
+ float m_rasterWidth=0.0f,m_rasterHeight=0.0f;
 @VERTEX@
 @PAGE@
  std::shared_ptr<CGLESTextureResources> m_textureResources;std::vector<Page>m_pages;bool m_uploadFailed=false;
@@ -302,14 +307,14 @@ struct CRenderManager{
 '''
 
 SOFTWARE_ADAPTERS = r'''
-struct VideoPicture{unsigned int iWidth=3840,iHeight=2160;};
+struct VideoPicture{unsigned int iWidth=3840,iHeight=2160;int iDisplayWidth=0,iDisplayHeight=0;};
 struct CDVDVideoCodec{virtual ~CDVDVideoCodec()=default;};
 struct CDVDVideoCodecFFmpeg:CDVDVideoCodec{bool accel=false;void*GetHWAccel(){return accel?this:nullptr;}};
 struct CVideoPlayerVideo{
- struct Hints{std::shared_ptr<const void> subtitleProbeSource;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE;int width=3840,height=2160;}m_hints;
+ struct Hints{std::shared_ptr<const void> subtitleProbeSource;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE;int width=3840,height=2160;double aspect=0.0;}m_hints;
  struct ProcessInfo{bool hw=false;int reads=0;bool IsVideoHwDecoder(){++reads;return hw;}}m_processInfo;
  std::unique_ptr<CDVDVideoCodec>m_pVideoCodec;std::shared_ptr<const void>m_subtitleProbeSource;
- unsigned int m_subtitleProbeWidth=0,m_subtitleProbeHeight=0;
+ unsigned int m_subtitleProbeWidth=0,m_subtitleProbeHeight=0;double m_subtitleProbeAspect=0.0;
  void UpdateSubtitleProbe(const VideoPicture&);void ResetSubtitleProbe();void StopSubtitleProbe();
 };
 '''
@@ -510,7 +515,14 @@ void lifecycle(const char* font){
  }
  select();publish();assert(!get(1920,1080));aml_dv_detect_active_area_stop();assert(!get());
  // Cropped geometry is visible renderer padding without a probe.
- select(false,3840,1634);auto scansBeforeCrop=scans.load();aml_dv_detect_active_area_start();s_detectWorker.Stop();assert(scans==scansBeforeCrop&&!get(3840,1634));
+ select(false,3840,1634);
+#ifdef FIXTURE_CURRENT
+ auto cropSelection=aml_subtitle_active_area_source();assert(aml_subtitle_active_area_configure(3840,1634,false,true,cropSelection,3840.0/1634.0));
+#endif
+ auto scansBeforeCrop=scans.load();aml_dv_detect_active_area_start();s_detectWorker.Stop();assert(scans==scansBeforeCrop&&!get(3840,1634));
+#ifdef FIXTURE_CURRENT
+ assert(!s_detectSource->pending);
+#endif
  manager.m_picture.iHeight=1634;manager.m_overlays.m_rs={0,0,3840,1634};manager.m_overlays.m_rd={0,131.5f,1920,948.5f};auto cropped=draw(manager,c,st);inside(cropped.bounds,manager.m_overlays.m_activePicture);
  std::cout<<"PASS: pure seek/reset retained geometry, old-run rejection, same-path replacement, geometry/native/eligibility/destructive lifecycle and cropped fallback\n";
 }
@@ -682,7 +694,7 @@ def run(code, args, negative=False):
                  '-Wno-misleading-indentation', '-pthread', '-fsanitize=address,undefined',
                  '-fno-omit-frame-pointer', '-fno-pie', '-no-pie', '-I', str(out), '-I', str(ROOT / 'xbmc'), '-I', str(ROOT / VIDEO / 'VideoRenderers')]
         subprocess.run(flags + [str(out / 'test.cpp'), str(utility), args.ass_library,
-                               *[('-l:' + ctypes.util.find_library(name)) for name in ('freetype', 'harfbuzz', 'fribidi')], '-lm', '-o', str(out / 'test')], check=True)
+                               *[('-l:' + ctypes.util.find_library(name)) for name in ('freetype', 'harfbuzz', 'fribidi', 'fontconfig')], '-lm', '-o', str(out / 'test')], check=True)
         result = subprocess.run([str(out / 'test'), str(args.font)], capture_output=True, text=True,
                                 env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'}, timeout=30)
         if negative:
@@ -717,7 +729,7 @@ def main():
             ('handler retained stale style', 'm_lastStyle != subStyle || !RenderOptsEqual(opts, m_lastOpts)', 'false'),
             ('destructive lifecycle retains cache', 's_detectSource->retained.reset();', '(void)preserveGeometry;'),
             ('seek retained cache destroyed', 's_detectSource->retained = s_detectSource->result;', 's_detectSource->retained.reset();'),
-            ('geometry identity ignored', 'previous->width == width && previous->height == height &&', 'true &&'),
+            ('geometry identity ignored', 'previous->width == width &&\n      previous->height == height &&', 'true &&'),
             ('original native identity ignored', 'previous->nativeDV == nativeDV &&', 'true &&'),
             ('software to HW retained stale ownership', 'StopSubtitleProbe(); // format renegotiation may change the installed decoder route', '// fixture: retirement omitted'),
             ('software HW acceleration admitted', 'softwareCodec->GetHWAccel() ||', 'false ||'),

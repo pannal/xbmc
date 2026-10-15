@@ -1436,15 +1436,24 @@ void CVideoPlayerVideo::UpdateSubtitleProbe(const VideoPicture& picture)
     aml_subtitle_active_area_startup_admitted(m_hints.subtitleProbeSource);
     return;
   }
+  // Display dimensions alone can contain a square-pixel fallback when SAR is
+  // missing. Require explicit source DAR and agreement with this decoded frame;
+  // four display pixels allow the software decoder's alignment rounding.
+  const double aspect = picture.iDisplayWidth > 0 && picture.iDisplayHeight > 0 &&
+      m_hints.aspect > 0.0 &&
+      std::abs(m_hints.aspect * picture.iDisplayHeight - picture.iDisplayWidth) <= 4.0
+          ? m_hints.aspect : 0.0;
   if (m_subtitleProbeSource == m_hints.subtitleProbeSource &&
-      m_subtitleProbeWidth == picture.iWidth && m_subtitleProbeHeight == picture.iHeight)
+      m_subtitleProbeWidth == picture.iWidth && m_subtitleProbeHeight == picture.iHeight &&
+      m_subtitleProbeAspect == aspect)
     return;
   if (!aml_subtitle_active_area_configure(picture.iWidth, picture.iHeight, false, true,
-                                        m_hints.subtitleProbeSource))
+                                        m_hints.subtitleProbeSource, aspect))
     return;
   m_subtitleProbeSource = m_hints.subtitleProbeSource;
   m_subtitleProbeWidth = picture.iWidth;
   m_subtitleProbeHeight = picture.iHeight;
+  m_subtitleProbeAspect = aspect;
   aml_dv_detect_active_area_start(); // generic geometry only; existing opt-in/throttle/eligibility
 }
 
@@ -1465,6 +1474,7 @@ void CVideoPlayerVideo::ResetSubtitleProbe()
   // when a flush arrived before any file-wide geometry had been accepted.
   m_subtitleProbeWidth = 0;
   m_subtitleProbeHeight = 0;
+  m_subtitleProbeAspect = 0.0;
 }
 
 void CVideoPlayerVideo::StopSubtitleProbe()
@@ -1477,6 +1487,7 @@ void CVideoPlayerVideo::StopSubtitleProbe()
   m_subtitleProbeSource.reset();
   m_subtitleProbeWidth = 0;
   m_subtitleProbeHeight = 0;
+  m_subtitleProbeAspect = 0.0;
 }
 #endif
 

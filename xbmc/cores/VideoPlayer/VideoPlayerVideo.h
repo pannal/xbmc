@@ -197,6 +197,7 @@ protected:
   std::shared_ptr<const void> m_subtitleProbeSource;
   unsigned int m_subtitleProbeWidth{0};
   unsigned int m_subtitleProbeHeight{0};
+  double m_subtitleProbeAspect{0.0};
 #endif
   int m_iSubtitlePlane{0}; ///< 3D MVC subtitle depth plane (ss_offset_sequence_id)
   std::unique_ptr<CDVDVideoCodec> m_pVideoCodec;

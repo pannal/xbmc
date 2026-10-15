@@ -2737,14 +2737,29 @@ struct DetectResult
   uint16_t top, bottom, left, right;
   bool highConfidence{false}; // all requested scenes support invariant native geometry
 };
+// Only explicit square-pixel geometry proves that the non-16:9 frame already
+// has its padding supplied by the renderer. Unknown/anamorphic aspect is not
+// evidence of a crop. Keep the existing near-16:9 tolerance in coded pixels.
+static bool detect_coded_crop(int width, int height, double displayAspect)
+{
+  if (width < 64 || height < 64 || width > 65535 || height > 65535 ||
+      !std::isfinite(displayAspect) || displayAspect <= 0.0 ||
+      std::abs(displayAspect * height - width) > 1.0)
+    return false;
+  return (width * 9 / 16 - height) / 2 > 20 ||
+         (height * 16 / 9 - width) / 2 > 20;
+}
+
 struct DetectSource
 {
   explicit DetectSource(std::string value, int w = 0, int h = 0,
                         bool native = false, bool probe = false,
-                        std::shared_ptr<const void> selected = {}, int index = -1, int codec = 0)
+                        std::shared_ptr<const void> selected = {}, int index = -1, int codec = 0,
+                        double aspect = 0.0)
     : path(std::move(value)), width(w), height(h), nativeDV(native), allowProbe(probe),
       selection(selected ? std::move(selected) : std::make_shared<const unsigned char>(0)),
-      streamIndex(index), codecHint(codec) {}
+      streamIndex(index), codecHint(codec), displayAspect(aspect),
+      codedCrop(detect_coded_crop(w, h, aspect)) {}
   const std::string path;
   const int width;
   const int height;
@@ -2753,6 +2768,8 @@ struct DetectSource
   const std::shared_ptr<const void> selection;
   const int streamIndex;
   const int codecHint;
+  const double displayAspect;
+  const bool codedCrop;
   const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
   std::atomic<bool> pending{false};
   bool startupVideoReady{false}; // current epoch, protected by s_detectSourceMutex
@@ -2855,7 +2872,8 @@ std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int
 }
 
 bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bool allowProbe,
-                                      const std::shared_ptr<const void>& expectedSource)
+                                      const std::shared_ptr<const void>& expectedSource,
+                                      double displayAspect)
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   if (!expectedSource || expectedSource != s_detectSource->selection)
@@ -2864,13 +2882,21 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
   previous->superseded->store(true);
   s_detectSource = std::make_shared<DetectSource>(previous->path, width, height,
                                                  nativeDV, allowProbe, expectedSource,
-                                                 previous->streamIndex, previous->codecHint);
+                                                 previous->streamIndex, previous->codecHint,
+                                                 displayAspect);
   s_detectSource->startupVideoReady = previous->startupVideoReady;
   s_detectSource->pm4kStartupToken = previous->pm4kStartupToken;
   s_detectSource->startupWait = previous->startupWait;
   s_detectSource->startupHeld = previous->startupHeld;
   s_detectSource->startupAdmission = previous->startupAdmission;
-  if (allowProbe && previous->width == width && previous->height == height &&
+  if (s_detectSource->codedCrop)
+  {
+    s_detectSource->startupAdmission->store(false);
+    s_detectSource->startupHeld->store(false);
+    s_detectState.store(DV_DETECT_SKIP_NON16X9);
+  }
+  if (allowProbe && !s_detectSource->codedCrop && previous->width == width &&
+      previous->height == height && previous->displayAspect == displayAspect &&
       previous->nativeDV == nativeDV && previous->allowProbe == allowProbe)
   {
     s_detectSource->retained = previous->retained;
@@ -2889,7 +2915,7 @@ void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedS
   previous->superseded->store(true);
   s_detectSource = std::make_shared<DetectSource>(previous->path, previous->width, previous->height,
       previous->nativeDV, previous->allowProbe, expectedSource,
-      previous->streamIndex, previous->codecHint);
+      previous->streamIndex, previous->codecHint, previous->displayAspect);
   s_detectSource->startupVideoReady = previous->startupVideoReady;
   s_detectSource->pm4kStartupToken = previous->pm4kStartupToken;
   s_detectSource->startupWait = previous->startupWait;
@@ -2978,7 +3004,27 @@ void aml_subtitle_active_area_startup_set_held(const std::shared_ptr<const void>
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   if (expectedSource && expectedSource == s_detectSource->selection)
-    s_detectSource->startupHeld->store(held && s_detectSource->startupWait->load());
+    s_detectSource->startupHeld->store(held && s_detectSource->startupWait->load() &&
+                                      !s_detectSource->codedCrop);
+}
+
+bool aml_subtitle_active_area_startup_try_hold(const std::shared_ptr<const void>& expectedSource,
+                                             const std::function<void()>& pause)
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  const auto& source = s_detectSource;
+  if (!expectedSource || expectedSource != source->selection || source->codedCrop ||
+      !source->startupWait->load() ||
+      (!source->startupAdmission->load() &&
+       (source->superseded->load() || !source->pending.load())) ||
+      !source->startupVideoReady || PM4K_STARTUP::Pending(source->pm4kStartupToken))
+    return false;
+  // A same-selection geometry update cannot turn eligible content into a
+  // known crop between this decision and the player's pause. The callback
+  // only queues stream speeds and updates the clock; never wait for a decoder.
+  pause();
+  source->startupHeld->store(true);
+  return true;
 }
 
 bool aml_subtitle_active_area_startup_held(const std::shared_ptr<const void>& expectedSource)
@@ -3002,7 +3048,7 @@ bool aml_subtitle_active_area_startup_progress(const std::shared_ptr<const void>
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   completed = total = 0;
   if (!expectedSource || expectedSource != s_detectSource->selection ||
-      !s_detectSource->startupWait->load())
+      !s_detectSource->startupWait->load() || s_detectSource->codedCrop)
     return false;
   // Cancelling one run for a seek is not completion of the startup selection.
   // total=0 distinguishes deferred admission from an actual 14-position scan.
@@ -4807,9 +4853,8 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     }
   }
 
-  // A coded crop already has separately composed native padding. Scanning its
-  // residual in-picture borders is useful for text, but must not inject a new
-  // absolute native L5 rectangle in the coded coordinate system.
+  // Known square-pixel crops bypass the worker before scanning. For unknown or
+  // anamorphic geometry, retain the existing final native-coordinate safeguard.
   if (source->nativeDV &&
       (std::max(0, (source->width * 9 / 16 - source->height) / 2) > 20 ||
        std::max(0, (source->height * 16 / 9 - source->width) / 2) > 20))
@@ -4888,7 +4933,7 @@ void aml_dv_detect_active_area_start()
                           "superseded={} restart_pending={}", source->completedPositions.load(),
                   s_detectState.load(), source->superseded->load(), source->startupAdmission->load());
     });
-    source->pending.store(true);
+    source->pending.store(!source->codedCrop);
     source->startupScan = source->startupWait->load();
     source->startupAdmission->store(false);
     source->result.reset();
@@ -4902,6 +4947,11 @@ void aml_dv_detect_active_area_start()
   s_detectStable.store(false);
   s_detectState.store(DV_DETECT_FAILED);
   detect_clear_injection(source->nativeDV);
+  if (source->codedCrop)
+  {
+    s_detectState.store(DV_DETECT_SKIP_NON16X9);
+    return; // no worker, cache lookup, file reads or software decoding
+  }
   const bool enabled = settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
       (source->nativeDV && aml_dv_detect_active_area_enabled());
   if (!enabled || !source->allowProbe || source->superseded->load() ||

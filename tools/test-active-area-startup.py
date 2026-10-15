@@ -223,6 +223,7 @@ void aml_subtitle_active_area_startup_set_video_ready(const std::shared_ptr<cons
 bool aml_subtitle_active_area_startup_external_pending(const std::shared_ptr<const void>&){return externalPending;}
 bool startupPending=false,heldStatus=false;int notifications=0,progressPosition=0;
 void aml_subtitle_active_area_startup_set_held(const std::shared_ptr<const void>&,bool held){heldStatus=held;}
+bool aml_subtitle_active_area_startup_try_hold(const std::shared_ptr<const void>&,const std::function<void()>& pause){if(!startupPending)return false;pause();heldStatus=true;return true;}
 int progressTotal=14, detectorModes=1;
 int aml_subtitle_active_area_startup_modes(const std::shared_ptr<const void>&){return detectorModes;}
 bool aml_subtitle_active_area_startup_progress(const std::shared_ptr<const void>&,int& completed,int& total){completed=progressPosition;total=progressTotal;return startupPending;}
@@ -306,6 +307,8 @@ def connected_source():
         'std::shared_ptr<const void> aml_subtitle_active_area_source(){return ::aml_subtitle_active_area_source();}')
     player = player.replace(function(player, 'void aml_subtitle_active_area_startup_set_held('),
         'void aml_subtitle_active_area_startup_set_held(const std::shared_ptr<const void>& selected,bool held){::aml_subtitle_active_area_startup_set_held(selected,held);}')
+    player = player.replace(function(player, 'bool aml_subtitle_active_area_startup_try_hold('),
+        'bool aml_subtitle_active_area_startup_try_hold(const std::shared_ptr<const void>& selected,const std::function<void()>& pause){return ::aml_subtitle_active_area_startup_try_hold(selected,pause);}')
     player = player.replace(function(player, 'void aml_subtitle_active_area_invalidate('),
         'void aml_subtitle_active_area_invalidate(bool preserve,bool restart){subtitleInvalidations.push_back(preserve);::aml_subtitle_active_area_invalidate(preserve,restart);}')
     owner = (ROOT/'xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp').read_text()
@@ -316,7 +319,7 @@ def connected_source():
     player = player.replace(fake+';', fake.replace('struct FakeCodec {','struct FakeCodec {virtual ~FakeCodec()=default;') + ';\nstruct CDVDVideoCodecFFmpeg:FakeCodec {void* GetHWAccel(){return nullptr;}};\nnamespace StreamHdrType {constexpr int HDR_TYPE_DOLBYVISION=1;}')
     player = player.replace('std::make_shared<FakeCodec>()', 'std::make_shared<CDVDVideoCodecFFmpeg>()')
     player = player.replace('struct CVideoPlayerVideo {', '''struct CVideoPlayerVideo {
-std::shared_ptr<const void> m_subtitleProbeSource;int m_subtitleProbeWidth=0,m_subtitleProbeHeight=0;
+std::shared_ptr<const void> m_subtitleProbeSource;int m_subtitleProbeWidth=0,m_subtitleProbeHeight=0;double m_subtitleProbeAspect=0.0;
 struct {std::shared_ptr<const void> subtitleProbeSource;int hdrType=0;}m_hints;
 void ResetSubtitleProbe();''', 1) + '\n' + reset
     assert 'aml_subtitle_active_area_startup_admitted(m_hints.subtitleProbeSource);' in function(owner, 'if (decoderState == CDVDVideoCodec::VC_EOF)\n  {')
@@ -540,7 +543,9 @@ int main(){ready();CAMLSession value;init(value);settingsValue.wait=true;
             mutant = code.replace(old,new)
             # Admission now rechecks hold state after querying the cache.
             # Remove both bypasses to model the same broken held-scan policy.
-            if label == 'throttle waits on held playback':
+            if label == 'hold before initial video/sync':
+                mutant = mutant.replace('!source->startupVideoReady ||', 'false ||')
+            elif label == 'throttle waits on held playback':
                 mutant = mutant.replace('return detect_startup_wait_active(run) ? 100 : level;', 'return level;')
             elif label == 'low-buffer abort during hold':
                 mutant = mutant.replace('if (detect_startup_wait_active(*run))\n          return 0;', '/* late hold protection lost */')

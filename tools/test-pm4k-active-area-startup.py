@@ -150,7 +150,13 @@ def main():
             ('waitOFF skips addon I/O deferral', '!PM4K_STARTUP::Pending(s_detectSource->pm4kStartupToken)', '(!s_detectSource->startupScan || !PM4K_STARTUP::Pending(s_detectSource->pm4kStartupToken))'),
         ]:
             assert old in code, label
-            run(code.replace(old, new), negative=True)
+            mutant=code.replace(old,new)
+            # Parent snapshot and atomic admission independently protect startup.
+            if label=='pause during PM4K startup':
+                mutant=mutant.replace('PM4K_STARTUP::Pending(source->pm4kStartupToken)', 'false')
+            elif label=='flag clear bypasses current synchronization':
+                mutant=mutant.replace('!source->startupVideoReady ||', 'false ||')
+            run(mutant, negative=True)
             print('REJECTED:', label)
 
 

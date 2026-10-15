@@ -57,8 +57,8 @@ struct StringUtils {static bool StartsWithNoCase(const std::string& s,const std:
     index = code.index('static bool detect_wait_for_startup_hold(')
     code = code[:index]+support+code[index:]
     code = code.replace(old, callbacks+'\n'+replacement)
-    code = code.replace('void aml_subtitle_active_area_startup_set_held(const std::shared_ptr<const void>& selected,bool held){::aml_subtitle_active_area_startup_set_held(selected,held);}',
-        'std::function<void()> checkPause;void aml_subtitle_active_area_startup_set_held(const std::shared_ptr<const void>& selected,bool held){if(held&&checkPause)checkPause();::aml_subtitle_active_area_startup_set_held(selected,held);}')
+    code = code.replace('bool aml_subtitle_active_area_startup_try_hold(const std::shared_ptr<const void>& selected,const std::function<void()>& pause){return ::aml_subtitle_active_area_startup_try_hold(selected,pause);}',
+        'std::function<void()> checkPause;bool aml_subtitle_active_area_startup_try_hold(const std::shared_ptr<const void>& selected,const std::function<void()>& pause){const bool wasHeld=::aml_subtitle_active_area_startup_held(selected);return ::aml_subtitle_active_area_startup_try_hold(selected,[&]{pause();assert(s_detectSource->startupHeld->load()==wasHeld);if(checkPause)checkPause();});}')
     owner = (ROOT/'xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp').read_text()
     eof = function(owner, 'if (decoderState == CDVDVideoCodec::VC_EOF)\n  {')
     terminal = eof[eof.index('{')+1:eof.index('    m_mpeg2Cadence.Drain();')]
@@ -211,7 +211,7 @@ def main():
         for label,old,new in [
             ('no startup I/O deferral','if (s_detectSource->startupHeld->load())\n          return true;','if (true)\n          return true;'),
             ('temporary EOF cancels replacement','if (m_inputEnded && m_syncState == IDVDStreamPlayer::SYNC_STARTING)','if ((m_inputEnded || true) && m_syncState == IDVDStreamPlayer::SYNC_STARTING)'),
-            ('hold published before pause','SetCaching(CACHESTATE_INIT);\n    aml_subtitle_active_area_startup_set_held(m_CurrentVideo.hint.subtitleProbeSource, true);','aml_subtitle_active_area_startup_set_held(m_CurrentVideo.hint.subtitleProbeSource, true);\n    SetCaching(CACHESTATE_INIT);'),
+            ('hold published before pause','pause();\n  source->startupHeld->store(true);','source->startupHeld->store(true);\n  pause();'),
             ('waitOFF loses buffer protection','if (s_detectThrottleActive.load() && !detect_startup_wait_active(*run))','if (false)'),
             ('EOF strands deferred worker','::aml_subtitle_active_area_startup_complete(m_hints.subtitleProbeSource);','(void)0; /* no retirement */'),
         ]:
