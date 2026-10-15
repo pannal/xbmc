@@ -132,10 +132,11 @@ namespace XBMCAddon
       CMediaSettings::GetInstance().SetMediaStartWindowed(windowed);
 
       // play current file in playlist
-      if (CServiceBroker::GetPlaylistPlayer().GetCurrentPlaylist() != iPlayList)
-        CServiceBroker::GetPlaylistPlayer().SetCurrentPlaylist(iPlayList);
+      // The main thread selects the playlist and plays in one message, so a stop
+      // notification that it handles in between cannot reset the selection.
       CServiceBroker::GetAppMessenger()->SendMsg(
-          TMSG_PLAYLISTPLAYER_PLAY, CServiceBroker::GetPlaylistPlayer().GetCurrentItemIdx());
+          TMSG_PLAYLISTPLAYER_PLAY, CServiceBroker::GetPlaylistPlayer().GetCurrentItemIdx(),
+          iPlayList);
     }
 
     void Player::playPlaylist(const PlayList* playlist, bool windowed, int startpos)
@@ -149,10 +150,9 @@ namespace XBMCAddon
 
         // play a python playlist (a playlist from playlistplayer.cpp)
         iPlayList = playlist->getPlayListId();
-        CServiceBroker::GetPlaylistPlayer().SetCurrentPlaylist(iPlayList);
-        if (startpos > -1)
-          CServiceBroker::GetPlaylistPlayer().SetCurrentItemIdx(startpos);
-        CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, startpos);
+        // The main thread selects the playlist and plays in one message, so a stop
+        // notification that it handles in between cannot reset the selection.
+        CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, startpos, iPlayList);
       }
       else
         playCurrent(windowed);
@@ -190,14 +190,9 @@ namespace XBMCAddon
     {
       XBMC_TRACE;
       DelayedCallGuard dc(languageHook);
-
-      if (CServiceBroker::GetPlaylistPlayer().GetCurrentPlaylist() != iPlayList)
-      {
-        CServiceBroker::GetPlaylistPlayer().SetCurrentPlaylist(iPlayList);
-      }
-      CServiceBroker::GetPlaylistPlayer().SetCurrentItemIdx(selected);
-
-      CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, selected);
+      // The main thread selects the playlist and plays in one message, so a stop
+      // notification that it handles in between cannot reset the selection.
+      CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, selected, iPlayList);
       //CServiceBroker::GetPlaylistPlayer().Play(selected);
       //CLog::Log(LOGINFO, "Current Song After Play: {}", CServiceBroker::GetPlaylistPlayer().GetCurrentItemIdx());
     }
