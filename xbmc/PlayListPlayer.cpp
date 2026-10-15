@@ -392,6 +392,9 @@ bool CPlayListPlayer::Play(int iSong,
          advancedSettings->m_playlistTimeout))
     {
       CLog::Log(LOGDEBUG,"Playlist Player: one or more items failed to play... aborting playback");
+      // A playlist that replaces this one during the dialog starts with a fresh retry budget
+      m_iFailedSongs = 0;
+      m_failedSongsStart = std::chrono::steady_clock::now();
 
       // open error dialog
       HELPERS::ShowOKDialogText(CVariant{16026}, CVariant{16027});
@@ -403,8 +406,6 @@ bool CPlayListPlayer::Play(int iSong,
       Reset();
       GetPlaylist(playlistId).Clear();
       m_iCurrentPlayList = TYPE_NONE;
-      m_iFailedSongs = 0;
-      m_failedSongsStart = std::chrono::steady_clock::now();
       return false;
     }
 
