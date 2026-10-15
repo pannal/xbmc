@@ -12,8 +12,9 @@
 #include "commons/Exception.h"
 #include "utils/log.h"
 
+#include <cstdint>
+#include <map>
 #include <mutex>
-#include <vector>
 
 namespace XBMCAddon
 {
@@ -27,19 +28,19 @@ namespace XBMCAddon
   };
 
   //********************************************************************
-  // This holds the callback messages which will be executed. It doesn't
-  //  seem to work correctly with the Ref object so we'll go with Ref*'s
-  typedef std::vector<AddonClass::Ref<AsyncCallbackMessage> > CallbackQueue;
+  // Sequence keys preserve callback order across queue changes.
+  typedef std::map<std::uint64_t, AddonClass::Ref<AsyncCallbackMessage>> CallbackQueue;
   //********************************************************************
 
   static CCriticalSection critSection;
   static CallbackQueue g_callQueue;
+  static std::uint64_t g_nextCallbackId = 0;
 
   void RetardedAsyncCallbackHandler::invokeCallback(Callback* cb)
   {
     XBMC_TRACE;
     std::unique_lock<CCriticalSection> lock(critSection);
-    g_callQueue.push_back(new AsyncCallbackMessage(cb,this));
+    g_callQueue.emplace(g_nextCallbackId++, new AsyncCallbackMessage(cb, this));
   }
 
   RetardedAsyncCallbackHandler::~RetardedAsyncCallbackHandler()
@@ -51,7 +52,7 @@ namespace XBMCAddon
     CallbackQueue::iterator iter = g_callQueue.begin();
     while (iter != g_callQueue.end())
     {
-      if ((*iter)->handler.get() == this) // then this message is because of me
+      if (iter->second->handler.get() == this) // then this message is because of me
       {
         g_callQueue.erase(iter);
         iter = g_callQueue.begin();
@@ -68,11 +69,13 @@ namespace XBMCAddon
     CallbackQueue::iterator iter = g_callQueue.begin();
     while (iter != g_callQueue.end())
     {
-      AddonClass::Ref<AsyncCallbackMessage> p(*iter);
+      AsyncCallbackMessage* message = iter->second.get();
 
       // only call when we are in the right thread state
-      if(p->handler->isStateOk(p->cb->getObject()))
+      if (message->handler->isStateOk(message->cb->getObject()))
       {
+        const auto sequence = iter->first;
+        AddonClass::Ref<AsyncCallbackMessage> p(message);
         // remove it from the queue. No matter what we're done with
         //  this. Even if it doesn't execute for some reason.
         g_callQueue.erase(iter);
@@ -109,13 +112,12 @@ namespace XBMCAddon
                         reinterpret_cast<int64_t>(p->cb.get()));
             }
           }
+          // Release the selected message before the queue lock is reacquired.
+          p.reset();
         }
 
-        // since the state of the iterator may have been corrupted by
-        //  the changing state of the list from another thread during
-        //  the releasing fo the lock in the immediately preceeding
-        //  codeblock, we need to reset it before continuing the loop
-        iter = g_callQueue.begin();
+        // Resume after the selected sequence when callbacks change the queue.
+        iter = g_callQueue.upper_bound(sequence);
       }
       else // if we're not in the right thread for this callback...
         ++iter;
@@ -129,7 +131,7 @@ namespace XBMCAddon
     CallbackQueue::iterator iter = g_callQueue.begin();
     while (iter != g_callQueue.end())
     {
-      AddonClass::Ref<AsyncCallbackMessage> p(*iter);
+      AddonClass::Ref<AsyncCallbackMessage> p(iter->second);
 
       if(p->handler->shouldRemoveCallback(p->cb->getObject(),userData))
       {
