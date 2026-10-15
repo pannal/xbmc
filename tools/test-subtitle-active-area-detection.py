@@ -73,8 +73,10 @@ def source(aml=None):
             code += '#define STRICT_POSITIVE_AXIS 1\n'
         code += '#define TIERED_SPATIAL_EVIDENCE 1\n'
     code += re.search(r'static const uint32_t s_commonAR\[\] = \{.*?\};', aml, re.S).group() + '\n'
-    end = '\n  }\n\n  // A coded crop' if '// A coded crop' in scan else '\n  }\n\n  detect_publish('
-    final = scan[scan.index('    /* Require enough usable samples'):scan.index(end)]
+    final_start = scan.index('    /* Require enough usable samples')
+    publication = scan.index('\n  if (source->nativeDV &&', final_start)
+    # End at the enclosing scan scope before native publication, independent of comments.
+    final = scan[final_start:scan.rindex('\n  }', final_start, publication)]
     code += 'bool Select(const uint16_t* samples_top,const uint16_t* samples_bottom,const uint16_t* samples_left,const uint16_t* samples_right,int validSamples,int lastWidth,int lastHeight,DetectResult& result,const bool* rejected=nullptr){\n'
     code += 'bool known[7]{};const bool* samples_rejected=rejected?rejected:known;(void)samples_rejected;\n'
     if 'static bool detect_subtitle_consensus(' in aml:
