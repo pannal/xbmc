@@ -134,12 +134,12 @@ namespace XBMCAddon
         CMediaSettings::GetInstance().SetMediaStartWindowed(windowed);
 
         // play current file in playlist
-        if (CServiceBroker::GetPlaylistPlayer().GetCurrentPlaylist() != iPlayList)
-          CServiceBroker::GetPlaylistPlayer().SetCurrentPlaylist(iPlayList);
         current = CServiceBroker::GetPlaylistPlayer().GetCurrentItemIdx();
       }
       DelayedCallGuard dc(languageHook);
-      CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, current);
+      // The main thread selects the playlist and plays in one message, so a stop
+      // notification that it handles in between cannot reset the selection.
+      CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, current, iPlayList);
     }
 
     void Player::playPlaylist(const PlayList* playlist, bool windowed, int startpos)
@@ -154,12 +154,11 @@ namespace XBMCAddon
 
           // play a python playlist (a playlist from playlistplayer.cpp)
           iPlayList = playlist->getPlayListId();
-          CServiceBroker::GetPlaylistPlayer().SetCurrentPlaylist(iPlayList);
-          if (startpos > -1)
-            CServiceBroker::GetPlaylistPlayer().SetCurrentItemIdx(startpos);
         }
         DelayedCallGuard dc(languageHook);
-        CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, startpos);
+        // The main thread selects the playlist and plays in one message, so a stop
+        // notification that it handles in between cannot reset the selection.
+        CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, startpos, iPlayList);
       }
       else
         playCurrent(windowed);
@@ -196,17 +195,10 @@ namespace XBMCAddon
     void Player::playselected(int selected)
     {
       XBMC_TRACE;
-      {
-        XBMCAddonUtils::GuiLock lock(languageHook, false);
-        if (CServiceBroker::GetPlaylistPlayer().GetCurrentPlaylist() != iPlayList)
-        {
-          CServiceBroker::GetPlaylistPlayer().SetCurrentPlaylist(iPlayList);
-        }
-        CServiceBroker::GetPlaylistPlayer().SetCurrentItemIdx(selected);
-      }
-
       DelayedCallGuard dc(languageHook);
-      CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, selected);
+      // The main thread selects the playlist and plays in one message, so a stop
+      // notification that it handles in between cannot reset the selection.
+      CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, selected, iPlayList);
     }
 
     void Player::OnPlayBackStarted(const CFileItem &file)
