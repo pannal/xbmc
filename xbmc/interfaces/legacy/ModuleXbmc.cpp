@@ -295,7 +295,6 @@ namespace XBMCAddon
       if (!cLine)
         return {};
 
-      XBMCAddonUtils::GuiLock lock(LanguageHook::GetLanguageHook(), false);
       CGUIInfoManager& infoMgr = CServiceBroker::GetGUI()->GetInfoManager();
       int ret = infoMgr.TranslateString(cLine);
       // Resolve formatted labels when no single InfoTag matches.
@@ -310,7 +309,6 @@ namespace XBMCAddon
       if (!infotag)
         return {};
 
-      XBMCAddonUtils::GuiLock lock(LanguageHook::GetLanguageHook(), false);
       CGUIInfoManager& infoMgr = CServiceBroker::GetGUI()->GetInfoManager();
       int ret = infoMgr.TranslateString(infotag);
       return infoMgr.GetImage(ret, WINDOW_INVALID);

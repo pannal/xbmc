@@ -96,7 +96,6 @@ namespace XBMCAddon
 
     int PlayList::size()
     {
-      XBMCAddonUtils::GuiLock lock(languageHook, false);
       return pPlayList->size();
     }
 
@@ -114,23 +113,14 @@ namespace XBMCAddon
 
     int PlayList::getposition()
     {
-      XBMCAddonUtils::GuiLock lock(languageHook, false);
       return CServiceBroker::GetPlaylistPlayer().GetCurrentItemIdx();
     }
 
     XBMCAddon::xbmcgui::ListItem* PlayList::operator [](long i)
     {
-      CFileItemPtr item;
-      {
-        XBMCAddonUtils::GuiLock lock(languageHook, false);
-        const int playlistSize = pPlayList->size();
-        long position = i;
-        if (position < 0)
-          position += playlistSize;
-        if (position < 0 || position >= playlistSize)
-          throw PlayListException("array out of bound");
-        item = (*pPlayList)[position];
-      }
+      const CFileItemPtr item = pPlayList->TryGet(i, true);
+      if (!item)
+        throw PlayListException("array out of bound");
       return new XBMCAddon::xbmcgui::ListItem(item);
     }
   }

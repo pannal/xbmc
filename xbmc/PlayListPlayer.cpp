@@ -125,52 +125,57 @@ bool CPlayListPlayer::OnMessage(CGUIMessage &message)
 
 int CPlayListPlayer::GetNextItemIdx(int offset) const
 {
-  if (m_iCurrentPlayList == TYPE_NONE)
+  const Id playlistId = m_iCurrentPlayList.load();
+  if (playlistId == TYPE_NONE)
     return -1;
 
-  const CPlayList& playlist = GetPlaylist(m_iCurrentPlayList);
-  if (playlist.size() <= 0)
+  const CPlayList& playlist = GetPlaylist(playlistId);
+  const int playlistSize = playlist.size();
+  if (playlistSize <= 0)
     return -1;
 
-  int song = m_iCurrentSong;
+  int song = m_iCurrentSong.load();
 
   // party mode
-  if (g_partyModeManager.IsEnabled() && GetCurrentPlaylist() == TYPE_MUSIC)
+  if (g_partyModeManager.IsEnabled() && playlistId == TYPE_MUSIC)
     return song + offset;
 
   // wrap around in the case of repeating
-  if (RepeatedOne(m_iCurrentPlayList))
+  if (RepeatedOne(playlistId))
     return song;
 
   song += offset;
-  if (song >= playlist.size() && Repeated(m_iCurrentPlayList))
-    song %= playlist.size();
+  if (song >= playlistSize && Repeated(playlistId))
+    song %= playlistSize;
 
   return song;
 }
 
 int CPlayListPlayer::GetNextItemIdx()
 {
-  if (m_iCurrentPlayList == TYPE_NONE)
+  const Id playlistId = m_iCurrentPlayList.load();
+  if (playlistId == TYPE_NONE)
     return -1;
-  CPlayList& playlist = GetPlaylist(m_iCurrentPlayList);
-  if (playlist.size() <= 0)
+  CPlayList& playlist = GetPlaylist(playlistId);
+  const int playlistSize = playlist.size();
+  if (playlistSize <= 0)
     return -1;
-  int iSong = m_iCurrentSong;
+  int iSong = m_iCurrentSong.load();
 
   // party mode
-  if (g_partyModeManager.IsEnabled() && GetCurrentPlaylist() == TYPE_MUSIC)
+  if (g_partyModeManager.IsEnabled() && playlistId == TYPE_MUSIC)
     return iSong + 1;
 
   // if repeat one, keep playing the current song if its valid
-  if (RepeatedOne(m_iCurrentPlayList))
+  if (RepeatedOne(playlistId))
   {
     // otherwise immediately abort playback
-    if (m_iCurrentSong >= 0 && m_iCurrentSong < playlist.size() && playlist[m_iCurrentSong]->GetProperty("unplayable").asBoolean())
+    const CFileItemPtr item = playlist.TryGet(iSong);
+    if (item && item->GetProperty("unplayable").asBoolean())
     {
       CLog::Log(LOGERROR, "Playlist Player: RepeatOne stuck on unplayable item: {}, path [{}]",
-                m_iCurrentSong, playlist[m_iCurrentSong]->GetPath());
-      CGUIMessage msg(GUI_MSG_PLAYLISTPLAYER_STOPPED, 0, 0, m_iCurrentPlayList, m_iCurrentSong);
+                iSong, item->GetPath());
+      CGUIMessage msg(GUI_MSG_PLAYLISTPLAYER_STOPPED, 0, 0, playlistId, iSong);
       CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
       Reset();
       m_iCurrentPlayList = TYPE_NONE;
@@ -182,7 +187,7 @@ int CPlayListPlayer::GetNextItemIdx()
   // if we've gone beyond the playlist and repeat all is enabled,
   // then we clear played status and wrap around
   iSong++;
-  if (iSong >= playlist.size() && Repeated(m_iCurrentPlayList))
+  if (iSong >= playlistSize && Repeated(playlistId))
     iSong = 0;
 
   return iSong;
@@ -214,16 +219,17 @@ bool CPlayListPlayer::PlayNext(int offset, bool bAutoPlay)
 
 bool CPlayListPlayer::PlayPrevious()
 {
-  if (m_iCurrentPlayList == TYPE_NONE)
+  const Id playlistId = m_iCurrentPlayList.load();
+  if (playlistId == TYPE_NONE)
     return false;
 
-  const CPlayList& playlist = GetPlaylist(m_iCurrentPlayList);
+  const CPlayList& playlist = GetPlaylist(playlistId);
   int iSong = m_iCurrentSong;
 
-  if (!RepeatedOne(m_iCurrentPlayList))
+  if (!RepeatedOne(playlistId))
     iSong--;
 
-  if (iSong < 0 && Repeated(m_iCurrentPlayList))
+  if (iSong < 0 && Repeated(playlistId))
     iSong = playlist.size() - 1;
 
   if (iSong < 0 || playlist.size() <= 0)
@@ -237,16 +243,18 @@ bool CPlayListPlayer::PlayPrevious()
 
 bool CPlayListPlayer::IsSingleItemNonRepeatPlaylist() const
 {
-  const CPlayList& playlist = GetPlaylist(m_iCurrentPlayList);
-  return (playlist.size() <= 1 && !RepeatedOne(m_iCurrentPlayList) && !Repeated(m_iCurrentPlayList));
+  const Id playlistId = m_iCurrentPlayList.load();
+  const CPlayList& playlist = GetPlaylist(playlistId);
+  return (playlist.size() <= 1 && !RepeatedOne(playlistId) && !Repeated(playlistId));
 }
 
 bool CPlayListPlayer::Play()
 {
-  if (m_iCurrentPlayList == TYPE_NONE)
+  const Id playlistId = m_iCurrentPlayList.load();
+  if (playlistId == TYPE_NONE)
     return false;
 
-  const CPlayList& playlist = GetPlaylist(m_iCurrentPlayList);
+  const CPlayList& playlist = GetPlaylist(playlistId);
   if (playlist.size() <= 0)
     return false;
 
@@ -255,10 +263,11 @@ bool CPlayListPlayer::Play()
 
 bool CPlayListPlayer::PlayItemIdx(int itemIdx)
 {
-  if (m_iCurrentPlayList == TYPE_NONE)
+  const Id playlistId = m_iCurrentPlayList.load();
+  if (playlistId == TYPE_NONE)
     return false;
 
-  CPlayList& playlist = GetPlaylist(m_iCurrentPlayList);
+  CPlayList& playlist = GetPlaylist(playlistId);
   if (playlist.size() <= 0)
     return Play();
 
@@ -317,16 +326,18 @@ bool CPlayListPlayer::Play(int iSong,
                            bool bAutoPlay /* = false */,
                            bool bPlayPrevious /* = false */)
 {
-  if (m_iCurrentPlayList == TYPE_NONE)
+  const Id playlistId = m_iCurrentPlayList.load();
+  if (playlistId == TYPE_NONE)
     return false;
 
-  CPlayList& playlist = GetPlaylist(m_iCurrentPlayList);
-  if (playlist.size() <= 0)
+  CPlayList& playlist = GetPlaylist(playlistId);
+  const int playlistSize = playlist.size();
+  if (playlistSize <= 0)
     return false;
   if (iSong < 0)
     iSong = 0;
-  if (iSong >= playlist.size())
-    iSong = playlist.size() - 1;
+  if (iSong >= playlistSize)
+    iSong = playlistSize - 1;
 
   // check if the item itself is a playlist, and can be expanded
   // only allow a few levels, this could end up in a loop
@@ -337,8 +348,10 @@ bool CPlayListPlayer::Play(int iSong,
       break;
   }
 
+  const CFileItemPtr item = playlist.TryGet(iSong);
+  if (!item)
+    return false;
   m_iCurrentSong = iSong;
-  CFileItemPtr item = playlist[m_iCurrentSong];
   if (item->IsVideoDb() && !item->HasVideoInfoTag())
     *(item->GetVideoInfoTag()) = XFILE::CVideoDatabaseFile::GetVideoTag(CURL(item->GetDynPath()));
 
@@ -348,11 +361,19 @@ bool CPlayListPlayer::Play(int iSong,
 
   const auto playAttempt = std::chrono::steady_clock::now();
   bool ret = g_application.PlayFile(*item, player, bAutoPlay);
+  // OpenFile can release GUI ownership while Python changes the playlist.
+  const auto selectionIsCurrent = [&]() {
+    return m_iCurrentPlayList.load() == playlistId && m_iCurrentSong.load() == iSong &&
+           playlist.TryGet(iSong) == item;
+  };
+  if (!selectionIsCurrent())
+    return ret;
+
   if (!ret)
   {
-    CLog::Log(LOGERROR, "Playlist Player: skipping unplayable item: {}, path [{}]", m_iCurrentSong,
+    CLog::Log(LOGERROR, "Playlist Player: skipping unplayable item: {}, path [{}]", iSong,
               CURL::GetRedacted(item->GetDynPath()));
-    playlist.SetUnPlayable(m_iCurrentSong);
+    playlist.SetUnPlayable(iSong);
 
     // abort on 100 failed CONSECUTIVE songs
     if (!m_iFailedSongs)
@@ -373,11 +394,13 @@ bool CPlayListPlayer::Play(int iSong,
 
       // open error dialog
       HELPERS::ShowOKDialogText(CVariant{16026}, CVariant{16027});
+      if (!selectionIsCurrent())
+        return false;
 
-      CGUIMessage msg(GUI_MSG_PLAYLISTPLAYER_STOPPED, 0, 0, m_iCurrentPlayList, m_iCurrentSong);
+      CGUIMessage msg(GUI_MSG_PLAYLISTPLAYER_STOPPED, 0, 0, playlistId, iSong);
       CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
       Reset();
-      GetPlaylist(m_iCurrentPlayList).Clear();
+      GetPlaylist(playlistId).Clear();
       m_iCurrentPlayList = TYPE_NONE;
       m_iFailedSongs = 0;
       m_failedSongsStart = std::chrono::steady_clock::now();
@@ -393,7 +416,7 @@ bool CPlayListPlayer::Play(int iSong,
     else
     {
       CLog::Log(LOGDEBUG,"Playlist Player: no more playable items... aborting playback");
-      CGUIMessage msg(GUI_MSG_PLAYLISTPLAYER_STOPPED, 0, 0, m_iCurrentPlayList, m_iCurrentSong);
+      CGUIMessage msg(GUI_MSG_PLAYLISTPLAYER_STOPPED, 0, 0, playlistId, iSong);
       CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
       Reset();
       m_iCurrentPlayList = TYPE_NONE;
@@ -424,12 +447,12 @@ void CPlayListPlayer::SetCurrentItemIdx(int iSong)
 
 int CPlayListPlayer::GetCurrentItemIdx() const
 {
-  return m_iCurrentSong;
+  return m_iCurrentSong.load();
 }
 
 Id CPlayListPlayer::GetCurrentPlaylist() const
 {
-  return m_iCurrentPlayList;
+  return m_iCurrentPlayList.load();
 }
 
 void CPlayListPlayer::SetCurrentPlaylist(Id playlistId)
@@ -548,8 +571,10 @@ void CPlayListPlayer::SetShuffle(Id playlistId, bool bYesNo, bool bNotify /* = f
     // save the order value of the current song so we can use it find its new location later
     int iOrder = -1;
     CPlayList& playlist = GetPlaylist(playlistId);
-    if (m_iCurrentSong >= 0 && m_iCurrentSong < playlist.size())
-      iOrder = playlist[m_iCurrentSong]->m_iprogramCount;
+    const int currentSong = m_iCurrentSong.load();
+    const CFileItemPtr currentItem = playlist.TryGet(currentSong);
+    if (currentItem)
+      iOrder = currentItem->m_iprogramCount;
 
     // shuffle or unshuffle as necessary
     if (bYesNo)
