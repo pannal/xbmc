@@ -676,7 +676,7 @@ bool CTCPServer::CTCPClient::SetAnnouncementFlags(int flags)
 
 void CTCPServer::CTCPClient::Send(const char *data, unsigned int size)
 {
-  if (m_disconnecting)
+  if (size == 0 || m_disconnecting)
     return;
 
   {
