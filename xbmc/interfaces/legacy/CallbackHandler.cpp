@@ -40,7 +40,8 @@ namespace XBMCAddon
   {
     XBMC_TRACE;
     std::unique_lock<CCriticalSection> lock(critSection);
-    g_callQueue.emplace(g_nextCallbackId++, new AsyncCallbackMessage(cb, this));
+    const AddonClass::Ref<AsyncCallbackMessage> message(new AsyncCallbackMessage(cb, this));
+    g_callQueue.emplace(g_nextCallbackId++, message);
   }
 
   RetardedAsyncCallbackHandler::~RetardedAsyncCallbackHandler()
@@ -53,10 +54,7 @@ namespace XBMCAddon
     while (iter != g_callQueue.end())
     {
       if (iter->second->handler.get() == this) // then this message is because of me
-      {
-        g_callQueue.erase(iter);
-        iter = g_callQueue.begin();
-      }
+        iter = g_callQueue.erase(iter);
       else
         ++iter;
     }
