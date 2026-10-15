@@ -206,8 +206,13 @@ bool PAPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options)
 
   if (m_streams.size() > 1 || !m_defaultCrossfadeMS || m_isPaused)
   {
-    CloseAllStreams(!m_isPaused);
-    StopThread();
+    const bool fade = !m_isPaused;
+    {
+      // Decoder jobs can wait for Python HTTP handlers that need GUI ownership.
+      CApplication::ScopedFrameMoveGuardExit exit(g_application);
+      CloseAllStreams(fade);
+      StopThread();
+    }
     m_isPaused = false; // Make sure to reset the pause state
   }
 
