@@ -6,6 +6,8 @@
 #include "ActiveAreaCache.h"
 
 #include "FileItem.h"
+#include "URL.h"
+#include "filesystem/CurlFile.h"
 #include "filesystem/Directory.h"
 #include "filesystem/File.h"
 #include "filesystem/SpecialProtocol.h"
@@ -22,7 +24,7 @@ namespace ACTIVE_AREA_CACHE
 namespace
 {
 // Bump when detection policy or the meaning of stored geometry changes.
-constexpr int CACHE_VERSION = 2;
+constexpr int CACHE_VERSION = 3;
 constexpr auto CACHE_DIRECTORY = "special://profile/active-area-cache/";
 std::mutex maintenanceMutex;
 
@@ -82,10 +84,70 @@ void CleanObsoleteEntries(const std::string& directory)
     XFILE::CFile::Delete(temporary);
 }
 
+std::string StablePath(const std::string& path)
+{
+  const CURL url(path);
+  if (!url.IsProtocol("http") && !url.IsProtocol("https"))
+    return path;
+  // Only Plex original-media parts have proven non-content session fields.
+  auto file = url.GetFileName();
+  if (!file.empty() && file.front() == '/')
+    file.erase(0, 1);
+  const std::string prefix = "library/parts/";
+  if (file.compare(0, prefix.size(), prefix) != 0)
+    return path;
+  size_t part = prefix.size();
+  for (int component = 0; component < 2; ++component)
+  {
+    const auto end = file.find('/', part);
+    if (end == std::string::npos || end == part ||
+        !std::all_of(file.begin() + part, file.begin() + end,
+                     [](unsigned char c) { return c >= '0' && c <= '9'; }))
+      return path;
+    part = end + 1;
+  }
+  const auto query = path.find('?');
+  const auto suffix = path.find_first_of("#|");
+  if (query == std::string::npos || (suffix != std::string::npos && suffix < query))
+    return path;
+  const auto end = suffix == std::string::npos ? path.size() : suffix;
+  std::string options;
+  bool retained = false;
+  for (size_t start = query + 1; start <= end;)
+  {
+    auto next = path.find('&', start);
+    if (next == std::string::npos || next > end)
+      next = end;
+    const auto option = path.substr(start, next - start);
+    const auto name = CURL::Decode(option.substr(0, option.find('=')));
+    if (name != "X-Plex-Session-Id" && name != "X-Plex-Session-Identifier")
+    {
+      if (retained)
+        options += '&';
+      options += option;
+      retained = true;
+    }
+    if (next == end)
+      break;
+    start = next + 1;
+  }
+  // Do not round-trip options through a map: duplicate parameters, escaping,
+  // order, authorization and protocol/header options must remain distinct.
+  return path.substr(0, query) + (retained ? "?" + options : "") + path.substr(end);
+}
+
+bool StrongETag(const std::string& tag)
+{
+  return tag.size() >= 2 && tag.front() == '"' && tag.back() == '"' &&
+         std::all_of(tag.begin() + 1, tag.end() - 1, [](unsigned char c) {
+           return c == 0x21 || (c >= 0x23 && c != 0x7f);
+         });
+}
+
 std::string Key(const Identity& identity, const std::string& directory)
 {
   // Source URLs may contain credentials. Persist only a digest of the key.
-  const auto key = identity.path + '\n' + std::to_string(identity.streamIndex) + '\n' +
+  const auto key = StablePath(identity.path) + '\n' + std::to_string(identity.streamIndex) + '\n' +
                    std::to_string(identity.codec) + '\n' + std::to_string(identity.width) + '\n' +
                    std::to_string(identity.height) + '\n' + std::to_string(identity.nativeDV);
   using KODI::UTILITY::CDigest;
@@ -111,7 +173,8 @@ bool Identity::operator==(const Identity& other) const
 {
   return path == other.path && size == other.size && modified == other.modified &&
          created == other.created && device == other.device && inode == other.inode &&
-         streamIndex == other.streamIndex && codec == other.codec && width == other.width &&
+         validator == other.validator && streamIndex == other.streamIndex &&
+         codec == other.codec && width == other.width &&
          height == other.height && nativeDV == other.nativeDV;
 }
 
@@ -122,8 +185,22 @@ bool ReadIdentity(Identity& identity)
       identity.height > 65535)
     return false;
   struct __stat64 info{};
-  if (XFILE::CFile::Stat(identity.path, &info) != 0 || (info.st_mode & S_IFDIR) ||
-      info.st_size <= 0 || info.st_mtime <= 0)
+  identity.validator.clear();
+  const CURL url(identity.path);
+  int status;
+  if (url.IsProtocol("http") || url.IsProtocol("https"))
+  {
+    XFILE::CCurlFile file;
+    status = file.Stat(url, &info);
+    const auto tag = file.GetHttpHeader().GetValue("etag");
+    if (status == 0 && StrongETag(tag))
+      identity.validator = KODI::UTILITY::CDigest::Calculate(
+          KODI::UTILITY::CDigest::Type::SHA256, tag);
+  }
+  else
+    status = XFILE::CFile::Stat(identity.path, &info);
+  if (status != 0 || (info.st_mode & S_IFDIR) || info.st_size <= 0 ||
+      (info.st_mtime <= 0 && identity.validator.empty()))
     return false;
   identity.size = info.st_size;
   identity.modified = info.st_mtime;
@@ -155,10 +232,12 @@ bool Load(const Identity& identity, Record& record)
   Identity stored = identity;
   Record candidate;
   if (!(input >> version >> stored.size >> stored.modified >> stored.created >> stored.device >>
-        stored.inode >> candidate.state >> candidate.hasStrict >> candidate.hasSubtitle >>
-        candidate.highConfidence) ||
+        stored.inode >> stored.validator >> candidate.state >> candidate.hasStrict >>
+        candidate.hasSubtitle >> candidate.highConfidence) ||
       version != CACHE_VERSION)
     return false;
+  if (stored.validator == "-")
+    stored.validator.clear();
   for (auto& offset : candidate.strict)
     if (!(input >> offset))
       return false;
@@ -184,6 +263,7 @@ bool Store(const Identity& identity, const Record& record)
   std::ostringstream output;
   output << CACHE_VERSION << ' ' << identity.size << ' ' << identity.modified << ' '
          << identity.created << ' ' << identity.device << ' ' << identity.inode << ' '
+         << (identity.validator.empty() ? "-" : identity.validator) << ' '
          << record.state << ' ' << record.hasStrict << ' ' << record.hasSubtitle << ' '
          << record.highConfidence;
   for (const auto offset : record.strict)

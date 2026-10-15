@@ -45,6 +45,39 @@ public:
 };
 }
 '''
+URL_STUB = r'''
+#pragma once
+#include <algorithm>
+#include <cctype>
+#include <string>
+class CURL {
+ std::string path;
+public:
+ explicit CURL(const std::string& p):path(p){}
+ const std::string& Get()const{return path;}
+ bool IsProtocol(const std::string& p)const{auto value=path.substr(0,path.find(":"));std::transform(value.begin(),value.end(),value.begin(),[](unsigned char c){return std::tolower(c);});return value==p;}
+ std::string GetFileName()const{auto start=path.find("://");if(start==std::string::npos)return path;start=path.find('/',start+3);if(start==std::string::npos)return {};auto end=path.find_first_of("?#|",start);return path.substr(start+1,end==std::string::npos?end:end-start-1);}
+ static std::string Decode(const std::string& p){std::string out;for(size_t n=0;n<p.size();++n){if(p[n]=='%'&&n+2<p.size()&&std::isxdigit(static_cast<unsigned char>(p[n+1]))&&std::isxdigit(static_cast<unsigned char>(p[n+2]))){out+=static_cast<char>(std::stoi(p.substr(n+1,2),nullptr,16));n+=2;}else out+=p[n];}return out;}
+};
+'''
+HTTP_STUB = r'''
+#pragma once
+#include "File.h"
+#include "URL.h"
+#include <map>
+namespace XFILE {
+struct HttpIdentity {int64_t size=1000,modified=1234;std::string tag;};
+inline std::map<std::string,HttpIdentity> httpResources;
+inline int httpStats=0;
+inline std::string lastHttpRequest;
+struct Header {std::string tag;std::string GetValue(const std::string&)const{return tag;}};
+class CCurlFile {Header header;public:
+ int Stat(const CURL& url,struct stat* info){++httpStats;lastHttpRequest=url.Get();auto found=httpResources.find(url.Get());if(found==httpResources.end())return -1;*info={};info->st_mode=S_IFREG;info->st_size=found->second.size;info->st_mtime=found->second.modified;header.tag=found->second.tag;return 0;}
+ const Header& GetHttpHeader()const{return header;}
+};
+}
+'''
+
 DIRECTORY_STUB = r'''
 #pragma once
 #include "File.h"
@@ -137,9 +170,137 @@ int main(int argc,char** argv) {
 }
 '''
 
+HTTP_TEST = r'''
+#include "utils/ActiveAreaCache.h"
+#include "filesystem/CurlFile.h"
+#include <cassert>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+using namespace ACTIVE_AREA_CACHE;
+Identity Identify(const std::string& path,XFILE::HttpIdentity metadata={}){
+ XFILE::httpResources[path]=metadata;Identity id;id.path=path;
+ id.streamIndex=0;id.codec=173;id.width=1920;id.height=1080;id.nativeDV=true;
+ const auto before=XFILE::httpStats;assert(ReadIdentity(id));
+ assert(XFILE::httpStats==before+1&&XFILE::lastHttpRequest==path&&id.path==path);
+ return id;
+}
+int main(int argc,char** argv){
+ assert(argc==2);const auto profile=std::string(argv[1])+"/http-profile";
+ std::filesystem::create_directories(profile);setenv("CACHE_TEST_PROFILE",profile.c_str(),1);
+ const auto privateRecords=[&]{
+  for(const auto& entry:std::filesystem::directory_iterator(profile+"/active-area-cache")){
+   std::ifstream input(entry.path());const std::string bytes((std::istreambuf_iterator<char>(input)),{});
+   assert(bytes.find("synthetic-secret")==std::string::npos);
+   assert(bytes.find("fake.example")==std::string::npos);
+   assert(bytes.find("synthetic-private-validator")==std::string::npos);
+   assert(entry.path().filename()=="version"||entry.path().filename().string().size()==68);
+  }
+ };
+ // Synthetic URLs: retained bytes, order, duplicates, escaped values, headers and
+ // credentials must remain part of identity. Only the two proven session names
+ // may disappear from the key; requests and revalidation retain the whole URL.
+ const std::string endpoint="https://fake.example:32400/library/parts/123/456/file.mkv";
+ const std::string stable="?X-Plex-Token=synthetic-secret&a=%2f&a=/&profile=original";
+ const std::string tail="|User-Agent=synthetic%20client&seekable=1";
+ const auto first=endpoint+stable+"&X-Plex-Session-Id=first&X-Plex-Session-Identifier=one"+tail;
+ const auto second=endpoint+stable+"&X-Plex-Session-Id=second&X-Plex-Session-Identifier=two"+tail;
+ Record record,loaded;record.state=3;record.hasStrict=true;record.highConfidence=true;
+ record.strict={16,16,0,0};record.hasSubtitle=true;record.subtitle={40,40,0,0};
+ const XFILE::HttpIdentity strong{1000,0,"\"synthetic-private-validator\""};
+ auto id=Identify(first,strong);assert(id.modified==0&&!id.validator.empty());
+ assert(id.validator!=strong.tag&&id.validator.size()==64);
+ const int beforeStore=XFILE::httpStats;assert(Store(id,record));
+ assert(XFILE::httpStats==beforeStore+1&&XFILE::lastHttpRequest==first);
+ privateRecords(); // Check while the strong-validator record still exists.
+ auto next=Identify(second,strong);assert(Load(next,loaded));
+ assert(loaded.highConfidence&&loaded.strict==record.strict&&loaded.subtitle==record.subtitle);
+ // A percent-encoded spelling of an exact session name remains non-content;
+ // leading, trailing and duplicated session fields likewise do not alter it.
+ const auto encoded=endpoint+stable+"&%58-Plex-Session-Id=three&X-Plex-Session-Identifier=four"+tail;
+ assert(Load(Identify(encoded,strong),loaded));
+ const auto duplicates=endpoint+"?X-Plex-Session-Id=x&"+stable.substr(1)+
+   "&X-Plex-Session-Id=y&X-Plex-Session-Identifier=z"+tail;
+ assert(Load(Identify(duplicates,strong),loaded));
+ for(const auto& changed: {
+   std::string("http://fake.example:32400/library/parts/123/456/file.mkv")+stable+tail,
+   std::string("https://other.example:32400/library/parts/123/456/file.mkv")+stable+tail,
+   endpoint+"?X-Plex-Token=other&a=%2f&a=/&profile=original"+tail,
+   endpoint+"?X-Plex-Token=synthetic-secret&a=/&a=%2f&profile=original"+tail,
+   endpoint+"?X-Plex-Token=synthetic-secret&a=%2F&a=/&profile=original"+tail,
+   endpoint+"?X-Plex-Token=synthetic-secret&a=/&profile=original"+tail,
+   endpoint+stable+"&"+tail, // Preserve even a retained empty query segment.
+   endpoint+stable+"&x-plex-session-id=case-sensitive"+tail,
+   endpoint+stable+"&X-Plex-Session-Id-extra=content"+tail,
+   endpoint+stable+"&X-Plex-Client-Identifier=different-client"+tail,
+   endpoint+stable+"&X-Plex-Session=not-a-proven-session-field"+tail,
+   endpoint+"?X-Plex-Token=synthetic-secret&a=%2f&a=/&profile=transcoded"+tail,
+   endpoint+stable+"|User-Agent=other&seekable=1",
+   endpoint+stable+tail+"#different-fragment",
+   std::string("https://fake.example:32400/library/parts/124/456/file.mkv")+stable+tail,
+   std::string("https://fake.example:32400/library/parts/123/457/file.mkv")+stable+tail,
+   std::string("https://fake.example:32400/library/parts/123/456/other.mkv")+stable+tail})
+  assert(!Load(Identify(changed,strong),loaded));
+ for(int field=0;field<5;++field){auto changed=next;
+  switch(field){case 0:++changed.streamIndex;break;case 1:++changed.codec;break;
+   case 2:++changed.width;break;case 3:++changed.height;break;case 4:changed.nativeDV=false;break;}
+  assert(!Load(changed,loaded));
+ }
+ // Normalization is deliberately unavailable outside an original Plex part.
+ for(const auto& path:{std::string("https://fake.example/video/:/transcode/universal/start.m3u8"),
+   std::string("https://fake.example/library/parts/abc/456/file.mkv"),
+   std::string("https://fake.example/library/parts/123/abc/file.mkv"),
+   std::string("https://fake.example/library/parts//456/file.mkv"),
+   std::string("https://fake.example/library/parts/123/456"),
+   std::string("https://fake.example/other/library/parts/123/456/file.mkv")}){
+  auto original=Identify(path+"?X-Plex-Session-Id=a",strong);assert(Store(original,record));
+  assert(!Load(Identify(path+"?X-Plex-Session-Id=b",strong),loaded));
+ }
+ const auto suffixFirst=endpoint+"|User-Agent=x?X-Plex-Session-Id=";
+ assert(Store(Identify(suffixFirst+"a",strong),record));
+ assert(!Load(Identify(suffixFirst+"b",strong),loaded));
+ // Neither metadata nor validators may be borrowed from the endpoint/session.
+ auto changed=Identify(second,{1001,0,strong.tag});assert(!Load(changed,loaded));
+ changed=Identify(second,{1000,0,"\"replacement-validator\""});assert(!Load(changed,loaded));
+ XFILE::httpResources[first]={1000,0,"\"replacement-validator\""};
+ assert(!Store(id,record)); // The original identity is rechecked at commit time.
+ Identify(first,strong);assert(Store(id,record));
+ XFILE::httpResources.erase(first);assert(!Store(id,record));
+ auto missing=id;assert(!ReadIdentity(missing));
+ for(const auto& invalid: {std::string(),std::string("W/\"weak\""),std::string("unquoted"),
+   std::string("\"unterminated"),std::string("\"inner\"quote\""),std::string(" \"spaces\""),
+   std::string("\"bad space\""),std::string("\"bad\nline\""),std::string("\"bad\x7f\""),
+   std::string("\"good\" trailing")}){
+  XFILE::httpResources[first]={1000,0,invalid};auto candidate=id;
+  assert(!ReadIdentity(candidate)&&candidate.validator.empty());
+ }
+ // A usable Last-Modified does not require an ETag. Strong validators need
+ // known positive length; neither a weak tag nor a URL timestamp suffices.
+ auto dated=Identify(first,{1000,1234,"W/\"weak\""});assert(dated.validator.empty());
+ assert(Store(dated,record));assert(Load(Identify(second,{1000,1234,"W/\"weak\""}),loaded));
+ assert(!Load(Identify(second,{1000,1235,""}),loaded));
+ assert(!Load(Identify(second,{1001,1234,""}),loaded));
+ assert(!Identify(first,{1000,0,"\"\""}).validator.empty()); // Empty opaque ETag is valid.
+ for(const auto& metadata:{XFILE::HttpIdentity{0,1234,strong.tag},XFILE::HttpIdentity{-1,1234,strong.tag},
+   XFILE::HttpIdentity{1000,0,""},XFILE::HttpIdentity{1000,-1,"W/\"weak\""}}){
+  XFILE::httpResources[first]=metadata;auto candidate=id;assert(!ReadIdentity(candidate));
+ }
+ // A local filename resembling a Plex URL query remains byte-exact.
+ const auto local=profile+"/local?X-Plex-Session-Id=";
+ std::ofstream(local+"a")<<"synthetic local file";std::ofstream(local+"b")<<"synthetic local file";
+ Identity localId;localId.path=local+"a";localId.streamIndex=0;localId.codec=173;localId.width=1920;localId.height=1080;
+ assert(ReadIdentity(localId)&&Store(localId,record));localId.path=local+"b";
+ assert(ReadIdentity(localId)&&!Load(localId,loaded));
+ privateRecords();
+ std::cout<<"PASS: HTTP Plex session reuse, exact retained identity and original requests, validated Last-Modified/strong ETag eligibility, metadata invalidation and private persistence\n";
+}
+'''
+
 LIFECYCLE = r'''
 #include "utils/ActiveAreaCache.h"
 #include "filesystem/File.h"
+#include "filesystem/CurlFile.h"
 #include <atomic>
 #include <cassert>
 #include <cstdlib>
@@ -161,8 +322,9 @@ struct DetectSource {
  std::shared_ptr<std::atomic<bool>> superseded=std::make_shared<std::atomic<bool>>(false);
  std::shared_ptr<const DetectResult> result,subtitleResult,retained,retainedSubtitle;
 };
+bool workerCancelled=false;
 struct CAMLNativeWorker {
- struct Run {bool Cancelled() const {return false;}};
+ struct Run {bool Cancelled() const {return workerCancelled;}};
  void Stop() {} bool Closed() const {return false;}
  template<class F,class T>void Start(F f,T) {f(Run{});}
 } s_detectWorker;
@@ -172,14 +334,14 @@ std::atomic<bool> s_detectThrottleActive{false},s_detectCacheStarved{false},s_de
 std::atomic<int> s_detectState{0};
 struct CSettings {enum {SETTING_SUBTITLES_CACHEACTIVEAREA,SETTING_SUBTITLES_DETECTACTIVEAREA};};
 struct Settings {
- bool cache=false,enabled=true;
+ bool cache=false,enabled=true,dvEnabled=true;
  bool GetBool(int id)const{return id==CSettings::SETTING_SUBTITLES_CACHEACTIVEAREA?cache:enabled;}
 } setting;
 Settings* settings(){return &setting;}
-bool aml_dv_detect_active_area_enabled(){return setting.enabled;}
+bool aml_dv_detect_active_area_enabled(){return setting.dvEnabled;}
 void detect_clear_injection(bool){}
 struct CLog {template<class... T>static void Log(T...) {}};
-int scans=0;
+int scans=0,scanMode=0;
 void detect_publish_subtitle(const CAMLNativeWorker::Run&,const std::shared_ptr<DetectSource>& source,DetectResult result){
  source->subtitleResult=std::make_shared<DetectResult>(result);
 }
@@ -188,7 +350,13 @@ void detect_publish(const CAMLNativeWorker::Run&,const std::shared_ptr<DetectSou
 }
 void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source,const CAMLNativeWorker::Run& run){
  assert(source->pending.load());
- ++scans;detect_publish_subtitle(run,source,{20,20,0,0});s_detectState=2;
+ ++scans;source->completedPositions.store(14);
+ if(scanMode==2){s_detectState=DV_DETECT_FAILED;return;}
+ detect_publish_subtitle(run,source,{20,20,0,0});s_detectState=2;
+ if(scanMode==1||scanMode==3||scanMode==4)
+  detect_publish(run,source,16,16,0,0,true);
+ if(scanMode==3)workerCancelled=true;
+ if(scanMode==4)XFILE::httpResources.at(source->path).tag="\"changed-during-scan\"";
 }
 '''
 
@@ -232,7 +400,62 @@ int main(int argc,char** argv){
  assert(!s_detectSource->result&&!s_detectSource->subtitleResult);
  assert(XFILE::statCalls==offStats&&XFILE::openCalls==offOpens&&XFILE::writeCalls==offWrites);
  assert(!s_detectSource->pending.load());
+ // Connected regression: only native DV detection enabled, with the two
+ // request-session fields changing exactly as in the reported Plex opens.
+ PERFORMANCE_CORES::allowed=true;setting.enabled=false;setting.dvEnabled=true;
+ setting.cache=true;scanMode=1;
+ const std::string base="https://synthetic.example/library/parts/111/222/original.mkv";
+ const auto first=base+"?X-Plex-Token=fake&X-Plex-Session-Id=one&X-Plex-Session-Identifier=first";
+ const auto second=base+"?X-Plex-Token=fake&X-Plex-Session-Id=two&X-Plex-Session-Identifier=second";
+ const XFILE::HttpIdentity metadata{1000,0,"\"native-dv-original\""};
+ XFILE::httpResources[first]=metadata;XFILE::httpResources[second]=metadata;
+ const auto open=[&](const std::string& path){
+  s_detectSource=std::make_shared<DetectSource>();s_detectSource->path=path;
+  s_detectSource->nativeDV=true;aml_dv_detect_active_area_start();
+  assert(!s_detectSource->pending.load());
+ };
+ const int firstScan=scans;open(first);
+ assert(scans==firstScan+1&&s_detectSource->completedPositions.load()==14);
+ assert(s_detectState==DV_DETECT_OK&&s_detectSource->result->top==16&&s_detectSource->result->highConfidence);
+ assert(s_detectSource->subtitleResult->top==20&&XFILE::lastHttpRequest==first);
+ open(second);assert(scans==firstScan+1&&s_detectSource->completedPositions.load()==0);
+ assert(s_detectState==DV_DETECT_OK&&s_detectSource->result->top==16&&s_detectSource->result->highConfidence);
+ assert(s_detectSource->subtitleResult->top==20&&XFILE::lastHttpRequest==second);
+ // A newer validator forces decoding even though the stable part is identical.
+ XFILE::httpResources[second].tag="\"native-dv-replaced\"";
+ open(second);assert(scans==firstScan+2&&s_detectSource->completedPositions.load()==14);
+ // Cache OFF ignores an otherwise reusable HTTP entry and does no identity I/O.
+ setting.cache=false;const auto httpBefore=XFILE::httpStats,opensBefore=XFILE::openCalls;
+ const auto writesBefore=XFILE::writeCalls;
+ open(second);assert(scans==firstScan+3);
+ assert(XFILE::httpStats==httpBefore&&XFILE::openCalls==opensBefore&&XFILE::writeCalls==writesBefore);
+ // Both detector enables OFF is a terminal no-I/O return, even for native DV.
+ setting.cache=true;setting.dvEnabled=false;open(second);assert(scans==firstScan+3);
+ assert(XFILE::httpStats==httpBefore&&XFILE::openCalls==opensBefore&&XFILE::writeCalls==writesBefore);
+ setting.dvEnabled=true;
+ // Failure, cancellation, source changes during decoding, and unavailable
+ // identity must never seed a successful result for a subsequent open.
+ for(int mode:{2,3,4,5,6}){
+  const auto path=base+"?case="+std::to_string(mode);
+  if(mode!=6)XFILE::httpResources[path]=mode==5?XFILE::HttpIdentity{1000,0,"W/\"weak\""}:metadata;
+  const int initial=scans;scanMode=mode>=5?1:mode;open(path);
+  assert(scans==initial+1);workerCancelled=false;
+  ACTIVE_AREA_CACHE::Identity failed;failed.path=path;failed.streamIndex=0;failed.codec=173;
+  failed.width=1920;failed.height=1080;failed.nativeDV=true;ACTIVE_AREA_CACHE::Record absent;
+  const bool identified=ACTIVE_AREA_CACHE::ReadIdentity(failed);
+  assert(mode>=5?!identified:identified&&!ACTIVE_AREA_CACHE::Load(failed,absent));
+  scanMode=1;open(path);assert(scans==initial+2);
+ }
+ // Withheld-native/text-only acceptance remains text-only across reuse: it
+ // must not be promoted into a high-confidence native L5 result by caching.
+ const auto withheld=base+"?case=withheld";XFILE::httpResources[withheld]=metadata;
+ scanMode=0;const int withheldScan=scans;open(withheld);
+ assert(scans==withheldScan+1&&s_detectState==DV_DETECT_SKIP_IMAX);
+ assert(!s_detectSource->result&&s_detectSource->subtitleResult->top==20);
+ open(withheld);assert(scans==withheldScan+1&&s_detectSource->completedPositions.load()==0);
+ assert(!s_detectSource->result&&s_detectState==DV_DETECT_SKIP_IMAX&&s_detectSource->subtitleResult->top==20);
  std::cout<<"PASS: production startup disabled-cache I/O bypass, persistent miss/save, blind hit without scanning, strict/subtitle separation, selected-stream/file invalidation\n";
+ std::cout<<"PASS: native DV-only HTTP session reuse (14 positions then zero), independent enables, cancellation/failure/change rejection and withheld-native preservation\n";
 }
 '''
 
@@ -343,7 +566,7 @@ struct URIUtils{static std::string GetFileName(const std::string& path){return p
 #include "File.h"
 struct CSpecialProtocol{static std::string TranslatePath(const std::string& path){return XFILE::Path(path);}};
 '''
-        for name, text in [('filesystem/SpecialProtocol.h',special),('FileItem.h',file_items),('utils/URIUtils.h',uri),('filesystem/File.h', counted_file), ('filesystem/Directory.h', DIRECTORY_STUB), ('utils/Digest.h', DIGEST_STUB)]:
+        for name, text in [('URL.h',URL_STUB),('filesystem/CurlFile.h',HTTP_STUB),('filesystem/SpecialProtocol.h',special),('FileItem.h',file_items),('utils/URIUtils.h',uri),('filesystem/File.h', counted_file), ('filesystem/Directory.h', DIRECTORY_STUB), ('utils/Digest.h', DIGEST_STUB)]:
             path = work / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
@@ -353,12 +576,40 @@ struct CSpecialProtocol{static std::string TranslatePath(const std::string& path
         # LeakSanitizer cannot inspect threads under the tool's ptrace sandbox.
         subprocess.run([str(work / 'test'), str(work)], check=True,
                        env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'}, timeout=30)
+        (work / 'http.cpp').write_text(HTTP_TEST)
+        http_argv = [str(work/'http.cpp') if value==str(work/'test.cpp') else
+                     str(work/'http') if value==str(work/'test') else value for value in argv]
+        subprocess.run(http_argv,check=True)
+        subprocess.run([str(work/'http'),str(work)],check=True,
+                       env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'},timeout=30)
         (work / 'upgrade.cpp').write_text(UPGRADE_TEST)
         upgrade_argv = [str(work/'upgrade.cpp') if value==str(work/'test.cpp') else str(work/'upgrade') if value==str(work/'test') else value for value in argv]
         subprocess.run(upgrade_argv,check=True)
         subprocess.run([str(work/'upgrade'),str(work)],check=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'},timeout=30)
         if args.negative_controls:
             actual=(ROOT/'xbmc/utils/ActiveAreaCache.cpp').read_text()
+            for index,(label,old,new) in enumerate([
+                ('HTTP session identity remains volatile',
+                 'StablePath(identity.path) +', 'StablePath(identity.path) + identity.path +'),
+                ('HTTP retained query fields discarded',
+                 'if (name != "X-Plex-Session-Id" && name != "X-Plex-Session-Identifier")',
+                 'if (false && name != "X-Plex-Session-Id" && name != "X-Plex-Session-Identifier")'),
+                ('HTTP malformed ETag accepted',
+                 'status == 0 && StrongETag(tag)', 'status == 0 && (StrongETag(tag) || true)'),
+                ('HTTP changed validator ignored',
+                 'validator == other.validator &&', '(validator == other.validator || true) &&'),
+            ]):
+                assert old in actual,label
+                broken=work/'broken-http-cache.cpp';broken.write_text(actual.replace(old,new,1))
+                broken_argv=[str(broken) if value==str(ROOT/'xbmc/utils/ActiveAreaCache.cpp') else value for value in http_argv]
+                broken_argv[1:1]=['-iquote',str(ROOT/'xbmc/utils')]
+                subprocess.run(broken_argv,check=True)
+                target=work/('http-negative-'+str(index));target.mkdir()
+                result=subprocess.run([str(work/'http'),str(target)],text=True,capture_output=True,
+                                      env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'},timeout=30)
+                assert result.returncode!=0 and 'Assertion' in result.stderr,(label,result.stdout,result.stderr)
+                assert 'AddressSanitizer' not in result.stderr and 'runtime error:' not in result.stderr,result.stderr
+                print('REJECTED:',label)
             owned_start=actual.index('    if (item->m_bIsFolder')
             owned_end=actual.index('      continue;',owned_start)+len('      continue;')
             ownership=actual[owned_start:owned_end]
@@ -388,6 +639,22 @@ struct CSpecialProtocol{static std::string TranslatePath(const std::string& path
         subprocess.run(lifecycle_argv, check=True)
         subprocess.run([str(work / 'lifecycle'), str(work)], check=True,
                        env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'}, timeout=30)
+        if args.negative_controls:
+            for index,(label,broken_startup) in enumerate([
+                ('native DV incorrectly gated by subtitle enable',startup.replace(
+                    '(source->nativeDV && aml_dv_detect_active_area_enabled())',
+                    '(false && source->nativeDV && aml_dv_detect_active_area_enabled())')),
+                ('cancelled worker result persisted',startup.replace('!run.Cancelled()', 'true')),
+            ]):
+                assert broken_startup!=startup,label
+                (work/'lifecycle.cpp').write_text(LIFECYCLE+broken_startup+LIFECYCLE_TEST)
+                subprocess.run(lifecycle_argv,check=True)
+                target=work/('worker-negative-'+str(index));target.mkdir()
+                result=subprocess.run([str(work/'lifecycle'),str(target)],text=True,capture_output=True,
+                                      env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'},timeout=30)
+                assert result.returncode!=0 and 'Assertion' in result.stderr,(label,result.stdout,result.stderr)
+                assert 'AddressSanitizer' not in result.stderr and 'runtime error:' not in result.stderr,result.stderr
+                print('REJECTED:',label)
 
 if __name__ == '__main__':
     main()

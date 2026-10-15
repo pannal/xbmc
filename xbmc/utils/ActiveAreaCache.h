@@ -19,6 +19,7 @@ struct Identity
   int64_t created{0};
   uint64_t device{0};
   uint64_t inode{0};
+  std::string validator; // digest of a strong HTTP ETag; never its plaintext
   int streamIndex{-1};
   int codec{0};
   int width{0};
@@ -38,7 +39,8 @@ struct Record
   std::array<uint16_t, 4> subtitle{};
 };
 
-// Missing timestamps or stream identity disable persistence. No media writes.
+// HTTP needs size and a modification time or strong ETag; other files need stat
+// timestamps. Missing content/stream identity disables persistence. No media writes.
 bool ReadIdentity(Identity& identity);
 bool Load(const Identity& identity, Record& record);
 bool Store(const Identity& identity, const Record& record);
