@@ -1544,6 +1544,7 @@ bool CGUIMediaWindow::OnPlayAndQueueMedia(const CFileItemPtr& item, const std::s
       }
     }
 
+    CFileItemList queuedItems;
     // now queue...
     for ( int i = 0; i < m_vecItems->Size(); i++ )
     {
@@ -1553,13 +1554,16 @@ bool CGUIMediaWindow::OnPlayAndQueueMedia(const CFileItemPtr& item, const std::s
         continue;
 
       if (!nItem->IsZIP() && !nItem->IsRAR() && (!nItem->IsDVDFile() || (URIUtils::GetFileName(nItem->GetDynPath()) == mainDVD)))
-        CServiceBroker::GetPlaylistPlayer().Add(playlistId, nItem);
+        queuedItems.Add(nItem);
 
       if (item->IsSamePath(nItem.get()))
       { // item that was clicked
-        mediaToPlay = CServiceBroker::GetPlaylistPlayer().GetPlaylist(playlistId).size() - 1;
+        mediaToPlay = queuedItems.Size() - 1;
       }
     }
+
+    if (queuedItems.Size() > 0)
+      CServiceBroker::GetPlaylistPlayer().Add(playlistId, queuedItems);
 
     // Save current window and directory to know where the selected item was
     if (m_guiState)
@@ -1613,6 +1617,8 @@ void CGUIMediaWindow::UpdateFileList()
     CServiceBroker::GetPlaylistPlayer().ClearPlaylist(playlistId);
     CServiceBroker::GetPlaylistPlayer().Reset();
 
+    CFileItemList queuedItems;
+    int currentItemIdx = -1;
     for (int i = 0; i < m_vecItems->Size(); i++)
     {
       CFileItemPtr pItem = m_vecItems->Get(i);
@@ -1620,12 +1626,17 @@ void CGUIMediaWindow::UpdateFileList()
         continue;
 
       if (!pItem->IsPlayList() && !pItem->IsZIP() && !pItem->IsRAR())
-        CServiceBroker::GetPlaylistPlayer().Add(playlistId, pItem);
+        queuedItems.Add(pItem);
 
       if (pItem->GetPath() == playlistItem.GetPath() &&
           pItem->GetStartOffset() == playlistItem.GetStartOffset())
-        CServiceBroker::GetPlaylistPlayer().SetCurrentItemIdx(
-            CServiceBroker::GetPlaylistPlayer().GetPlaylist(playlistId).size() - 1);
+        currentItemIdx = queuedItems.Size() - 1;
+    }
+
+    if (queuedItems.Size() > 0)
+    {
+      CServiceBroker::GetPlaylistPlayer().Add(playlistId, queuedItems);
+      CServiceBroker::GetPlaylistPlayer().SetCurrentItemIdx(currentItemIdx);
     }
   }
 }
