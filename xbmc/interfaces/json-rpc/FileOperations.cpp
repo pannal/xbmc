@@ -376,8 +376,9 @@ bool CFileOperations::FillFileItemList(const CVariant &parameterObject, CFileIte
       if (directory.GetDirectory(strPath, items, extensions, DIR_FLAG_DEFAULTS))
       {
         // Sort folders and files by filename to avoid reverse item order bug on some platforms,
-        // but leave items from a playlist, smartplaylist or upnp container in order supplied
-        if (!items.IsPlayList() && !items.IsSmartPlayList() && !URIUtils::IsUPnP(items.GetPath()))
+        // but leave items from a playlist, smartplaylist, upnp or plugin container in order supplied
+        if (!items.IsPlayList() && !items.IsSmartPlayList() && !URIUtils::IsUPnP(items.GetPath()) &&
+            !URIUtils::IsPlugin(items.GetPath()))
           items.Sort(SortByFile, SortOrderAscending);
 
         CFileItemList filteredDirectories;
