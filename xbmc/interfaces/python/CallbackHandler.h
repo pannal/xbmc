@@ -23,7 +23,6 @@ namespace XBMCAddon
      */
     class PythonCallbackHandler : public RetardedAsyncCallbackHandler
     {
-      PyThreadState* objectThreadState;
     public:
 
       /**

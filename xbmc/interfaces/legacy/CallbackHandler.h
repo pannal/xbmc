@@ -41,14 +41,22 @@ namespace XBMCAddon
    */
   class RetardedAsyncCallbackHandler : public CallbackHandler
   {
+    const void* const owner;
+
   protected:
-    inline RetardedAsyncCallbackHandler() = default;
+    /**
+     * The owner identifies the language thread that may run the queued callbacks.
+     * isStateOk() must return false unless makePendingCalls() received this owner.
+     */
+    inline explicit RetardedAsyncCallbackHandler(const void* _owner) : owner(_owner) {}
+    inline const void* getOwner() const { return owner; }
+
   public:
 
     ~RetardedAsyncCallbackHandler() override;
 
     void invokeCallback(Callback* cb) override;
-    static void makePendingCalls();
+    static void makePendingCalls(const void* owner);
     static void clearPendingCalls(void* userData);
 
     virtual bool isStateOk(AddonClass* obj) =  0;
