@@ -37,7 +37,7 @@ namespace XBMCAddon
     void PythonLanguageHook::MakePendingCalls()
     {
       XBMC_TRACE;
-      PythonCallbackHandler::makePendingCalls();
+      PythonCallbackHandler::makePendingCalls(PyThreadState_Get());
     }
 
     void PythonLanguageHook::DelayedCallOpen()

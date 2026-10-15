@@ -21,9 +21,9 @@ namespace XBMCAddon
      *  handling callbacks in the appropriate thread.
      */
     PythonCallbackHandler::PythonCallbackHandler()
+      : RetardedAsyncCallbackHandler(PyThreadState_Get())
     {
       XBMC_TRACE;
-      objectThreadState = PyThreadState_Get();
     }
 
     /**
@@ -34,7 +34,7 @@ namespace XBMCAddon
     {
       XBMC_TRACE;
       PyThreadState* state = PyThreadState_Get();
-      if (objectThreadState == state)
+      if (getOwner() == state)
       {
         // make sure the interpreter is still active.
         AddonClass::Ref<XBMCAddon::Python::PythonLanguageHook> lh(XBMCAddon::Python::PythonLanguageHook::GetIfExists(state->interp));
@@ -54,7 +54,7 @@ namespace XBMCAddon
     bool PythonCallbackHandler::shouldRemoveCallback(AddonClass* obj, void* threadState)
     {
       XBMC_TRACE;
-      if (threadState == objectThreadState)
+      if (threadState == getOwner())
         return true;
 
       // we also want to remove the callback if the language hook no longer exists.
