@@ -1828,6 +1828,11 @@ int8_t CCurlFile::CReadState::FillBuffer(unsigned int want)
     {
       case CURLM_OK:
       {
+        // The perform call can satisfy the request or fill the buffer. The loop condition then
+        // ends the fill, so no wait is needed.
+        if (m_buffer.getMaxReadSize() >= want || m_buffer.getMaxWriteSize() == 0)
+          break;
+
         int maxfd = -1;
         FD_ZERO(&fdread);
         FD_ZERO(&fdwrite);
