@@ -137,8 +137,6 @@ namespace XBMCAddon
         current = CServiceBroker::GetPlaylistPlayer().GetCurrentItemIdx();
       }
       DelayedCallGuard dc(languageHook);
-      // The main thread selects the playlist and plays in one message, so a stop
-      // notification that it handles in between cannot reset the selection.
       CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, current, iPlayList);
     }
 
@@ -156,8 +154,6 @@ namespace XBMCAddon
           iPlayList = playlist->getPlayListId();
         }
         DelayedCallGuard dc(languageHook);
-        // The main thread selects the playlist and plays in one message, so a stop
-        // notification that it handles in between cannot reset the selection.
         CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, startpos, iPlayList);
       }
       else
@@ -196,8 +192,6 @@ namespace XBMCAddon
     {
       XBMC_TRACE;
       DelayedCallGuard dc(languageHook);
-      // The main thread selects the playlist and plays in one message, so a stop
-      // notification that it handles in between cannot reset the selection.
       CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, selected, iPlayList);
     }
 

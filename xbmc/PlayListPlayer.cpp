@@ -875,7 +875,7 @@ void PLAYLIST::CPlayListPlayer::OnApplicationMessage(KODI::MESSAGING::ThreadMess
   switch (pMsg->dwMessage)
   {
   case TMSG_PLAYLISTPLAYER_PLAY:
-    // A sender that names a playlist selects the playlist in the same message as the play.
+    // Select and play in one message so Stop cannot reset the selection between calls.
     if (pMsg->param2 == TYPE_MUSIC || pMsg->param2 == TYPE_VIDEO)
       SetCurrentPlaylist(pMsg->param2);
     if (pMsg->param1 != -1)
