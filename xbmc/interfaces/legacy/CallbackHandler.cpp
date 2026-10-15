@@ -44,21 +44,7 @@ namespace XBMCAddon
     g_callQueue.emplace(g_nextCallbackId++, message);
   }
 
-  RetardedAsyncCallbackHandler::~RetardedAsyncCallbackHandler()
-  {
-    XBMC_TRACE;
-    std::unique_lock<CCriticalSection> lock(critSection);
-
-    // find any messages that might be there because of me ... and remove them
-    CallbackQueue::iterator iter = g_callQueue.begin();
-    while (iter != g_callQueue.end())
-    {
-      if (iter->second->handler.get() == this) // then this message is because of me
-        iter = g_callQueue.erase(iter);
-      else
-        ++iter;
-    }
-  }
+  RetardedAsyncCallbackHandler::~RetardedAsyncCallbackHandler() = default;
 
   void RetardedAsyncCallbackHandler::makePendingCalls()
   {
