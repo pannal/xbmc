@@ -11,6 +11,7 @@
 #include "guilib/GUIMessage.h"
 #include "guilib/GUIProgressControl.h"
 #include "utils/TimeUtils.h"
+#include "utils/Variant.h"
 
 #include <cmath>
 #include <mutex>
@@ -55,9 +56,10 @@ CGUIDialogExtendedProgressBar::CGUIDialogExtendedProgressBar(void)
   m_iCurrentItem    = 0;
 }
 
-CGUIDialogProgressBarHandle *CGUIDialogExtendedProgressBar::GetHandle(const std::string &strTitle)
+CGUIDialogProgressBarHandle* CGUIDialogExtendedProgressBar::GetHandle(const std::string& strTitle,
+                                                                   bool activeAreaStartup)
 {
-  CGUIDialogProgressBarHandle *handle = new CGUIDialogProgressBarHandle(strTitle);
+  auto* handle = new CGUIDialogProgressBarHandle(strTitle, activeAreaStartup);
   {
     std::unique_lock<CCriticalSection> lock(m_critSection);
     m_handles.push_back(handle);
@@ -72,6 +74,10 @@ bool CGUIDialogExtendedProgressBar::OnMessage(CGUIMessage& message)
 {
   switch (message.GetMessage())
   {
+  case GUI_MSG_WINDOW_DEINIT:
+    // Keep the last rendered handle's signal throughout its closing animation.
+    SetProperty("activeareastartup", "");
+    break;
   case GUI_MSG_WINDOW_INIT:
     {
       m_iLastSwitchTime = CTimeUtils::GetFrameTime();
@@ -100,6 +106,7 @@ void CGUIDialogExtendedProgressBar::UpdateState(unsigned int currentTime)
   std::string strHeader;
   std::string strTitle;
   float  fProgress(-1.0f);
+  bool activeAreaStartup = false;
 
   {
     std::unique_lock<CCriticalSection> lock(m_critSection);
@@ -141,9 +148,13 @@ void CGUIDialogExtendedProgressBar::UpdateState(unsigned int currentTime)
       strTitle  = handle->Text();
       strHeader = handle->Title();
       fProgress = handle->Percentage();
+      activeAreaStartup = handle->IsActiveAreaStartup();
     }
   }
 
+  // The current rendered item owns this signal, not the worker that finishes
+  // it. Another progress job can replace it without closing the shared dialog.
+  SetProperty("activeareastartup", activeAreaStartup ? "1" : "");
   SET_CONTROL_LABEL(CONTROL_LABELHEADER, strHeader);
   SET_CONTROL_LABEL(CONTROL_LABELTITLE, strTitle);
 

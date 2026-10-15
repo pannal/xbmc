@@ -2949,6 +2949,15 @@ void aml_subtitle_active_area_startup_begin(uint64_t pm4kStartupToken)
   s_detectSource->startupAdmission->store(wait);
 }
 
+int aml_subtitle_active_area_startup_modes(const std::shared_ptr<const void>& expectedSource)
+{
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  if (!expectedSource || expectedSource != s_detectSource->selection)
+    return 0;
+  return (settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ? 1 : 0) |
+         (s_detectSource->nativeDV && aml_dv_detect_active_area_enabled() ? 2 : 0);
+}
+
 void aml_subtitle_active_area_startup_set_video_ready(const std::shared_ptr<const void>& expectedSource,
                                                      bool ready)
 {

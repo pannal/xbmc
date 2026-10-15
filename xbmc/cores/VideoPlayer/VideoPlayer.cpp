@@ -4641,6 +4641,8 @@ bool CVideoPlayer::WaitForActiveAreaDetection()
                     videoReady;
   if (held)
   {
+    const int modes = aml_subtitle_active_area_startup_modes(m_CurrentVideo.hint.subtitleProbeSource);
+    const int title = modes == 2 ? 69378 : (modes == 3 ? 69379 : 69376);
     // Release scanner I/O only after the clock and stream speeds are paused.
     SetCaching(CACHESTATE_INIT);
     aml_subtitle_active_area_startup_set_held(m_CurrentVideo.hint.subtitleProbeSource, true);
@@ -4655,8 +4657,7 @@ bool CVideoPlayer::WaitForActiveAreaDetection()
                               WINDOW_DIALOG_EXT_PROGRESS) : nullptr;
       if (dialog)
       {
-        m_activeAreaProgress = dialog->GetHandle(g_localizeStrings.Get(69376));
-        dialog->SetProperty("activeareastartup", true);
+        m_activeAreaProgress = dialog->GetHandle(g_localizeStrings.Get(title), true);
       }
     }
     if (m_activeAreaProgress)
@@ -4669,7 +4670,7 @@ bool CVideoPlayer::WaitForActiveAreaDetection()
       }
       else
       {
-        m_activeAreaProgress->SetText(g_localizeStrings.Get(69376));
+        m_activeAreaProgress->SetText(g_localizeStrings.Get(title));
         m_activeAreaProgress->SetPercentage(0.0f);
       }
     }
@@ -4689,11 +4690,6 @@ void CVideoPlayer::FinishActiveAreaProgress()
   {
     m_activeAreaProgress->MarkFinished();
     m_activeAreaProgress = nullptr;
-    auto* gui = CServiceBroker::GetGUI();
-    auto* dialog = gui ? gui->GetWindowManager().GetWindow<CGUIDialogExtendedProgressBar>(
-                            WINDOW_DIALOG_EXT_PROGRESS) : nullptr;
-    if (dialog)
-      dialog->SetProperty("activeareastartup", "");
   }
 }
 

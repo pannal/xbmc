@@ -256,6 +256,7 @@ bool aml_dv_detect_active_area_override_get(int width, int height, uint16_t& top
     uint16_t& bottom, uint16_t& left, uint16_t& right);
 bool aml_dv_detect_active_area_stable();
 void aml_dv_detect_active_area_get(uint16_t& top, uint16_t& bottom, uint16_t& left, uint16_t& right);
+// State 2 retains its legacy name/API value; it means variable or uncertain framing.
 enum DvDetectState { DV_DETECT_FAILED = 0, DV_DETECT_SKIP_NON16X9 = 1,
                      DV_DETECT_SKIP_IMAX = 2, DV_DETECT_OK = 3,
                      DV_DETECT_SKIPPED = 4, DV_DETECT_INACTIVE = 5,
@@ -264,6 +265,8 @@ int aml_dv_detect_active_area_state();
 void aml_dv_detect_set_file(const std::string& path);
 // Startup hold is selection-bound and independent of the DV-only status label.
 void aml_subtitle_active_area_startup_begin(uint64_t pm4kStartupToken = 0);
+// Bit 0: subtitle detection; bit 1: native DV L5 detection for this selection.
+int aml_subtitle_active_area_startup_modes(const std::shared_ptr<const void>& expectedSource);
 void aml_subtitle_active_area_startup_set_video_ready(const std::shared_ptr<const void>& expectedSource,
                                                     bool ready);
 bool aml_subtitle_active_area_startup_external_pending(const std::shared_ptr<const void>& expectedSource);

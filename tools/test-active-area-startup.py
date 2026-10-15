@@ -19,6 +19,17 @@ NATIVE_TEST = r'''
 int main() {
  ready(); CAMLSession sessionValue; init(sessionValue);
  settingsValue.wait=true;
+ // Independently enabled detector modes select the truthful toast title.
+ for(bool nativeDV:{false,true}){
+  select("modes",nativeDV);const auto selected=aml_subtitle_active_area_source();
+  for(bool subtitle:{false,true})for(bool dv:{false,true}){
+   settingsValue.detect=subtitle;dvDetection=dv;
+   assert(aml_subtitle_active_area_startup_modes(selected)==((subtitle?1:0)|(nativeDV&&dv?2:0)));
+   assert(aml_subtitle_active_area_startup_modes({})==0);
+   assert(aml_subtitle_active_area_startup_modes(std::make_shared<int>(1))==0);
+  }
+ }
+ settingsValue.detect=true;dvDetection=true;
  // Admission is part of startup even before a backend can start its worker.
  aml_dv_detect_set_file("deferred");aml_subtitle_active_area_startup_begin();
  auto deferred=aml_subtitle_active_area_source(0,173);int checked,total;
@@ -139,11 +150,11 @@ int main(){
  p.m_activeAreaWaitStart=std::chrono::steady_clock::now()-600ms;
  assert(p.WaitForActiveAreaDetection());assert(p.WaitForActiveAreaDetection());
  assert(notifications==1);auto* progress=p.m_activeAreaProgress;
- assert(progress&&progress->completed==0&&progress->total==14&&progressDialog.startup);
+ assert(progress&&progress->completed==0&&progress->total==14&&progress->activeAreaStartup);
  progressPosition=7;assert(p.WaitForActiveAreaDetection());
  assert(progress->completed==7&&progress->text=="7/14"&&notifications==1);
  startupPending=false;p.HoldStep();
- assert(!heldStatus&&progress->finished&&!p.m_activeAreaProgress&&!progressDialog.startup);
+ assert(!heldStatus&&progress->finished&&!p.m_activeAreaProgress);
  assert(p.m_clock.speed==0&&p.audio.speed==0&&video.appliedSpeed==0);
  assert(p.m_callback.starts==1&&p.normalSteps==1);
  // Accepted geometry retires startup; an ordinary background scan has no hold.
@@ -163,7 +174,20 @@ int main(){
  stopped.m_activeAreaWaitStart=std::chrono::steady_clock::now()-600ms;
  assert(stopped.WaitForActiveAreaDetection());auto* stoppedProgress=stopped.m_activeAreaProgress;
  stopped.m_bAbortRequest=true;assert(!stopped.WaitForActiveAreaDetection());
- assert(!heldStatus&&stoppedProgress->finished&&!stopped.m_activeAreaProgress&&!progressDialog.startup);
+ assert(!heldStatus&&stoppedProgress->finished&&!stopped.m_activeAreaProgress);
+ // Every mode uses the actual parent title selection and marks the handle;
+ // finishing only retires the handle. Rendering/closing is the GUI's lifetime.
+ for(int modes:{1,2,3}){
+  detectorModes=modes;startupPending=true;
+  Parent titled(video);titled.m_CurrentVideo.id=0;titled.m_State.streamsReady=true;
+  titled.m_activeAreaVideoReady=true;titled.m_CurrentVideo.syncState=IDVDStreamPlayer::SYNC_INSYNC;
+  titled.m_activeAreaWaitStart=std::chrono::steady_clock::now()-600ms;
+  assert(titled.WaitForActiveAreaDetection());auto* h=titled.m_activeAreaProgress;
+  assert(h&&h->activeAreaStartup&&!h->finished);
+  assert(h->title=="localized-"+std::to_string(modes==2?69378:modes==3?69379:69376));
+  titled.FinishActiveAreaProgress();assert(h->finished&&!titled.m_activeAreaProgress);
+ }
+ detectorModes=1;
  // A real flush resets first-frame readiness. Stale start reports cannot rearm it.
  Parent seeking(video);seeking.m_activeAreaVideoReady=true;seeking.FlushBuffers(0,true,true);
  assert(!seeking.m_activeAreaVideoReady);
@@ -199,22 +223,21 @@ void aml_subtitle_active_area_startup_set_video_ready(const std::shared_ptr<cons
 bool aml_subtitle_active_area_startup_external_pending(const std::shared_ptr<const void>&){return externalPending;}
 bool startupPending=false,heldStatus=false;int notifications=0,progressPosition=0;
 void aml_subtitle_active_area_startup_set_held(const std::shared_ptr<const void>&,bool held){heldStatus=held;}
-int progressTotal=14;
+int progressTotal=14, detectorModes=1;
+int aml_subtitle_active_area_startup_modes(const std::shared_ptr<const void>&){return detectorModes;}
 bool aml_subtitle_active_area_startup_progress(const std::shared_ptr<const void>&,int& completed,int& total){completed=progressPosition;total=progressTotal;return startupPending;}
-struct Localize{std::string Get(int){return "detecting";}} g_localizeStrings;
+struct Localize{std::string Get(int id){return "localized-"+std::to_string(id);}} g_localizeStrings;
 struct StringUtils{static std::string Format(const std::string&,int a,int b){return std::to_string(a)+"/"+std::to_string(b);}};
 struct CGUIDialogProgressBarHandle{
- bool finished=false;int completed=-1,total=0;std::string text;
+ bool finished=false,activeAreaStartup=false;int completed=-1,total=0;std::string text,title;
  void SetText(const std::string& value){assert(!finished);text=value;}
  void SetProgress(int value,int count){assert(!finished);completed=value;total=count;}
  void SetPercentage(float value){assert(!finished);assert(value==0.0f);completed=0;}
  void MarkFinished(){assert(!finished);finished=true;}
 };
 struct CGUIDialogExtendedProgressBar{
- bool startup=false;void SetProperty(const std::string&,bool v){startup=v;}
- void SetProperty(const std::string&,const char* v){startup=std::string(v)!="";}
  std::vector<std::unique_ptr<CGUIDialogProgressBarHandle>> handles;
- auto GetHandle(const std::string&){++notifications;handles.emplace_back(std::make_unique<CGUIDialogProgressBarHandle>());return handles.back().get();}
+ auto GetHandle(const std::string& title,bool activeAreaStartup=false){++notifications;handles.emplace_back(std::make_unique<CGUIDialogProgressBarHandle>());auto* h=handles.back().get();h->title=title;h->activeAreaStartup=activeAreaStartup;return h;}
 } progressDialog;
 constexpr int WINDOW_DIALOG_EXT_PROGRESS=1;
 struct GUI{GUI&GetWindowManager(){return *this;}template<class T>T*GetWindow(int){return &progressDialog;}} gui;
@@ -269,6 +292,8 @@ def connected_source():
     native = native.replace(function(native, 'int main()'), '')
     player = player_source()
     player = player.replace(function(player, 'int main()'), '')
+    player = player.replace(function(player, 'int aml_subtitle_active_area_startup_modes('),
+        'int aml_subtitle_active_area_startup_modes(const std::shared_ptr<const void>& selected){return ::aml_subtitle_active_area_startup_modes(selected);}')
     player = player.replace(function(player, 'void aml_subtitle_active_area_startup_set_video_ready('),
         'void aml_subtitle_active_area_startup_set_video_ready(const std::shared_ptr<const void>& selected,bool ready){::aml_subtitle_active_area_startup_set_video_ready(selected,ready);}')
     player = player.replace(function(player, 'bool aml_subtitle_active_area_startup_external_pending('),
@@ -302,6 +327,30 @@ void ResetSubtitleProbe();''', 1) + '\n' + reset
     test = r"""
 int main(){
  ready();CAMLSession sessionValue;init(sessionValue);settingsValue.wait=true;
+ // Connect independent real detector toggles all the way through the actual
+ // source helper and held parent title selection, with a real admitted worker.
+ for(int modes:{1,2,3}){
+  settingsValue.detect=modes&1;dvDetection=modes&2;
+  select("connected-title-"+std::to_string(modes),true);
+  aml_subtitle_active_area_startup_begin();const auto selected=aml_subtitle_active_area_source();
+  PLAYER_FIXTURE::CVideoPlayerVideo titleVideo;PLAYER_FIXTURE::Parent titleParent(titleVideo);
+  titleParent.m_CurrentVideo.id=0;titleParent.m_CurrentVideo.hint.subtitleProbeSource=selected;
+  titleParent.m_State.streamsReady=true;titleParent.m_activeAreaVideoReady=true;
+  titleParent.m_CurrentVideo.syncState=PLAYER_FIXTURE::IDVDStreamPlayer::SYNC_INSYNC;
+  assert(titleParent.WaitForActiveAreaDetection());
+  std::promise<void> entered,finish;auto gate=finish.get_future();
+  scanHook=[&](const auto& source,const CAMLNativeWorker::Run&){
+   source->completedPositions=3;entered.set_value();gate.wait();
+  };
+  {CAMLNativeTransaction owner;assert(owner.TryBegin());aml_dv_detect_active_area_start();}
+  assert(entered.get_future().wait_for(2s)==std::future_status::ready);
+  titleParent.m_activeAreaWaitStart=std::chrono::steady_clock::now()-600ms;
+  assert(titleParent.WaitForActiveAreaDetection());auto* h=titleParent.m_activeAreaProgress;
+  assert(h&&h->activeAreaStartup&&h->completed==3&&h->total==14);
+  assert(h->title=="localized-"+std::to_string(modes==2?69378:modes==3?69379:69376));
+  finish.set_value();s_detectWorker.Stop();titleParent.HoldStep();assert(h->finished);
+ }
+ settingsValue.detect=true;dvDetection=true;
  for(bool nativeDV:{false,true}){
   aml_dv_detect_set_file(nativeDV?"deferred-DV":"deferred-SDR");aml_subtitle_active_area_startup_begin();
   const auto selection=aml_subtitle_active_area_source(0,173);
@@ -371,7 +420,7 @@ int main(){
   aml_subtitle_active_area_startup_admitted(selection); // stale EOF cannot resolve the reset
   {CAMLNativeTransaction owner;assert(owner.TryBegin());aml_dv_detect_active_area_start();}
   p.SynchronizeStreams(false);assert(p.m_State.streamsReady&&!handle->finished);
-  assert(handle->completed==0&&handle->text=="detecting");
+  assert(handle->completed==0&&handle->text=="localized-"+std::to_string(nativeDV?69379:69376));
   // REOPEN temporarily stops and configures an unavailable route; its
   // selection admission must survive those intermediate operations too.
   {CAMLNativeTransaction owner;assert(owner.TryBegin());aml_dv_detect_active_area_stop();}
@@ -481,6 +530,10 @@ int main(){ready();CAMLSession value;init(value);settingsValue.wait=true;
             (player,'user resume bypasses hold','if (WaitForActiveAreaDetection())\n        SetCaching(CACHESTATE_INIT);','if (false)\n        SetCaching(CACHESTATE_INIT);'),
             (player,'audio-only startup ownership leaked','aml_subtitle_active_area_startup_complete(aml_subtitle_active_area_source());','aml_subtitle_active_area_startup_complete(m_CurrentVideo.hint.subtitleProbeSource);'),
             (native,'progress counter discarded','completed = std::clamp(s_detectSource->completedPositions.load(), 0, total);','completed = 0;'),
+            (player,'DV title incorrectly says black borders','modes == 2 ? 69378','modes == 2 ? 69376'),
+            (player,'combined title hides L5 mode','modes == 3 ? 69379','modes == 3 ? 69376'),
+            (player,'detector handle lacks rendered metadata','GetHandle(g_localizeStrings.Get(title), true)','GetHandle(g_localizeStrings.Get(title), false)'),
+            (native,'DV modes coupled to subtitle toggle','s_detectSource->nativeDV && aml_dv_detect_active_area_enabled() ? 2 : 0','settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) && s_detectSource->nativeDV && aml_dv_detect_active_area_enabled() ? 2 : 0'),
             (player,'finished progress handle leaked','m_activeAreaProgress->MarkFinished();','/* leaked */'),
         ]:
             assert old in code,label
