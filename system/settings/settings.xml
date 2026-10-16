@@ -4605,6 +4605,28 @@
           </constraints>
           <control type="slider" format="integer" />
         </setting>
+        <setting id="coreelec.amlogic.dolbyvision.graphics.stable" type="boolean" label="60650" help="60651" parent="coreelec.amlogic.dolbyvision.mode">
+          <requirement>HAVE_AMCODEC</requirement>
+          <visible>false</visible>
+          <level>2</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible">
+              <and>
+                <condition on="property" name="dvgraphicsstableavailable" />
+                <condition on="property" name="dvnewbackendavailable" />
+                <condition setting="coreelec.amlogic.dolbyvision.mode" operator="!is">2</condition>
+                <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">0</condition>
+                <condition setting="coreelec.amlogic.dolbyvision.video.processor" operator="is">0</condition>
+                <or>
+                  <condition setting="coreelec.amlogic.dolbyvision.vs10.dv" operator="is">0</condition>
+                  <condition setting="coreelec.amlogic.dolbyvision.vs10.dv" operator="is">1</condition>
+                </or>
+              </and>
+            </dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
         <setting id="coreelec.amlogic.dolbyvision.handshake_bypass" type="boolean" label="60644" help="60645">
           <level>2</level>
           <default>false</default>

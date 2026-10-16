@@ -20104,6 +20104,17 @@ msgctxt "#60649"
 msgid "Under On Demand, prepares SDR output at Kodi startup when \"DV VS10 for DV video\" is set to SDR. Set every DV VS10 mode to SDR and enable \"Disable DV black screen when starting or stopping playback\" and \"Keep SDR output state on playback stop\" to keep the same output during playback and in the GUI. Resolution or refresh-rate changes can still cause a black screen."
 msgstr "Bereitet im On-Demand-Modus die SDR-Ausgabe beim Kodi-Start vor, wenn \"DV VS10 for DV video\" auf SDR steht. Alle DV-VS10-Modi auf SDR stellen und \"DV-Schwarzbild beim Starten oder Stoppen der Wiedergabe deaktivieren\" sowie \"SDR-Ausgabeformat beim Stoppen der Wiedergabe beibehalten\" aktivieren, damit Wiedergabe und Benutzeroberfläche dieselbe Ausgabe verwenden. Änderungen der Auflösung oder Bildwiederholrate können weiterhin ein Schwarzbild verursachen."
 
+#: system/settings/settings.xml
+msgctxt "#60650"
+msgid "Stabilize SDR subtitle and OSD brightness"
+msgstr "Helligkeit von SDR-Untertiteln und OSD stabilisieren"
+
+#: system/settings/settings.xml
+msgctxt "#60651"
+msgid "Use only if your TV's scene-dependent dimming of subtitles and the OSD is unwanted. This SDR-only compatibility option overrides dovi5's native graphics tone mapping during native display-led Dolby Vision playback. Leave disabled to preserve native behavior."
+msgstr "Nur verwenden, wenn das szenenabhängige Abdunkeln von Untertiteln und OSD durch den Fernseher unerwünscht ist. Diese auf SDR-Grafiken beschränkte Kompatibilitätsoption übersteuert das native Grafik-Tonemapping von dovi5 bei nativer Dolby-Vision-Wiedergabe im Display-led-Modus. Deaktiviert lassen, um das native Verhalten beizubehalten."
+
+
 msgctxt "#69196"
 msgid "Convert DV Profile 7 FEL to MEL or to Profile 8.1"
 msgstr "DV Profil 7 umwandeln"

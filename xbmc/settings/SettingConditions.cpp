@@ -133,6 +133,18 @@ bool DVNewBackendAvailable(const std::string&,
 #endif
 }
 
+bool DVGraphicsStableAvailable(const std::string&,
+                              const std::string&,
+                              const SettingConstPtr&,
+                              void*)
+{
+#if defined(HAS_LIBAMCODEC)
+  return aml_dv_graphics_stability_supported();
+#else
+  return false;
+#endif
+}
+
 bool SupportsDolbyVision(const std::string& condition,
                          const std::string& value,
                          const SettingConstPtr& setting,
@@ -529,6 +541,7 @@ void CSettingConditions::Initialize()
   m_complexConditions.emplace("supportsvideosuperresolution", SupportsVideoSuperResolution);
   m_complexConditions.emplace("supportsdolbyvision", SupportsDolbyVision);
   m_complexConditions.emplace("dvnewbackendavailable", DVNewBackendAvailable);
+  m_complexConditions.emplace("dvgraphicsstableavailable", DVGraphicsStableAvailable);
   m_complexConditions.emplace("ishdrdisplay", IsHDRDisplay);
   m_complexConditions.emplace("bluetoothconnected", IsBluetoothConnected);
   m_complexConditions.emplace("ismasteruser", IsMasterUser);

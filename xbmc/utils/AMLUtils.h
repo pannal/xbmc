@@ -118,6 +118,8 @@ bool aml_support_av1();
 bool aml_support_dolby_vision();
 // Cached native initialization result; never reads sysfs from settings callers.
 bool aml_dv_new_backend_available();
+bool aml_dv_graphics_stability_supported();
+void aml_dv_apply_graphics_stability();
 // Enables automatic eligible routing; caller holds native Setup admission.
 void aml_dv_enable_new_backend();
 // CPU-only GUI accessors; bounded sampling belongs to the admitted AML decoder.

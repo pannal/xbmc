@@ -718,6 +718,7 @@ static void set_dv_settings_visible(bool show)
 {
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE_ON_LUMINANCE, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_OSD_BRIGHTNESS, show);
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_GRAPHICS_STABLE, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR_TM, show);
@@ -1011,6 +1012,7 @@ bool CDolbyVisionAML::Setup(CAMLSession::DisplayRequest display)
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE_ON_LUMINANCE);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_OSD_BRIGHTNESS);
+  settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_GRAPHICS_STABLE);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_BOOST);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_SRC_MAX_NITS);
@@ -1057,6 +1059,7 @@ bool CDolbyVisionAML::Setup(CAMLSession::DisplayRequest display)
   bool override_edid = settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_OVERRIDE_EDID);
   bool dv_supported = aml_support_dolby_vision();
   aml_dv_enable_new_backend();
+  aml_dv_apply_graphics_stability();
 
   if (!dv_supported && !override_edid)
   {
@@ -1135,7 +1138,11 @@ void CDolbyVisionAML::schedule_native_setting_apply(const std::string& settingId
 
 void CDolbyVisionAML::apply_native_setting(const std::string& settingId)
 {
-  if (settingId == CSettings::SETTING_COREELEC_AUDIO_DDR_PRIORITY)
+  if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_GRAPHICS_STABLE)
+  {
+    aml_dv_apply_graphics_stability();
+  }
+  else if (settingId == CSettings::SETTING_COREELEC_AUDIO_DDR_PRIORITY)
   {
     aml_set_audio_ddr_urgent(settings()->GetBool(settingId));
   }
@@ -1230,7 +1237,8 @@ void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& se
   if (!setting || m_retiring) return;
 
   // Queue independent native switches without entering DV preset policy.
-  if (setting->GetId() == CSettings::SETTING_COREELEC_AUDIO_DDR_PRIORITY ||
+  if (setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_DV_GRAPHICS_STABLE ||
+      setting->GetId() == CSettings::SETTING_COREELEC_AUDIO_DDR_PRIORITY ||
       setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_LIMITER ||
       setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_LUMINANCE ||
       setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL)

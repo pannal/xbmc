@@ -881,6 +881,23 @@ bool aml_support_dolby_vision()
   return (support_dv == 1);
 }
 
+static std::atomic<bool> s_dvGraphicsStableAvailable{false};
+
+bool aml_dv_graphics_stability_supported()
+{
+  return s_dvGraphicsStableAvailable.load(std::memory_order_acquire);
+}
+
+// Setup, wake and playback/deferred settings callers already hold native admission.
+void aml_dv_apply_graphics_stability()
+{
+  CSysfsPath control{"/sys/module/amdolby_vision/parameters/dv_graphics_stable"};
+  const bool supported = control.Exists();
+  s_dvGraphicsStableAvailable.store(supported, std::memory_order_release);
+  if (supported)
+    control.Set(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_GRAPHICS_STABLE));
+}
+
 bool aml_dolby_vision_enabled()
 {
   static int dv_enabled = -1;
@@ -1008,6 +1025,7 @@ void aml_dv_apply_l5_sysfs()
 unsigned int aml_dv_on(unsigned int mode, bool force_hdmi)
 {
   CDVCoreGuard dvlock(__FUNCTION__);
+  aml_dv_apply_graphics_stability();
   aml_dv_apply_l5_sysfs();
   aml_dv_apply_l5_override_sysfs();
   /* No-op unless the auto-letterbox path is actually driving the override. */
@@ -2227,6 +2245,7 @@ void aml_dv_start()
   // Ordering: s_dvStartMutex -> s_dvCoreMutex (never the reverse). The nested
   // aml_dv_off()/aml_dv_on() inside re-acquire s_dvCoreMutex recursively.
   CDVCoreGuard dvlock(__FUNCTION__);
+  aml_dv_apply_graphics_stability();
   _dv_start_locked();
 }
 

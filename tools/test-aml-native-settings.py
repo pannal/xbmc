@@ -103,6 +103,7 @@ void effect(const std::string& name,int value=0){
 AMLDVCapability aml_read_dv_cap(){assert(!inCallback);assert(session&&!session->AcquireDecoder());return {};}
 void aml_set_audio_ddr_urgent(bool v){effect("ddr",v);}
 void aml_apply_hdr10_metadata_limits(){effect("limits");}
+void aml_dv_apply_graphics_stability(){effect("stable",settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_GRAPHICS_STABLE));}
 void aml_dv_set_osd_max(int v){effect("gui",v);}
 void aml_dv_set_osd_brightness(int v){effect("osd",v);}
 void aml_dv_set_hdr10_osd_brightness(int v){effect("hdr",v);}

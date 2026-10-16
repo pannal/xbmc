@@ -53,6 +53,8 @@ void aml_apply_hdr10_metadata_limits(){++limitApplies;}
 bool supported=true;
 bool aml_support_dolby_vision(){return supported;}
 void aml_dv_enable_new_backend(){}
+int graphicsStabilityApplies=0;
+void aml_dv_apply_graphics_stability(){++graphicsStabilityApplies;}
 struct DOVIStreamMetadata {int source_max_pq;};
 struct Cache {std::atomic<int> pq{1000};DOVIStreamMetadata GetVideoDoViStreamMetadata(){return {pq};}};
 struct Announcer {void AddAnnouncer(void*){}};
