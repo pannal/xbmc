@@ -293,29 +293,21 @@ namespace XBMCAddon
     {
       XBMC_TRACE;
       if (!cLine)
-      {
-        String ret;
-        return ret;
-      }
+        return {};
 
       CGUIInfoManager& infoMgr = CServiceBroker::GetGUI()->GetInfoManager();
       int ret = infoMgr.TranslateString(cLine);
-      //doesn't seem to be a single InfoTag?
-      //try full blown GuiInfoLabel then
+      // Resolve formatted labels when no single InfoTag matches.
       if (ret == 0)
         return GUILIB::GUIINFO::CGUIInfoLabel::GetLabel(cLine, INFO::DEFAULT_CONTEXT);
-      else
-        return infoMgr.GetLabel(ret, INFO::DEFAULT_CONTEXT);
+      return infoMgr.GetLabel(ret, INFO::DEFAULT_CONTEXT);
     }
 
     String getInfoImage(const char * infotag)
     {
       XBMC_TRACE;
       if (!infotag)
-        {
-          String ret;
-          return ret;
-        }
+        return {};
 
       CGUIInfoManager& infoMgr = CServiceBroker::GetGUI()->GetInfoManager();
       int ret = infoMgr.TranslateString(infotag);

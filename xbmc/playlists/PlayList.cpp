@@ -14,15 +14,15 @@
 #include "filesystem/File.h"
 #include "interfaces/AnnouncementManager.h"
 #include "music/tags/MusicInfoTag.h"
-#include "utils/Random.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/Variant.h"
 #include "utils/log.h"
 
 #include <algorithm>
-#include <cassert>
 #include <iostream>
+#include <mutex>
+#include <random>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -40,130 +40,162 @@ CPlayList::CPlayList(Id id /* = PLAYLIST::TYPE_NONE */) : m_id(id)
   m_bWasPlayed = false;
 }
 
+CPlayList::CPlayList(const CPlayList& playlist) : m_id(TYPE_NONE)
+{
+  std::unique_lock lock(playlist.m_critSection);
+  m_id = playlist.m_id;
+  m_strPlayListName = playlist.m_strPlayListName;
+  m_strBasePath = playlist.m_strBasePath;
+  m_iPlayableItems = playlist.m_iPlayableItems;
+  m_bShuffled = playlist.m_bShuffled;
+  m_bWasPlayed = playlist.m_bWasPlayed;
+  m_vecItems = playlist.m_vecItems;
+}
+
+CPlayList& CPlayList::operator=(const CPlayList& playlist)
+{
+  if (this == &playlist)
+    return *this;
+  CPlayList snapshot(playlist);
+  {
+    std::unique_lock lock(m_critSection);
+    m_id = snapshot.m_id;
+    m_strPlayListName = std::move(snapshot.m_strPlayListName);
+    m_strBasePath = std::move(snapshot.m_strBasePath);
+    m_iPlayableItems = snapshot.m_iPlayableItems;
+    m_bShuffled = snapshot.m_bShuffled;
+    m_bWasPlayed = snapshot.m_bWasPlayed;
+    m_vecItems.swap(snapshot.m_vecItems);
+  }
+  return *this;
+}
+
 void CPlayList::AnnounceRemove(int pos)
 {
-  if (m_id == TYPE_NONE)
+  Id id;
+  {
+    std::unique_lock lock(m_critSection);
+    id = m_id;
+  }
+  if (id == TYPE_NONE)
     return;
 
   CVariant data;
-  data["playlistid"] = m_id;
+  data["playlistid"] = id;
   data["position"] = pos;
   CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::Playlist, "OnRemove", data);
 }
 
 void CPlayList::AnnounceClear()
 {
-  if (m_id == TYPE_NONE)
+  Id id;
+  {
+    std::unique_lock lock(m_critSection);
+    id = m_id;
+  }
+  if (id == TYPE_NONE)
     return;
 
   CVariant data;
-  data["playlistid"] = m_id;
+  data["playlistid"] = id;
   CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::Playlist, "OnClear", data);
 }
 
 void CPlayList::AnnounceAdd(const std::shared_ptr<CFileItem>& item, int pos)
 {
-  if (m_id == TYPE_NONE)
+  Id id;
+  {
+    std::unique_lock lock(m_critSection);
+    id = m_id;
+  }
+  if (id == TYPE_NONE)
     return;
 
   CVariant data;
-  data["playlistid"] = m_id;
+  data["playlistid"] = id;
   data["position"] = pos;
   CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::Playlist, "OnAdd", item, data);
 }
 
-void CPlayList::Add(const std::shared_ptr<CFileItem>& item, int iPosition, int iOrder)
+int CPlayList::AddLocked(const std::shared_ptr<CFileItem>& item, int iPosition, int iOrder)
 {
-  int iOldSize = size();
+  const int iOldSize = m_vecItems.size();
   if (iPosition < 0 || iPosition >= iOldSize)
     iPosition = iOldSize;
-  if (iOrder < 0 || iOrder >= iOldSize)
-    item->m_iprogramCount = iOldSize;
-  else
-    item->m_iprogramCount = iOrder;
+  item->m_iprogramCount = (iOrder < 0 || iOrder >= iOldSize) ? iOldSize : iOrder;
 
-  // increment the playable counter
   item->ClearProperty("unplayable");
   if (m_iPlayableItems < 0)
     m_iPlayableItems = 1;
   else
     m_iPlayableItems++;
-
-  // set 'IsPlayable' property - needed for properly handling plugin:// URLs
   item->SetProperty("IsPlayable", true);
 
-  //CLog::Log(LOGDEBUG,"{} item:({:02}/{:02})[{}]", __FUNCTION__, iPosition, item->m_iprogramCount, item->GetPath());
-  if (iPosition == iOldSize)
-    m_vecItems.push_back(item);
-  else
-  {
-    ivecItems it = m_vecItems.begin() + iPosition;
-    m_vecItems.insert(it, 1, item);
-    // correct any duplicate order values
-    if (iOrder < iOldSize)
-      IncrementOrder(iPosition + 1, iOrder);
-  }
-  AnnounceAdd(item, iPosition);
+  m_vecItems.insert(m_vecItems.begin() + iPosition, item);
+  if (iPosition < iOldSize && iOrder < iOldSize)
+    IncrementOrder(iPosition + 1, iOrder);
+  return iPosition;
 }
 
 void CPlayList::Add(const std::shared_ptr<CFileItem>& item)
 {
-  Add(item, -1, -1);
+  int position;
+  {
+    std::unique_lock lock(m_critSection);
+    position = AddLocked(item, -1, -1);
+  }
+  AnnounceAdd(item, position);
 }
 
 void CPlayList::Add(const CPlayList& playlist)
 {
-  for (int i = 0; i < playlist.size(); i++)
-    Add(playlist[i], -1, -1);
+  InsertItems(playlist.GetItems(), -1);
 }
 
 void CPlayList::Add(const CFileItemList& items)
 {
-  for (int i = 0; i < items.Size(); i++)
-    Add(items[i]);
+  Insert(items, -1);
 }
 
-void CPlayList::Insert(const CPlayList& playlist, int iPosition /* = -1 */)
+void CPlayList::InsertItems(const std::vector<std::shared_ptr<CFileItem>>& items, int position)
 {
-  // out of bounds so just add to the end
-  int iSize = size();
-  if (iPosition < 0 || iPosition >= iSize)
+  std::vector<int> positions;
+  positions.reserve(items.size());
   {
-    Add(playlist);
-    return;
+    std::unique_lock lock(m_critSection);
+    const bool append = position < 0 || position >= static_cast<int>(m_vecItems.size());
+    for (const auto& item : items)
+    {
+      positions.push_back(AddLocked(item, append ? -1 : position, append ? -1 : position));
+      if (!append)
+        ++position;
+    }
   }
-  for (int i = 0; i < playlist.size(); i++)
-  {
-    int iPos = iPosition + i;
-    Add(playlist[i], iPos, iPos);
-  }
+  for (size_t i = 0; i < items.size(); ++i)
+    AnnounceAdd(items[i], positions[i]);
 }
 
-void CPlayList::Insert(const CFileItemList& items, int iPosition /* = -1 */)
+void CPlayList::Insert(const CPlayList& playlist, int position)
 {
-  // out of bounds so just add to the end
-  int iSize = size();
-  if (iPosition < 0 || iPosition >= iSize)
-  {
-    Add(items);
-    return;
-  }
-  for (int i = 0; i < items.Size(); i++)
-  {
-    Add(items[i], iPosition + i, iPosition + i);
-  }
+  InsertItems(playlist.GetItems(), position);
 }
 
-void CPlayList::Insert(const std::shared_ptr<CFileItem>& item, int iPosition /* = -1 */)
+void CPlayList::Insert(const CFileItemList& items, int position)
 {
-  // out of bounds so just add to the end
-  int iSize = size();
-  if (iPosition < 0 || iPosition >= iSize)
+  std::vector<CFileItemPtr> entries;
+  entries.reserve(items.Size());
+  for (int i = 0; i < items.Size(); ++i)
+    entries.push_back(items[i]);
+  InsertItems(entries, position);
+}
+
+void CPlayList::Insert(const std::shared_ptr<CFileItem>& item, int position)
+{
   {
-    Add(item);
-    return;
+    std::unique_lock lock(m_critSection);
+    position = AddLocked(item, position, position);
   }
-  Add(item, iPosition, iPosition);
+  AnnounceAdd(item, position);
 }
 
 void CPlayList::DecrementOrder(int iOrder)
@@ -171,7 +203,7 @@ void CPlayList::DecrementOrder(int iOrder)
   if (iOrder < 0) return;
 
   // it was the last item so do nothing
-  if (iOrder == size()) return;
+  if (iOrder == static_cast<int>(m_vecItems.size())) return;
 
   // fix all items with an order greater than the removed iOrder
   ivecItems it;
@@ -209,66 +241,73 @@ void CPlayList::IncrementOrder(int iPosition, int iOrder)
 
 void CPlayList::Clear()
 {
-  bool announce = false;
-  if (!m_vecItems.empty())
+  std::vector<CFileItemPtr> removed;
   {
-    m_vecItems.erase(m_vecItems.begin(), m_vecItems.end());
-    announce = true;
+    std::unique_lock lock(m_critSection);
+    removed.swap(m_vecItems);
+    m_strPlayListName.clear();
+    m_iPlayableItems = -1;
+    m_bWasPlayed = false;
   }
-  m_strPlayListName = "";
-  m_iPlayableItems = -1;
-  m_bWasPlayed = false;
-
-  if (announce)
+  if (!removed.empty())
     AnnounceClear();
 }
 
 int CPlayList::size() const
 {
-  return (int)m_vecItems.size();
+  std::unique_lock lock(m_critSection);
+  return m_vecItems.size();
 }
 
-const std::shared_ptr<CFileItem> CPlayList::operator[](int iItem) const
+std::shared_ptr<CFileItem> CPlayList::TryGet(int index) const
 {
-  if (iItem < 0 || iItem >= size())
-  {
-    assert(false);
-    CLog::Log(LOGERROR, "Error trying to retrieve an item that's out of range");
-    return CFileItemPtr();
-  }
-  return m_vecItems[iItem];
+  return TryGet(index, false);
 }
 
-std::shared_ptr<CFileItem> CPlayList::operator[](int iItem)
+std::shared_ptr<CFileItem> CPlayList::TryGet(long index, bool relativeToEnd) const
 {
-  if (iItem < 0 || iItem >= size())
-  {
-    assert(false);
-    CLog::Log(LOGERROR, "Error trying to retrieve an item that's out of range");
-    return CFileItemPtr();
-  }
-  return m_vecItems[iItem];
+  std::unique_lock lock(m_critSection);
+  if (relativeToEnd && index < 0)
+    index += static_cast<long>(m_vecItems.size());
+  if (index < 0 || static_cast<size_t>(index) >= m_vecItems.size())
+    return {};
+  return m_vecItems[index];
+}
+
+std::vector<std::shared_ptr<CFileItem>> CPlayList::GetItems() const
+{
+  std::unique_lock lock(m_critSection);
+  return m_vecItems;
+}
+
+const std::shared_ptr<CFileItem> CPlayList::operator[](int index) const
+{
+  return TryGet(index);
+}
+
+std::shared_ptr<CFileItem> CPlayList::operator[](int index)
+{
+  return TryGet(index);
 }
 
 void CPlayList::Shuffle(int iPosition)
 {
-  if (size() == 0)
-    // nothing to shuffle, just set the flag for later
-    m_bShuffled = true;
-  else
+  std::mt19937 random{std::random_device{}()};
+  std::unique_lock lock(m_critSection);
+  if (m_vecItems.empty())
   {
-    if (iPosition >= size())
-      return;
-    if (iPosition < 0)
-      iPosition = 0;
-    CLog::Log(LOGDEBUG, "{} shuffling at pos:{}", __FUNCTION__, iPosition);
-
-    ivecItems it = m_vecItems.begin() + iPosition;
-    KODI::UTILS::RandomShuffle(it, m_vecItems.end());
-
-    // the list is now shuffled!
     m_bShuffled = true;
+    return;
   }
+  if (iPosition >= static_cast<int>(m_vecItems.size()))
+    return;
+  if (iPosition < 0)
+    iPosition = 0;
+
+  std::shuffle(m_vecItems.begin() + iPosition, m_vecItems.end(), random);
+  m_bShuffled = true;
+  lock.unlock();
+  CLog::Log(LOGDEBUG, "{} shuffling at pos:{}", __FUNCTION__, iPosition);
 }
 
 struct SSortPlayListItem
@@ -281,44 +320,78 @@ struct SSortPlayListItem
 
 void CPlayList::UnShuffle()
 {
+  std::unique_lock lock(m_critSection);
   std::sort(m_vecItems.begin(), m_vecItems.end(), SSortPlayListItem::PlaylistSort);
   // the list is now unshuffled!
   m_bShuffled = false;
 }
 
-const std::string& CPlayList::GetName() const
+std::string CPlayList::GetName() const
 {
+  std::unique_lock lock(m_critSection);
   return m_strPlayListName;
+}
+
+bool CPlayList::IsShuffled() const
+{
+  std::unique_lock lock(m_critSection);
+  return m_bShuffled;
+}
+
+void CPlayList::SetPlayed(bool bPlayed)
+{
+  std::unique_lock lock(m_critSection);
+  m_bWasPlayed = true;
+}
+
+bool CPlayList::WasPlayed() const
+{
+  std::unique_lock lock(m_critSection);
+  return m_bWasPlayed;
+}
+
+int CPlayList::GetPlayable() const
+{
+  std::unique_lock lock(m_critSection);
+  return m_iPlayableItems;
 }
 
 void CPlayList::Remove(const std::string& strFileName)
 {
-  int iOrder = -1;
-  int position = 0;
-  ivecItems it;
-  it = m_vecItems.begin();
-  while (it != m_vecItems.end() )
+  std::vector<CFileItemPtr> removed;
+  std::vector<int> positions;
   {
-    CFileItemPtr item = *it;
-    if (item->GetPath() == strFileName)
+    std::unique_lock lock(m_critSection);
+    removed.reserve(m_vecItems.size());
+    positions.reserve(m_vecItems.size());
+    int order = -1;
+    int position = 0;
+    auto entry = m_vecItems.begin();
+    while (entry != m_vecItems.end())
     {
-      iOrder = item->m_iprogramCount;
-      it = m_vecItems.erase(it);
-      AnnounceRemove(position);
-      //CLog::Log(LOGDEBUG,"PLAYLIST, removing item at order {}", iPos);
+      if ((*entry)->GetPath() == strFileName)
+      {
+        order = (*entry)->m_iprogramCount;
+        removed.push_back(std::move(*entry));
+        entry = m_vecItems.erase(entry);
+        positions.push_back(position);
+      }
+      else
+      {
+        ++position;
+        ++entry;
+      }
     }
-    else
-    {
-      ++position;
-      ++it;
-    }
+    DecrementOrder(order);
   }
-  DecrementOrder(iOrder);
+  for (int position : positions)
+    AnnounceRemove(position);
 }
 
 int CPlayList::FindOrder(int iOrder) const
 {
-  for (int i = 0; i < size(); i++)
+  std::unique_lock lock(m_critSection);
+  for (size_t i = 0; i < m_vecItems.size(); i++)
   {
     if (m_vecItems[i]->m_iprogramCount == iOrder)
       return i;
@@ -329,64 +402,48 @@ int CPlayList::FindOrder(int iOrder) const
 // remove item from playlist by position
 void CPlayList::Remove(int position)
 {
-  int iOrder = -1;
-  if (position >= 0 && position < (int)m_vecItems.size())
+  CFileItemPtr removed;
   {
-    iOrder = m_vecItems[position]->m_iprogramCount;
-    m_vecItems.erase(m_vecItems.begin() + position);
+    std::unique_lock lock(m_critSection);
+    int order = -1;
+    if (position >= 0 && position < static_cast<int>(m_vecItems.size()))
+    {
+      order = m_vecItems[position]->m_iprogramCount;
+      removed = std::move(m_vecItems[position]);
+      m_vecItems.erase(m_vecItems.begin() + position);
+    }
+    DecrementOrder(order);
   }
-  DecrementOrder(iOrder);
-
   AnnounceRemove(position);
 }
 
 int CPlayList::RemoveDVDItems()
 {
-  std::vector <std::string> vecFilenames;
-
-  // Collect playlist items from DVD share
-  ivecItems it;
-  it = m_vecItems.begin();
-  while (it != m_vecItems.end() )
+  std::vector<std::string> filenames;
+  for (const auto& item : GetItems())
   {
-    CFileItemPtr item = *it;
-    if ( item->IsCDDA() || item->IsOnDVD() )
-    {
-      vecFilenames.push_back( item->GetPath() );
-    }
-    ++it;
+    if (item->IsCDDA() || item->IsOnDVD())
+      filenames.push_back(item->GetPath());
   }
-
-  // Delete them from playlist
-  int nFileCount = vecFilenames.size();
-  if ( nFileCount )
-  {
-    std::vector <std::string>::iterator it;
-    it = vecFilenames.begin();
-    while (it != vecFilenames.end() )
-    {
-      std::string& strFilename = *it;
-      Remove( strFilename );
-      ++it;
-    }
-    vecFilenames.erase( vecFilenames.begin(), vecFilenames.end() );
-  }
-  return nFileCount;
+  for (const auto& filename : filenames)
+    Remove(filename);
+  return filenames.size();
 }
 
 bool CPlayList::Swap(int position1, int position2)
 {
+  std::unique_lock lock(m_critSection);
   if (
     (position1 < 0) ||
     (position2 < 0) ||
-    (position1 >= size()) ||
-    (position2 >= size())
+    (position1 >= static_cast<int>(m_vecItems.size())) ||
+    (position2 >= static_cast<int>(m_vecItems.size()))
   )
   {
     return false;
   }
 
-  if (!IsShuffled())
+  if (!m_bShuffled)
   {
     // swap the ordinals before swapping the items!
     //CLog::Log(LOGDEBUG,"PLAYLIST swapping items at orders ({}, {})",m_vecItems[position1]->m_iprogramCount,m_vecItems[position2]->m_iprogramCount);
@@ -400,8 +457,10 @@ bool CPlayList::Swap(int position1, int position2)
 
 void CPlayList::SetUnPlayable(int iItem)
 {
-  if (iItem < 0 || iItem >= size())
+  std::unique_lock lock(m_critSection);
+  if (iItem < 0 || iItem >= static_cast<int>(m_vecItems.size()))
   {
+    lock.unlock();
     CLog::Log(LOGWARNING, "Attempt to set unplayable index {}", iItem);
     return;
   }
@@ -418,7 +477,11 @@ void CPlayList::SetUnPlayable(int iItem)
 bool CPlayList::Load(const std::string& strFileName)
 {
   Clear();
-  m_strBasePath = URIUtils::GetDirectory(strFileName);
+  const std::string basePath = URIUtils::GetDirectory(strFileName);
+  {
+    std::unique_lock lock(m_critSection);
+    m_strBasePath = basePath;
+  }
 
   CFileStream file;
   if (!file.Open(strFileName))
@@ -450,7 +513,9 @@ bool CPlayList::LoadData(const std::string& strData)
 
 bool CPlayList::Expand(int position)
 {
-  CFileItemPtr item = m_vecItems[position];
+  const CFileItemPtr item = TryGet(position);
+  if (!item)
+    return false;
   std::unique_ptr<CPlayList> playlist (CPlayListFactory::Create(*item.get()));
   if (playlist == nullptr)
     return false;
@@ -482,8 +547,26 @@ bool CPlayList::Expand(int position)
   if (playlist->size() <= 0)
     return false;
 
-  Remove(position);
-  Insert(*playlist, position);
+  const auto entries = playlist->GetItems();
+  std::vector<int> positions;
+  positions.reserve(entries.size());
+  {
+    std::unique_lock lock(m_critSection);
+    if (position < 0 || position >= static_cast<int>(m_vecItems.size()) ||
+        m_vecItems[position] != item)
+      return false;
+    const int order = item->m_iprogramCount;
+    m_vecItems.erase(m_vecItems.begin() + position);
+    DecrementOrder(order);
+    for (const auto& entry : entries)
+    {
+      const int next = position + positions.size();
+      positions.push_back(AddLocked(entry, next, next));
+    }
+  }
+  AnnounceRemove(position);
+  for (size_t i = 0; i < entries.size(); ++i)
+    AnnounceAdd(entries[i], positions[i]);
   return true;
 }
 
@@ -491,9 +574,9 @@ void CPlayList::UpdateItem(const CFileItem *item)
 {
   if (!item) return;
 
-  for (ivecItems it = m_vecItems.begin(); it != m_vecItems.end(); ++it)
+  // Assignment can release GUI resources. Retain the shared item outside the leaf lock.
+  for (const auto& playlistItem : GetItems())
   {
-    CFileItemPtr playlistItem = *it;
     if (playlistItem->IsSamePath(item))
     {
       std::string temp = playlistItem->GetPath(); // save path, it may have been altered

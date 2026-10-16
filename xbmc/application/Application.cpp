@@ -1867,6 +1867,13 @@ void CApplication::OnApplicationMessage(ThreadMessage* pMsg)
   }
 }
 
+CApplication::ScopedFrameMoveGuardExit::ScopedFrameMoveGuardExit(CApplication& application)
+{
+  if (auto* window = CServiceBroker::GetWinSystem())
+    m_graphicsExit.emplace(window->GetGfxContext());
+  m_frameMoveExit.emplace(application.m_frameMoveGuard);
+}
+
 void CApplication::LockFrameMoveGuard()
 {
   ++m_WaitingExternalCalls;

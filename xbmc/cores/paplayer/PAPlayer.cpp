@@ -13,6 +13,7 @@
 #include "ServiceBroker.h"
 #include "URL.h"
 #include "Util.h"
+#include "application/Application.h"
 #include "cores/AudioEngine/Interfaces/AE.h"
 #include "cores/AudioEngine/Interfaces/AEStream.h"
 #include "cores/AudioEngine/Utils/AEStreamData.h"
@@ -205,8 +206,13 @@ bool PAPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options)
 
   if (m_streams.size() > 1 || !m_defaultCrossfadeMS || m_isPaused)
   {
-    CloseAllStreams(!m_isPaused);
-    StopThread();
+    const bool fade = !m_isPaused;
+    {
+      // Decoder jobs can wait for Python HTTP handlers that need GUI ownership.
+      CApplication::ScopedFrameMoveGuardExit exit(g_application);
+      CloseAllStreams(fade);
+      StopThread();
+    }
     m_isPaused = false; // Make sure to reset the pause state
   }
 
@@ -526,15 +532,18 @@ bool PAPlayer::CloseFile(bool reopen)
   if (reopen)
     CServiceBroker::GetActiveAE()->KeepConfiguration(3000);
 
-  if (!m_isPaused)
-    SoftStop(true, true);
-  CloseAllStreams(false);
-
-  /* wait for the thread to terminate */
-  StopThread(true);//true - wait for end of thread
-
-  // wait for any pending jobs to complete
   {
+    // Decoder jobs can wait for Python HTTP handlers that need GUI ownership.
+    CApplication::ScopedFrameMoveGuardExit exit(g_application);
+
+    if (!m_isPaused)
+      SoftStop(true, true);
+    CloseAllStreams(false);
+
+    /* wait for the thread to terminate */
+    StopThread(true);//true - wait for end of thread
+
+    // wait for any pending jobs to complete
     std::unique_lock<CCriticalSection> lock(m_streamsLock);
     while (m_jobCounter > 0)
     {
