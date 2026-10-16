@@ -91,6 +91,21 @@ public:
     virtual void GetChapterName(std::string& name, int ch=-1) = 0;
     virtual int64_t GetChapterPos(int ch=-1) = 0;
     virtual bool SeekChapter(int ch) = 0;
+
+    struct SeekResult
+    {
+      // Legacy chapter positions remain title-relative seconds. Native sources
+      // may instead provide an authored 90kHz timestamp for demux conversion.
+      enum class Domain { CHAPTER_POSITION, SOURCE_90KHZ, UNAVAILABLE };
+      Domain domain = Domain::CHAPTER_POSITION;
+      int64_t timestamp = 0;
+      int64_t titleTimestamp = 0; // precise title position, also 90kHz
+    };
+    virtual bool SeekChapterWithResult(int ch, SeekResult& result)
+    {
+      result = {};
+      return SeekChapter(ch);
+    }
   };
 
   class IMenus

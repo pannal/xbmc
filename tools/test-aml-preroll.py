@@ -385,7 +385,7 @@ def main():
     if args.negative_controls:
         controls = [
             ('reverse scan inherits floor', 'm_speed >= DVD_PLAYSPEED_PAUSE &&', ''),
-            ('disabled decoded floor', 'videoPicture.pts < m_prerollTarget', 'false'),
+            ('disabled decoded floor', '(videoPicture.pts == DVD_NOPTS_VALUE || videoPicture.pts < std::trunc(m_prerollTarget))', 'false'),
             ('eligible output clears target', '      VideoHoldDecoded();',
              '      VideoHoldDecoded(); m_prerollTarget = DVD_NOPTS_VALUE;'),
             ('preroll admits unsupported hold', '      videoPicture.iFlags |= DVP_FLAG_DROPPED;',

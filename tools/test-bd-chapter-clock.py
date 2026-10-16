@@ -39,12 +39,14 @@ def harness(parent):
         'int CDVDInputStreamBluray::GetChapter(',
         'int64_t CDVDInputStreamBluray::GetChapterPos(',
         'bool CDVDInputStreamBluray::SeekChapter(',
+        'bool CDVDInputStreamBluray::SeekChapterWithResult(',
+        'MenuType CDVDInputStreamBluray::GetSupportedMenuType(',
         'int CDVDInputStreamBluray::GetTotalTime(',
         'int CDVDInputStreamBluray::GetTime('))
     methods += '\n' + '\n'.join(extract(demux, n) for n in (
         'int CDVDDemuxFFmpeg::GetChapterCount(',
         'int64_t CDVDDemuxFFmpeg::GetChapterPos(',
-        'bool CDVDDemuxFFmpeg::SeekChapter('))
+        'bool CDVDDemuxFFmpeg::SeekChapter(', 'double CDVDDemuxFFmpeg::ConvertTimestamp('))
     seek = extract(parent, 'void CVideoPlayer::Seek(bool bPlus,')
     methods += '\n' + seek[:seek.index('\n  int64_t seekTarget;')] + '\n  ++timedSeeks;\n}\n'
     methods += '\n' + '\n'.join(extract(parent, n) for n in (
@@ -62,7 +64,8 @@ def harness(parent):
 BLURAY_BODY = r'''
   std::mutex m_clipTableMutex; BLURAY native; BLURAY* m_bd=&native;
   BLURAY_TITLE_INFO title; BLURAY_TITLE_INFO* m_titleInfo=&title;
-  std::vector<Chapter> marks;
+  std::vector<Chapter> marks;std::vector<Clip> clips;
+  uint64_t m_titleGeneration=0;std::atomic_bool m_aborted{false};
   bool m_seamlessPlayItem=true, m_navmode=true, m_bMVCPlayback=false;
   std::atomic<unsigned> m_uoMask{0};
   std::shared_ptr<Session> m_session=std::make_shared<Session>();
@@ -72,16 +75,18 @@ BLURAY_BODY = r'''
   bool PosTime(int) override {return false;}
   bool CanSeek() override {return !menu || seekable;}
   bool GetState(std::string& s) override {s="BD-J";return true;}
-  MenuType GetSupportedMenuType() override {return MenuType::NATIVE;}
+  MenuType GetSupportedMenuType() override;
   void GetChapterName(std::string&, int=-1) override {}
   int GetChapterCount() override; int GetChapter() override;
   int64_t GetChapterPos(int) override; bool SeekChapter(int) override;
+  bool SeekChapterWithResult(int,CDVDInputStream::IChapter::SeekResult&) override;
   int GetTotalTime() override; int GetTime() override;
   void ProcessEvent() {++native.events;}
   void OpenNextStream() {} void SeekMVCDemux(int64_t) {}
   void SetMarks(const std::vector<int64_t>& seconds) {
     marks.clear(); for(auto s:seconds)marks.push_back({static_cast<uint64_t>(s)*90000});
     title.chapter_count=marks.size();title.chapters=marks.data();title.duration=13000*90000ULL;
+    clips={{0,0,title.duration}};title.clip_count=1;title.clips=clips.data();
   }
 };
 '''
@@ -95,6 +100,8 @@ PRELUDE = r'''
 #include <cstdint>
 #include <ctime>
 #include <memory>
+#include <limits>
+#include <functional>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -128,32 +135,36 @@ struct CDVDInputStream {
   template<class T> bool GetCacheStatus(T*){return false;}
   int64_t GetLength(){return 0;}
 };
-struct Chapter {uint64_t start;};
-struct BLURAY_TITLE_INFO {unsigned chapter_count=0;Chapter* chapters=nullptr;uint64_t duration=0;};
-struct BLURAY {unsigned chapter=0; bool fail=false; int events=0;std::vector<unsigned> requests;};
+struct Chapter {uint64_t start;unsigned clip_ref=0;};
+struct Clip {uint64_t start_time,in_time,out_time;};
+struct BLURAY_TITLE_INFO {unsigned clip_count=0;Clip* clips=nullptr;unsigned chapter_count=0;Chapter* chapters=nullptr;uint64_t duration=0;};
+struct BLURAY {unsigned chapter=0; bool fail=false; int events=0;std::vector<unsigned> requests;std::function<void()> duringSeek;};
 constexpr unsigned BLURAY_UO_CHAPTER_SEARCH=1;
 unsigned bd_get_current_chapter(BLURAY* p){return p->chapter;}
 // Recording library boundary: real nav_chapter_search uses this zero-based
 // chapter index directly. No media, access-point rounding or BD-J VM is emulated.
-int64_t bd_seek_chapter(BLURAY* p,unsigned ch){p->requests.push_back(ch);if(p->fail)return -1;p->chapter=ch;return ch*1000;}
+int64_t bd_seek_chapter(BLURAY* p,unsigned ch){p->requests.push_back(ch);if(p->fail)return -1;if(p->duringSeek)p->duringSeek();p->chapter=ch;return ch*1000;}
 int bd_get_event(BLURAY*,int*){return 0;}
 struct Session {int resets=0;void ResetAccessPattern(){++resets;}};
 #define EMPTY_QUEUE(q) while(!(q).empty())(q).pop()
 @BLURAY@
 struct AVChapter {int64_t start=0;struct {int den=1,num=1;} time_base;};
 template<class T> double av_q2d(T v){return double(v.num)/v.den;}
-struct Format {unsigned nb_chapters=0;AVChapter** chapters=nullptr;};
+constexpr int64_t AV_NOPTS_VALUE=std::numeric_limits<int64_t>::min();
+constexpr int AV_TIME_BASE=1000000;
+struct Format {int64_t start_time=0;unsigned nb_chapters=0;AVChapter** chapters=nullptr;};
 struct CLog {template<class...T>static void Log(int,const char*,T...) {}};
 struct CDVDDemuxFFmpeg {
   std::shared_ptr<CDVDInputStream> m_pInput; Format* m_pFormatContext=nullptr;
+  bool m_checkTransportStream=false,m_bSup=false;double m_startTime=0;
   double m_currentPts=0; int flushes=0,readerQueries=0;std::vector<int64_t> fileMarks;
-  int GetChapterCount(); int64_t GetChapterPos(int); bool SeekChapter(int,double*);
+  int GetChapterCount(); int64_t GetChapterPos(int); bool SeekChapter(int,double*,double* = nullptr);
   int GetChapter(){++readerQueries;return 70;}
   void GetChapterName(std::string& n,int ch){n=std::to_string(ch);}
   int GetStreamLength(){auto d=m_pInput?m_pInput->GetIDisplayTime():nullptr;return d?d->GetTotalTime():12000000;}
   void Flush(){++flushes;}
   bool SeekTime(double,bool,double*){assert(false && "unexpected_time_seek");return false;}
-  double ConvertTimestamp(int64_t x,int d,int n){return double(x)*n/d*DVD_TIME_BASE;}
+  double ConvertTimestamp(int64_t,int,int);
 };
 struct CacheCore {std::vector<std::pair<std::string,int64_t>> chapters;void SetChapters(const decltype(chapters)& c){chapters=c;}};
 struct CServiceBroker {static CacheCore& GetDataCacheCore(){static CacheCore c;return c;}};
@@ -357,7 +368,7 @@ def main():
                 ('wrong-libbluray-index', 'bd_seek_chapter(m_bd, ch - 1)',
                  'bd_seek_chapter(m_bd, ch)', 'provider_receives_zero_based_two'),
                 ('wrong-chapter-units', '.start / 90000;', '.start / 90;',
-                 'normalized_seek_retires_intent'),
+                 'start==bd->GetChapterPos(c)*DVD_TIME_BASE'),
             ]
             for name, old, new, assertion in controls:
                 assert old in source, name

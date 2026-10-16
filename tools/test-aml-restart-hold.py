@@ -24,6 +24,7 @@ def function(s, sig):
 PRELUDE = r'''
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
 #include <cassert>
+#include <cmath>
 #include <cerrno>
 #include <cstring>
 #include <deque>

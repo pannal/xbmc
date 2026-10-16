@@ -317,7 +317,11 @@ public:
    * Seek to a specified chapter.
    * startpts can be updated to the point where display should start
    */
-  virtual bool SeekChapter(int chapter, double* startpts = NULL) { return false; }
+  // startpts uses the packet timeline; startTime is the title position in ms.
+  virtual bool SeekChapter(int chapter, double* startpts = nullptr, double* startTime = nullptr)
+  {
+    return false;
+  }
 
   /*
    * Get the number of chapters available

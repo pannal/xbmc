@@ -4208,16 +4208,27 @@ void CVideoPlayer::HandleMessages()
 
       CDVDMsgPlayerSeekChapter& msg(*std::static_pointer_cast<CDVDMsgPlayerSeekChapter>(pMsg));
       double start = DVD_NOPTS_VALUE;
+      const bool blurayChapter =
+          m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY);
+      double chapterTime = DVD_NOPTS_VALUE;
       int offset = 0;
       bool chapterSeekAccepted = false;
 
       // This should always be the case.
-      if(m_pDemuxer && m_pDemuxer->SeekChapter(msg.GetChapter(), &start))
+      if(m_pDemuxer && m_pDemuxer->SeekChapter(msg.GetChapter(), &start, &chapterTime))
       {
         chapterSeekAccepted = true;
-        FlushBuffers(start, true, true, [this, start, chapter = msg.GetChapter()] {
+        FlushBuffers(start, true, true, [this, start, blurayChapter, chapterTime, chapter = msg.GetChapter()] {
           const int64_t beforeSeek = GetTime();
-          const int offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
+          // Decoder start PTS may retain a native clip origin; UI seek offsets
+          // use the captured title marker, never that decoder timestamp.
+          if (blurayChapter && start != DVD_NOPTS_VALUE && chapterTime != DVD_NOPTS_VALUE)
+            m_videoRecoveryStartTime = chapterTime;
+          const int64_t offset = blurayChapter
+                                     ? (chapterTime != DVD_NOPTS_VALUE
+                                            ? static_cast<int64_t>(chapterTime) - beforeSeek
+                                            : 0)
+                                     : DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
           m_callback.OnPlayBackSeekChapter(chapter);
           m_processInfo->SeekFinished(offset);
         }, true);
@@ -4228,9 +4239,17 @@ void CVideoPlayer::HandleMessages()
         if (pChapter && pChapter->SeekChapter(msg.GetChapter()))
         {
           chapterSeekAccepted = true;
-          FlushBuffers(start, true, true, [this, start, chapter = msg.GetChapter()] {
+          FlushBuffers(start, true, true, [this, start, blurayChapter, chapterTime, chapter = msg.GetChapter()] {
             const int64_t beforeSeek = GetTime();
-            const int offset = DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
+            // Decoder start PTS may retain a native clip origin; UI seek offsets
+            // use the captured title marker, never that decoder timestamp.
+            if (blurayChapter && start != DVD_NOPTS_VALUE && chapterTime != DVD_NOPTS_VALUE)
+              m_videoRecoveryStartTime = chapterTime;
+            const int64_t offset = blurayChapter
+                                         ? (chapterTime != DVD_NOPTS_VALUE
+                                                ? static_cast<int64_t>(chapterTime) - beforeSeek
+                                                : 0)
+                                         : DVD_TIME_TO_MSEC(start) - static_cast<int>(beforeSeek);
             m_callback.OnPlayBackSeekChapter(chapter);
             m_processInfo->SeekFinished(offset);
           }, true);

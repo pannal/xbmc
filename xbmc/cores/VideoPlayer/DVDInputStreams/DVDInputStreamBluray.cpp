@@ -2055,6 +2055,63 @@ bool CDVDInputStreamBluray::SeekChapter(int ch)
   return true;
 }
 
+bool CDVDInputStreamBluray::SeekChapterWithResult(
+    int ch, CDVDInputStream::IChapter::SeekResult& result)
+{
+  result = {};
+  if (!m_navmode)
+    return CDVDInputStream::IChapter::SeekChapterWithResult(ch, result);
+
+  result.domain = CDVDInputStream::IChapter::SeekResult::Domain::UNAVAILABLE;
+  const auto session = std::atomic_load(&m_session);
+  auto* const native = m_bd;
+  if (!session || !native || m_aborted)
+    return false;
+
+  int64_t timestamp;
+  int64_t titleTimestamp;
+  uint64_t generation;
+  {
+    std::lock_guard lock(m_clipTableMutex);
+    if (!m_titleInfo || !m_titleInfo->chapters || !m_titleInfo->clips || ch <= 0 ||
+        static_cast<uint32_t>(ch) > m_titleInfo->chapter_count)
+      return false;
+    const auto& chapter = m_titleInfo->chapters[ch - 1];
+    if (chapter.clip_ref >= m_titleInfo->clip_count)
+      return false;
+    const auto& clip = m_titleInfo->clips[chapter.clip_ref];
+    if (chapter.start < clip.start_time || clip.out_time < clip.in_time)
+      return false;
+    const uint64_t relative = chapter.start - clip.start_time;
+    const auto maximum = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+    if (chapter.start > maximum || relative > clip.out_time - clip.in_time ||
+        clip.in_time > maximum ||
+        relative > maximum - clip.in_time)
+      return false;
+    // The library may land at an earlier access unit. Keep the authored mark,
+    // using its own clip's origin rather than current read position or UI time.
+    timestamp = static_cast<int64_t>(clip.in_time + relative);
+    titleTimestamp = static_cast<int64_t>(chapter.start);
+    generation = m_titleGeneration;
+  }
+
+  if (!SeekChapter(ch))
+    return false;
+
+  // Event draining can replace title/angle metadata or retire this source.
+  // Navigation was accepted, so preserve the caller's flush, but never attach
+  // the old target to the replacement (or borrow its chapter-position fallback).
+  std::lock_guard lock(m_clipTableMutex);
+  if (!m_aborted && m_bd == native && m_navmode && m_titleGeneration == generation &&
+      std::atomic_load(&m_session) == session)
+  {
+    result.domain = CDVDInputStream::IChapter::SeekResult::Domain::SOURCE_90KHZ;
+    result.timestamp = timestamp;
+    result.titleTimestamp = titleTimestamp;
+  }
+  return true;
+}
+
 int64_t CDVDInputStreamBluray::GetChapterPos(int ch)
 {
   if (ch == -1 || ch > GetChapterCount())

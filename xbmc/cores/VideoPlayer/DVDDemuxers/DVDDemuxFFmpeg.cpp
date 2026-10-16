@@ -2739,23 +2739,49 @@ int64_t CDVDDemuxFFmpeg::GetChapterPos(int chapterIdx)
   return static_cast<int64_t>(m_pFormatContext->chapters[chapterIdx - 1]->start * av_q2d(m_pFormatContext->chapters[chapterIdx - 1]->time_base));
 }
 
-bool CDVDDemuxFFmpeg::SeekChapter(int chapter, double* startpts)
+bool CDVDDemuxFFmpeg::SeekChapter(int chapter, double* startpts, double* startTime)
 {
+  if (startTime)
+    *startTime = DVD_NOPTS_VALUE;
   if (chapter < 1)
     chapter = 1;
 
-  std::shared_ptr<CDVDInputStream::IChapter> ich = std::dynamic_pointer_cast<CDVDInputStream::IChapter>(m_pInput);
+  const auto input = m_pInput;
+  std::shared_ptr<CDVDInputStream::IChapter> ich = std::dynamic_pointer_cast<CDVDInputStream::IChapter>(input);
   if (ich)
   {
     CLog::Log(LOGDEBUG, "{} - chapter seeking using input stream", __FUNCTION__);
-    if (!ich->SeekChapter(chapter))
+    CDVDInputStream::IChapter::SeekResult target;
+    if (!ich->SeekChapterWithResult(chapter, target))
       return false;
+    if (m_pInput != input)
+      target.domain = CDVDInputStream::IChapter::SeekResult::Domain::UNAVAILABLE;
 
     if (startpts)
     {
-      *startpts = DVD_SEC_TO_TIME(static_cast<double>(ich->GetChapterPos(chapter)));
+      switch (target.domain)
+      {
+        case CDVDInputStream::IChapter::SeekResult::Domain::SOURCE_90KHZ:
+          // Use the same origin/transport conversion as source packet PTS.
+          // Native chapter navigation has reset the provider's seam offset.
+          *startpts = ConvertTimestamp(target.timestamp, 90000, 1);
+          break;
+        case CDVDInputStream::IChapter::SeekResult::Domain::UNAVAILABLE:
+          *startpts = DVD_NOPTS_VALUE;
+          break;
+        case CDVDInputStream::IChapter::SeekResult::Domain::CHAPTER_POSITION:
+          *startpts = DVD_SEC_TO_TIME(static_cast<double>(ich->GetChapterPos(chapter)));
+          break;
+      }
     }
 
+    if (startTime)
+    {
+      if (target.domain == CDVDInputStream::IChapter::SeekResult::Domain::SOURCE_90KHZ)
+        *startTime = static_cast<double>(target.titleTimestamp) / 90.0;
+      else if (target.domain == CDVDInputStream::IChapter::SeekResult::Domain::CHAPTER_POSITION)
+        *startTime = static_cast<double>(ich->GetChapterPos(chapter)) * 1000.0;
+    }
     Flush();
     return true;
   }
@@ -2767,6 +2793,7 @@ bool CDVDDemuxFFmpeg::SeekChapter(int chapter, double* startpts)
     return false;
 
   AVChapter* ch = m_pFormatContext->chapters[chapter - 1];
+  const double titleTime = static_cast<double>(ch->start) * av_q2d(ch->time_base) * 1000.0;
   double dts = ConvertTimestamp(ch->start, ch->time_base.den, ch->time_base.num);
   bool rtn = SeekTime(DVD_TIME_TO_MSEC(dts), true, startpts);
   if (rtn)
@@ -2780,6 +2807,8 @@ bool CDVDDemuxFFmpeg::SeekChapter(int chapter, double* startpts)
         *startpts = startpts_b;
     }
   }
+  if (rtn && startTime)
+    *startTime = titleTime;
   CLog::Log(LOGDEBUG, "CDVDDemuxFFmpeg::{} - seeking chapter:{:d} start:{:.3f} key-frame:{:.3f} ", __FUNCTION__, chapter, DVD_TIME_TO_MSEC(dts) / 1000.0, m_currentPts / DVD_TIME_BASE);
   return rtn;
 }

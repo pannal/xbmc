@@ -187,6 +187,7 @@ struct IPlayerCallback {
   void OnAVStarted(int) {++starts;}
   void OnPlayBackSeekChapter(int chapter) {chapters.push_back(chapter);}
 };
+constexpr int DVDSTREAM_TYPE_BLURAY=1;
 struct CDVDInputStream {
   struct IChapter {bool accepted=false; int calls=0; bool SeekChapter(int) {++calls;return accepted;}};
 };
@@ -194,16 +195,19 @@ struct CDVDInputStream {
     source = source.replace('struct ProcessInfo { double MinTempoPlatform()',
                             'struct ProcessInfo { std::vector<int> seekOffsets; void SeekFinished(int offset) {seekOffsets.push_back(offset);} double MinTempoPlatform()', 1)
     source = source.replace('struct Input {bool realtime=false; bool IsRealtime() const {return realtime;} } input;',
-                            'struct Input {bool realtime=false; CDVDInputStream::IChapter* chapter=nullptr; CDVDInputStream::IChapter* GetIChapter() {return chapter;} bool IsRealtime() const {return realtime;} } input;', 1)
+                            'struct Input {bool realtime=false,bluray=false; bool IsStreamType(int) const {return bluray;} CDVDInputStream::IChapter* chapter=nullptr; CDVDInputStream::IChapter* GetIChapter() {return chapter;} bool IsRealtime() const {return realtime;} } input;', 1)
     source = source.replace('struct Demux {int speed=0; void SetSpeed(int v) {speed=v;} } demux;', r'''
   struct Demux {
     int speed=0; bool accepted=true; std::vector<int> requests;
     std::function<void()> duringSeek;
     void SetSpeed(int v) {speed=v;}
-    bool SeekChapter(int chapter, double* start) {
+    bool SeekChapter(int chapter, double* start, double* time=nullptr) {
       requests.push_back(chapter); const bool result=accepted;
       auto call=std::move(duringSeek); duringSeek={}; if(call) call();
-      if(result) *start=chapter==6 ? 2960165000.0 : chapter*400.0*DVD_TIME_BASE;
+      if(result) {
+        *start=chapter==6 ? 2960165000.0 : chapter*400.0*DVD_TIME_BASE;
+        if(time)*time=chapter==6 ? 2400123.456 : chapter*400000.0;
+      }
       return result;
     }
   } demux;
@@ -245,6 +249,11 @@ struct CDVDInputStream {
 
 CHAPTER_HANDLER_TESTS = r'''
 static void chapter_handlers() {
+  // Ordinary file/provider completion keeps its prior landing-based UI offset.
+  {CVideoPlayerVideo video; Parent p(video);p.Back();p.HandleMessages();
+   complete(video);assert(p.ContinueParentLifecycle());
+   assert(std::find(p.m_processInfo->seekOffsets.begin(),p.m_processInfo->seekOffsets.end(),
+                    2960165-3636289)!=p.m_processInfo->seekOffsets.end() && "generic_callback_keeps_landing_offset");}
   // A rejected forward target has not been reached and must not remain the
   // base of subsequent Back/Next. This fails even when published chapter=7.
   {CVideoPlayerVideo video; Parent p(video); p.demux.accepted=false;
@@ -289,7 +298,7 @@ static void chapter_handlers() {
   // Exact arrival order: chapter 6 is already in source Seek when Back queues
   // chapter 5. Actual parent queue mode 2 holds it until the first native
   // flush receipt completes; both accurate targets and callbacks are serial.
-  {CVideoPlayerVideo video; Parent p(video); p.demux.duringSeek=[&]{p.Back();};
+  {CVideoPlayerVideo video; Parent p(video); p.input.bluray=true; p.demux.duringSeek=[&]{p.Back();};
    p.Back(); p.HandleMessages();
    assert((p.demux.requests==std::vector<int>{6}) && "second_seek_waits_first_receipt");
    assert(p.queue.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER)==1);
@@ -299,6 +308,9 @@ static void chapter_handlers() {
    p.HandleMessages(); assert((p.demux.requests==std::vector<int>{6}));
    complete(video); assert(p.ContinueParentLifecycle());
    assert((p.m_callback.chapters==std::vector<int>{6}) && "first_callback_after_receipt");
+   assert(std::find(p.m_processInfo->seekOffsets.begin(),p.m_processInfo->seekOffsets.end(),
+                    2400123-3636289)!=p.m_processInfo->seekOffsets.end() && "callback_uses_title_marker_not_decoder_pts");
+   assert(p.m_videoRecoveryStartTime==2400123.456 && "bd_recovery_keeps_title_target");
    p.SetCaching(CACHESTATE_DONE);p.Publish(p.m_State);
    assert(p.m_chapterSeekTarget==5 && "queued_second_intent_not_retired");
    p.HandleMessages(); assert((p.demux.requests==std::vector<int>{6,5}));
@@ -358,12 +370,15 @@ def main():
                 assert old in source,name
                 run(source.replace(old,'true',1),out,name,True,assertion)
             handler_controls=[
+                ('recovery-keeps-old-origin','m_videoRecoveryStartTime = chapterTime;','m_videoRecoveryStartTime = m_videoRecoveryStartTime;', 'bd_recovery_keeps_title_target'),
+                ('native-ui-offset-for-files','const int64_t offset = blurayChapter','const int64_t offset = true','generic_callback_keeps_landing_offset'),
+                ('raw-origin-in-ui-offset','static_cast<int64_t>(chapterTime) - beforeSeek','static_cast<int64_t>(chapterTime) + 4199000 - beforeSeek', 'callback_uses_title_marker_not_decoder_pts'),
                 ('keep-rejected-forward-intent','m_chapterSeekTarget.compare_exchange_strong(failedChapter, 0);','(void)failedChapter;', 'failed_forward_cleared'),
                 ('erase-queued-same-failure','if (m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER) == 0)','if (true)', 'queued_same_intent_retained'),
                 ('erase-accepted-intent','if (!chapterSeekAccepted)','if (chapterSeekAccepted || !chapterSeekAccepted)', 'queued_same_intent_retained'),
                 ('unnormalized-failed-intent','int failedChapter = std::max(msg.GetChapter(), 1);','int failedChapter = msg.GetChapter();', 'failed_normalized_cleared'),
                 ('dispatch-chapter-during-flush','ParentLifecyclePending() ? 2 : 0','0', 'second_seek_waits_first_receipt'),
-                ('chapter-flush-inaccurate','FlushBuffers(start, true, true, [this, start, chapter = msg.GetChapter()]','FlushBuffers(start, false, true, [this, start, chapter = msg.GetChapter()]', 'first_seek_accurate'),
+                ('chapter-flush-inaccurate','FlushBuffers(start, true, true, [this, start, blurayChapter, chapterTime, chapter = msg.GetChapter()]','FlushBuffers(start, false, true, [this, start, blurayChapter, chapterTime, chapter = msg.GetChapter()]', 'first_seek_accurate'),
                 ('chapter-callback-before-receipt','if (request && request->state == CVideoFlushRequest::State::PENDING)','if (false && request && request->state == CVideoFlushRequest::State::PENDING)', 'accepted_callback_waits_receipt'),
             ]
             for name,old,new,assertion in handler_controls:

@@ -107,7 +107,7 @@ public:
   int GetPrograms(std::vector<ProgramInfo>& programs) override;
   void SetProgram(int progId) override;
 
-  bool SeekChapter(int chapter, double* startpts = NULL) override;
+  bool SeekChapter(int chapter, double* startpts = nullptr, double* startTime = nullptr) override;
   int GetChapterCount() override;
   int GetChapter() override;
   void GetChapterName(std::string& strChapterName, int chapterIdx=-1) override;

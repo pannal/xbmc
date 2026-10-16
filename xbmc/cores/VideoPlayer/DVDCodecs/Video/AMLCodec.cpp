@@ -3483,10 +3483,11 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     // Input DROP describes the packet currently being fed, not this asynchronous
     // output. Keep decoding references, but reject decoded preroll even after
     // later input has crossed the target or an eligible frame has been returned.
+    // Codec check-in stores PTS as integer microseconds; compare in that same
+    // representation while retaining the precise target for transport/bookkeeping.
     // Reverse scanning deliberately visits pictures before the last seek marker.
     if (m_speed >= DVD_PLAYSPEED_PAUSE && m_prerollTarget != DVD_NOPTS_VALUE &&
-        videoPicture.pts != DVD_NOPTS_VALUE &&
-        videoPicture.pts < m_prerollTarget)
+        (videoPicture.pts == DVD_NOPTS_VALUE || videoPicture.pts < std::trunc(m_prerollTarget)))
     {
       videoPicture.iFlags |= DVP_FLAG_DROPPED;
     }
