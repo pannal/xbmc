@@ -15,6 +15,7 @@
 #include "threads/Thread.h"
 #include "websocket/WebSocket.h"
 
+#include <memory>
 #include <vector>
 
 #include <sys/socket.h>
@@ -107,7 +108,11 @@ namespace JSONRPC
       std::string m_buffer;
     };
 
-    std::vector<CTCPClient*> m_connections;
+    // Only the server thread changes m_connections. The lock orders those changes against
+    // the announcement thread's snapshot; code never holds the lock while calling a client or
+    // taking another lock. The shared_ptr keeps a client in a snapshot alive after removal.
+    std::vector<std::shared_ptr<CTCPClient>> m_connections;
+    CCriticalSection m_connectionsLock;
     std::vector<SOCKET> m_servers;
     int m_port;
     bool m_nonlocal;
