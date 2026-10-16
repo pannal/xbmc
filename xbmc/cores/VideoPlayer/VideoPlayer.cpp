@@ -7088,8 +7088,10 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
   std::shared_ptr<CDVDInputStream::IMenus> pMenu = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
 
+  bool chaptersFromClock = false;
   if (m_pDemuxer)
   {
+    chaptersFromClock = true;
     state.chapters.clear();
     if (m_pDemuxer->GetChapterCount() > 0)
     {
@@ -7104,31 +7106,9 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
     state.time = m_clock.GetClock(false) * 1000 / DVD_TIME_BASE;
     state.timeMax = m_pDemuxer->GetStreamLength();
-
-    if (IsInMenuInternal() && pMenu && !pMenu->CanSeek())
-      state.chapter = 0;
-    else
-    {
-      // Find the current chapter from the real playback clock (state.time, ms)
-      // against each chapter's static start position (state.chapters[i].second,
-      // seconds), rather than asking the demuxer for its own notion of "current
-      // chapter". CDVDDemuxFFmpeg::GetChapter() compares against m_currentPts,
-      // which tracks how far the demuxer has read ahead into its buffers -- not
-      // what is actually being decoded/displayed. That gap is usually
-      // negligible for long files, but for short chapter ranges buffered
-      // quickly it can jump the reported chapter far past the real position,
-      // right after any seek.
-      state.chapter = 0;
-      for (size_t i = 0; i < state.chapters.size(); ++i)
-      {
-        double chapterStartMs = state.chapters[i].second * 1000.0;
-        if (state.time >= chapterStartMs)
-          state.chapter = static_cast<int>(i) + 1;
-        else
-          break;
-      }
-    }
   }
+
+  double chapterTime = state.time;
 
   state.canpause = false;
   state.canseek = false;
@@ -7141,6 +7121,7 @@ void CVideoPlayer::UpdatePlayState(double timeout)
     CDVDInputStream::IChapter* pChapter = m_pInputStream->GetIChapter();
     if (pChapter)
     {
+      chaptersFromClock = false;
       if (IsInMenuInternal() && pMenu && !pMenu->CanSeek())
         state.chapter = 0;
       else
@@ -7199,6 +7180,11 @@ void CVideoPlayer::UpdatePlayState(double timeout)
       state.time_offset = 0;
     }
 
+    // Chapter markers use title time, while native Blu-ray packets/clock can
+    // retain a clip PTS origin. Save the normalized playback position before
+    // menu/still UI time overrides it; EDL cuts below also leave marks unchanged.
+    chapterTime = state.time;
+
     if (pMenu)
     {
       if (!pMenu->GetState(state.player_state))
@@ -7230,6 +7216,23 @@ void CVideoPlayer::UpdatePlayState(double timeout)
     state.cantempo = false;
 
     m_processInfo->SetStateRealtime(realtime);
+  }
+
+  if (chaptersFromClock)
+  {
+    state.chapter = 0;
+    if (!(IsInMenuInternal() && pMenu && !pMenu->CanSeek()))
+    {
+      // Use the normalized playback clock, not the demuxer's read-ahead position.
+      for (size_t i = 0; i < state.chapters.size(); ++i)
+      {
+        const double chapterStartMs = state.chapters[i].second * 1000.0;
+        if (chapterTime >= chapterStartMs)
+          state.chapter = static_cast<int>(i) + 1;
+        else
+          break;
+      }
+    }
   }
 
   if (m_Edl.HasCuts())

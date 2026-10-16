@@ -59,7 +59,11 @@ struct CDVDDemuxUtils {static void FreeDemuxPacket(DemuxPacket* p){delete p;}};'
 '''
     source = source.replace('  CVideoPlayerVideo* m_VideoPlayerVideo;', declarations + '\n  CVideoPlayerVideo* m_VideoPlayerVideo;')
     source=source.replace('  bool inited=false; unsigned packets=0;',
-      '  bool inited=false; unsigned packets=0;\n  struct {int codec=0,profile=0;} hint;\n  double duration=40000;double dts_end() const{return dts+duration;}')
+      '  bool inited=false; unsigned packets=0;\n  double duration=40000;double dts_end() const{return dts+duration;}')
+    # Extend the shared hint instead of redeclaring it; retain the lifecycle
+    # fixture's subtitle probe ownership field and every existing assertion.
+    source=source.replace('struct {std::shared_ptr<const void> subtitleProbeSource;} hint;',
+      'struct {int codec=0,profile=0;std::shared_ptr<const void> subtitleProbeSource;} hint;',1)
     source=source.replace('#include <algorithm>', '#include <algorithm>\n#include <cmath>\nconstexpr double DVD_MSEC_TO_TIME(double x){return x*1000;}')
     source += '\n' + extract(parent,'static void UpdateLimits(')
     source += '\n' + extract(parent,'void CVideoPlayer::UpdateCorrection(').replace('CVideoPlayer::','Parent::')
