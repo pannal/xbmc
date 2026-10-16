@@ -892,7 +892,9 @@ bool aml_dv_graphics_stability_supported()
 void aml_dv_apply_graphics_stability()
 {
   CSysfsPath control{"/sys/module/amdolby_vision/parameters/dv_graphics_stable"};
-  const bool supported = control.Exists();
+  CSysfsPath capability{"/sys/module/amdolby_vision/parameters/dv_graphics_stable_available"};
+  const auto available = capability.Exists() ? capability.Get<std::string>() : std::nullopt;
+  const bool supported = control.Exists() && available && (*available == "Y" || *available == "1");
   s_dvGraphicsStableAvailable.store(supported, std::memory_order_release);
   if (supported)
     control.Set(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_GRAPHICS_STABLE));

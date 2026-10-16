@@ -24,16 +24,23 @@ KEY = 'SETTING_COREELEC_AMLOGIC_DV_GRAPHICS_STABLE'
 
 RECORDING = r'''
 bool graphicsNode = false;
+bool graphicsCapability = true;
+std::optional<std::string> graphicsCapabilityValue = "Y";
 int graphicsExists = 0;
 struct CSysfsPath {
  std::string path;
  explicit CSysfsPath(const char* value):path(value){}
  bool Exists(){
   assert(!inCallback && session && !session->AcquireDecoder());
-  assert(path=="/sys/module/amdolby_vision/parameters/dv_graphics_stable");
-  ++graphicsExists;return graphicsNode;
+  ++graphicsExists;
+  if(path=="/sys/module/amdolby_vision/parameters/dv_graphics_stable_available")return graphicsCapability;
+  assert(path=="/sys/module/amdolby_vision/parameters/dv_graphics_stable");return graphicsNode;
  }
- void Set(bool value){assert(graphicsNode);effect("graphics",value);}
+ template<typename T> std::optional<T> Get(){
+  assert(path=="/sys/module/amdolby_vision/parameters/dv_graphics_stable_available");
+  return graphicsCapabilityValue;
+ }
+ void Set(bool value){assert(graphicsNode && graphicsCapability && graphicsCapabilityValue && (*graphicsCapabilityValue=="Y" || *graphicsCapabilityValue=="1"));effect("graphics",value);}
 };
 @HELPERS@
 using SettingConstPtr=std::shared_ptr<const CSetting>;
@@ -56,7 +63,7 @@ void graphics_helper_policy(){
   auto intent=storage.values;const int previous=graphicsExists;effects.clear();
   auto request=CAMLSession::FenceNative();assert(CAMLSession::TryBeginNative(request));
   aml_dv_apply_graphics_stability();assert(CAMLSession::EndNative(request));
-  assert(graphicsExists==previous+1 && storage.values==intent);
+  assert(graphicsExists==previous+2 && storage.values==intent);
   assert(aml_dv_graphics_stability_supported()==node);
   assert(DVGraphicsStableAvailable("","",nullptr,nullptr)==node);
   assert(!DVGraphicsStableAvailableWithoutAML("","",nullptr,nullptr));
@@ -65,6 +72,16 @@ void graphics_helper_policy(){
    std::vector<std::pair<std::string,int>>{};
   assert(snapshot()==expected);
  }
+ // Existing control without the new library capability must never invoke the old hold.
+ for(bool present:{false,true})for(auto text:{std::optional<std::string>{},std::optional<std::string>{"N"},std::optional<std::string>{"0"},std::optional<std::string>{"bad"},std::optional<std::string>{"Y"},std::optional<std::string>{"1"}}){
+  graphicsNode=true;graphicsCapability=present;graphicsCapabilityValue=text;effects.clear();
+  auto permit=CAMLSession::FenceNative();assert(CAMLSession::TryBeginNative(permit));
+  aml_dv_apply_graphics_stability();assert(CAMLSession::EndNative(permit));
+  bool expected=present&&text&&(*text=="Y"||*text=="1");
+  assert(aml_dv_graphics_stability_supported()==expected);
+  assert(snapshot().size()==(expected?1:0));
+ }
+ graphicsCapability=true;graphicsCapabilityValue="Y";
  // Removal is observed by the next admitted apply, never from GUI readers.
  assert(aml_dv_graphics_stability_supported());graphicsNode=false;
  const int previous=graphicsExists;
@@ -122,7 +139,7 @@ def native_code():
                  .replace('@CONDITION@', condition)
                  .replace('@NO_AML_CONDITION@', condition.replace(
                      'DVGraphicsStableAvailable(', 'DVGraphicsStableAvailableWithoutAML(', 1)))
-    code = native['source']()
+    code = '#include <optional>\n' + native['source']()
     # The shared fixture records unrelated hardware effects; replace its helper
     # stub with production code for this setting's actual sysfs/cache contract.
     if 'void aml_dv_apply_graphics_stability()' in code:
@@ -267,6 +284,7 @@ def main():
     if args.negative_controls:
         for label, old, new in (
             ('missing-driver write', '  if (supported)\n    control.Set(', '  if (true)\n    control.Set('),
+            ('ignores capability', 'control.Exists() && available && (*available == "Y" || *available == "1")', 'control.Exists()'),
             ('ignores saved off', 'control.Set(settings()->GetBool(CSettings::' + KEY + '));', 'control.Set(true);'),
             ('GUI performs sysfs read', 'return s_dvGraphicsStableAvailable.load(std::memory_order_acquire);', 'return CSysfsPath("/sys/module/amdolby_vision/parameters/dv_graphics_stable").Exists();'),
             ('synchronous callback effect', 'schedule_native_setting_apply(setting->GetId());', 'apply_native_setting(setting->GetId());'),
