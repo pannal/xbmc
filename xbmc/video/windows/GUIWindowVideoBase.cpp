@@ -545,6 +545,11 @@ bool CGUIWindowVideoBase::OnSelect(int iItem)
 
   const std::shared_ptr<CFileItem> item = m_vecItems->Get(iItem);
 
+  if (item->m_bIsFolder && item->IsVideoDb() && item->HasVideoInfoTag() &&
+      item->GetVideoInfoTag()->m_type == MediaTypeTvShow &&
+      CVideoSelectActionProcessorBase::GetDefaultSelectAction() == ACTION_INFO)
+    return OnItemInfo(*item);
+
   const std::string path = item->GetPath();
   if (!item->m_bIsFolder && path != "add" &&
       ((!StringUtils::StartsWith(path, "newsmartplaylist://") &&
