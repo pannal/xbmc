@@ -808,17 +808,14 @@ bool CAESinkALSA::Initialize(AEAudioFormat &format, std::string &device)
       }
     }
 
-    // The TDM-B/I2S path used by the surround71 (HDMI Multi Channel PCM) device
-    // on AML G12B (S922X) and SC2 (S905X4) does not reliably support 44.1kHz-
-    // family clock rates, causing DMA underruns/cutouts for any decoded PCM
-    // content regardless of channel count. Snap to the nearest 48kHz-family
-    // rate so that ActiveAE resamples upstream and the hardware only ever sees
-    // 48kHz-family clocks. The snapped rate is returned via outconfig/
-    // format.m_sampleRate so ActiveAE creates the resampler automatically.
+    // Retain the 44.1kHz-family cutout workaround on SC2. G12B's HDMI PCM
+    // path uses TDM-C/MCLK-C and supports native rates; do not force it through
+    // the old resampling workaround. Returning the negotiated SC2 rate via
+    // format.m_sampleRate lets ActiveAE perform the required conversion.
     if (!m_passthrough && device.substr(0, 10) == "surround71")
     {
       int cpuFamily = aml_get_cpufamily_id();
-      if (cpuFamily == AML_G12B || cpuFamily == AML_SC2)
+      if (cpuFamily == AML_SC2)
       {
         switch (inconfig.sampleRate)
         {
@@ -833,7 +830,7 @@ bool CAESinkALSA::Initialize(AEAudioFormat &format, std::string &device)
         if (inconfig.sampleRate != format.m_sampleRate)
           CLog::Log(LOGINFO,
                     "CAESinkALSA::Initialize - AML surround71: snapping {}Hz -> {}Hz (44.1kHz "
-                    "family unsupported on TDM-B path on G12B/SC2)",
+                    "family cutout workaround on SC2)",
                     format.m_sampleRate, inconfig.sampleRate);
       }
     }
@@ -1932,12 +1929,10 @@ void CAESinkALSA::EnumerateDevice(AEDeviceInfoList &list, const std::string &dev
       if (device.substr(0, 10) == "surround71")
       {
         info.m_displayNameExtra = "HDMI Multi Ch PCM";
-        // On AML G12B (S922X) and SC2 (S905X4) the TDM-B/I2S path used by this
-        // device does not reliably support 44.1kHz-family clock rates. Remove
-        // them from the reported capabilities so format negotiation reflects the
-        // true hardware limitation.
+        // Keep SC2's advertised rates consistent with its cutout workaround.
+        // G12B retains the native rates reported by ALSA and the receiver.
         int cpuFamily = aml_get_cpufamily_id();
-        if (cpuFamily == AML_G12B || cpuFamily == AML_SC2)
+        if (cpuFamily == AML_SC2)
           info.m_sampleRates.erase(
               std::remove_if(info.m_sampleRates.begin(), info.m_sampleRates.end(),
                              [](unsigned int rate) {

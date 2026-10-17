@@ -2772,10 +2772,9 @@ void CActiveAE::LoadSettings()
 
   m_settings.resampleQuality = static_cast<AEQuality>(settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_PROCESSQUALITY));
 #if defined(HAS_LIBAMCODEC)
-  // On AML G12B (S922X) and SC2 (S905X4) the surround71 HDMI Multi Channel PCM
-  // path requires resampling 44.1kHz-family content to 48kHz. Force HIGH quality
-  // to ensure the mandatory resample is transparent, overriding the user setting
-  // if it is set lower.
+  // Preserve the minimum resampling quality on G12B/SC2. SC2's surround71
+  // cutout workaround still converts 44.1kHz-family content; G12B can use native
+  // rates, but other output configurations can still require conversion.
   {
     int cpuFamily = aml_get_cpufamily_id();
     if ((cpuFamily == AML_G12B || cpuFamily == AML_SC2) &&
