@@ -31,8 +31,8 @@ public:
   CActiveAESettings(CActiveAE &ae);
   ~CActiveAESettings() override;
 
-  bool OnSettingChanging(const std::shared_ptr<const CSetting>& setting) override;
   void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;
+  void OnSettingAction(const std::shared_ptr<const CSetting>& setting) override;
 
   static void SettingOptionsAudioDevicesFiller(const std::shared_ptr<const CSetting>& setting,
                                                std::vector<StringSettingOption>& list,
@@ -70,14 +70,27 @@ protected:
   CActiveAE &m_audioEngine;
   CCriticalSection m_cs;
   /*!
-   * \brief React to the object-audio head model being switched.
+   * \brief React to the binaural response being switched.
    *
-   * Choosing a personal measurement asks for the file there and then, because
-   * "Personal" with no file is not a state worth keeping; choosing the
-   * built-in set discards the copy held in the profile. Both of those are
-   * settings writes that re-enter this class, so it is called outside the lock.
+   * Choosing a custom HRTF set or a measured room asks for the file there and
+   * then, because either with no file is not a state worth keeping, and a
+   * cancel or a refused file returns to the response that was in use. Choosing
+   * the built-in set empties both file controls; what the cache keeps stays.
+   * All of those are settings writes that re-enter this class, so it is
+   * called outside the lock.
    */
   static void OnOmniphonyHrtfModeChanged(int mode);
+
+  /*!
+   * \brief Ask for an HRTF set or, with \p room, a room-response file, check
+   * it and keep it in the cache (COmniphonyHrtf::Choose, COmniphonyRoom::Choose)
+   * and say what came of it. The same file chosen again is checked against
+   * what is kept for it, which is why the file buttons are actions rather
+   * than Kodi's own file control, which says nothing when the value stays.
+   *
+   * \return true when the file is kept and set
+   */
+  static bool ChooseFile(bool room);
 
   /*!
    * \brief Keep passthrough and binaural rendering from both being on.

@@ -24321,8 +24321,9 @@ msgctxt "#39213"
 msgid "Apply a 25% volume boost when using Bluetooth (A2DP) audio output. This can help improve volume levels with quieter Bluetooth devices."
 msgstr ""
 
-#. Binaural headphone settings category
+#. Binaural headphone settings category, and the heading of its notifications
 #: system/settings/settings.xml
+#: xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecOmniphony.cpp
 msgctxt "#39309"
 msgid "Binaural Headphones"
 msgstr ""
@@ -24336,7 +24337,7 @@ msgstr ""
 #. Omniphony: help text for the setting
 #: system/settings/settings.xml
 msgctxt "#39311"
-msgid "Place the individual sounds a Dolby Atmos or DTS:X soundtrack carries, and unfold the height layer of an Auro-3D one, rather than placing only the channels it was mixed into. If a device struggles with it, try Cascade mode under the Advanced setting level first - that keeps the heights, where turning this off loses them entirely."
+msgid "Uses the positions stored in Dolby Atmos and DTS:X soundtracks, and the height channels of Auro-3D, so each sound is placed exactly where it was mixed, including above you. If playback stutters, try Cascade mode (shown at the Advanced settings level) first: it keeps the height sounds, while turning this off loses them."
 msgstr ""
 
 #. Omniphony: label of the room simulation setting
@@ -24348,7 +24349,7 @@ msgstr ""
 #. Omniphony: help text for the room simulation setting
 #: system/settings/settings.xml
 msgctxt "#39313"
-msgid "Place the render inside a simulated room. Its early reflections are what make sound seem to come from around you rather than from inside your head, the most audible control here. A room is never smaller than the scene, so the smaller presets converge as distance rises; off is the driest."
+msgid "Adds the echoes of a virtual room around you. These early reflections make sound seem to come from outside your head, so this setting makes the biggest difference. The room grows with Speaker distance: from 2 m (the default) up, Small and Medium room sound almost alike, and Large is clearly bigger. Off gives the driest sound."
 msgstr ""
 
 #. Omniphony: label of the level setting
@@ -24358,7 +24359,7 @@ msgstr ""
 
 #. Omniphony: help text for the level setting
 msgctxt "#39315"
-msgid "How loud the rendered soundtrack is. The default matches Kodi's own stereo downmix of the same film, so turning this on does not change the volume. Raise it if it sounds too quiet, lower it if loud scenes sound strained. It follows \"Maintain original volume\" on its own."
+msgid "How loud the 3D sound is. The default matches Kodi's normal stereo playback of the same film, so switching binaural on does not change the volume. Raise it if everything sounds too quiet; lower it if loud scenes sound harsh or squashed. It also follows the \"Maintain original volume on downmix\" setting on its own."
 msgstr ""
 
 #. Room simulation preset: no room at all
@@ -24394,7 +24395,7 @@ msgstr ""
 #. help text for setting audiooutput.omniphonydistance
 #: system/settings/settings.xml
 msgctxt "#39321"
-msgid "How far away the rendered sound is placed. Larger values push the scene out and make it wider; smaller values bring it closer. The direct sound keeps its level, but reflections and reverb grow with distance, so raising this raises overall loudness. Little effect with room simulation off."
+msgid "How far away the virtual speakers are placed. Larger values push the sound further out and make it wider; smaller values bring it closer to your head. Echoes and reverb grow with distance, so larger values also sound louder. With Room simulation off it changes little, and it does nothing with a custom room."
 msgstr ""
 
 #. label for setting audiooutput.omniphonyreverb
@@ -24406,43 +24407,43 @@ msgstr ""
 #. help text for setting audiooutput.omniphonyreverb
 #: system/settings/settings.xml
 msgctxt "#39323"
-msgid "How much reverberation tail the simulated room adds after its early reflections. Raise it for a more spacious, distant sound, lower it for a drier and more direct one. Has no effect when room simulation is off."
+msgid "How much lingering reverberation the simulated room adds after its first echoes. Raise it for a bigger, more spacious and more distant sound; lower it for a drier, closer one, which can make dialogue clearer. It only works while Room simulation is on, and does nothing with a custom room, which brings its own reverb."
 msgstr ""
 
-#. label for setting audiooutput.omniphonyhrtf
+#. label for setting audiooutput.omniphonyhrtfmode
 #: system/settings/settings.xml
 msgctxt "#39324"
-msgid "- Head-related transfer function"
+msgid "- Binaural response"
 msgstr ""
 
-#. help text for setting audiooutput.omniphonyhrtf
+#. help text for setting audiooutput.omniphonyhrtfmode
 #: system/settings/settings.xml
 msgctxt "#39325"
-msgid "Whether to use the measurements built into the engine, which suit most listeners, or a SOFA file of your own. These describe how your head and ears colour sound from each direction, so your own can place sounds more convincingly. \"Built-in\" also removes the copy held in your profile."
+msgid "Chooses what shapes the 3D sound. Built-in HRTF: a standard head that suits most people. Custom HRTF: a head measured in a SOFA file, ideally your own, for the most convincing placement. Custom Room: a real listening room measured with loudspeakers, used instead of the simulated room. The custom choices ask you for a file."
 msgstr ""
 
-#. Head-related transfer function: the engine's own measurements
+#. Binaural response: the engine's own measurements
 #: system/settings/settings.xml
 msgctxt "#39326"
-msgid "Built-in"
+msgid "Built-in HRTF (HRIR)"
 msgstr ""
 
-#. Head-related transfer function: a SOFA file the listener supplies
+#. Binaural response: a SOFA HRTF set the listener supplies
 #: system/settings/settings.xml
 msgctxt "#39327"
-msgid "Personal"
+msgid "Custom HRTF (HRIR)"
 msgstr ""
 
 #. label for setting audiooutput.omniphonyhrtf
 #: system/settings/settings.xml
 msgctxt "#39328"
-msgid "- Personal HRTF file (SOFA)"
+msgid "- Custom HRTF file (SOFA)"
 msgstr ""
 
 #. help text for setting audiooutput.omniphonyhrtf
 #: system/settings/settings.xml
 msgctxt "#39329"
-msgid "Choose the SOFA file to use. It is checked and copied into your profile the first time a film plays with it selected; one that cannot be used is refused and the built-in set used instead. It must be a free-field HRIR measurement (SimpleFreeFieldHRIR), whatever it is named."
+msgid "Pick a SOFA file holding the HRTF measurements of a head (SOFA type SimpleFreeFieldHRIR). It is checked straight away and a message tells you what is inside. If it cannot be used, your previous choice stays. Measured rooms belong under Custom Room (BRIR) instead; very large files are rooms, not HRTF sets, and are refused."
 msgstr ""
 
 #. label for setting audiooutput.omniphonycascade
@@ -24454,61 +24455,45 @@ msgstr ""
 #. help text for setting audiooutput.omniphonycascade
 #: system/settings/settings.xml
 msgctxt "#39331"
-msgid "Render the objects onto twelve virtual loudspeakers and place those around you, instead of placing every object individually. Turning it on costs less CPU, worth having if the sound breaks up, for slightly less precise placement."
+msgid "Places sounds on twelve virtual speakers around you instead of positioning every sound on its own. It needs less processing power, so switch it on if playback stutters or the sound breaks up; placement becomes slightly less precise. It has no effect with a custom room, which always uses the room's own loudspeakers."
 msgstr ""
 
-#. heading for the personal HRTF file browser and its result dialog
+#. heading for the custom HRTF file browser and its result dialog
 #: xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESettings.cpp
 msgctxt "#39332"
-msgid "Personal HRTF file"
+msgid "Custom HRTF file"
 msgstr ""
 
-#. HRTF file check: accepted
+#. HRTF file check: accepted, {0} the copy in the cache
 #: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
 msgctxt "#39333"
-msgid "This file can be used. It has been copied into your profile and will be used from the next thing you play."
+msgid "[B]Ready.[/B] This HRTF set will be used from the next thing you play. A copy is saved in the cache as [I]{0}[/I]."
 msgstr ""
 
-#. HRTF file check: could not be opened
+#. SOFA file check: could not be opened
 #: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyRoom.cpp
 msgctxt "#39334"
-msgid "The file could not be opened."
+msgid "[B]The file could not be opened.[/B]"
 msgstr ""
 
-#. HRTF file check: far too small
+#. SOFA file check: the engine cannot read it, {0} the engine's reason, in English
 #: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
-msgctxt "#39335"
-msgid "The file is far too small to hold a set of measurements. It may be an incomplete download."
-msgstr ""
-
-#. HRTF file check: not a SOFA container
-#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyRoom.cpp
 msgctxt "#39336"
-msgid "This is not a SOFA file. The name ends in .sofa but the contents are something else."
+msgid "[B]Not usable.[/B] This is not a SOFA file this system can read: {0}"
 msgstr ""
 
-#. HRTF file check: unsupported HDF5 revision
-#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
-msgctxt "#39337"
-msgid "This SOFA file was written in a newer format than the spatial audio engine can read. Re-saving it with an older tool may help."
-msgstr ""
-
-#. HRTF file check: no impulse responses
-#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
-msgctxt "#39338"
-msgid "This SOFA file holds no impulse responses. Filter coefficients and frequency-domain measurements cannot be used; the file must contain Data.IR."
-msgstr ""
-
-#. HRTF file check: wrong SOFA convention
+#. HRIR file check: neither an HRTF set nor a room the engine reads, or the wrong SOFA convention
 #: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
 msgctxt "#39339"
-msgid "This SOFA file is not a free-field HRIR measurement. Look for a file whose convention is SimpleFreeFieldHRIR - room responses and loudspeaker measurements will not work here."
+msgid "[B]Not an HRTF set.[/B] Look for a SOFA file of the SimpleFreeFieldHRIR type. A measured room goes under Custom Room (BRIR) instead."
 msgstr ""
 
-#. HRTF file check: could not be copied
+#. HRTF file check: could not be copied into the cache
 #: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
 msgctxt "#39340"
-msgid "The file could not be copied into your profile. Check there is space left on the device."
+msgid "[B]A copy could not be saved.[/B] Check that there is free space on this device."
 msgstr ""
 
 #. label for setting audiooutput.omniphonylfe
@@ -24520,7 +24505,7 @@ msgstr ""
 #. help text for setting audiooutput.omniphonylfe
 #: system/settings/settings.xml
 msgctxt "#39342"
-msgid "Raise the level of the low-frequency effects channel, the one a cinema sends to its subwoofer. On headphones there is no subwoofer to turn up, so this is the only way to change it. It affects that channel alone, so a soundtrack with little in it will barely move. Raising it uses headroom, and enough will make the limiter quieten everything."
+msgid "Turns up the LFE channel: the deep rumble of explosions and engines that a cinema sends to its subwoofer. Headphones have no subwoofer to turn up, so this is the way to get more of it. Only that channel changes, so films with little LFE will barely sound different. Too much makes the limiter turn everything down."
 msgstr ""
 
 #. label for setting audiooutput.omniphony
@@ -24532,7 +24517,196 @@ msgstr ""
 #. help text for setting audiooutput.omniphony
 #: system/settings/settings.xml
 msgctxt "#39344"
-msgid "Place the sound of anything you play around you on headphones, instead of folding it flat to stereo. It applies to every soundtrack that can be decoded, films and music alike. Turning it on turns passthrough off, and it is unused while the audio output is set to more than two channels."
+msgid "Turns any soundtrack, film or music, into 3D sound for headphones: voices and effects seem to come from around and above you instead of from inside your head. Use it only with headphones. While it is on, passthrough is switched off, and it does nothing when the audio output is set to more than two channels."
+msgstr ""
+
+#. Binaural response: a measured listening room
+#: system/settings/settings.xml
+msgctxt "#39345"
+msgid "Custom Room (BRIR)"
+msgstr ""
+
+#. label for setting audiooutput.omniphonybrir
+#: system/settings/settings.xml
+msgctxt "#39346"
+msgid "- Custom Room file (SOFA)"
+msgstr ""
+
+#. help text for setting audiooutput.omniphonybrir
+#: system/settings/settings.xml
+msgctxt "#39347"
+msgid "Pick a SOFA file of a measured listening room, such as the BBC or IoSR rooms. It is prepared once when you pick it, which can take a moment for a large file; after that it loads instantly. Keep the original file: if the prepared copy is ever lost, it is made again from it. Room simulation, distance, reverb and Cascade mode do not apply."
+msgstr ""
+
+#. heading for the custom Room file browser and its result dialog
+#: xbmc/cores/AudioEngine/Engines/ActiveAE/ActiveAESettings.cpp
+msgctxt "#39348"
+msgid "Custom Room file"
+msgstr ""
+
+#. SOFA file check, what the file holds: {0} convention, {1} directions, {2} samples, {3} rate
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyTool.cpp
+msgctxt "#39350"
+msgid "[B]What is inside:[/B] an HRTF set ({0}) with {1:d} directions, {2:d} samples each at {3:d} Hz."
+msgstr ""
+
+#. SOFA file check, what the file holds: {0} loudspeakers, {1} their names, {2} head orientations, {3} samples, {4} rate
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyTool.cpp
+msgctxt "#39351"
+msgid "[B]What is inside:[/B] a room measured with {0:d} loudspeakers ({1}) at {2:d} head orientations, {3:d} samples each at {4:d} Hz."
+msgstr ""
+
+#. SOFA file check, what the file holds: {0} loudspeakers, {1} their names, {2} samples, {3} rate
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyTool.cpp
+msgctxt "#39352"
+msgid "[B]What is inside:[/B] a prepared room with {0:d} loudspeakers ({1}), {2:d} samples each at {3:d} Hz."
+msgstr ""
+
+#. SOFA file check, what the file holds: {0} convention, {1} measurements, {2} sources in each, {3} the engine's reason, in English
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyTool.cpp
+msgctxt "#39353"
+msgid "[B]What is inside:[/B] {0}, {1:d} measurements of {2:d} sources each. Neither Custom HRTF nor Custom Room can use it: {3}"
+msgstr ""
+
+#. HRIR file check: the file is a measured room
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+msgctxt "#39354"
+msgid "[B]This is a measured room[/B], not an HRTF set. Choose it under Custom Room (BRIR) instead."
+msgstr ""
+
+#. Room file check: the file is an HRTF set
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyRoom.cpp
+msgctxt "#39355"
+msgid "[B]This is an HRTF set[/B], not a measured room. Choose it under Custom HRTF (HRIR) instead."
+msgstr ""
+
+#. Room file check: prepared, {0} the room in the cache
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyRoom.cpp
+msgctxt "#39356"
+msgid "[B]Ready.[/B] The room will be used from the next thing you play. It is saved in the cache as [I]{0}[/I]."
+msgstr ""
+
+#. Room file check: prepared before from the same file
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyRoom.cpp
+msgctxt "#39357"
+msgid "[B]Already set up.[/B] This file was prepared before and has not changed, so nothing needed doing. It will be used from the next thing you play."
+msgstr ""
+
+#. SOFA file check: not enough memory
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyRoom.cpp
+msgctxt "#39358"
+msgid "[B]Not enough memory.[/B] This device does not have enough free memory to prepare this file."
+msgstr ""
+
+#. SOFA file check: the file ended early
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyRoom.cpp
+msgctxt "#39359"
+msgid "[B]The file could not be read to the end.[/B] If it is on the network, try again, or copy it to this device first."
+msgstr ""
+
+#. Room file check: could not be saved
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyRoom.cpp
+msgctxt "#39360"
+msgid "[B]The prepared room could not be saved.[/B] Check that there is free space on this device."
+msgstr ""
+
+#. SOFA file check: the engine could not be asked
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyRoom.cpp
+msgctxt "#39361"
+msgid "[B]The 3D audio engine could not be started.[/B] It may be missing from this system."
+msgstr ""
+
+#. Room file check: the engine failed
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyRoom.cpp
+msgctxt "#39362"
+msgid "[B]The 3D audio engine could not prepare this file.[/B]"
+msgstr ""
+
+#. notification at playback: the room cannot be used and its file is gone, {0} the file's name
+#: xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecOmniphony.cpp
+msgctxt "#39363"
+msgid "{0} is gone. Choose the room again in the settings."
+msgstr ""
+
+#. heading of the notification about the listener's config.yaml
+#: xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecOmniphony.cpp
+msgctxt "#39364"
+msgid "Binaural config.yaml"
+msgstr ""
+
+#. notification: config.yaml refused, {0} Kodi's or the engine's reason, in English
+#: xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecOmniphony.cpp
+msgctxt "#39365"
+msgid "Not applied: {0}"
+msgstr ""
+
+#. notification: the room config.yaml names could not be loaded, {0} its file name
+#: xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecOmniphony.cpp
+msgctxt "#39366"
+msgid "The room {0} in config.yaml could not be loaded."
+msgstr ""
+
+#. Room file check: prepared, what a prepared room is and why the chosen file is kept
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyRoom.cpp
+msgctxt "#39368"
+msgid "Only the part of the file that plays was kept, so the room loads in a moment. [B]Keep the original file[/B]: if the prepared room is ever lost, or an update needs it prepared again, it is made again from that file automatically."
+msgstr ""
+
+#. HRTF file check: accepted, its 48 kHz grid built
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+msgctxt "#39371"
+msgid "[B]Ready for 48 kHz.[/B] Films at 48 kHz start with it straight away. A film at another sample rate plays its first few seconds with the built-in sound while its own version is prepared, once."
+msgstr ""
+
+#. HRTF file check: the same file is already in the cache
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+msgctxt "#39372"
+msgid "[B]Already set up.[/B] This file was chosen before and has not changed, so it was not copied again. It will be used from the next thing you play."
+msgstr ""
+
+#. notification at playback: the custom HRTF set is gone, {0} the file's name
+#: xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecOmniphony.cpp
+msgctxt "#39373"
+msgid "{0} is gone. Choose the HRTF set again in the settings."
+msgstr ""
+
+#. notification at playback: the room is prepared again, {0} the file's name
+#: xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecOmniphony.cpp
+msgctxt "#39374"
+msgid "Preparing the room from {0}."
+msgstr ""
+
+#. notification at playback: the room could not be prepared again, {0} the file's name
+#: xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecOmniphony.cpp
+msgctxt "#39375"
+msgid "The room could not be prepared from {0}. Choose it again in the settings."
+msgstr ""
+
+#. HRTF file check: the engine cannot load the set, or stopped on it
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyHrtf.cpp
+msgctxt "#39376"
+msgid "[B]This file cannot be used as an HRTF set.[/B] The 3D audio engine could not load it, so your previous choice stays."
+msgstr ""
+
+#. Room file check, after Ready: a measured room can play louder than the built-in HRTF
+#: xbmc/cores/AudioEngine/Omniphony/OmniphonyRoom.cpp
+msgctxt "#39377"
+msgid "[B]Volume:[/B] a room can sound clearly louder than the built-in HRTF, because its echoes build up on long, steady sounds. Turn the volume down a little if needed; sudden loud peaks are held back automatically."
+msgstr ""
+
+#. notification at playback: the custom HRTF set is made ready (copied into the cache again, or its version for the film's sample rate built), {0} the file's name
+#: xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecOmniphony.cpp
+msgctxt "#39378"
+msgid "Preparing the HRTF set {0}."
+msgstr ""
+
+#. notification at playback: the custom HRTF set is gone from the cache and its file is no longer a set, {0} the file's name
+#: xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecOmniphony.cpp
+msgctxt "#39379"
+msgid "{0} can no longer be used as an HRTF set. Choose one again in the settings."
 msgstr ""
 
 #. Dolby Vision RPU Conversion

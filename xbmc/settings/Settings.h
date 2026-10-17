@@ -448,6 +448,7 @@ public:
   static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYREVERB = "audiooutput.omniphonyreverb";
   static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYHRTFMODE = "audiooutput.omniphonyhrtfmode";
   static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYHRTF = "audiooutput.omniphonyhrtf";
+  static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYBRIR = "audiooutput.omniphonybrir";
   static constexpr auto SETTING_AUDIOOUTPUT_OMNIPHONYCASCADE = "audiooutput.omniphonycascade";
   static constexpr auto SETTING_AUDIOOUTPUT_PASSTHROUGHDEVICE = "audiooutput.passthroughdevice";
   static constexpr auto SETTING_AUDIOOUTPUT_AC3PASSTHROUGH = "audiooutput.ac3passthrough";
