@@ -1690,6 +1690,21 @@ void CRenderManager::UpdateResolution(bool force)
                     m_picture.stereoMode.empty(), CStreamDetails::DynamicRangeToString(actual_hdrType));
         }
       }
+#if defined(HAS_LIBAMCODEC)
+      // Without a refresh switch above, the native GUI still has to make way
+      // for a DV FEL stream at the current mode (aml_native_gui_prepare).
+      {
+        auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+        if (aml_native_gui_needs_update(gfx.GetVideoResolution()))
+        {
+          CancelDeferredDV();
+          if (!gfx.SetVideoResolution(gfx.GetVideoResolution(), false, false))
+            return;
+          if (m_pRenderer)
+            m_pRenderer->Update();
+        }
+      }
+#endif
       if (!CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())
       {
         CancelDeferredDV();

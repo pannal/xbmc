@@ -372,6 +372,16 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
     return false;
   }
 
+  // The GUI size is not part of the display mode: the native GUI can be
+  // suspended at the same mode (aml_native_gui_prepare), so compare against
+  // the window actually created.
+  if (m_bWindowCreated && m_nWidth > 0 && m_nHeight > 0 &&
+      stereo_mode == RENDER_STEREO_MODE_OFF && m_stereo_mode == RENDER_STEREO_MODE_OFF)
+  {
+    current_resolution.iWidth = m_nWidth;
+    current_resolution.iHeight = m_nHeight;
+  }
+
   CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: "
     "m_bWindowCreated: {}, "
     "frac rate {:d}({:d}), "
@@ -635,6 +645,7 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   if (!rendered)
   {
     GuiABPresented(false);
+    aml_native_gui_osd_present(false);
     observe();
     return;
   }
@@ -664,6 +675,7 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   else
     m_presentResult = PresentResult::SWAP_FAILED;
   GuiABPresented(m_presentResult == PresentResult::SWAP_ACCEPTED);
+  aml_native_gui_osd_present(m_presentResult == PresentResult::SWAP_ACCEPTED);
   observe();
 }
 
