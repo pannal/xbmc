@@ -1170,6 +1170,11 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
   return retVal;
 }
 
+int CDVDVideoCodecAmlogic::GetDataLevel() const
+{
+  return m_Codec ? static_cast<int>(m_Codec->GetDataLevel()) : 0;
+}
+
 void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
 {
   if (m_codecControlFlags != flags)

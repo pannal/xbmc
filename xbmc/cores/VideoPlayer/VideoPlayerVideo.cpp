@@ -292,6 +292,7 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint,
   }
 
   m_pVideoCodec = std::move(codec);
+  m_hwDataLevel = 0;
   m_hints = hint;
   m_mpeg2SourceRate = m_fFrameRate;
   m_mpeg2RateChanged = false;
@@ -339,6 +340,7 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
   StopSubtitleProbe(); // video thread has retired; no new software startup can race this join
 #endif
   m_pVideoCodec.reset();
+  m_hwDataLevel = 0;
   m_mpeg2LastPacket.reset();
   m_mpeg2Cadence.Reset(false, 0.0, false, MPEG2NowMs());
   m_mpeg2SourceRate = 0.0;
@@ -359,7 +361,11 @@ bool CVideoPlayerVideo::AcceptsData() const
 
 bool CVideoPlayerVideo::HasData() const
 {
-  return m_messageQueue.GetDataSize() > 0;
+  // A hardware decoder can hold a lot of input: a low bitrate file can sit
+  // entirely in its buffer long before the end. Counting only the message
+  // queue made the player hit demuxer EOF there and leave its main loop, which
+  // froze the time display and ignored seeks while the tail kept playing.
+  return m_messageQueue.GetDataSize() > 0 || m_hwDataLevel > 0;
 }
 
 bool CVideoPlayerVideo::IsInited() const
@@ -946,6 +952,11 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   const bool diagnostics = PLAYBACK_DIAGNOSTICS::Enabled();
   const auto decodeStart = diagnostics ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
   CDVDVideoCodec::VCReturn decoderState = m_pVideoCodec->GetPicture(&m_picture);
+  // Sampled here, on the video thread that owns the codec. VC_EOF means the
+  // drain is over: never let a leftover in the buffer keep the player waiting.
+  m_hwDataLevel = (decoderState != CDVDVideoCodec::VC_EOF && m_processInfo.IsVideoHwDecoder())
+                      ? m_pVideoCodec->GetDataLevel()
+                      : 0;
   if (diagnostics)
   {
     m_diagnostics.decode.Add(PLAYBACK_DIAGNOSTICS::NowUs() - decodeStart);

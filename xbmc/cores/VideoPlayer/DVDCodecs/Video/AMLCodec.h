@@ -136,6 +136,7 @@ public:
   static float  OMXPtsToSeconds(int omxpts);
   static int    OMXDurationToNs(int duration);
   int           GetAmlDuration() const;
+  float         GetDataLevel();
   int           ReleaseFrame(const uint32_t index, uint64_t generation, const CAMLSession::Permit& permit, bool bDrop = false);
   uint64_t      GetPresentationGeneration();
 

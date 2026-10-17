@@ -170,6 +170,8 @@ protected:
   float m_fForcedAspectRatio;
   int m_speed;
   std::atomic_bool m_stalled = false;
+  // Hardware decoder buffer level, sampled on the video thread for HasData().
+  std::atomic_int m_hwDataLevel{0};
   std::atomic_bool m_rewindStalled;
   bool m_paused;
   IDVDStreamPlayer::ESyncState m_syncState;
