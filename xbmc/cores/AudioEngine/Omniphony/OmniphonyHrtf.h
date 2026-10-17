@@ -8,110 +8,107 @@
 
 #pragma once
 
+#include "OmniphonyTool.h"
+
 #include <string>
 
 namespace ActiveAE
 {
 
-//! \brief Which head model the render uses. Order matches settings.xml.
+//! \brief Which binaural response the render uses. Order matches settings.xml.
 enum OmniphonyHrtfMode
 {
   OMNI_HRTF_BUILTIN = 0,
-  OMNI_HRTF_PERSONAL = 1,
+  OMNI_HRTF_PERSONAL = 1, //!< "Custom HRTF (HRIR)": a SOFA HRTF set of the listener's
+  OMNI_HRTF_ROOM = 2, //!< "Custom Room (BRIR)": a measured room - see COmniphonyRoom
 };
 
 /*!
- * \brief The listener's own HRTF measurement, if they have chosen one.
+ * \brief The listener's own HRTF set, kept in the cache - see COmniphonyCache.
  *
  * A head-related transfer function describes how a particular head and pair
  * of ears colour sound arriving from each direction. The engine ships one
  * measured set and can be pointed at another, supplied as a SOFA file.
  *
- * Kodi keeps exactly one such file, copied into the user profile, and treats
- * its presence as the whole of the answer to "is a personal HRTF in use". That
- * has three consequences worth stating, because they are the reason this class
- * exists rather than the setting being handed straight to the engine:
- *
- *  - The engine opens the path with the C library, so it cannot read a Kodi
- *    virtual path. A file chosen from a network share has to be copied before
- *    it can be used at all.
- *  - The copy is checked before it is kept. The engine's reader accepts a
- *    file whose structure it recognises and only warns about the rest, so a
- *    file of the wrong kind can load and render nonsense rather than failing.
- *  - Once staged, the file is local and its path is fixed, so nothing later in
- *    playback depends on a share still being mounted.
+ * The engine opens a set by its path with the C library, so it cannot read a
+ * Kodi path, and a set on a share would have to be there whenever a film
+ * starts. So a chosen set is copied into the cache as `<name>.sofa`, and that
+ * copy is what plays; the engine keeps its finished HRIR grids beside it,
+ * `<name>-<kHz>.grid`, one per stream rate, and builds the 48 kHz one when
+ * the set is chosen. The engine is asked what the copy holds before it is
+ * kept, and a set already kept under the name - the same file chosen again -
+ * is recognised by its identity and left as it is.
  */
 class COmniphonyHrtf
 {
 public:
-  //! \brief Why a file was refused, or Ok.
+  //! The stream rate whose grid is built when a set is chosen.
+  static constexpr unsigned int GRID_RATE = 48000;
+
   enum class Result
   {
-    Ok,
+    Ok, //!< copied into the cache and checked
+    Cached, //!< already in the cache: the same file was chosen before
     NotFound, //!< the file could not be opened
-    TooSmall, //!< far too small to hold a set of impulse responses
-    NotSofa, //!< not an HDF5 container, which every SOFA file is
-    Unreadable, //!< an HDF5 layout this engine's reader does not accept
-    NoImpulseResponses, //!< no Data.IR: frequency domain or filter coefficients
-    WrongConvention, //!< not SimpleFreeFieldHRIR
-    CopyFailed, //!< could not be copied into the profile
+    Unusable, //!< the engine cannot read it as a SOFA file - see Outcome::detail
+    WrongConvention, //!< a SOFA file neither binaural stage takes
+    RoomResponse, //!< a measured room, which belongs under Custom Room (BRIR)
+    CopyFailed, //!< could not be copied into the cache
+    TooLarge, //!< more than this device has free memory for
+    ReadFailed, //!< the file ended before the size it stated
+    Unavailable, //!< the engine could not be asked
+    //! The engine cannot load it: it said so when asked for its grid, or
+    //! stopped on it - see Outcome::detail. The set kept before stays.
+    EngineFailed,
+    Cancelled, //!< the listener stopped it
+  };
+
+  struct Outcome
+  {
+    Result result{Result::Unavailable};
+    OmniphonySofaInfo contents;
+    bool described{false}; //!< \ref contents holds what the engine found
+    std::string name; //!< what the set is kept as in the cache
+    bool gridKept{false}; //!< its GRID_RATE grid is in the cache
+    std::string detail; //!< the engine's words, for Unusable, TooLarge and EngineFailed
   };
 
   /*!
-   * \brief Check a file the way the engine's reader will.
-   *
-   * Screens for the things that reader requires and does not report: the
-   * container format, an HDF5 revision it can parse, time-domain impulse
-   * responses, and the free-field HRIR convention. A file that passes will
-   * load; a file that fails would either be refused or, worse, accepted and
-   * rendered as noise.
-   *
-   * \param path A Kodi path. Reading is sequential, so a large file on a slow
-   *             share is slow to check - prefer checking the local copy.
+   * \brief Check \p chosen and keep it in the cache, behind busy dialogs that
+   * can cancel it. A cancel, or a file refused, leaves the cache as it was,
+   * and the file kept under its name, chosen again, is checked where it is
+   * and not copied. Only the GUI thread may call this.
    */
-  static Result Validate(const std::string& path);
+  static Outcome Choose(const std::string& chosen);
+
+  //! \brief What became of the copy of a set for a stream - see ForStream.
+  enum class Copy
+  {
+    Kept, //!< in the cache as it was
+    Again, //!< gone from the cache, and copied again
+    Gone, //!< gone from the cache, and the file it was copied from too
+    Refused, //!< gone from the cache, and the file is no longer a set
+    Picked, //!< gone from the cache, and being picked in the settings now
+  };
 
   /*!
-   * \brief Copy a chosen file into the profile, replacing any previous one.
-   *
-   * The copy is validated before it replaces what is already there, so a bad
-   * choice costs the user nothing: the previous file, if any, survives.
-   *
-   * \return Ok when the file is staged and in use from the next stream on.
+   * \brief The local path of the copy of \p chosen in the cache, for a
+   * stream about to start, or empty when there is none and it cannot be
+   * copied again: the built-in set plays then. A copy missing from the cache
+   * is made again, without a dialog; its grids are the engine's to build.
+   * \p copy says which. The copy made again is put in place only if the set
+   * has not been picked in the settings since \p epoch, the
+   * COmniphonyCache::PickEpoch the stream took before it read \p chosen from
+   * its settings.
    */
-  static Result Stage(const std::string& path);
+  static std::string ForStream(const std::string& chosen, Copy& copy, uint64_t epoch);
 
-  /*!
-   * \brief Stage \p path only if it is not what is already staged.
-   *
-   * Every stream open asks for the same file, and copying it each time would
-   * fetch a measurement kept on a share once per film. A note beside the copy
-   * records where it came from, so the usual answer is to do nothing.
-   */
-  static Result StageIfChanged(const std::string& path);
+  //! \brief Where the engine keeps the grids of \p chosen: `<name>-{khz}.grid`
+  //! in the cache, local.
+  static std::string GridPath(const std::string& chosen);
 
-  //! \brief Discard the staged file and return to the engine's own set.
-  static void Clear();
-
-  /*!
-   * \brief Absolute path of the staged file, or empty when there is none.
-   *
-   * Translated out of special:// because it is handed to the engine, which
-   * knows nothing about Kodi paths.
-   */
-  static std::string StagedPath();
-
-  /*!
-   * \brief Whether a personal file is staged in the profile.
-   *
-   * A fact about the copy, and only about the copy: whether the engine could
-   * load it is the engine's to say, and the player reports that from what the
-   * engine says it is convolving with - see CDVDAudioCodecOmniphony.
-   */
-  static bool IsStaged();
-
-  //! \brief Localised, user-facing explanation of a result.
-  static std::string Explain(Result result);
+  //! \brief Localised, user-facing account of \p outcome.
+  static std::string Explain(const Outcome& outcome);
 };
 
 } // namespace ActiveAE

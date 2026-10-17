@@ -369,6 +369,7 @@ void CProcessInfo::ResetAudioCodecInfo()
     m_dataCache->SetOmniphonyInput({});
     m_dataCache->SetOmniphonyRender({});
     m_dataCache->SetOmniphonySofa({});
+    m_dataCache->SetOmniphonyConfig({});
   }
 }
 
@@ -394,6 +395,14 @@ void CProcessInfo::SetOmniphonySofa(const std::string& sofa)
 
   if (m_dataCache)
     m_dataCache->SetOmniphonySofa(sofa);
+}
+
+void CProcessInfo::SetOmniphonyConfig(const std::string& config)
+{
+  std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
+
+  if (m_dataCache)
+    m_dataCache->SetOmniphonyConfig(config);
 }
 
 void CProcessInfo::SetAudioDecoderName(const std::string &name)

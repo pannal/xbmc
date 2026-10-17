@@ -16,12 +16,14 @@ endif()
 if(CORE_SYSTEM_NAME STREQUAL linux)
   list(APPEND SOURCES DVDAudioCodecOmniphony.cpp
                       OmniphonyCommandQueue.cpp
+                      OmniphonyConfig.cpp
                       OmniphonyPcmSource.cpp
                       OmniphonyPcmStream.cpp
                       OmniphonyRateCheck.cpp
                       OmniphonyTimeline.cpp)
   list(APPEND HEADERS DVDAudioCodecOmniphony.h
                       OmniphonyCommandQueue.h
+                      OmniphonyConfig.h
                       OmniphonyPcmSource.h
                       OmniphonyPcmStream.h
                       OmniphonyTimeline.h)

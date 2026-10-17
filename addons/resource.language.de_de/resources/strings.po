@@ -18055,24 +18055,24 @@ msgid "- Dolby Atmos, DTS:X, and Auro-3D"
 msgstr "- Dolby Atmos, DTS:X und Auro-3D"
 
 msgctxt "#39311"
-msgid "Place the individual sounds a Dolby Atmos or DTS:X soundtrack carries, and unfold the height layer of an Auro-3D one, rather than placing only the channels it was mixed into. If a device struggles with it, try Cascade mode under the Advanced setting level first - that keeps the heights, where turning this off loses them entirely."
-msgstr "Die einzelnen Klänge einer Dolby-Atmos- oder DTS:X-Tonspur platzieren und die Höhenebene einer Auro-3D-Tonspur entfalten, statt nur die Kanäle zu platzieren, in die sie gemischt wurde. Wenn ein Gerät damit überfordert ist, zuerst den Kaskadenmodus unter der Einstellungsstufe Fortgeschritten versuchen – er behält die Höhen bei, während sie beim Ausschalten ganz verloren gehen."
+msgid "Uses the positions stored in Dolby Atmos and DTS:X soundtracks, and the height channels of Auro-3D, so each sound is placed exactly where it was mixed, including above you. If playback stutters, try Cascade mode (shown at the Advanced settings level) first: it keeps the height sounds, while turning this off loses them."
+msgstr "Nutzt die in Dolby-Atmos- und DTS:X-Tonspuren gespeicherten Positionen und die Höhenkanäle von Auro-3D, damit jeder Klang genau dort sitzt, wo er gemischt wurde, auch über einem. Ruckelt die Wiedergabe, zuerst den Kaskadenmodus (Einstellungsstufe Fortgeschritten) versuchen: Er behält die Höhen, die beim Ausschalten verloren gehen."
 
 msgctxt "#39312"
 msgid "- Room simulation"
 msgstr "- Raumsimulation"
 
 msgctxt "#39313"
-msgid "Place the render inside a simulated room. Its early reflections are what make sound seem to come from around you rather than from inside your head, the most audible control here. A room is never smaller than the scene, so the smaller presets converge as distance rises; off is the driest."
-msgstr "Das Rendering in einen simulierten Raum setzen. Dessen frühe Reflexionen lassen den Klang von ringsum statt aus dem eigenen Kopf kommen – die am deutlichsten hörbare Einstellung hier. Ein Raum ist nie kleiner als die Szene, daher gleichen sich die kleineren Voreinstellungen mit wachsender Entfernung an; Aus klingt am trockensten."
+msgid "Adds the echoes of a virtual room around you. These early reflections make sound seem to come from outside your head, so this setting makes the biggest difference. The room grows with Speaker distance: from 2 m (the default) up, Small and Medium room sound almost alike, and Large is clearly bigger. Off gives the driest sound."
+msgstr "Fügt die Echos eines virtuellen Raums hinzu. Diese frühen Reflexionen lassen den Klang von außerhalb des Kopfes kommen, daher bewirkt diese Einstellung am meisten. Der Raum wächst mit dem Lautsprecherabstand: ab 2 m (Standard) klingen Kleiner und Mittlerer Raum fast gleich, Großer Raum deutlich größer. Aus klingt am trockensten."
 
 msgctxt "#39314"
 msgid "- Binaural level"
 msgstr "- Binaurale Lautstärke"
 
 msgctxt "#39315"
-msgid "How loud the rendered soundtrack is. The default matches Kodi's own stereo downmix of the same film, so turning this on does not change the volume. Raise it if it sounds too quiet, lower it if loud scenes sound strained. It follows \"Maintain original volume\" on its own."
-msgstr "Wie laut die gerenderte Tonspur ist. Der Standardwert entspricht Kodis eigenem Stereo-Downmix desselben Films, sodass sich die Lautstärke beim Einschalten nicht ändert. Erhöhen, wenn es zu leise klingt, verringern, wenn laute Szenen angestrengt klingen. Folgt \"Originallautstärke beim Heruntermischen beibehalten\" von selbst."
+msgid "How loud the 3D sound is. The default matches Kodi's normal stereo playback of the same film, so switching binaural on does not change the volume. Raise it if everything sounds too quiet; lower it if loud scenes sound harsh or squashed. It also follows the \"Maintain original volume on downmix\" setting on its own."
+msgstr "Wie laut der 3D-Klang ist. Der Standard entspricht Kodis normaler Stereowiedergabe desselben Films, das Einschalten ändert die Lautstärke also nicht. Höher, wenn alles zu leise klingt; niedriger, wenn laute Szenen hart oder gepresst klingen. Folgt außerdem selbst der Einstellung \"Originallautstärke beim Heruntermischen beibehalten\"."
 
 msgctxt "#39316"
 msgid "Off"
@@ -18095,100 +18095,212 @@ msgid "- Speaker distance"
 msgstr "- Lautsprecherabstand"
 
 msgctxt "#39321"
-msgid "How far away the rendered sound is placed. Larger values push the scene out and make it wider; smaller values bring it closer. The direct sound keeps its level, but reflections and reverb grow with distance, so raising this raises overall loudness. Little effect with room simulation off."
-msgstr "Wie weit entfernt der gerenderte Klang platziert wird. Größere Werte rücken die Szene nach außen und machen sie breiter, kleinere holen sie näher heran. Der Direktschall behält seinen Pegel, Reflexionen und Nachhall nehmen aber mit der Entfernung zu, sodass ein höherer Wert die Gesamtlautstärke erhöht. Bei ausgeschalteter Raumsimulation mit wenig Wirkung."
+msgid "How far away the virtual speakers are placed. Larger values push the sound further out and make it wider; smaller values bring it closer to your head. Echoes and reverb grow with distance, so larger values also sound louder. With Room simulation off it changes little, and it does nothing with a custom room."
+msgstr "Wie weit entfernt die virtuellen Lautsprecher stehen. Größere Werte rücken den Klang weiter weg und machen ihn breiter; kleinere holen ihn näher an den Kopf. Echos und Nachhall wachsen mit dem Abstand, daher klingen größere Werte auch lauter. Ohne Raumsimulation ändert es wenig, mit einem eigenen Raum gar nichts."
 
 msgctxt "#39322"
 msgid "- Reverb amount"
 msgstr "- Nachhallanteil"
 
 msgctxt "#39323"
-msgid "How much reverberation tail the simulated room adds after its early reflections. Raise it for a more spacious, distant sound, lower it for a drier and more direct one. Has no effect when room simulation is off."
-msgstr "Wie viel Nachhall der simulierte Raum nach seinen frühen Reflexionen hinzufügt. Erhöhen für einen räumlicheren, entfernteren Klang, verringern für einen trockeneren und direkteren. Ohne Wirkung, wenn die Raumsimulation ausgeschaltet ist."
+msgid "How much lingering reverberation the simulated room adds after its first echoes. Raise it for a bigger, more spacious and more distant sound; lower it for a drier, closer one, which can make dialogue clearer. It only works while Room simulation is on, and does nothing with a custom room, which brings its own reverb."
+msgstr "Wie viel ausklingenden Nachhall der simulierte Raum nach seinen ersten Echos hinzufügt. Mehr klingt größer, weiter und entfernter; weniger klingt trockener und näher, was Dialoge verständlicher machen kann. Wirkt nur bei eingeschalteter Raumsimulation und nicht mit einem eigenen Raum, der seinen eigenen Nachhall mitbringt."
 
 msgctxt "#39324"
-msgid "- Head-related transfer function"
-msgstr "- Kopfbezogene Übertragungsfunktion"
+msgid "- Binaural response"
+msgstr "- Binaurale Antwort"
 
 msgctxt "#39325"
-msgid "Whether to use the measurements built into the engine, which suit most listeners, or a SOFA file of your own. These describe how your head and ears colour sound from each direction, so your own can place sounds more convincingly. \"Built-in\" also removes the copy held in your profile."
-msgstr "Ob die in die Engine eingebauten Messungen verwendet werden, die für die meisten Hörer passen, oder eine eigene SOFA-Datei. Sie beschreiben, wie Kopf und Ohren den Klang aus jeder Richtung färben, daher kann eine eigene Messung Klänge überzeugender platzieren. \"Integriert\" entfernt außerdem die im Profil gespeicherte Kopie."
+msgid "Chooses what shapes the 3D sound. Built-in HRTF: a standard head that suits most people. Custom HRTF: a head measured in a SOFA file, ideally your own, for the most convincing placement. Custom Room: a real listening room measured with loudspeakers, used instead of the simulated room. The custom choices ask you for a file."
+msgstr "Legt fest, was den 3D-Klang formt. Integrierte HRTF: ein Standardkopf, der den meisten passt. Eigene HRTF: ein in einer SOFA-Datei vermessener Kopf, am besten der eigene, für die überzeugendste Ortung. Eigener Raum: ein echter, mit Lautsprechern vermessener Hörraum statt des simulierten Raums. Die eigenen Varianten fragen nach einer Datei."
 
 msgctxt "#39326"
-msgid "Built-in"
-msgstr "Integriert"
+msgid "Built-in HRTF (HRIR)"
+msgstr "Integrierte HRTF (HRIR)"
 
 msgctxt "#39327"
-msgid "Personal"
-msgstr "Persönlich"
+msgid "Custom HRTF (HRIR)"
+msgstr "Eigene HRTF (HRIR)"
 
 msgctxt "#39328"
-msgid "- Personal HRTF file (SOFA)"
-msgstr "- Persönliche HRTF-Datei (SOFA)"
+msgid "- Custom HRTF file (SOFA)"
+msgstr "- Eigene HRTF-Datei (SOFA)"
 
 msgctxt "#39329"
-msgid "Choose the SOFA file to use. It is checked and copied into your profile the first time a film plays with it selected; one that cannot be used is refused and the built-in set used instead. It must be a free-field HRIR measurement (SimpleFreeFieldHRIR), whatever it is named."
-msgstr "Die zu verwendende SOFA-Datei wählen. Sie wird geprüft und ins Profil kopiert, wenn zum ersten Mal ein Film mit ihr abgespielt wird; eine unbrauchbare Datei wird abgelehnt und stattdessen der integrierte Satz verwendet. Es muss eine Freifeld-HRIR-Messung (SimpleFreeFieldHRIR) sein, unabhängig vom Dateinamen."
+msgid "Pick a SOFA file holding the HRTF measurements of a head (SOFA type SimpleFreeFieldHRIR). It is checked straight away and a message tells you what is inside. If it cannot be used, your previous choice stays. Measured rooms belong under Custom Room (BRIR) instead; very large files are rooms, not HRTF sets, and are refused."
+msgstr "Eine SOFA-Datei mit den HRTF-Messungen eines Kopfes wählen (SOFA-Typ SimpleFreeFieldHRIR). Sie wird sofort geprüft, und eine Meldung zeigt, was sie enthält. Ist sie nicht nutzbar, bleibt die bisherige Wahl. Gemessene Räume gehören unter Eigener Raum (BRIR); sehr große Dateien sind Räume, keine HRTF-Sätze, und werden abgelehnt."
 
 msgctxt "#39330"
 msgid "- Cascade mode (12 virtual speakers)"
 msgstr "- Kaskadenmodus (12 virtuelle Lautsprecher)"
 
 msgctxt "#39331"
-msgid "Render the objects onto twelve virtual loudspeakers and place those around you, instead of placing every object individually. Turning it on costs less CPU, worth having if the sound breaks up, for slightly less precise placement."
-msgstr "Die Objekte auf zwölf virtuelle Lautsprecher rendern und diese rund um den Hörer platzieren, statt jedes Objekt einzeln zu platzieren. Einschalten spart CPU-Last – sinnvoll, wenn der Ton abreißt – auf Kosten einer etwas ungenaueren Platzierung."
+msgid "Places sounds on twelve virtual speakers around you instead of positioning every sound on its own. It needs less processing power, so switch it on if playback stutters or the sound breaks up; placement becomes slightly less precise. It has no effect with a custom room, which always uses the room's own loudspeakers."
+msgstr "Verteilt den Klang auf zwölf virtuelle Lautsprecher, statt jeden Klang einzeln zu platzieren. Das braucht weniger Rechenleistung, also einschalten, wenn die Wiedergabe ruckelt oder der Ton aussetzt; die Ortung wird etwas ungenauer. Ohne Wirkung mit einem eigenen Raum, der immer seine eigenen Lautsprecher nutzt."
 
 msgctxt "#39332"
-msgid "Personal HRTF file"
-msgstr "Persönliche HRTF-Datei"
+msgid "Custom HRTF file"
+msgstr "Eigene HRTF-Datei"
 
 msgctxt "#39333"
-msgid "This file can be used. It has been copied into your profile and will be used from the next thing you play."
-msgstr "Diese Datei kann verwendet werden. Sie wurde ins Profil kopiert und wird ab der nächsten Wiedergabe verwendet."
+msgid "[B]Ready.[/B] This HRTF set will be used from the next thing you play. A copy is saved in the cache as [I]{0}[/I]."
+msgstr "[B]Bereit.[/B] Dieser HRTF-Satz wird ab der nächsten Wiedergabe verwendet. Eine Kopie liegt im Cache als [I]{0}[/I]."
 
 msgctxt "#39334"
-msgid "The file could not be opened."
-msgstr "Die Datei konnte nicht geöffnet werden."
-
-msgctxt "#39335"
-msgid "The file is far too small to hold a set of measurements. It may be an incomplete download."
-msgstr "Die Datei ist viel zu klein für einen Messdatensatz. Möglicherweise ist der Download unvollständig."
+msgid "[B]The file could not be opened.[/B]"
+msgstr "[B]Die Datei konnte nicht geöffnet werden.[/B]"
 
 msgctxt "#39336"
-msgid "This is not a SOFA file. The name ends in .sofa but the contents are something else."
-msgstr "Dies ist keine SOFA-Datei. Der Name endet auf .sofa, der Inhalt ist aber etwas anderes."
-
-msgctxt "#39337"
-msgid "This SOFA file was written in a newer format than the spatial audio engine can read. Re-saving it with an older tool may help."
-msgstr "Diese SOFA-Datei wurde in einem neueren Format geschrieben, als die Raumklang-Engine lesen kann. Erneutes Speichern mit einem älteren Werkzeug kann helfen."
-
-msgctxt "#39338"
-msgid "This SOFA file holds no impulse responses. Filter coefficients and frequency-domain measurements cannot be used; the file must contain Data.IR."
-msgstr "Diese SOFA-Datei enthält keine Impulsantworten. Filterkoeffizienten und Messungen im Frequenzbereich können nicht verwendet werden; die Datei muss Data.IR enthalten."
+msgid "[B]Not usable.[/B] This is not a SOFA file this system can read: {0}"
+msgstr "[B]Nicht nutzbar.[/B] Dies ist keine SOFA-Datei, die dieses System lesen kann: {0}"
 
 msgctxt "#39339"
-msgid "This SOFA file is not a free-field HRIR measurement. Look for a file whose convention is SimpleFreeFieldHRIR - room responses and loudspeaker measurements will not work here."
-msgstr "Diese SOFA-Datei ist keine Freifeld-HRIR-Messung. Eine Datei mit der Konvention SimpleFreeFieldHRIR verwenden – Raumantworten und Lautsprechermessungen funktionieren hier nicht."
+msgid "[B]Not an HRTF set.[/B] Look for a SOFA file of the SimpleFreeFieldHRIR type. A measured room goes under Custom Room (BRIR) instead."
+msgstr "[B]Kein HRTF-Satz.[/B] Eine SOFA-Datei vom Typ SimpleFreeFieldHRIR suchen. Ein gemessener Raum gehört stattdessen unter Eigener Raum (BRIR)."
 
 msgctxt "#39340"
-msgid "The file could not be copied into your profile. Check there is space left on the device."
-msgstr "Die Datei konnte nicht ins Profil kopiert werden. Bitte prüfen, ob auf dem Gerät noch Speicherplatz frei ist."
+msgid "[B]A copy could not be saved.[/B] Check that there is free space on this device."
+msgstr "[B]Es konnte keine Kopie gespeichert werden.[/B] Prüfen, ob auf diesem Gerät genug Speicherplatz frei ist."
 
 msgctxt "#39341"
 msgid "- LFE boost"
 msgstr "- LFE-Anhebung"
 
 msgctxt "#39342"
-msgid "Raise the level of the low-frequency effects channel, the one a cinema sends to its subwoofer. On headphones there is no subwoofer to turn up, so this is the only way to change it. It affects that channel alone, so a soundtrack with little in it will barely move. Raising it uses headroom, and enough will make the limiter quieten everything."
-msgstr "Den Pegel des Tieftoneffektkanals (LFE) anheben, den ein Kino an seinen Subwoofer schickt. Kopfhörer haben keinen Subwoofer, den man lauter stellen könnte, daher ist dies die einzige Möglichkeit, ihn zu ändern. Es betrifft nur diesen Kanal, eine Tonspur mit wenig Inhalt darin ändert sich also kaum. Eine Anhebung verbraucht Aussteuerungsreserve, und genug davon lässt den Limiter alles leiser machen."
+msgid "Turns up the LFE channel: the deep rumble of explosions and engines that a cinema sends to its subwoofer. Headphones have no subwoofer to turn up, so this is the way to get more of it. Only that channel changes, so films with little LFE will barely sound different. Too much makes the limiter turn everything down."
+msgstr "Hebt den LFE-Kanal an: das tiefe Grollen von Explosionen und Motoren, das ein Kino an seinen Subwoofer schickt. Kopfhörer haben keinen Subwoofer zum Lauterdrehen, so bekommt man mehr davon. Nur dieser Kanal ändert sich, Filme mit wenig LFE klingen also kaum anders. Zu viel lässt den Limiter alles leiser machen."
 
 msgctxt "#39343"
 msgid "Binaural rendering for headphones"
 msgstr "Binaurales Rendering für Kopfhörer"
 
 msgctxt "#39344"
-msgid "Place the sound of anything you play around you on headphones, instead of folding it flat to stereo. It applies to every soundtrack that can be decoded, films and music alike. Turning it on turns passthrough off, and it is unused while the audio output is set to more than two channels."
-msgstr "Den Klang von allem, was abgespielt wird, auf Kopfhörern rund um den Hörer platzieren, statt ihn flach auf Stereo herunterzumischen. Gilt für jede dekodierbare Tonspur, Filme wie Musik. Das Einschalten deaktiviert Passthrough, und die Einstellung wird nicht verwendet, solange die Audioausgabe auf mehr als zwei Kanäle eingestellt ist."
+msgid "Turns any soundtrack, film or music, into 3D sound for headphones: voices and effects seem to come from around and above you instead of from inside your head. Use it only with headphones. While it is on, passthrough is switched off, and it does nothing when the audio output is set to more than two channels."
+msgstr "Macht aus jedem Ton, ob Film oder Musik, 3D-Klang für Kopfhörer: Stimmen und Effekte scheinen rings um und über einem zu entstehen statt im Kopf. Nur mit Kopfhörern verwenden. Solange es aktiv ist, ist Passthrough aus, und bei einer Audioausgabe mit mehr als zwei Kanälen bleibt es wirkungslos."
+
+msgctxt "#39345"
+msgid "Custom Room (BRIR)"
+msgstr "Eigener Raum (BRIR)"
+
+msgctxt "#39346"
+msgid "- Custom Room file (SOFA)"
+msgstr "- Eigene Raumdatei (SOFA)"
+
+msgctxt "#39347"
+msgid "Pick a SOFA file of a measured listening room, such as the BBC or IoSR rooms. It is prepared once when you pick it, which can take a moment for a large file; after that it loads instantly. Keep the original file: if the prepared copy is ever lost, it is made again from it. Room simulation, distance, reverb and Cascade mode do not apply."
+msgstr "Eine SOFA-Datei eines gemessenen Hörraums wählen, etwa die Räume von BBC oder IoSR. Sie wird beim Auswählen einmal vorbereitet, was bei großen Dateien etwas dauert; danach lädt sie sofort. Die Originaldatei behalten: Geht die vorbereitete Kopie verloren, wird sie daraus neu erstellt. Raumsimulation, Abstand, Nachhall und Kaskadenmodus gelten hier nicht."
+
+msgctxt "#39348"
+msgid "Custom Room file"
+msgstr "Eigene Raumdatei"
+
+msgctxt "#39350"
+msgid "[B]What is inside:[/B] an HRTF set ({0}) with {1:d} directions, {2:d} samples each at {3:d} Hz."
+msgstr "[B]Inhalt:[/B] ein HRTF-Satz ({0}) mit {1:d} Richtungen, je {2:d} Samples bei {3:d} Hz."
+
+msgctxt "#39351"
+msgid "[B]What is inside:[/B] a room measured with {0:d} loudspeakers ({1}) at {2:d} head orientations, {3:d} samples each at {4:d} Hz."
+msgstr "[B]Inhalt:[/B] ein mit {0:d} Lautsprechern ({1}) bei {2:d} Kopfausrichtungen gemessener Raum, je {3:d} Samples bei {4:d} Hz."
+
+msgctxt "#39352"
+msgid "[B]What is inside:[/B] a prepared room with {0:d} loudspeakers ({1}), {2:d} samples each at {3:d} Hz."
+msgstr "[B]Inhalt:[/B] ein vorbereiteter Raum mit {0:d} Lautsprechern ({1}), je {2:d} Samples bei {3:d} Hz."
+
+msgctxt "#39353"
+msgid "[B]What is inside:[/B] {0}, {1:d} measurements of {2:d} sources each. Neither Custom HRTF nor Custom Room can use it: {3}"
+msgstr "[B]Inhalt:[/B] {0}, {1:d} Messungen mit je {2:d} Quellen. Weder Eigene HRTF noch Eigener Raum kann sie nutzen: {3}"
+
+msgctxt "#39354"
+msgid "[B]This is a measured room[/B], not an HRTF set. Choose it under Custom Room (BRIR) instead."
+msgstr "[B]Dies ist ein gemessener Raum[/B], kein HRTF-Satz. Stattdessen unter Eigener Raum (BRIR) auswählen."
+
+msgctxt "#39355"
+msgid "[B]This is an HRTF set[/B], not a measured room. Choose it under Custom HRTF (HRIR) instead."
+msgstr "[B]Dies ist ein HRTF-Satz[/B], kein gemessener Raum. Stattdessen unter Eigene HRTF (HRIR) auswählen."
+
+msgctxt "#39356"
+msgid "[B]Ready.[/B] The room will be used from the next thing you play. It is saved in the cache as [I]{0}[/I]."
+msgstr "[B]Bereit.[/B] Der Raum wird ab der nächsten Wiedergabe verwendet. Er liegt im Cache als [I]{0}[/I]."
+
+msgctxt "#39357"
+msgid "[B]Already set up.[/B] This file was prepared before and has not changed, so nothing needed doing. It will be used from the next thing you play."
+msgstr "[B]Bereits eingerichtet.[/B] Diese Datei wurde schon einmal vorbereitet und hat sich nicht geändert, es war also nichts zu tun. Sie wird ab der nächsten Wiedergabe verwendet."
+
+msgctxt "#39358"
+msgid "[B]Not enough memory.[/B] This device does not have enough free memory to prepare this file."
+msgstr "[B]Nicht genug Arbeitsspeicher.[/B] Dieses Gerät hat nicht genug freien Arbeitsspeicher, um diese Datei vorzubereiten."
+
+msgctxt "#39359"
+msgid "[B]The file could not be read to the end.[/B] If it is on the network, try again, or copy it to this device first."
+msgstr "[B]Die Datei konnte nicht bis zum Ende gelesen werden.[/B] Liegt sie im Netzwerk, erneut versuchen oder sie zuerst auf dieses Gerät kopieren."
+
+msgctxt "#39360"
+msgid "[B]The prepared room could not be saved.[/B] Check that there is free space on this device."
+msgstr "[B]Der vorbereitete Raum konnte nicht gespeichert werden.[/B] Prüfen, ob auf diesem Gerät genug Speicherplatz frei ist."
+
+msgctxt "#39361"
+msgid "[B]The 3D audio engine could not be started.[/B] It may be missing from this system."
+msgstr "[B]Die 3D-Audio-Engine konnte nicht gestartet werden.[/B] Sie fehlt möglicherweise auf diesem System."
+
+msgctxt "#39362"
+msgid "[B]The 3D audio engine could not prepare this file.[/B]"
+msgstr "[B]Die 3D-Audio-Engine konnte diese Datei nicht vorbereiten.[/B]"
+
+msgctxt "#39363"
+msgid "{0} is gone. Choose the room again in the settings."
+msgstr "{0} ist nicht mehr vorhanden. Den Raum in den Einstellungen erneut wählen."
+
+msgctxt "#39364"
+msgid "Binaural config.yaml"
+msgstr "Binaurale config.yaml"
+
+msgctxt "#39365"
+msgid "Not applied: {0}"
+msgstr "Nicht angewendet: {0}"
+
+msgctxt "#39366"
+msgid "The room {0} in config.yaml could not be loaded."
+msgstr "Der Raum {0} aus config.yaml konnte nicht geladen werden."
+
+msgctxt "#39368"
+msgid "Only the part of the file that plays was kept, so the room loads in a moment. [B]Keep the original file[/B]: if the prepared room is ever lost, or an update needs it prepared again, it is made again from that file automatically."
+msgstr "Nur der Teil der Datei, der abgespielt wird, wurde behalten, daher lädt der Raum sofort. [B]Die Originaldatei behalten[/B]: Geht der vorbereitete Raum verloren oder muss er nach einem Update neu vorbereitet werden, geschieht das automatisch aus dieser Datei."
+
+msgctxt "#39371"
+msgid "[B]Ready for 48 kHz.[/B] Films at 48 kHz start with it straight away. A film at another sample rate plays its first few seconds with the built-in sound while its own version is prepared, once."
+msgstr "[B]Bereit für 48 kHz.[/B] Filme mit 48 kHz starten sofort damit. Ein Film mit einer anderen Abtastrate spielt seine ersten Sekunden mit dem integrierten Klang, während seine eigene Version einmalig vorbereitet wird."
+
+msgctxt "#39372"
+msgid "[B]Already set up.[/B] This file was chosen before and has not changed, so it was not copied again. It will be used from the next thing you play."
+msgstr "[B]Bereits eingerichtet.[/B] Diese Datei wurde schon einmal gewählt und hat sich nicht geändert, daher wurde sie nicht erneut kopiert. Sie wird ab der nächsten Wiedergabe verwendet."
+
+msgctxt "#39373"
+msgid "{0} is gone. Choose the HRTF set again in the settings."
+msgstr "{0} ist nicht mehr vorhanden. Den HRTF-Satz in den Einstellungen erneut wählen."
+
+msgctxt "#39374"
+msgid "Preparing the room from {0}."
+msgstr "Der Raum wird aus {0} vorbereitet."
+
+msgctxt "#39375"
+msgid "The room could not be prepared from {0}. Choose it again in the settings."
+msgstr "Der Raum konnte nicht aus {0} vorbereitet werden. Ihn in den Einstellungen erneut wählen."
+
+msgctxt "#39376"
+msgid "[B]This file cannot be used as an HRTF set.[/B] The 3D audio engine could not load it, so your previous choice stays."
+msgstr "[B]Diese Datei kann nicht als HRTF-Satz verwendet werden.[/B] Die 3D-Audio-Engine konnte sie nicht laden, daher bleibt die bisherige Wahl."
+
+msgctxt "#39377"
+msgid "[B]Volume:[/B] a room can sound clearly louder than the built-in HRTF, because its echoes build up on long, steady sounds. Turn the volume down a little if needed; sudden loud peaks are held back automatically."
+msgstr "[B]Lautstärke:[/B] Ein Raum kann deutlich lauter klingen als die integrierte HRTF, weil sich sein Nachhall bei langen, gleichmäßigen Klängen aufbaut. Bei Bedarf etwas leiser stellen; plötzliche laute Spitzen werden automatisch abgefangen."
+
+msgctxt "#39378"
+msgid "Preparing the HRTF set {0}."
+msgstr "Der HRTF-Satz {0} wird vorbereitet."
+
+msgctxt "#39379"
+msgid "{0} can no longer be used as an HRTF set. Choose one again in the settings."
+msgstr "{0} ist nicht mehr als HRTF-Satz verwendbar. In den Einstellungen erneut einen wählen."
 
 msgctxt "#40000"
 msgid "Versions"

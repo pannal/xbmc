@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <sys/types.h>
@@ -31,16 +32,109 @@
 class CProcessInfo;
 class COmniphonyPcmSource;
 
+namespace ActiveAE
+{
+class COmniphonyTool;
+}
+
 /*!
  * \brief Word the engine's HRIR report for Player.Process(omniphony.sofa).
  *
- * \param selector the set the engine says it is convolving with, as the helper
+ * \param hrir the set the engine says it is convolving with, as the helper
  *        passes it on: "saf" for its embedded KEMAR measurements, "sofa" for a
- *        file of the listener's.
- * \return "Built-in", "Personal", or empty for anything else - an engine too
- *         old to say included - rather than a guess.
+ *        file of the listener's, "brir" once a measured room renders.
+ * \return "Built-in HRIR", "Custom HRIR" or "Custom BRIR", or empty for
+ *         anything else rather than a guess.
  */
-std::string OmniphonyDescribeHrir(const std::string& selector);
+std::string OmniphonyDescribeHrir(const std::string& hrir);
+
+/*!
+ * \brief Word the engine's render path for Player.Process(omniphony.render).
+ *
+ * \param path how the session renders, as the helper passes it on: "direct",
+ *        "cascade:N" or "room:N", N the loudspeakers it pans onto.
+ * \return "Direct", "Cascade N" or "Room N", or empty for anything else -
+ *         speaker output - rather than a guess.
+ */
+std::string OmniphonyDescribeRender(const std::string& path);
+
+/*!
+ * \brief One field of a helper status line: the word after " <key>=".
+ *
+ * The leading space is part of the match, so "hrir" is never found inside
+ * "brir=". \p value is everything up to the next space.
+ *
+ * \return false when the line does not carry the field, which is not the
+ *         same as carrying it empty.
+ */
+bool OmniphonyStatusField(const std::string& msg, const std::string& key, std::string& value);
+
+/*!
+ * \brief The render's delay in DVD time - microseconds - from the helper's
+ * latency= field, which counts samples at the rate the engine runs at.
+ *
+ * \return 0 for a rate of 0, which no open engine has.
+ */
+double OmniphonyLatencyUs(uint64_t samples, unsigned int rate);
+
+//! \brief What the helper did with the config Kodi merged from the listener's
+//! config.yaml, from its acknowledgement of OPEN: "... override=applied".
+struct OmniphonyOverrideAck
+{
+  enum class Status
+  {
+    Absent, //!< no override was handed over
+    Applied,
+    Rejected, //!< the engine refused it; an override_error line says why
+  };
+  Status status{Status::Absent};
+};
+
+OmniphonyOverrideAck OmniphonyReadOverrideAck(const std::string& ack);
+
+/*!
+ * \brief A string as a single-quoted YAML scalar.
+ *
+ * Paths reach the engine's config from the listener's file names, which can
+ * hold anything a double-quoted scalar treats as an escape; in single quotes
+ * only the quote itself is special, and it is doubled.
+ */
+std::string OmniphonyYamlQuote(const std::string& value);
+
+/*!
+ * \brief The settings a stream renders with, read once when it opens.
+ *
+ * Read once rather than at every write of the config, because the config is
+ * written again whenever the helper is restarted at the stream's own rate, and
+ * a setting changed in between would otherwise reach the second helper and not
+ * the first - the same film rendered two ways a second apart.
+ */
+struct OmniphonyRenderChoices
+{
+  int roomPreset{2}; //!< the synthetic room - see RoomFor
+  double distanceM{2.0};
+  int reverbPercent{10};
+  double levelDb{-3.0}; //!< as set, before the match terms - see WriteConfig
+  bool maintainVolume{false};
+  double lfeDb{0.0};
+  bool cascade{false};
+  //! The listener's HRTF set, staged in the profile; a local path or empty.
+  std::string hrtf;
+  //! Where the engine keeps that set's finished grid; empty for none.
+  std::string hrtfGrid;
+  //! The prepared room, a local path or empty. Rendered in place of any HRTF.
+  std::string room;
+};
+
+/*!
+ * \brief The engine's config for \p choices, as YAML.
+ *
+ * \param bridge the decoder bridge, a local path
+ * \param levelDb the master gain, the match terms applied - see WriteConfig
+ */
+std::string OmniphonyRenderYaml(const OmniphonyRenderChoices& choices,
+                                const std::string& bridge,
+                                double levelDb);
 
 /*!
  * \brief Name the spatial bed the renderer was handed, e.g. "7.1.4 + 5
@@ -177,6 +271,21 @@ OmniphonyRateVerdict OmniphonyRateCheck(unsigned int reported,
                                         unsigned int opened,
                                         bool pcmPath,
                                         bool formatPublished);
+
+/*!
+ * \brief The syncword family the object path's parser looks for, from the
+ *        bridge codec CDVDAudioCodecOmniphony::CodecId named.
+ *
+ * A track's codec never changes mid-stream, so the parser is held to its
+ * family, as the passthrough codec's is. Left to any family it reads the
+ * two-byte AC-3 syncword in TrueHD data as a frame when a restart (ReopenAs)
+ * lands mid-stream, and counts each miss as the stream losing sync - which
+ * CVideoPlayerAudio answers with a recovery seek.
+ *
+ * \param codec "eac3", "truehd" or "dts"; anything else, or nullptr for the
+ *              PCM path, is any family
+ */
+CAEStreamParser::SyncFamily OmniphonySyncFamily(const char* codec);
 
 /*!
  * \brief Render audio to headphones binaurally, out of process.
@@ -508,18 +617,55 @@ private:
    * including an audio track change part-way through a film.
    */
   void PublishRenderInfo();
-  //! \brief Take the three omniphony rows off the screen, because nothing is
+  //! \brief Take the omniphony rows off the screen, because nothing is
   //! being rendered any more.
   void ClearRenderInfo();
   //! \brief What the engine was handed, worded for the screen. Empty until the
   //! first frame has been decoded, which is the earliest it can be truthful.
   std::string InputDescription() const;
-  //! \brief Take the head model from a helper status line that reports one -
-  //! see \ref m_sofa.
+  //! \brief Take the head model, the room's state and the render's latency
+  //! from a helper status line that reports them - see \ref m_sofa and
+  //! \ref m_latencyUs.
   void ReadHrirReport(const std::string& msg);
-  bool WriteConfig(const std::string& bridge) const;
+  /*!
+   * \brief Prepare the chosen room again from the file it was prepared from,
+   * on a thread of its own, while the built-in set plays - or, with that file
+   * gone, tell the listener to choose the room again. Once per stream.
+   */
+  void PrepareRoomAgain();
+  /*!
+   * \brief Take what PrepareRoomAgain came to: a prepared room is put in play
+   * by restarting the helper with it.
+   *
+   * \return false when the restart failed and the codec has fallen back
+   */
+  bool TakeRoomRepair();
+  //! \brief Stop PrepareRoomAgain, killing its helper, and wait for it.
+  void StopRoomRepair();
+  //! \brief Whether the settings' room is what this stream plays: not while
+  //! the listener's config.yaml chooses the response in its place.
+  bool RoomInPlay() const { return !(m_overrideApplied && m_overrideOwnResponse); }
+  //! \brief Take what became of config.yaml from the helper's acknowledgement
+  //! of OPEN, or the reason it was refused from the line after it.
+  void ReadOverrideReport(const std::string& msg);
+  //! \brief Say once per stream that config.yaml is not what plays, and why.
+  void NotifyOverride(const std::string& text);
+  bool WriteConfig(const std::string& bridge, std::string& yaml) const;
+  /*!
+   * \brief The listener's config.yaml merged over \p base, render.yaml's text,
+   * into effective.yaml - see OmniphonyMergeListenerConfig.
+   *
+   * \return effective.yaml's path when it is what should play, empty when
+   *         render.yaml should: config.yaml is absent, sets nothing, or was
+   *         refused, which has been said.
+   */
+  std::string ListenerOverride(const std::string& base,
+                               bool& layoutSet,
+                               bool& decodeThreadSet,
+                               bool& cascade);
   static std::string HelperPath();
   static std::string ConfigPath();
+  static std::string EffectivePath();
   static std::string LayoutPath();
   static const char* CodecId(const CDVDStreamInfo& hints);
 
@@ -709,7 +855,84 @@ private:
   std::unique_ptr<CDVDStreamInfo> m_hints;
 
   //! \brief Render mode: Direct unless the listener chose Cascade - see Open.
+  //! A room is rendered Direct as far as this is concerned: the engine
+  //! builds its virtual loudspeakers from the room's own.
   RenderMode m_mode{RenderMode::Direct};
+
+  //! \brief The settings this stream renders with - see OmniphonyRenderChoices.
+  OmniphonyRenderChoices m_choices;
+
+  //! \brief The engine plays the listener's config.yaml -
+  //! Player.Process(omniphony.config) says so.
+  bool m_overrideApplied{false};
+  //! \brief The room file config.yaml names, when it renders one of its own:
+  //! while it plays, a room the engine refuses is that file, not the one
+  //! the settings chose, and is not Kodi's to prepare again.
+  std::string m_overrideRoom;
+  //! \brief config.yaml chooses the response itself - see
+  //! OmniphonyListenerConfig::ownResponse - so while it plays, the settings'
+  //! room is not what is heard.
+  bool m_overrideOwnResponse{false};
+  //! \brief A notification about the patch has been shown for this stream:
+  //! one is enough, and a rate re-open would otherwise repeat it.
+  bool m_overrideNoticed{false};
+
+  //! \brief The HRTF set the settings chose, as it was chosen, while its copy
+  //! in the cache plays; empty otherwise.
+  std::string m_hrtfChosen;
+  //! \brief That copy was made again for this stream, gone from the cache.
+  bool m_hrtfCopiedAgain{false};
+  //! \brief The listener was told the set is being made ready: once a
+  //! stream, which a rate re-open would otherwise repeat.
+  bool m_hrtfNoticed{false};
+
+  //! \brief The room-response file the settings chose, as it was chosen;
+  //! empty when the response is not a room. Its room is in the cache - see
+  //! ActiveAE::COmniphonyRoom.
+  std::string m_roomChosen;
+
+  /*!
+   * \brief Preparing the room again while the built-in set plays: the room in
+   * the cache is gone, or the engine refused it - an update that prepares
+   * rooms differently - and the file it was prepared from is still there.
+   * Asked once per stream; see PrepareRoomAgain and TakeRoomRepair.
+   */
+  bool m_roomRepairAsked{false};
+  //! \brief The settings' room is gone from the cache, and is prepared again
+  //! once the helper has said whether config.yaml chooses the response in
+  //! its place - see RoomInPlay.
+  bool m_roomRepairPending{false};
+  std::thread m_roomRepair;
+  std::unique_ptr<ActiveAE::COmniphonyTool> m_roomPreparer;
+  //! \brief Where picks stood when this stream read its files from the
+  //! settings - see ActiveAE::COmniphonyCache::PickEpoch.
+  uint64_t m_pickEpoch{0};
+  //! \brief 1 once the room is prepared, 2 if it was picked in the settings
+  //! meanwhile, -1 if it could not be prepared, 0 until then.
+  std::atomic<int> m_roomRepaired{0};
+  //! \brief The room prepared again is what plays: one the engine refuses
+  //! even so is not prepared a second time, and the listener is told.
+  bool m_roomRepairPlaying{false};
+
+  //! \brief The helper's last hrir= word - see OmniphonyDescribeHrir. Kept
+  //! across a rate re-open until the new helper says otherwise.
+  std::string m_hrir;
+
+  //! \brief The helper's last render= word - see OmniphonyDescribeRender.
+  //! Kept across a rate re-open until the new helper says otherwise, as
+  //! \ref m_hrir is.
+  std::string m_renderPath;
+
+  /*!
+   * \brief How late the render is, in microseconds, as the engine reports it.
+   *
+   * A room is convolved partly on short blocks, so what comes out at a sample
+   * went in 127 samples earlier - 2.6 ms at 48 kHz - once the room renders,
+   * and nothing while it loads. Taken off each block's timestamp where the
+   * engine's count becomes the player's, and nowhere else: \ref m_timeline
+   * works on the engine's count, which the delay does not move.
+   */
+  double m_latencyUs{0.0};
   /*!
    * \brief Objects the stream is currently carrying, or -1 when it is not.
    *
@@ -750,13 +973,15 @@ private:
   std::string m_sourceLabel;
 
   /*!
-   * \brief The head model the engine is convolving with, worded for the screen.
+   * \brief The response the engine is convolving with, worded for the screen.
    *
-   * Taken from the engine's own report rather than from the setting or from the
-   * file staged in the profile, so a personal file the engine could not load
-   * reads "Built-in" - which is what the listener is actually hearing. Live:
-   * the engine starts on its built-in set and swaps a configured file in once
-   * it has been built, a moment into the stream. Empty until the first report.
+   * Taken from the engine's own report (\ref m_hrir) rather than from the
+   * setting or from the files staged in the profile, so a custom file the
+   * engine could not load, or a room still loading, reads "Built-in HRIR" -
+   * which is what the listener is actually hearing. Live: the engine starts on
+   * its built-in set and swaps a configured file in once it has been built, a
+   * moment into the stream. Empty until the first report. One of the rows
+   * PublishRenderInfo rebuilds.
    */
   std::string m_sofa;
 
@@ -765,7 +990,7 @@ private:
   bool m_infoDirty{false};
 
   /*!
-   * \brief The three rows as they are to appear, rebuilt only when they change.
+   * \brief The rows as they are to appear, rebuilt only when they change.
    *
    * Held rather than rebuilt per block because they are re-published per block:
    * ActiveAE empties the whole audio player info when it reconfigures, so a row

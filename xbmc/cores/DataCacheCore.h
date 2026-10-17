@@ -189,7 +189,7 @@ public:
   /*!
    * @brief What the object audio renderer was handed, e.g. "15 Objects + LFE".
    *
-   * The three below are all empty whenever nothing is being rendered
+   * The four below are all empty whenever nothing is being rendered
    * binaurally, so a skin can hide the rows rather than print a word for
    * "nothing special" - and so that a stream which fell back to the software
    * decoder mid-film stops describing a render that is no longer happening.
@@ -206,6 +206,9 @@ public:
   //! @brief Which head-related measurements are in use, the engine's or the listener's.
   void SetOmniphonySofa(std::string sofa);
   std::string GetOmniphonySofa();
+  //! @brief "config" while the listener's config.yaml is what plays, else empty.
+  void SetOmniphonyConfig(std::string config);
+  std::string GetOmniphonyConfig();
 
   // Additional Player Process Info data (Only set in Data Core Cache)
   void SetAudioLiveBitRate(double bitRate);
@@ -398,6 +401,7 @@ protected:
     std::string omniphonyInput;
     std::string omniphonyRender;
     std::string omniphonySofa;
+    std::string omniphonyConfig;
     int sampleRate;
     int bitsPerSample;
     double liveBitRate = 0;
