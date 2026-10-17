@@ -353,6 +353,22 @@ void CGUIDialogVideoInfo::SetMovie(const CFileItem *item)
 
   MediaType type = item->GetVideoInfoTag()->m_type;
 
+  // Library navigation items may omit cast. Seasons use the parent show's cast.
+  CVideoInfoTag* videoInfo = m_movieItem->GetVideoInfoTag();
+  const bool isSeason = type == MediaTypeSeason;
+  const int castId = isSeason ? videoInfo->m_iIdShow : videoInfo->m_iDbId;
+  if (item->IsVideoDb() && castId >= 0 && videoInfo->m_cast.empty() &&
+      type != MediaTypeVideoCollection)
+  {
+    CVideoDatabase database;
+    if (database.Open())
+    {
+      database.GetCast(castId, isSeason ? MediaTypeTvShow : type, videoInfo->m_cast);
+      if (type == MediaTypeEpisode)
+        database.GetCast(videoInfo->m_iIdShow, MediaTypeTvShow, videoInfo->m_cast);
+    }
+  }
+
   m_startUserrating = m_movieItem->GetVideoInfoTag()->m_iUserRating;
 
   if (type == MediaTypeMusicVideo)

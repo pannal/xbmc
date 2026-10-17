@@ -550,6 +550,7 @@ public:
   bool GetEpisodeBasicInfo(const std::string& strFilenameAndPath, CVideoInfoTag& details, int idEpisode  = -1);
   bool GetEpisodeInfo(const std::string& strFilenameAndPath, CVideoInfoTag& details, int idEpisode = -1, int getDetails = VideoDbDetailsAll);
   bool GetMusicVideoInfo(const std::string& strFilenameAndPath, CVideoInfoTag& details, int idMVideo = -1, int getDetails = VideoDbDetailsAll);
+  void GetCast(int media_id, const std::string& media_type, std::vector<SActorInfo>& cast);
   bool GetSetInfo(int idSet, CVideoInfoTag& details, CFileItem* item = nullptr);
   bool GetFileInfo(const std::string& strFilenameAndPath, CVideoInfoTag& details, int idFile = -1);
 
@@ -1195,7 +1196,6 @@ protected:
                     VideoDbContentType idContent = VideoDbContentType::UNKNOWN,
                     const Filter& filter = Filter(),
                     bool countOnly = false);
-  void GetCast(int media_id, const std::string &media_type, std::vector<SActorInfo> &cast);
   void GetTags(int media_id, const std::string &media_type, std::vector<std::string> &tags);
   void GetRatings(int media_id, const std::string &media_type, RatingMap &ratings);
   void GetUniqueIDs(int media_id, const std::string &media_type, CVideoInfoTag& details);
