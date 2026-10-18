@@ -9,6 +9,7 @@
 #pragma once
 
 #include "PlayListTypes.h"
+#include "threads/CriticalSection.h"
 
 #include <memory>
 #include <string>
@@ -22,8 +23,13 @@ namespace PLAYLIST
 
 class CPlayList
 {
+  // Leaf lock: container and playlist scalars only. Shared item fields remain unsynchronized.
+  mutable CCriticalSection m_critSection;
+
 public:
   explicit CPlayList(PLAYLIST::Id id = PLAYLIST::TYPE_NONE);
+  CPlayList(const CPlayList& playlist);
+  CPlayList& operator=(const CPlayList& playlist);
   virtual ~CPlayList(void) = default;
   virtual bool Load(const std::string& strFileName);
   virtual bool LoadData(std::istream &stream);
@@ -40,7 +46,7 @@ public:
   void Insert(const std::shared_ptr<CFileItem>& item, int iPosition = -1);
 
   int FindOrder(int iOrder) const;
-  const std::string& GetName() const;
+  std::string GetName() const;
   void Remove(const std::string& strFileName);
   void Remove(int position);
   bool Swap(int position1, int position2);
@@ -52,15 +58,19 @@ public:
   const std::shared_ptr<CFileItem> operator[](int iItem) const;
   std::shared_ptr<CFileItem> operator[](int iItem);
 
+  std::shared_ptr<CFileItem> TryGet(int index) const;
+  std::shared_ptr<CFileItem> TryGet(long index, bool relativeToEnd) const;
+  std::vector<std::shared_ptr<CFileItem>> GetItems() const;
+
   void Shuffle(int iPosition = 0);
   void UnShuffle();
-  bool IsShuffled() const { return m_bShuffled; }
+  bool IsShuffled() const;
 
-  void SetPlayed(bool bPlayed) { m_bWasPlayed = true; }
-  bool WasPlayed() const { return m_bWasPlayed; }
+  void SetPlayed(bool bPlayed);
+  bool WasPlayed() const;
 
   void SetUnPlayable(int iItem);
-  int GetPlayable() const { return m_iPlayableItems; }
+  int GetPlayable() const;
 
   void UpdateItem(const CFileItem *item);
 
@@ -74,12 +84,13 @@ protected:
   bool m_bShuffled;
   bool m_bWasPlayed;
 
-//  CFileItemList m_vecItems;
+  // Format subclasses populate local parser instances before publication.
   std::vector<std::shared_ptr<CFileItem>> m_vecItems;
   typedef std::vector<std::shared_ptr<CFileItem>>::iterator ivecItems;
 
 private:
-  void Add(const std::shared_ptr<CFileItem>& item, int iPosition, int iOrderOffset);
+  int AddLocked(const std::shared_ptr<CFileItem>& item, int position, int order);
+  void InsertItems(const std::vector<std::shared_ptr<CFileItem>>& items, int position);
   void DecrementOrder(int iOrder);
   void IncrementOrder(int iPosition, int iOrder);
 
