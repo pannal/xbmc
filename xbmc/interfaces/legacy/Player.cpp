@@ -163,12 +163,14 @@ namespace XBMCAddon
     void Player::stop()
     {
       XBMC_TRACE;
+      DelayedCallGuard dc(languageHook);
       CServiceBroker::GetAppMessenger()->SendMsg(TMSG_MEDIA_STOP);
     }
 
     void Player::pause()
     {
       XBMC_TRACE;
+      DelayedCallGuard dc(languageHook);
       CServiceBroker::GetAppMessenger()->SendMsg(TMSG_MEDIA_PAUSE);
     }
 
@@ -475,6 +477,9 @@ namespace XBMCAddon
       if (!getAppPlayer()->IsPlaying())
         throw PlayerException("Kodi is not playing any media file");
 
+      // The player can hold its stream lock while it reads from a Python-served
+      // stream, so waiting for that lock with the GIL held stops the server.
+      DelayedCallGuard dc(languageHook);
       g_application.SeekTime( pTime );
     }
 
