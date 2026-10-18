@@ -760,7 +760,7 @@ void CPlayListPlayer::Insert(Id playlistId, const CPlayList& playlist, int iInde
   if (list.IsShuffled())
     ReShuffle(playlistId, iSize);
   else if (m_iCurrentPlayList == playlistId && m_iCurrentSong >= iIndex)
-    m_iCurrentSong++;
+    m_iCurrentSong += list.size() - iSize; // Every inserted item moves the current song.
 }
 
 void CPlayListPlayer::Insert(Id playlistId, const CFileItemPtr& pItem, int iIndex)
@@ -786,7 +786,7 @@ void CPlayListPlayer::Insert(Id playlistId, const CFileItemList& items, int iInd
   if (list.IsShuffled())
     ReShuffle(playlistId, iSize);
   else if (m_iCurrentPlayList == playlistId && m_iCurrentSong >= iIndex)
-    m_iCurrentSong++;
+    m_iCurrentSong += list.size() - iSize; // Every inserted item moves the current song.
 
   // its likely that the playlist changed
   CGUIMessage msg(GUI_MSG_PLAYLIST_CHANGED, 0, 0);
