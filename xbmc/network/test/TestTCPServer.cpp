@@ -310,19 +310,13 @@ class TestTCPServerAnnouncements : public TestTCPServer
 protected:
   void SetUp() override
   {
-    m_previous = CServiceBroker::GetAnnouncementManager();
+    TestTCPServer::SetUp();
+    CTCPServer::StopServer(true);
     m_manager = std::make_shared<CTestAnnouncementManager>();
     CServiceBroker::RegisterAnnouncementManager(m_manager);
-    TestTCPServer::SetUp();
+    ASSERT_TRUE(CTCPServer::StartServer(m_port, false));
   }
 
-  void TearDown() override
-  {
-    TestTCPServer::TearDown();
-    CServiceBroker::RegisterAnnouncementManager(m_previous);
-  }
-
-  std::shared_ptr<ANNOUNCEMENT::CAnnouncementManager> m_previous;
   std::shared_ptr<CTestAnnouncementManager> m_manager;
 };
 } // namespace
