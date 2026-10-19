@@ -7,7 +7,6 @@
  */
 
 #include "ActiveAEStream.h"
-#include "cores/AudioEngine/Utils/AudioDiagnostics.h"
 
 #include "ActiveAE.h"
 #include "cores/AudioEngine/AEResampleFactory.h"
@@ -223,10 +222,6 @@ unsigned int CActiveAEStream::GetSpace()
 
 unsigned int CActiveAEStream::AddData(const uint8_t* const *data, unsigned int offset, unsigned int frames, ExtData *extData)
 {
-  const int64_t diagnosticStart = AudioDiagnostics::Begin();
-  if (diagnosticStart)
-    AudioDiagnostics::Record({{AudioDiagnostics::Metric::StreamAddBeginFrames, frames},
-                              {AudioDiagnostics::Metric::StreamRaw, m_format.m_dataFormat == AE_FMT_RAW}});
   Message *msg;
   unsigned int copied = 0;
   int sourceFrames = frames;
@@ -341,18 +336,8 @@ unsigned int CActiveAEStream::AddData(const uint8_t* const *data, unsigned int o
       }
     }
     if (!m_inMsgEvent.Wait(200ms))
-    {
-      AudioDiagnostics::Record({{AudioDiagnostics::Metric::StreamWaitTimeout, 1}});
       break;
-    }
   }
-  if (diagnosticStart)
-    AudioDiagnostics::Record(
-        {{AudioDiagnostics::Metric::StreamAddUs, AudioDiagnostics::NowUs() - diagnosticStart},
-         {AudioDiagnostics::Metric::StreamRequestedFrames, frames},
-         {AudioDiagnostics::Metric::StreamAcceptedFrames, copied},
-         {AudioDiagnostics::Metric::StreamPartial, copied < frames},
-         {AudioDiagnostics::Metric::StreamId, m_id}});
   return copied;
 }
 

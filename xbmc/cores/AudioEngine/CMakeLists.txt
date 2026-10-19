@@ -20,7 +20,6 @@ set(SOURCES AEResampleFactory.cpp
             Utils/AEPackIEC61937.cpp
             Utils/AEStreamInfo.cpp
             Utils/AEUtil.cpp
-            Utils/AudioDiagnostics.cpp
             Utils/PackerMAT.cpp)
 
 set(HEADERS AEResampleFactory.h
@@ -57,7 +56,6 @@ set(HEADERS AEResampleFactory.h
             Utils/AEStreamData.h
             Utils/AEStreamInfo.h
             Utils/AEUtil.h
-            Utils/AudioDiagnostics.h
             Utils/PackerMAT.h)
 
 if(TARGET ALSA::ALSA)

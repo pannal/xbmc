@@ -17,7 +17,6 @@
 #include "cores/AudioEngine/Interfaces/AEStream.h"
 #include "cores/AudioEngine/Utils/AEStreamData.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
-#include "cores/AudioEngine/Utils/AudioDiagnostics.h"
 #include "cores/DataCacheCore.h"
 #include "cores/VideoPlayer/Process/ProcessInfo.h"
 #include "messaging/ApplicationMessenger.h"
@@ -480,12 +479,6 @@ inline bool PAPlayer::PrepareStream(StreamInfo *si)
   si->m_stream->SetVolume(si->m_volume);
   float peak = 1.0;
   float gain = si->m_decoder.GetReplayGain(peak);
-  if (AudioDiagnostics::Enabled())
-  {
-    AudioDiagnostics::Scaled(AudioDiagnostics::Metric::PlayerGainPpm, static_cast<double>(gain), true);
-    AudioDiagnostics::Scaled(AudioDiagnostics::Metric::PlayerPeakPpm, static_cast<double>(peak), true);
-    AudioDiagnostics::Record({{AudioDiagnostics::Metric::PlayerCrossfadeMs, m_upcomingCrossfadeMS}}, true);
-  }
   if (peak * gain <= 1.0f)
     // No clipping protection needed
     si->m_stream->SetReplayGain(gain);
@@ -563,11 +556,8 @@ void PAPlayer::Process()
   }
 
   CLog::Log(LOGDEBUG, "PAPlayer::Process - Playback started");
-  AudioDiagnostics::Event("PAPlayer process start");
   while(m_isPlaying && !m_bStop)
   {
-    const int64_t diagnosticStart = AudioDiagnostics::Begin();
-    AudioDiagnostics::Gap(AudioDiagnostics::Metric::PlayerLoopGapUs);
     /* this needs to happen outside of any locks to prevent deadlocks */
     if (m_signalSpeedChange)
     {
@@ -600,12 +590,7 @@ void PAPlayer::Process()
       }
     }
 
-    const int64_t diagnosticPosition = GetTimeInternal(); // update for GUI
-    if (diagnosticStart)
-      AudioDiagnostics::Record(
-          {{AudioDiagnostics::Metric::PlayerLoopUs, AudioDiagnostics::NowUs() - diagnosticStart},
-           {AudioDiagnostics::Metric::PlayerSpeed, m_playbackSpeed.load()},
-           {AudioDiagnostics::Metric::PlayerPositionMs, diagnosticPosition}});
+    GetTimeInternal(); //update for GUI
   }
   m_isPlaying = false;
 }
@@ -796,8 +781,6 @@ inline bool PAPlayer::ProcessStream(StreamInfo *si, double &freeBufferTime)
     si->m_decoder.Seek(time);
   }
 
-  if (AudioDiagnostics::Enabled())
-    si->m_decoder.SetDiagnosticPlaying(si->m_started);
   int status = si->m_decoder.GetStatus();
   if (status == STATUS_ENDED   ||
       status == STATUS_NO_FILE ||
@@ -877,20 +860,11 @@ inline bool PAPlayer::ProcessStream(StreamInfo *si, double &freeBufferTime)
 
 bool PAPlayer::QueueData(StreamInfo *si)
 {
-  using M = AudioDiagnostics::Metric;
   unsigned int space = si->m_stream->GetSpace();
 
   if (si->m_audioFormat.m_dataFormat != AE_FMT_RAW)
   {
-    const unsigned int available = si->m_decoder.GetDataSize(false);
-    unsigned int samples = std::min(available, space / si->m_bytesPerSample);
-    if (AudioDiagnostics::Enabled())
-      AudioDiagnostics::Record({{M::PlayerSpaceBytes, space},
-                                {M::PlayerReadySamples, available},
-                                {M::PlayerStatus, si->m_decoder.GetStatus()},
-                                {M::PlayerNoData, space > 0 && available == 0},
-                                {M::PlayerNoSpace, space == 0},
-                                {M::PlayerStarted, si->m_started}}, !si->m_started);
+    unsigned int samples = std::min(si->m_decoder.GetDataSize(false), space / si->m_bytesPerSample);
     if (!samples)
       return true;
 
@@ -905,15 +879,7 @@ bool PAPlayer::QueueData(StreamInfo *si)
     }
 
     unsigned int frames = samples/si->m_audioFormat.m_channelLayout.Count();
-    const int64_t diagnosticStart = AudioDiagnostics::Begin();
-    if (diagnosticStart)
-      AudioDiagnostics::Record({{M::PlayerAddBeginFrames, frames}}, !si->m_started);
     unsigned int added = si->m_stream->AddData(&data, 0, frames, nullptr);
-    if (diagnosticStart)
-      AudioDiagnostics::Record({{M::PlayerAddUs, AudioDiagnostics::NowUs() - diagnosticStart},
-                                {M::PlayerWantFrames, frames}, {M::PlayerAddedFrames, added},
-                                {M::PlayerShortFrames, frames > added ? frames - added : 0}},
-                               !si->m_started);
     si->m_framesSent += added;
   }
   else
