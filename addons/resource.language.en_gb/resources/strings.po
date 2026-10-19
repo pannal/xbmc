@@ -22882,6 +22882,18 @@ msgctxt "#38093"
 msgid "The Amlogic VC-1 decoder stamps its frames with unreliable timestamps, and for interlaced streams it emits fields that nothing downstream plays correctly. On (default) fixes both: timestamps are replaced with a clean chain at the stream's nominal frame rate, and interlaced streams are switched to the decoder's frame output. Without this VC-1 drifts out of sync in a way seeking does not fix, and interlaced titles play in slow motion. Off leaves the decoder's output completely untouched, which is only useful for comparison. Genuine discontinuities such as a seek are left alone either way. Only affects VC-1 and WMV3 on the hardware decoder; takes effect on the next playback start."
 msgstr ""
 
+#. Setting "Allow native HDMI PCM sample rates"
+#: system/settings/settings.xml
+msgctxt "#38094"
+msgid "Allow native HDMI PCM sample rates"
+msgstr ""
+
+#. Description for the setting with label #38094
+#: system/settings/settings.xml
+msgctxt "#38095"
+msgid "Allow 44.1 kHz, 88.2 kHz and 176.4 kHz PCM output on G12B devices using HDMI Multi Ch PCM. Off by default: these rates are converted to the 48 kHz family to avoid audio cutouts. Enable only if native rates work reliably with your receiver. Changing this setting briefly restarts audio. Passthrough is unaffected."
+msgstr ""
+
 #. Used for the rating selection
 #: xbmc/music/MusicUtils.cpp
 #: xbmc/video/dialogs/GUIDialogVideoInfo.cpp

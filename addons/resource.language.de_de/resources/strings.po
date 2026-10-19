@@ -17038,6 +17038,18 @@ msgctxt "#38091"
 msgid "Some AV receivers and TVs latch their lip-sync compensation while the HDMI mode switch at playback start is still settling, leaving audio audibly late until a manual seek forces a clean re-lock. This performs that re-lock automatically: one brief internal reseek (a short audio/video interruption) a few seconds into playback, once the audio sync has settled. Only triggers on files whose declared frame rate needed repairing - in practice the affected ones. Only needed if you experience audio delay from the start of playback that a small seek fixes. On by default; takes effect on the next playback start."
 msgstr "Manche AV-Receiver und Fernseher speichern ihre Lippensynchronisations-Kompensation, während der HDMI-Moduswechsel beim Wiedergabestart noch nicht abgeschlossen ist. Der Ton bleibt dann hörbar verzögert, bis ein manueller Sprung eine saubere Neusynchronisation erzwingt. Diese Option führt diese Neusynchronisation automatisch durch: ein kurzer interner Sprung (eine kurze Ton-/Bildunterbrechung) wenige Sekunden nach Wiedergabebeginn, sobald sich die Audiosynchronisation stabilisiert hat. Wird nur bei Dateien ausgelöst, deren angegebene Bildrate repariert werden musste - in der Praxis die betroffenen. Nur nötig, wenn der Ton ab Wiedergabebeginn verzögert ist und ein kleiner Sprung das behebt. Standardmäßig aktiviert; wirkt ab dem nächsten Wiedergabestart."
 
+#. Setting "Allow native HDMI PCM sample rates"
+#: system/settings/settings.xml
+msgctxt "#38094"
+msgid "Allow native HDMI PCM sample rates"
+msgstr "Native HDMI-PCM-Abtastraten erlauben"
+
+#. Description for the setting with label #38094
+#: system/settings/settings.xml
+msgctxt "#38095"
+msgid "Allow 44.1 kHz, 88.2 kHz and 176.4 kHz PCM output on G12B devices using HDMI Multi Ch PCM. Off by default: these rates are converted to the 48 kHz family to avoid audio cutouts. Enable only if native rates work reliably with your receiver. Changing this setting briefly restarts audio. Passthrough is unaffected."
+msgstr "Erlaubt PCM-Ausgabe mit 44,1 kHz, 88,2 kHz und 176,4 kHz auf G12B-Geräten über HDMI Multi Ch PCM. Standardmäßig ausgeschaltet: Diese Abtastraten werden in die 48-kHz-Familie umgewandelt, um Tonaussetzer zu vermeiden. Nur einschalten, wenn native Abtastraten mit deinem Receiver zuverlässig funktionieren. Änderungen starten die Audioausgabe kurz neu. Passthrough bleibt unverändert."
+
 msgctxt "#38092"
 msgid "Repair VC-1 playback"
 msgstr "VC-1-Wiedergabe reparieren"

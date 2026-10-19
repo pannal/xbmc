@@ -424,6 +424,7 @@ public:
   static constexpr auto SETTING_AUDIOOUTPUT_CHANNELS = "audiooutput.channels";
   static constexpr auto SETTING_AUDIOOUTPUT_CONFIG = "audiooutput.config";
   static constexpr auto SETTING_AUDIOOUTPUT_SAMPLERATE = "audiooutput.samplerate";
+  static constexpr auto SETTING_AUDIOOUTPUT_G12BNATIVERATES = "audiooutput.g12bnativerates";
   static constexpr auto SETTING_AUDIOOUTPUT_STEREOUPMIX = "audiooutput.stereoupmix";
   static constexpr auto SETTING_AUDIOOUTPUT_MAINTAINORIGINALVOLUME =
       "audiooutput.maintainoriginalvolume";
