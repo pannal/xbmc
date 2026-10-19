@@ -18046,6 +18046,10 @@ msgctxt "#39213"
 msgid "Apply a 25% volume boost when using Bluetooth (A2DP) audio output. This can help improve volume levels with quieter Bluetooth devices."
 msgstr "25% Lautstärkeverstärkung bei Verwendung der Bluetooth-Audioausgabe (A2DP) anwenden. Dies kann helfen, die Lautstärke bei leiseren Bluetooth-Geräten zu verbessern."
 
+msgctxt "#39214"
+msgid "Automatic"
+msgstr "Automatisch"
+
 msgctxt "#39300"
 msgid "off"
 msgstr "Aus"
@@ -18075,8 +18079,8 @@ msgid "- Room simulation"
 msgstr "- Raumsimulation"
 
 msgctxt "#39313"
-msgid "Adds the echoes of a virtual room around you. These early reflections make sound seem to come from outside your head, so this setting makes the biggest difference. The room grows with Speaker distance: from 2 m (the default) up, Small and Medium room sound almost alike, and Large is clearly bigger. Off gives the driest sound."
-msgstr "Fügt die Echos eines virtuellen Raums hinzu. Diese frühen Reflexionen lassen den Klang von außerhalb des Kopfes kommen, daher bewirkt diese Einstellung am meisten. Der Raum wächst mit dem Lautsprecherabstand: ab 2 m (Standard) klingen Kleiner und Mittlerer Raum fast gleich, Großer Raum deutlich größer. Aus klingt am trockensten."
+msgid "Adds the echoes of a virtual room around you. These early reflections make sound seem to come from outside your head, so this setting makes the biggest difference. The presets use different room sizes and shapes. The room grows with Speaker distance up to a maximum size. Off gives the driest sound."
+msgstr "Fügt die Echos eines virtuellen Raums hinzu. Diese frühen Reflexionen lassen den Klang von außerhalb des Kopfes kommen, daher bewirkt diese Einstellung am meisten. Die Voreinstellungen unterscheiden sich in Raumgröße und -form. Der Raum wächst mit dem Lautsprecherabstand bis zu einer maximalen Größe. Aus klingt am trockensten."
 
 msgctxt "#39314"
 msgid "- Binaural level"

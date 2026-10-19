@@ -24367,7 +24367,7 @@ msgstr ""
 #. Omniphony: help text for the room simulation setting
 #: system/settings/settings.xml
 msgctxt "#39313"
-msgid "Adds the echoes of a virtual room around you. These early reflections make sound seem to come from outside your head, so this setting makes the biggest difference. The room grows with Speaker distance: from 2 m (the default) up, Small and Medium room sound almost alike, and Large is clearly bigger. Off gives the driest sound."
+msgid "Adds the echoes of a virtual room around you. These early reflections make sound seem to come from outside your head, so this setting makes the biggest difference. The presets use different room sizes and shapes. The room grows with Speaker distance up to a maximum size. Off gives the driest sound."
 msgstr ""
 
 #. Omniphony: label of the level setting
