@@ -22891,7 +22891,7 @@ msgstr ""
 #. Description for the setting with label #38094
 #: system/settings/settings.xml
 msgctxt "#38095"
-msgid "Allow 44.1 kHz, 88.2 kHz and 176.4 kHz PCM output on G12B devices using HDMI Multi Ch PCM. Off by default: conversion to the 48 kHz family provides a compatibility option for audio cutouts. Enable to try native rates with your HDMI setup. Changes briefly interrupt active audio; if audio is suspended, they apply when it resumes. Passthrough is unaffected."
+msgid "Allow 44.1 kHz, 88.2 kHz and 176.4 kHz PCM output on G12B devices using HDMI Multi Ch PCM. Enabled by default. Turn off to convert to the 48 kHz family if your HDMI setup has audio cutouts. Changes briefly interrupt active audio; if audio is suspended, they apply when it resumes. Passthrough is unaffected."
 msgstr ""
 
 #. Used for the rating selection

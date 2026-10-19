@@ -382,11 +382,11 @@ int main(int argc, char** argv) {
         self.assertEqual(events(3, 2), [1, 1, 1, 5, 5, 0, 0])
         self.assertEqual(events(0, 4), [1, 1, 1, 4, 4, 0, 0])
 
-    def test_setting_defaults_off(self):
+    def test_setting_defaults_on(self):
         tree = ET.parse(ROOT / "system/settings/settings.xml")
         setting = tree.find(f'.//category[@id="audio"]/group/setting[@id="{SETTING}"]')
         self.assertIsNotNone(setting)
-        self.assertEqual(setting.findtext("default"), "false")
+        self.assertEqual(setting.findtext("default"), "true")
         self.assertEqual(setting.findtext("requirement"), "HAVE_G12B")
 
     def test_setting_change_refreshes_device_capabilities(self):

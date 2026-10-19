@@ -809,8 +809,8 @@ bool CAESinkALSA::Initialize(AEAudioFormat &format, std::string &device)
       }
     }
 
-    // Retain the 44.1kHz-family cutout workaround on SC2 and, by default, G12B.
-    // G12B users can opt into the native rates reported by ALSA and the receiver.
+    // Retain the 44.1kHz-family cutout workaround on SC2 and on G12B when
+    // native rates are disabled for compatibility with the HDMI setup.
     // Returning the negotiated rate via format.m_sampleRate lets ActiveAE
     // perform the required conversion when the workaround is active.
     if (!m_passthrough && device.substr(0, 10) == "surround71")
@@ -2029,7 +2029,7 @@ void CAESinkALSA::EnumerateDevice(AEDeviceInfoList &list, const std::string &dev
       {
         info.m_displayNameExtra = "HDMI Multi Ch PCM";
         // Keep advertised rates consistent with the cutout workaround.
-        // G12B exposes native rates only when the user opts in.
+        // G12B exposes native rates when its native-rate setting is enabled.
         int cpuFamily = aml_get_cpufamily_id();
         if (cpuFamily == AML_SC2 ||
             (cpuFamily == AML_G12B &&
