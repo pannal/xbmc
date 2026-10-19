@@ -80,12 +80,13 @@ TEST(TestOmniphonyConfig, ValuesWinKeyByKeyAndListsWhole)
   EXPECT_NE(y.find("  master_gain: -6.5\n"), std::string::npos) << y;
   EXPECT_EQ(y.find("master_gain: -3.00"), std::string::npos) << y;
   // Kodi's reverb merges key by key with the patch's.
-  EXPECT_NE(y.find("    reverb:\n      enabled: true\n      level: 0.10\n      rt60_s: 0.5\n"
+  EXPECT_NE(y.find("    reverb:\n      enabled: true\n      level: 0.20\n      rt60_s: 0.5\n"
                    "      predelay_ms: 20\n"),
             std::string::npos)
       << y;
   EXPECT_NE(y.find("      level: 0.25\n"), std::string::npos) << y;
-  EXPECT_NE(y.find("      room_width_m: 4.00\n"), std::string::npos) << y;
+  // The default medium room, grown for the default 2 m speakers.
+  EXPECT_NE(y.find("      room_width_m: 8.00\n"), std::string::npos) << y;
   EXPECT_NE(y.find("    ear_gains: [1.0, 0.9]\n"), std::string::npos) << y;
   // Kodi's own values and its LFE rows, as written.
   EXPECT_NE(y.find("  bridge_path: '/usr/lib/kodi/omniphony/b.so'\n"), std::string::npos) << y;
