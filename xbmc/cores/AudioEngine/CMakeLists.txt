@@ -13,6 +13,7 @@ set(SOURCES AEResampleFactory.cpp
             Omniphony/OmniphonyRoom.cpp
             Omniphony/OmniphonyTool.cpp
             Utils/AEBitstreamPacker.cpp
+            Utils/AEBluetooth.cpp
             Utils/AEChannelInfo.cpp
             Utils/AEDeviceInfo.cpp
             Utils/AELimiter.cpp
@@ -45,6 +46,7 @@ set(HEADERS AEResampleFactory.h
             Interfaces/ThreadedAE.h
             Utils/AEAudioFormat.h
             Utils/AEBitstreamPacker.h
+            Utils/AEBluetooth.h
             Utils/AEChannelData.h
             Utils/AEChannelInfo.h
             Utils/AEDeviceInfo.h

@@ -227,7 +227,12 @@ protected:
   CAELimiter m_limiter;
   float m_volume;
   float m_rgain;
+  //! What the stream is mixed at: m_requestedAmplify scaled by m_btBoost.
   float m_amplify;
+  //! What the player asked for (volume amplification).
+  float m_requestedAmplify;
+  //! The Bluetooth volume boost, 1 when it does not apply.
+  float m_btBoost;
   float m_bufferedTime;
   int m_fadingSamples;
   float m_fadingBase;

@@ -1,6 +1,7 @@
 xbmc/addons/test                  test/addons
 xbmc/addons/gui/skin/test         test/skin
 xbmc/cores/AudioEngine/Sinks/test test/audioengine_sinks
+xbmc/cores/AudioEngine/Utils/test test/audioengine_utils
 xbmc/cores/VideoPlayer/test/edl   test/edl
 xbmc/cores/VideoPlayer/test/recovery test/videoplayer_recovery
 xbmc/cores/VideoPlayer/VideoRenderers/VideoShaders/test test/videoshaders

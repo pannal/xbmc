@@ -16,6 +16,7 @@
 #include "cores/AudioEngine/Omniphony/OmniphonyCache.h"
 #include "cores/AudioEngine/Omniphony/OmniphonyHrtf.h"
 #include "cores/AudioEngine/Omniphony/OmniphonyRoom.h"
+#include "cores/AudioEngine/Utils/AEBluetooth.h"
 #include "dialogs/GUIDialogFileBrowser.h"
 #include "dialogs/GUIDialogOK.h"
 #include "dialogs/GUIDialogTextViewer.h"
@@ -34,6 +35,22 @@
 #include "utils/URIUtils.h"
 
 #include <mutex>
+
+namespace
+{
+std::string BluetoothCodecLabel(const std::string& codec)
+{
+  if (codec == "ldac")
+    return "LDAC (High Quality)";
+  if (codec == "aptx_hd")
+    return "aptX HD";
+  if (codec == "aptx")
+    return "aptX";
+  if (codec == "aac")
+    return "AAC";
+  return "SBC (Baseline)";
+}
+} // namespace
 
 namespace ActiveAE
 {
@@ -305,21 +322,10 @@ void CActiveAESettings::OnSettingChanged(const std::shared_ptr<const CSetting>& 
   // Handle Bluetooth codec changes
   if (setting->GetId() == CSettings::SETTING_AUDIOOUTPUT_BTCODEC)
   {
-    std::string codec = std::static_pointer_cast<const CSettingString>(setting)->GetValue();
+    const std::string profile = AEBluetoothCodecProfile(
+        std::static_pointer_cast<const CSettingString>(setting)->GetValue());
 
-    // Map codec name to PulseAudio profile
-    std::string profile;
-    if (codec == "ldac")
-      profile = "a2dp_sink_ldac";
-    else if (codec == "aptx_hd")
-      profile = "a2dp_sink_aptx_hd";
-    else if (codec == "aptx")
-      profile = "a2dp_sink_aptx";
-    else if (codec == "aac")
-      profile = "a2dp_sink_aac";
-    else if (codec == "sbc")
-      profile = "a2dp_sink_sbc";
-
+    // Automatic switches nothing: the headset keeps what PulseAudio negotiated.
     if (!profile.empty())
     {
       // Find Bluetooth card and switch profile
@@ -466,107 +472,28 @@ void CActiveAESettings::SettingOptionsBluetoothCodecsFiller(
     std::string& current,
     void* data)
 {
+  // Offer the choices and nothing else. `current` comes back to the settings
+  // layer, which saves it when it differs - and a saved codec switches the
+  // headset's profile - so a filler that picked a "better" codec here switched
+  // codecs every time the settings page was opened, and a listener who chose
+  // SBC could never keep it.
   current = std::static_pointer_cast<const CSettingString>(setting)->GetValue();
 
-  std::unique_lock<CCriticalSection> lock(m_instance->m_cs);
-
-  CLog::Log(LOGINFO, "CActiveAESettings: Bluetooth codec filler called");
-
-  // Query PulseAudio for available Bluetooth codecs
-  FILE* pipe = popen("pactl list cards 2>/dev/null | grep -A 50 'bluez_card' | grep 'a2dp_sink' | grep 'available: yes'", "r");
-  if (!pipe)
+  std::string cards;
+  if (FILE* pipe = popen("pactl list cards 2>/dev/null", "r"))
   {
-    CLog::Log(LOGWARNING, "CActiveAESettings: Failed to open pipe for pactl");
-    list.emplace_back("SBC (Default)", "sbc");
-    current = "sbc";
-    return;
+    char buffer[256];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr)
+      cards += buffer;
+    pclose(pipe);
+  }
+  else
+  {
+    CLog::Log(LOGWARNING, "CActiveAESettings: could not run pactl to list Bluetooth codecs");
   }
 
-  // First pass: detect which codecs are available
-  bool hasLDAC = false;
-  bool hasAptXHD = false;
-  bool hasAptX = false;
-  bool hasAAC = false;
-  bool hasSBC = false;
-
-  char buffer[256];
-  while (fgets(buffer, sizeof(buffer), pipe) != nullptr)
-  {
-    std::string line(buffer);
-    CLog::Log(LOGINFO, "CActiveAESettings: Parsing codec line: {}", line);
-
-    if (line.find("a2dp_sink_ldac") != std::string::npos)
-      hasLDAC = true;
-    else if (line.find("a2dp_sink_aptx_hd") != std::string::npos)
-      hasAptXHD = true;
-    else if (line.find("a2dp_sink_aptx") != std::string::npos && line.find("aptx_hd") == std::string::npos)
-      hasAptX = true;
-    else if (line.find("a2dp_sink_aac") != std::string::npos)
-      hasAAC = true;
-    else if (line.find("a2dp_sink_sbc") != std::string::npos)
-      hasSBC = true;
-  }
-  pclose(pipe);
-
-  // Second pass: add codecs to list in priority order (highest quality first)
-  std::string firstCodec;
-  bool foundAny = false;
-
-  if (hasLDAC)
-  {
-    list.emplace_back("LDAC (High Quality)", "ldac");
-    if (!foundAny) firstCodec = "ldac";
-    foundAny = true;
-    CLog::Log(LOGINFO, "CActiveAESettings: Added LDAC codec");
-  }
-  if (hasAptXHD)
-  {
-    list.emplace_back("aptX HD", "aptx_hd");
-    if (!foundAny) firstCodec = "aptx_hd";
-    foundAny = true;
-    CLog::Log(LOGINFO, "CActiveAESettings: Added aptX HD codec");
-  }
-  if (hasAptX)
-  {
-    list.emplace_back("aptX", "aptx");
-    if (!foundAny) firstCodec = "aptx";
-    foundAny = true;
-    CLog::Log(LOGINFO, "CActiveAESettings: Added aptX codec");
-  }
-  if (hasAAC)
-  {
-    list.emplace_back("AAC", "aac");
-    if (!foundAny) firstCodec = "aac";
-    foundAny = true;
-    CLog::Log(LOGINFO, "CActiveAESettings: Added AAC codec");
-  }
-  if (hasSBC)
-  {
-    list.emplace_back("SBC (Baseline)", "sbc");
-    if (!foundAny) firstCodec = "sbc";
-    foundAny = true;
-    CLog::Log(LOGINFO, "CActiveAESettings: Added SBC codec");
-  }
-
-  // Always add SBC as fallback if nothing found
-  if (!foundAny)
-  {
-    CLog::Log(LOGWARNING, "CActiveAESettings: No codecs found, using SBC fallback");
-    list.emplace_back("SBC (Default)", "sbc");
-    current = "sbc";
-  }
-  else if (current.empty() || current == "Default")
-  {
-    current = firstCodec;
-    CLog::Log(LOGINFO, "CActiveAESettings: Setting default codec to {}", current);
-  }
-  else if (current == "sbc" && firstCodec != "sbc")
-  {
-    // Auto-upgrade from SBC to best available codec
-    current = firstCodec;
-    CLog::Log(LOGINFO, "CActiveAESettings: Upgrading from SBC to {}", current);
-  }
-
-  CLog::Log(LOGINFO, "CActiveAESettings: Bluetooth codec filler completed, {} codecs available", list.size());
+  list.emplace_back(g_localizeStrings.Get(39214), AE_BLUETOOTH_CODEC_AUTOMATIC);
+  for (const std::string& codec : AEBluetoothAvailableCodecs(cards))
+    list.emplace_back(BluetoothCodecLabel(codec), codec);
 }
 }
