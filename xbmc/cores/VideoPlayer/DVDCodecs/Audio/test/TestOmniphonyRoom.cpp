@@ -168,7 +168,8 @@ TEST(TestOmniphonyRoom, TheSameChoicesWriteTheSameConfig)
             OmniphonyRenderYaml(choices, "/b.so", -3.0));
   const std::string yaml = OmniphonyRenderYaml(choices, "/b.so", -3.0);
   EXPECT_NE(yaml.find("unit_scale_m: 4.50"), std::string::npos) << yaml;
-  EXPECT_NE(yaml.find("room_width_m: 6.00"), std::string::npos) << yaml;
+  // The large room, grown for 4.5 m speakers up to the engine's 20 m limit.
+  EXPECT_NE(yaml.find("room_width_m: 15.00"), std::string::npos) << yaml;
   EXPECT_NE(yaml.find("    reverb:\n      enabled: true\n      level: 0.35\n"), std::string::npos)
       << yaml;
   EXPECT_NE(yaml.find("gain_db: 6.0 }"), std::string::npos) << yaml;

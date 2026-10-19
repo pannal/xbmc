@@ -4092,7 +4092,7 @@
         </setting>
         <setting id="audiooutput.omniphonyreverb" type="integer" label="39322" help="39323">
           <level>2</level>
-          <default>10</default>
+          <default>20</default>
           <constraints>
             <minimum>0</minimum>
             <step>5</step>

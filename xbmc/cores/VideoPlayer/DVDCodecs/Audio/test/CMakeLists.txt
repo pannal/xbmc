@@ -4,6 +4,7 @@ set(SOURCES TestOmniphonyCache.cpp
             TestOmniphonyPcmStream.cpp
             TestOmniphonyRateCheck.cpp
             TestOmniphonyRoom.cpp
+            TestOmniphonyRoomPreset.cpp
             TestOmniphonySpatialBed.cpp
             TestOmniphonySyncFamily.cpp
             TestOmniphonyTimeline.cpp)
