@@ -6,9 +6,9 @@ image and place them together in `/storage/`. These instructions use CoreELEC's
 standard root profile. The collector checks that its companion is present before
 creating a capture. Use the matching diagnostic kernel and Kodi revision.
 
-The image keeps **Allow native HDMI PCM sample rates OFF by default**.
-A default-settings playback is the resampled compatibility case. It does
-**not** test the reported native 44.1 kHz failure.
+**Allow native HDMI PCM sample rates** is ON by default. Saved choices can
+override the default, so explicitly check the option for each case. Native reproduction needs it ON with actual **44100 Hz** output; the
+compatibility control needs it OFF with actual **48000 Hz** output.
 
 Keep the same affected FLAC, PAPlayer, HDMI chain/input, volume, DSP/ReplayGain,
 crossfade and display mode throughout. Start with the existing reliable
@@ -157,9 +157,9 @@ python3 /storage/audio-diagnostic.py disable
 ```
 
 This removes only the audio marker. The current recording ends at its bound;
-a normal Kodi restart disables it immediately. Keep the native option OFF
-after the control unless explicitly continuing native testing. No reboot-trace
-token, DDR setting or driver/HDMI policy is changed. Keep collected files until
+a normal Kodi restart disables it immediately. Restore your preferred native-rate
+setting after the comparison. No reboot-trace token, DDR setting or driver/HDMI
+policy is changed. Keep collected files until
 they have been received; remove only these owned capture directories/ZIPs and
 the diagnostic log when finished. Return to the ordinary image using the same
 normal CoreELEC update procedure after the test build is no longer needed.
