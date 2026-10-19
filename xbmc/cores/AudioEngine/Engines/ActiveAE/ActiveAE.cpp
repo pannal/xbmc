@@ -15,6 +15,7 @@
 #include "cores/AudioEngine/AEResampleFactory.h"
 #include "cores/AudioEngine/Encoders/AEEncoderFFmpeg.h"
 #include "cores/AudioEngine/Interfaces/IAudioCallback.h"
+#include "cores/AudioEngine/Utils/AEBluetooth.h"
 #include "cores/AudioEngine/Utils/AEStreamData.h"
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
@@ -714,8 +715,8 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         case CActiveAEControlProtocol::STREAMAMP:
           MsgStreamParameter *par;
           par = reinterpret_cast<MsgStreamParameter*>(msg->data);
-          par->stream->m_limiter.SetAmplification(par->parameter.float_par);
-          par->stream->m_amplify = par->parameter.float_par;
+          par->stream->m_requestedAmplify = par->parameter.float_par;
+          UpdateStreamAmplification(par->stream);
           return;
         case CActiveAEControlProtocol::STREAMVOLUME:
           par = reinterpret_cast<MsgStreamParameter*>(msg->data);
@@ -2853,37 +2854,50 @@ void CActiveAE::ValidateOutputDevices(bool saveChanges)
 
 bool CActiveAE::IsSinkA2DP()
 {
-  // Check if the current audio sink is a Bluetooth A2DP device
-  FILE* pipe = popen("pactl list sinks short 2>/dev/null | grep bluez | grep RUNNING", "r");
+  // Only a PulseAudio device can play to the headset. HDMI and the other ALSA
+  // outputs never do, even while the headset is PulseAudio's default sink.
+  const std::string sink = AEBluetoothPulseSink(m_settings.device);
+  if (sink.empty())
+    return false;
+  if (sink != "Default")
+    return AEBluetoothIsA2DPSink(sink);
+
+  // The sink Kodi's "Default" PulseAudio device plays to. Asked by name rather
+  // than by state: a stream is boosted as it is created, before its sink runs.
+  FILE* pipe = popen("pactl get-default-sink 2>/dev/null", "r");
   if (!pipe)
     return false;
 
   char buffer[256];
   bool isA2DP = false;
-
   if (fgets(buffer, sizeof(buffer), pipe) != nullptr)
-  {
-    std::string sinkInfo(buffer);
-    // A2DP sinks end with "a2dp_sink" in their name
-    isA2DP = (sinkInfo.find("a2dp_sink") != std::string::npos);
-  }
+    isA2DP = AEBluetoothIsA2DPSink(buffer);
 
   pclose(pipe);
   return isA2DP;
 }
 
+void CActiveAE::UpdateStreamAmplification(CActiveAEStream* stream)
+{
+  stream->m_amplify = AEBluetoothStreamAmplification(stream->m_requestedAmplify, stream->m_btBoost);
+  stream->m_limiter.SetAmplification(stream->m_amplify);
+}
+
 void CActiveAE::ApplyA2DPBoost()
 {
   bool shouldBoost = m_settings.btVolumeBoost && IsSinkA2DP();
-  float targetAmp = shouldBoost ? 1.25f : 1.0f;
+  float boost = shouldBoost ? 1.25f : 1.0f;
 
-  // Apply to all active streams and count changes
+  // The boost scales each stream's own amplification - the player's volume
+  // amplification among it - and is kept apart from it, so switching it on and
+  // off never overwrites what the player asked for.
   int streamsUpdated = 0;
   for (auto stream : m_streams)
   {
-    if (stream->m_amplify != targetAmp)
+    if (stream->m_btBoost != boost)
     {
-      stream->SetAmplification(targetAmp);
+      stream->m_btBoost = boost;
+      UpdateStreamAmplification(stream);
       streamsUpdated++;
     }
   }
@@ -2892,7 +2906,7 @@ void CActiveAE::ApplyA2DPBoost()
   if (streamsUpdated > 0)
   {
     CLog::Log(LOGDEBUG, "CActiveAE::ApplyA2DPBoost - {} A2DP volume boost ({}x) to {} stream(s)",
-              shouldBoost ? "Applied" : "Removed", targetAmp, streamsUpdated);
+              shouldBoost ? "Applied" : "Removed", boost, streamsUpdated);
   }
 }
 

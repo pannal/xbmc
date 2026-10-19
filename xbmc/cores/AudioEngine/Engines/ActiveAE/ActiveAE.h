@@ -313,6 +313,7 @@ protected:
   void LoadSettings();
   bool IsSinkA2DP();
   void ApplyA2DPBoost();
+  void UpdateStreamAmplification(CActiveAEStream* stream);
   void ValidateOutputDevices(bool saveChanges);
   bool NeedReconfigureBuffers();
   bool NeedReconfigureSink();
