@@ -636,7 +636,9 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           {
             m_extLastDeviceChange.pop();
           }
-          if (m_extLastDeviceChange.size() > 2)
+          // Explicit setting changes must refresh capabilities even during a
+          // burst of hardware notifications.
+          if (!m_sinkCapabilitiesChanged.load() && m_extLastDeviceChange.size() > 2)
           {
             CLog::Log(LOGWARNING, "CActiveAE - received {} device change events within one second",
                       m_extLastDeviceChange.size());
@@ -645,6 +647,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           m_extLastDeviceChange.push(now);
           UnconfigureSink();
           m_controlPort.PurgeOut(CActiveAEControlProtocol::DEVICECHANGE);
+          m_sinkCapabilitiesChanged = false;
           m_sink.EnumerateSinkList(true, "");
           LoadSettings();
           ValidateOutputDevices(false);
@@ -887,7 +890,9 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
         case CActiveAEControlProtocol::INIT:
           m_extError = false;
           m_extSuspended = false;
-          if (!displayReset)
+          // A display reset keeps the device list, unless the devices'
+          // capabilities changed while suspended.
+          if (m_sinkCapabilitiesChanged.exchange(false) || !displayReset)
           {
             m_controlPort.PurgeOut(CActiveAEControlProtocol::DEVICECHANGE);
             m_controlPort.PurgeOut(CActiveAEControlProtocol::DEVICECOUNTCHANGE);
@@ -2772,9 +2777,9 @@ void CActiveAE::LoadSettings()
 
   m_settings.resampleQuality = static_cast<AEQuality>(settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_PROCESSQUALITY));
 #if defined(HAS_LIBAMCODEC)
-  // Preserve the minimum resampling quality on G12B/SC2. SC2's surround71
-  // cutout workaround still converts 44.1kHz-family content; G12B can use native
-  // rates, but other output configurations can still require conversion.
+  // Preserve the minimum resampling quality on G12B/SC2. The surround71 cutout
+  // workaround converts 44.1kHz-family content unless G12B users opt into native
+  // rates; other output configurations can still require conversion.
   {
     int cpuFamily = aml_get_cpufamily_id();
     if ((cpuFamily == AML_G12B || cpuFamily == AML_SC2) &&
@@ -3163,6 +3168,14 @@ void CActiveAE::KeepConfiguration(unsigned int millis)
 
 void CActiveAE::DeviceChange()
 {
+  m_controlPort.SendOutMessage(CActiveAEControlProtocol::DEVICECHANGE);
+}
+
+void CActiveAE::SinkCapabilitiesChanged()
+{
+  // Remembered as well as sent: a suspended engine drops the event, and a
+  // display reset resumes it without listing the devices again.
+  m_sinkCapabilitiesChanged = true;
   m_controlPort.SendOutMessage(CActiveAEControlProtocol::DEVICECHANGE);
 }
 

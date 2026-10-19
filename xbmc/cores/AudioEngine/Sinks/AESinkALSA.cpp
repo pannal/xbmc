@@ -808,14 +808,16 @@ bool CAESinkALSA::Initialize(AEAudioFormat &format, std::string &device)
       }
     }
 
-    // Retain the 44.1kHz-family cutout workaround on SC2. G12B's HDMI PCM
-    // path uses TDM-C/MCLK-C and supports native rates; do not force it through
-    // the old resampling workaround. Returning the negotiated SC2 rate via
-    // format.m_sampleRate lets ActiveAE perform the required conversion.
+    // Retain the 44.1kHz-family cutout workaround on SC2 and, by default, G12B.
+    // G12B users can opt into the native rates reported by ALSA and the receiver.
+    // Returning the negotiated rate via format.m_sampleRate lets ActiveAE
+    // perform the required conversion when the workaround is active.
     if (!m_passthrough && device.substr(0, 10) == "surround71")
     {
       int cpuFamily = aml_get_cpufamily_id();
-      if (cpuFamily == AML_SC2)
+      if (cpuFamily == AML_SC2 ||
+          (cpuFamily == AML_G12B && !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+                                        CSettings::SETTING_AUDIOOUTPUT_G12BNATIVERATES)))
       {
         switch (inconfig.sampleRate)
         {
@@ -830,7 +832,7 @@ bool CAESinkALSA::Initialize(AEAudioFormat &format, std::string &device)
         if (inconfig.sampleRate != format.m_sampleRate)
           CLog::Log(LOGINFO,
                     "CAESinkALSA::Initialize - AML surround71: snapping {}Hz -> {}Hz (44.1kHz "
-                    "family cutout workaround on SC2)",
+                    "family cutout workaround on G12B/SC2)",
                     format.m_sampleRate, inconfig.sampleRate);
       }
     }
@@ -1929,10 +1931,13 @@ void CAESinkALSA::EnumerateDevice(AEDeviceInfoList &list, const std::string &dev
       if (device.substr(0, 10) == "surround71")
       {
         info.m_displayNameExtra = "HDMI Multi Ch PCM";
-        // Keep SC2's advertised rates consistent with its cutout workaround.
-        // G12B retains the native rates reported by ALSA and the receiver.
+        // Keep advertised rates consistent with the cutout workaround.
+        // G12B exposes native rates only when the user opts in.
         int cpuFamily = aml_get_cpufamily_id();
-        if (cpuFamily == AML_SC2)
+        if (cpuFamily == AML_SC2 ||
+            (cpuFamily == AML_G12B &&
+             !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+                 CSettings::SETTING_AUDIOOUTPUT_G12BNATIVERATES)))
           info.m_sampleRates.erase(
               std::remove_if(info.m_sampleRates.begin(), info.m_sampleRates.end(),
                              [](unsigned int rate) {

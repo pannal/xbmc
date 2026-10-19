@@ -16,6 +16,7 @@
 #include "threads/SystemClock.h"
 #include "threads/Thread.h"
 
+#include <atomic>
 #include <list>
 #include <memory>
 #include <queue>
@@ -269,6 +270,11 @@ public:
   bool IsSettingVisible(const std::string &settingId) override;
   void KeepConfiguration(unsigned int millis) override;
   void DeviceChange() override;
+  /*!
+   * \brief The devices' capabilities depend on a setting that changed: list
+   * them again, now or - when suspended - as the engine resumes.
+   */
+  void SinkCapabilitiesChanged();
   void DeviceCountChange(const std::string& driver) override;
   bool GetCurrentSinkFormat(AEAudioFormat &SinkFormat) override;
 
@@ -356,6 +362,8 @@ protected:
   bool m_extDeferData;
   std::queue<time_t> m_extLastDeviceChange;
   bool m_extSuspended = false;
+  //! Set by SinkCapabilitiesChanged until the devices are listed again.
+  std::atomic<bool> m_sinkCapabilitiesChanged{false};
   bool m_isWinSysReg = false;
 
   enum

@@ -81,6 +81,7 @@ CActiveAESettings::CActiveAESettings(CActiveAE &ae) : m_audioEngine(ae)
   std::set<std::string> settingSet;
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_CONFIG);
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_SAMPLERATE);
+  settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_G12BNATIVERATES);
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH);
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_CHANNELS);
   settingSet.insert(CSettings::SETTING_AUDIOOUTPUT_PROCESSQUALITY);
@@ -345,7 +346,10 @@ void CActiveAESettings::OnSettingChanged(const std::shared_ptr<const CSetting>& 
     }
   }
 
-  m_instance->m_audioEngine.OnSettingsChange();
+  if (setting->GetId() == CSettings::SETTING_AUDIOOUTPUT_G12BNATIVERATES)
+    m_audioEngine.SinkCapabilitiesChanged(); // Re-enumerate cached rates before reopening the sink.
+  else
+    m_instance->m_audioEngine.OnSettingsChange();
 }
 
 void CActiveAESettings::SettingOptionsAudioDevicesFiller(const SettingConstPtr& setting,
