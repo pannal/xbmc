@@ -33,12 +33,17 @@ diagnostic output, subject to OS/filesystem progress. The output is
 `/storage/.kodi/temp/audio-diagnostic.log`.
 The marker must be removed afterward to prevent another recording at restart.
 Restarting overwrites this trace; collect it before restarting.
+The collector prints a Kodi diagnostic preflight result before playback. For a
+valid comparison it must say **current**, with no warning that the budget will
+expire during collection. Otherwise enable/restart Kodi, wait for startup and
+begin a new collection. The collector warns and still saves other evidence;
+it does not restart Kodi automatically.
 
 ## Native reproduction
 
 In **Settings > System > Audio**, at Advanced level, turn **Allow native HDMI
 PCM sample rates ON**. Keep the existing HDMI Multi Ch PCM endpoint. Allow the
-brief audio reconfiguration, then start a fresh playback of the same track.
+brief audio reconfiguration, then prepare the same track without starting it.
 
 Immediately before starting the track, run:
 
@@ -70,17 +75,19 @@ recovery in your reply. No screenshots or unrelated settings dumps are needed.
 ## Resampled compatibility control
 
 After the native capture finishes, stop playback, turn the native option
-**OFF**, allow reconfiguration and use the same track from its start:
+**OFF** and allow reconfiguration. Retrieve the previous ZIP, then enable/restart
+Kodi for a fresh diagnostic window. Allow at least 30 seconds for startup and
+check that the TV/audio are awake. Prepare the same track from its beginning,
+then run the collector before starting playback:
 
 ```sh
 python3 /storage/audio-diagnostic.py collect compatibility --seconds 180
 ```
 
 Verify actual **48000 Hz** during playback. Keep the player, DSP, display and
-HDMI setup identical. Mark any dropout the same way. No Kodi restart is needed
-between these two cases. Together they fit within the 900-second window if
-started promptly. If recording expired or another restart is necessary, collect
-the current trace first, then enable/restart a new window.
+HDMI setup identical. Mark any dropout the same way. Restarting overwrites the
+Kodi trace, so retrieve each ZIP first. A fresh window keeps diagnostic recording
+active in both cases even when preparation takes longer than expected.
 
 Each command prints a ZIP path and SHA256. Retrieve those two ZIPs using SFTP
 and return them with the listening observations. The ZIPs contain only this
@@ -91,6 +98,36 @@ Endpoint output is restricted to known ALSA endpoint names and CARD/DEV IDs;
 the collector additionally redacts URLs, IPv4 and MAC addresses in the approved
 configuration snapshots. Raw kernel message text is never exported; event
 categories and selected rate/errno numbers replace it. Inspect files before sharing.
+The collector also reads the cached HDMI fractional-rate policy and retains
+approved numeric fields from existing HDMI setup messages: selected N, lookup
+clock/depth/rate enums and audio source. These messages must occur after collection
+starts, so start the track only after the collector is ready. Missing setup
+messages are unavailable; they are not a physical N/CTS measurement.
+
+## Comparing display modes on an affected setup
+
+Keep native rates **ON**, verify actual **44100 Hz** in both cases and use the
+same track from its beginning, player, chain, DSP and colour/deep-colour settings.
+Choose the first display mode in Kodi, then enable/restart Kodi for a fresh
+window, allow at least 30 seconds and confirm the TV/audio are awake. Run:
+
+```sh
+python3 /storage/audio-diagnostic.py collect native --seconds 180
+```
+
+Listen beyond the previously affected positions and mark every gap. Retrieve
+the printed ZIP. Repeat from enable/restart for the other display mode, using
+the **same command and `native` label**. Identify which ZIP is 60 Hz and which is
+120 Hz in the reply; display snapshots also record the modes. The labels
+`native60` and `native120` are not accepted. Report whether each gap recovered
+automatically; no drops is also a useful result.
+
+For an N-table candidate comparison, retain the same affected 120 Hz mode and
+workload before/after the normal test-image update. Confirm baseline selection
+N4707 and candidate selection N4704 in the returned setup events. Fractional
+120 Hz selects N4459 in both versions and does not exercise this correction.
+The test-image update remains an agreed operator action. A successful candidate
+run is validation evidence, not proof of a downstream clock/receiver mechanism.
 
 ## Finish
 
@@ -133,10 +170,17 @@ uses different packet units; use this capture to investigate PCM, and check
 the RAW flags before interpreting frame totals. Metrics can aggregate multiple
 started streams. Do not infer exact per-stream conservation from their sums.
 
-No observation, dropped submissions, absent windows, invalid reads, truncation
-or missing `END` are **unavailable evidence**, not healthy zeros. A capture made
-while recording continues normally lacks final `END`; its last window may be
-partial. The collector states this explicitly. Kernel access/clock nodes may
+No observation, dropped submissions, absent windows, invalid reads or truncation
+are **unavailable evidence**, not healthy zeros. `capture.json` now separates
+`recording_complete` (an `END` footer exists) from `coverage` for this collection:
+`current`, `partial`, `none` or `unavailable`. It saves collection start/end and
+trace window times, reasons, dropped submissions and final flush lag. `current`
+allows up to two seconds of worker flush lag, reported as `end_lag_us`; it is a
+temporal assessment, not a healthy-audio verdict. A running trace can have current
+coverage without `END`; an expired, completed trace can have no current coverage.
+Older collectors' `complete` field described recording completion only. Unknown
+wall/monotonic clock relationships and discontinuous windows are unavailable.
+Kernel access/clock nodes may
 be unavailable, and a new-event kernel capture contains no earlier history.
 Kernel records retain their printk timestamp and the collector's monotonic
 receive time separately. An unclassified event means its raw text was discarded,

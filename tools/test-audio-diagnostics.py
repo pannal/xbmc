@@ -351,6 +351,56 @@ class Collector(unittest.TestCase):
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
 
+    def test_recording_completion_is_not_current_coverage(self):
+        header = ("AUDIO_DIAG schema=1 clock=CLOCK_MONOTONIC mono_us=1000000 "
+                  "wall_unix_ms=1000 duration_s=900 capture_start_us=1000000 max_bytes=8388608\n")
+        current = header + "WINDOW seq=1 start_us=1000000 end_us=4000000 dropped=2\n"
+        active = self.module.diagnostic_coverage(current, 2000000, 5000000, 2000)
+        self.assertEqual(active["coverage"], "current")
+        self.assertFalse(active["recording_complete"])
+        self.assertEqual(active["end_lag_us"], 1000000)
+        self.assertEqual(active["overlapping_dropped_submissions"], 2)
+        preflight = self.module.diagnostic_coverage(current, 5000000, 5000000, 5000)
+        self.assertEqual(preflight["coverage"], "current")
+        completed = current + "END mono_us=4000100 reason=deadline\n"
+        stale = self.module.diagnostic_coverage(completed, 10000000, 20000000, 10000)
+        self.assertEqual(stale["coverage"], "none")
+        self.assertEqual(stale["reason"], "recording_ended_before_collection")
+        self.assertTrue(stale["recording_complete"])
+        partial = self.module.diagnostic_coverage(completed, 2000000, 10000000, 2000)
+        self.assertEqual(partial["coverage"], "partial")
+        self.assertTrue(partial["recording_complete"])
+        stopped_near_end = self.module.diagnostic_coverage(completed, 2000000, 5000000, 2000)
+        self.assertEqual(stopped_near_end["coverage"], "partial")
+        self.assertEqual(stopped_near_end["reason"], "recording_ended_during_collection")
+        self.assertEqual(self.module.diagnostic_coverage(current, 5000000, 6000000, 5000)["coverage"], "none")
+
+    def test_invalid_trace_and_clock_relationship_are_unavailable(self):
+        header = ("AUDIO_DIAG schema=1 clock=CLOCK_MONOTONIC mono_us=1000000 "
+                  "wall_unix_ms=1000 duration_s=900 capture_start_us=1000000 max_bytes=8388608\n")
+        window = "WINDOW seq=1 start_us=1000000 end_us=2000000 dropped=0\n"
+        for text in ("", header, header + "WINDOW broken\n", header + window +
+                     "WINDOW seq=3 start_us=3000000 end_us=4000000 dropped=0\n",
+                     header + window + "END BROKEN\n", header + window +
+                     "END mono_us=1000001 reason=deadline\n",
+                     header + window + "END mono_us=2000001 reason=deadline\n" + window):
+            self.assertEqual(self.module.diagnostic_coverage(text, 1000000, 4000000, 1000)["coverage"], "unavailable")
+        foreign = self.module.diagnostic_coverage(header + window, 1000000, 2000000, 100000)
+        self.assertEqual(foreign["reason"], "clock_relationship_unverified")
+        self.assertEqual(foreign["coverage"], "unavailable")
+
+    def test_existing_acr_messages_keep_only_approved_fields(self):
+        for n in (4707, 4704, 4459, 6272, 8918):
+            event = self.module.kernel_event(f"6,12,34000,-;hdmitx: hw: aud_n_para = {n}")
+            self.assertEqual((event["kind"], event["n"]), ("hdmi_acr_n", n))
+        selected = self.module.kernel_event("6,12,34000,-;hdmitx: fs = 2, cd = 4, tmds_clk = 297000")
+        self.assertEqual((selected["fs_enum"], selected["depth_enum"], selected["lookup_clock_khz"]), (2, 4, 297000))
+        source = self.module.kernel_event("6,12,34000,-;hdmitx: hw: hdmitx tx_aud_src = 1, audio_param->channel_num = 1, hdev->aud_output_ch = 2")
+        self.assertEqual((source["kind"], source["tx_aud_src"]), ("hdmi_audio_source", 1))
+        private = self.module.kernel_event("6,12,34000,-;hdmitx: hw: aud_n_para = 4707 PRIVATE token=SECRET")
+        self.assertNotIn("n", private)
+        self.assertNotIn("SECRET", json.dumps(private))
+
     def test_private_data_and_mark_validation(self):
         clean = self.module.redact("hdmi smb://user:pass@192.168.0.2/music 192.168.0.2 00:11:22:33:44:55")
         for secret in ("user", "pass", "192.168", "00:11"):
@@ -392,6 +442,13 @@ def synthetic_open(path,*args,**kwargs):
     if str(path)=='/dev/kmsg': raise FileNotFoundError(2,'synthetic unavailable')
     return original_open(path,*args,**kwargs)
 m.os.open=synthetic_open
+# Completed earlier recording: collection must warn and metadata must say no
+# current coverage, even though the old recording has its END footer.
+t=m.time.monotonic_ns()//1000; w=m.time.time_ns()//1000000
+(m.TEMP/'audio-diagnostic.log').write_text(
+ f'AUDIO_DIAG schema=1 clock=CLOCK_MONOTONIC mono_us={t-20000000} wall_unix_ms={w-20000} duration_s=10 capture_start_us={t-20000000} max_bytes=8388608\n'
+ f'WINDOW seq=1 start_us={t-20000000} end_us={t-10000000} dropped=0\n'
+ f'END mono_us={t-10000000} reason=deadline\n')
 m.collect('native',0.15)
 '''
             child = subprocess.Popen([sys.executable, "-c", code,
@@ -403,6 +460,15 @@ m.collect('native',0.15)
                 child.wait(timeout=2)
                 self.assertEqual(child.returncode, 0, child.stderr.read().decode())
                 self.assertEqual(len(list(Path(temporary).glob("*.zip"))), 1)
+                output = child.stdout.read().decode()
+                self.assertIn("Kodi diagnostic preflight: none", output)
+                self.assertIn("Kodi diagnostic coverage: none", output)
+                import zipfile
+                with zipfile.ZipFile(next(Path(temporary).glob("*.zip"))) as archive:
+                    metadata = json.loads(archive.read("capture.json"))
+                self.assertTrue(metadata["diagnostic"]["recording_complete"])
+                self.assertEqual(metadata["diagnostic"]["coverage"], "none")
+                self.assertLess(metadata["collection_start_us"], metadata["collection_end_us"])
             finally:
                 if child.poll() is None:
                     child.kill()
@@ -443,10 +509,14 @@ assert os.get_blocking(sys.stdin.fileno())==before
             node.mkdir(parents=True)
             (node / "hw_params").write_text("rate: 44100 (44100/1)\n")
             (node / "status").write_text("PRIVATE_STATUS_MUST_NOT_BE_READ")
+            frac = root / "sys/class/amhdmitx/amhdmitx0/frac_rate_policy"
+            frac.parent.mkdir(parents=True)
+            frac.write_text("0\n")
             result = self.module.configuration(root)
             self.assertNotIn("PRIVATE", json.dumps(result))
             self.assertTrue(result["nodes"]["proc/asound/card0/pcm3p/sub0/hw_params"]["available"])
             self.assertFalse(result["audio_clocks"]["available"])
+            self.assertEqual(result["nodes"]["sys/class/amhdmitx/amhdmitx0/frac_rate_policy"]["text"], "0\n")
             path = root / "bounded"
             output = self.module.BoundedFile(path, 1024)
             for _ in range(100):

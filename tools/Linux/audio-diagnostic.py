@@ -62,6 +62,18 @@ def kernel_event(line):
              "source_header_available": header is not None}
     if header:
         event.update(kernel_sequence=int(header[1]), kernel_timestamp_us=int(header[2]))
+    # Existing vendor setup messages only: no raw text or extra driver tracing.
+    n_value = re.fullmatch(r"hdmitx:\s*hw:\s*aud_n_para = (\d{1,7})\s*", lower)
+    selection = re.fullmatch(r"hdmitx: fs = (\d{1,2}), cd = (\d{1,2}), tmds_clk = (\d{1,7})\s*", lower)
+    source = re.fullmatch(r"hdmitx:\s*hw:\s*hdmitx tx_aud_src = ([01]), audio_param->channel_num = (\d{1,2}), hdev->aud_output_ch = (\d{1,3})\s*", lower)
+    if n_value and 0 < int(n_value[1]) < 1048576:
+        event.update(kind="hdmi_acr_n", n=int(n_value[1]))
+    elif selection:
+        event.update(kind="hdmi_acr_selection", fs_enum=int(selection[1]),
+                     depth_enum=int(selection[2]), lookup_clock_khz=int(selection[3]))
+    elif source:
+        event.update(kind="hdmi_audio_source", tx_aud_src=int(source[1]),
+                     channel_num_enum=int(source[2]), forced_output_channels=int(source[3]))
     rate = re.search(r"\b(?:sample[_ -]?rate|rate|fs)\s*[:=]\s*(\d{4,6})\b", lower)
     if rate and int(rate[1]) in (8000, 11025, 16000, 22050, 24000, 32000, 44100,
                                48000, 88200, 96000, 176400, 192000, 352800, 384000):
@@ -123,10 +135,10 @@ def configuration(root=Path("/")):
     files += sorted(glob.glob(str(root / "proc/asound/card*/pcm*p/sub*/sw_params")))
     files += [str(root / path) for path in (
         "sys/class/amhdmitx/amhdmitx0/config", "sys/class/amhdmitx/amhdmitx0/avmute",
-        "sys/class/display/mode",
+        "sys/class/display/mode", "sys/class/amhdmitx/amhdmitx0/frac_rate_policy",
     )]
     result = {"mono_us": time.monotonic_ns() // 1000, "wall_unix_ms": time.time_ns() // 1000000,
-              "pcm_nodes_found": len(files) - 3, "nodes_truncated": len(files) > 35,
+              "pcm_nodes_found": len(files) - 4, "nodes_truncated": len(files) > 35,
               "nodes": {str(Path(path).relative_to(root)): read_node(path) for path in files[:35]}}
     clocks = read_node(root / "sys/kernel/debug/clk/clk_summary", 256 * 1024)
     if clocks.get("available"):
@@ -170,7 +182,82 @@ def mark(line):
             "track_position": match[1] or "unknown", "automatic_recovery": match[2] or "unknown"}
 
 
+def diagnostic_coverage(text, start_us, end_us, wall_start_ms):
+    """Temporal coverage only; current windows do not establish healthy audio.
+
+    Allow two seconds of worker flush lag at the end, and expose the actual
+    lag. Wall/monotonic anchors conservatively reject old-boot/changed-clock
+    ambiguity; an unknown clock relationship must never look current.
+    """
+    result = {"coverage": "unavailable", "reason": "invalid_header",
+              "recording_complete": False, "worker_lag_allowance_us": 2000000}
+    header = re.match(r"AUDIO_DIAG schema=1 clock=CLOCK_MONOTONIC mono_us=(\d{1,20}) "
+                      r"wall_unix_ms=(\d{1,20}) duration_s=(\d{1,4}) "
+                      r"capture_start_us=(\d{1,20}) max_bytes=(\d{1,20})\n", text)
+    if not header or end_us < start_us:
+        return result
+    anchor, wall, seconds, trace_start, _ = map(int, header.groups())
+    result.update(trace_start_us=trace_start, configured_deadline_us=trace_start + seconds * 1000000)
+    delta = wall_start_ms - (wall + (start_us - anchor) // 1000)
+    result["wall_anchor_difference_ms"] = delta
+    if abs(delta) > 5000:
+        result["reason"] = "clock_relationship_unverified"
+        return result
+    windows = []
+    malformed = False
+    for line in text.splitlines():
+        if result["recording_complete"] and line:
+            malformed = True
+        if line.startswith("WINDOW "):
+            match = re.fullmatch(r"WINDOW seq=(\d{1,20}) start_us=(\d{1,20}) "
+                                 r"end_us=(\d{1,20}) dropped=(\d{1,20})", line)
+            if match:
+                seq, first, last, dropped = map(int, match.groups())
+                if trace_start <= first < last <= end_us + 2000000:
+                    windows.append((seq, first, last, dropped))
+                else:
+                    malformed = True
+            else:
+                malformed = True
+        elif line.startswith("END "):
+            match = re.fullmatch(r"END mono_us=(\d{1,20}) reason=([a-z_]{1,32})", line)
+            if match:
+                result.update(recording_complete=True, recording_end_us=int(match[1]),
+                              recording_end_reason=match[2])
+            else:
+                malformed = True
+    result["window_count"] = len(windows)
+    if malformed or any(b[0] != a[0] + 1 or b[1] != a[2] for a, b in zip(windows, windows[1:])):
+        result["reason"] = "invalid_or_discontinuous_windows"
+        return result
+    if not windows:
+        result["reason"] = "no_windows"
+        return result
+    first, last = windows[0][1], windows[-1][2]
+    if result.get("recording_end_us", last) < last:
+        result["reason"] = "footer_precedes_windows"
+        return result
+    result.update(first_window_start_us=first, last_window_end_us=last,
+                  end_lag_us=max(0, end_us - last),
+                  overlapping_dropped_submissions=sum(w[3] for w in windows
+                                                     if w[2] >= start_us and w[1] <= end_us))
+    preflight_recent = start_us == end_us and last >= start_us - result["worker_lag_allowance_us"]
+    if (last < start_us and not preflight_recent) or first > end_us:
+        result.update(coverage="none", reason="no_current_windows")
+    elif first <= start_us and last >= end_us - result["worker_lag_allowance_us"]:
+        result.update(coverage="current", reason="windows_cover_collection_with_worker_lag")
+    else:
+        result.update(coverage="partial", reason="windows_do_not_cover_collection")
+    if result.get("recording_end_us", end_us) < start_us:
+        result.update(coverage="none", reason="recording_ended_before_collection")
+    elif result.get("recording_end_us", end_us) < end_us:
+        result.update(coverage="partial", reason="recording_ended_during_collection")
+    return result
+
+
 def collect(label, seconds):
+    start_us = time.monotonic_ns() // 1000
+    wall_start_ms = time.time_ns() // 1000000
     TEMP.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     directory = TEMP / f"audio-capture-{label}-{stamp}-{os.getpid()}"
@@ -179,7 +266,12 @@ def collect(label, seconds):
     kernel = BoundedFile(directory / "kernel-audio.log")
     metadata = {"label": label, "seconds": seconds, "kernel_release": os.uname().release,
                 "release": read_node("/etc/release"), "kmsg": {"available": False},
-                "clock": "CLOCK_MONOTONIC", "marks": []}
+                "clock": "CLOCK_MONOTONIC", "marks": [],
+                "collection_start_us": start_us, "collection_wall_start_ms": wall_start_ms}
+    initial = read_node(TEMP / "audio-diagnostic.log", MAX_DIAGNOSTIC, owned=True)
+    preflight = diagnostic_coverage(initial["text"], start_us, start_us, wall_start_ms) if initial.get("available") else {
+        "coverage": "unavailable", "reason": "trace_unavailable"}
+    metadata["diagnostic_preflight"] = preflight
     selector = selectors.DefaultSelector()
     kmsg = None
     try:
@@ -206,6 +298,11 @@ def collect(label, seconds):
     next_config = 0.0
     kernel_reads = 0
     try:
+        print("Kodi diagnostic preflight: " + preflight["coverage"] + " (" + preflight["reason"] + ")", flush=True)
+        if preflight["coverage"] != "current":
+            print("WARNING: no verified fresh Kodi coverage. Enable/restart Kodi for a valid comparison; this command does not restart it.", flush=True)
+        elif preflight.get("configured_deadline_us", 0) < start_us + seconds * 1000000:
+            print("WARNING: Kodi diagnostic budget expires during this collection. Enable/restart Kodi before the comparison.", flush=True)
         print(f"Collecting {label} for {seconds}s. Start the SAME track now.", flush=True)
         print("At a dropout press Enter, or enter e.g. '55 yes' (position, automatic recovery yes/no/unknown).", flush=True)
         while time.monotonic() < deadline:
@@ -279,13 +376,18 @@ def collect(label, seconds):
     metadata["configuration_truncated"] = config.truncated
     metadata["kernel_truncated"] = kernel.truncated
     metadata["kmsg"]["read_attempts"] = kernel_reads
+    end_us = time.monotonic_ns() // 1000
+    metadata["collection_end_us"] = end_us
+    metadata["collection_wall_end_ms"] = time.time_ns() // 1000000
     diagnostic = read_node(TEMP / "audio-diagnostic.log", MAX_DIAGNOSTIC, owned=True)
     if diagnostic.get("available"):
         text = diagnostic.pop("text")
-        diagnostic["complete"] = "\nEND " in text
-        # The trace may still be recording. A partial copy is explicit, not a healthy trace.
+        diagnostic.update(diagnostic_coverage(text, start_us, end_us, wall_start_ms))
+        # Completion and current collection coverage are independent.
         (directory / "audio-diagnostic.log").write_text(text, encoding="utf-8")
         diagnostic["sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    else:
+        diagnostic.update(coverage="unavailable", reason="trace_unavailable")
     metadata["diagnostic"] = diagnostic
     (directory / "capture.json").write_text(json.dumps(metadata, indent=2) + "\n")
     archive = directory.with_suffix(".zip")
@@ -293,6 +395,9 @@ def collect(label, seconds):
         for path in sorted(directory.iterdir()):
             output.write(path, arcname=path.name)
     os.chmod(archive, 0o600)
+    print("Kodi diagnostic coverage: " + diagnostic["coverage"] + " (" + diagnostic["reason"] + ")")
+    if diagnostic["coverage"] != "current":
+        print("WARNING: this archive lacks verified Kodi coverage for the full collection; do not treat missing metrics as healthy.")
     print(f"Capture: {archive}\nSHA256: {hashlib.sha256(archive.read_bytes()).hexdigest()}")
 
 
