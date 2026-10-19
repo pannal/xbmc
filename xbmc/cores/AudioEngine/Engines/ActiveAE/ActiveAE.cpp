@@ -19,9 +19,11 @@
 #include "cores/AudioEngine/Utils/AEStreamData.h"
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
+#include "cores/AudioEngine/Utils/AudioDiagnostics.h"
 #include "cores/DataCacheCore.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "filesystem/SpecialProtocol.h"
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 
@@ -312,6 +314,7 @@ void CActiveAE::Dispose()
   m_controlPort.Purge();
   m_dataPort.Purge();
   m_sink.Dispose();
+  AudioDiagnostics::Stop();
 }
 
 //-----------------------------------------------------------------------------
@@ -345,6 +348,7 @@ int AE_parentStates[] = {
 
 void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
 {
+  AudioDiagnostics::Record({{AudioDiagnostics::Metric::AeSignal, signal}});
   for (int state = m_state; ; state = AE_parentStates[state])
   {
     switch (state)
@@ -808,6 +812,8 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           MsgStreamSample *msgData;
           CSampleBuffer *samples;
           msgData = reinterpret_cast<MsgStreamSample*>(msg->data);
+          AudioDiagnostics::Record(
+              {{AudioDiagnostics::Metric::AeInputFrames, msgData->buffer->pkt->nb_samples}});
           samples = msgData->stream->m_processingSamples.front();
           msgData->stream->m_processingSamples.pop_front();
           if (samples != msgData->buffer)
@@ -1053,6 +1059,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
 
 void CActiveAE::Process()
 {
+  AudioDiagnostics::Start(CSpecialProtocol::TranslatePath("special://temp/"));
   Message *msg = NULL;
   Protocol *port = NULL;
   bool gotMsg;
@@ -1070,6 +1077,8 @@ void CActiveAE::Process()
 
   while (!m_bStop)
   {
+    AudioDiagnostics::Gap(AudioDiagnostics::Metric::AeLoopGapUs);
+    AudioDiagnostics::Record({{AudioDiagnostics::Metric::AeState, m_state}});
     gotMsg = false;
     timer.Set(m_extTimeout);
 
@@ -1978,6 +1987,28 @@ void CActiveAE::UnconfigureSink()
 bool CActiveAE::RunStages()
 {
   bool busy = false;
+  if (AudioDiagnostics::Enabled())
+  {
+    using M = AudioDiagnostics::Metric;
+    int active = 0, buffering = 0, empty = 0;
+    for (auto* stream : m_streams)
+    {
+      if (!stream->m_paused && stream->m_started)
+      {
+        ++active;
+        if (stream->m_processingBuffers && stream->m_processingBuffers->m_outputSamples.empty())
+          ++empty;
+      }
+      buffering += stream->m_streamIsBuffering;
+      if (stream->m_processingBuffers)
+        AudioDiagnostics::Scaled(M::AeRatioPpm, stream->m_processingBuffers->GetRR());
+    }
+    AudioDiagnostics::Record({{M::AeStreamCount, static_cast<int64_t>(m_streams.size())},
+                              {M::AeActiveStreams, active}, {M::AeBufferingStreams, buffering},
+                              {M::AeEmptyStreams, empty}, {M::AeMode, m_mode},
+                              {M::AeQuality, m_settings.resampleQuality}});
+    AudioDiagnostics::Scaled(M::AeTargetUs, static_cast<double>(m_targetBufferLevel));
+  }
 
   // serve input streams
   std::list<CActiveAEStream*>::iterator it;
@@ -1996,6 +2027,8 @@ bool CActiveAE::RunStages()
 
     // provide buffers to stream
     float time = m_stats.GetCacheTime((*it));
+    if (AudioDiagnostics::Enabled())
+      AudioDiagnostics::Scaled(AudioDiagnostics::Metric::AeCacheUs, static_cast<double>(time));
     CSampleBuffer *buffer;
     if (!(*it)->m_drain)
     {
@@ -2059,7 +2092,10 @@ bool CActiveAE::RunStages()
   // The buffer level "GetWaterLevel()" always tries to follow m_targetBufferLevel because when it
   // is lower, audio samples are added, and when it is higher, audio samples stop being added
   // and the level goes down.
-  if ((m_stats.GetWaterLevel() < m_targetBufferLevel || isTrueHDPassthrough) &&
+  const float diagnosticWaterLevel = m_stats.GetWaterLevel();
+  if (AudioDiagnostics::Enabled())
+    AudioDiagnostics::Scaled(AudioDiagnostics::Metric::AeWaterUs, static_cast<double>(diagnosticWaterLevel));
+  if ((diagnosticWaterLevel < m_targetBufferLevel || isTrueHDPassthrough) &&
       (m_mode != MODE_TRANSCODE || (m_encoderBuffers && !m_encoderBuffers->m_freeSamples.empty())))
   {
     // calculate sync error
@@ -2445,6 +2481,7 @@ bool CActiveAE::RunStages()
     CSampleBuffer *out = NULL;
     out = m_sinkBuffers->m_outputSamples.front();
     m_sinkBuffers->m_outputSamples.pop_front();
+    AudioDiagnostics::Record({{AudioDiagnostics::Metric::AeOutputFrames, out->pkt->nb_samples}});
     m_sink.m_dataPort.SendOutMessage(CSinkDataProtocol::SAMPLE,
         &out, sizeof(CSampleBuffer*));
     busy = true;
@@ -2799,6 +2836,18 @@ void CActiveAE::LoadSettings()
   m_settings.silenceTimeoutMinutes = settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_STREAMSILENCE);
   m_settings.mixSubLevel = settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_MIXSUBLEVEL) / 100.0;
   m_settings.lowLatencyMode = settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_LOWLATENCY);
+  if (AudioDiagnostics::Enabled())
+  {
+    using M = AudioDiagnostics::Metric;
+    AudioDiagnostics::Record({{M::AeLowLatency, m_settings.lowLatencyMode},
+                              {M::AeNormalize, m_settings.normalizelevels},
+                              {M::AeStereoUpmix, m_settings.stereoupmix}});
+#if defined(HAS_LIBAMCODEC)
+    if (aml_get_cpufamily_id() == AML_G12B)
+      AudioDiagnostics::Record({{M::AeNativeOptIn,
+                                 settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_G12BNATIVERATES)}});
+#endif
+  }
   m_settings.btVolumeBoost = settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_BTVOLUMEBOOST);
 
   // Apply A2DP boost if needed

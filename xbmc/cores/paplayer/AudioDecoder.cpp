@@ -14,6 +14,7 @@
 #include "ServiceBroker.h"
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationVolumeHandling.h"
+#include "cores/AudioEngine/Utils/AudioDiagnostics.h"
 #include "music/tags/MusicInfoTag.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
@@ -69,6 +70,7 @@ bool CAudioDecoder::Create(const CFileItem &file, int64_t seekOffset)
   m_eof = false;
 
   // get correct cache size
+  m_diagnosticPlaying = false;
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   unsigned int filecache = settings->GetInt(CSettings::SETTING_CACHEAUDIO_INTERNET);
   if ( file.IsHD() )
@@ -99,6 +101,8 @@ bool CAudioDecoder::Create(const CFileItem &file, int64_t seekOffset)
 
   /* allocate the pcmBuffer for 2 seconds of audio */
   m_pcmBuffer.Create(2 * blockSize * m_codec->m_format.m_sampleRate);
+  if (AudioDiagnostics::Enabled())
+    AudioDiagnostics::Event("decoder create codec=" + m_codec->m_CodecName);
 
   if (file.HasMusicInfoTag())
   {
@@ -215,7 +219,11 @@ void *CAudioDecoder::GetData(unsigned int samples)
     size = m_pcmBuffer.getMaxReadSize();
   }
 
-  if (m_pcmBuffer.ReadData((char *)m_outputBuffer, size))
+  const bool read = m_pcmBuffer.ReadData((char *)m_outputBuffer, size);
+  AudioDiagnostics::Record({{AudioDiagnostics::Metric::DecoderConsumeBytes, read ? size : 0},
+                            {AudioDiagnostics::Metric::DecoderDataError, !read}},
+                           !m_diagnosticPlaying.load(std::memory_order_relaxed));
+  if (read)
   {
     if (m_status == STATUS_ENDING && m_pcmBuffer.getMaxReadSize() == 0)
       m_status = STATUS_ENDED;
@@ -243,6 +251,8 @@ uint8_t *CAudioDecoder::GetRawData(int &size)
 
 int CAudioDecoder::ReadSamples(int numsamples)
 {
+  using M = AudioDiagnostics::Metric;
+  const bool preparation = !m_diagnosticPlaying.load(std::memory_order_relaxed);
   if (m_status == STATUS_NO_FILE || m_status == STATUS_ENDING || m_status == STATUS_ENDED)
     return RET_SLEEP;             // nothing loaded yet
 
@@ -255,6 +265,12 @@ int CAudioDecoder::ReadSamples(int numsamples)
 
   if (m_codec->m_format.m_dataFormat != AE_FMT_RAW)
   {
+    if (AudioDiagnostics::Enabled())
+      AudioDiagnostics::Record({{M::DecoderRingBytes, m_pcmBuffer.getMaxReadSize()},
+                                {M::DecoderStatus, m_status},
+                                {M::DecoderRate, m_codec->m_format.m_sampleRate},
+                                {M::DecoderChannels, m_codec->m_format.m_channelLayout.Count()},
+                                {M::DecoderBits, m_codec->m_bitsPerSample}}, preparation);
     // Read in more data
     int maxsize = std::min<int>(INPUT_SAMPLES, m_pcmBuffer.getMaxWriteSize() / (m_codec->m_bitsPerSample >> 3));
     numsamples = std::min<int>(numsamples, maxsize);
@@ -262,9 +278,20 @@ int CAudioDecoder::ReadSamples(int numsamples)
     if (numsamples)
     {
       size_t readSize = 0;
+      const int64_t diagnosticStart = AudioDiagnostics::Begin();
+      if (diagnosticStart)
+        AudioDiagnostics::Record({{M::DecoderReadBeginBytes,
+                                   numsamples * (m_codec->m_bitsPerSample >> 3)}}, preparation);
       int result = m_codec->ReadPCM(
           m_pcmInputBuffer, static_cast<size_t>(numsamples * (m_codec->m_bitsPerSample >> 3)),
           &readSize);
+      if (diagnosticStart)
+        AudioDiagnostics::Record({{M::DecoderReadUs, AudioDiagnostics::NowUs() - diagnosticStart},
+                                  {M::DecoderRequestedBytes,
+                                   numsamples * (m_codec->m_bitsPerSample >> 3)},
+                                  {M::DecoderReadBytes, static_cast<int64_t>(readSize)},
+                                  {M::DecoderResult, result},
+                                  {M::DecoderEmpty, readSize == 0}}, preparation);
 
       if (result != READ_ERROR && readSize)
       {

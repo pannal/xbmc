@@ -13,6 +13,7 @@
 #include "cores/AudioEngine/Utils/AEBitstreamPacker.h"
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
+#include "cores/AudioEngine/Utils/AudioDiagnostics.h"
 #include "utils/EndianSwap.h"
 #include "utils/MemUtils.h"
 #include "utils/log.h"
@@ -242,6 +243,8 @@ int SINK_parentStates[] = {
 
 void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
 {
+  AudioDiagnostics::Record({{AudioDiagnostics::Metric::SinkState, m_state},
+                            {AudioDiagnostics::Metric::SinkSignal, signal}});
   for (int state = m_state; ; state = SINK_parentStates[state])
   {
     switch (state)
@@ -1019,6 +1022,10 @@ void CActiveAESink::ReturnBuffers()
 
 unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
 {
+  AudioDiagnostics::Gap(AudioDiagnostics::Metric::SinkGapUs);
+  AudioDiagnostics::Record({{AudioDiagnostics::Metric::SinkPooled, samples->pool != nullptr},
+                            {AudioDiagnostics::Metric::SinkRaw,
+                             m_requestedFormat.m_dataFormat == AE_FMT_RAW}});
   uint8_t **buffer = samples->pkt->data;
   uint8_t *packBuffer;
   unsigned int frames = samples->pkt->nb_samples;
@@ -1088,7 +1095,17 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   while (frames > 0)
   {
     maxFrames = std::min(frames, m_sinkFormat.m_frames);
+    const int64_t diagnosticStart = AudioDiagnostics::Begin();
+    if (diagnosticStart)
+      AudioDiagnostics::Record({{AudioDiagnostics::Metric::SinkBeginFrames, maxFrames}});
     written = m_sink->AddPackets(buffer, maxFrames, totalFrames - frames);
+    if (diagnosticStart)
+      AudioDiagnostics::Record(
+          {{AudioDiagnostics::Metric::SinkCallUs, AudioDiagnostics::NowUs() - diagnosticStart},
+           {AudioDiagnostics::Metric::SinkWantFrames, maxFrames},
+           {AudioDiagnostics::Metric::SinkWrittenFrames, written <= maxFrames ? written : 0},
+           {AudioDiagnostics::Metric::SinkZero, written == 0},
+           {AudioDiagnostics::Metric::SinkInvalid, written > maxFrames}});
     if (written == 0)
     {
       CThread::Sleep(
@@ -1122,6 +1139,9 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
     frames -= written;
 
     m_sink->GetDelay(status);
+
+    if (AudioDiagnostics::Enabled())
+      AudioDiagnostics::Scaled(AudioDiagnostics::Metric::SinkDelayUs, status.delay);
 
     if (m_requestedFormat.m_dataFormat != AE_FMT_RAW)
       m_stats->UpdateSinkDelay(status, samples->pool ? written : 0);

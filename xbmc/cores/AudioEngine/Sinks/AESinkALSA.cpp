@@ -16,6 +16,7 @@
 #endif
 #include "cores/AudioEngine/Utils/AEELDParser.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
+#include "cores/AudioEngine/Utils/AudioDiagnostics.h"
 #include "platform/Platform.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
@@ -910,8 +911,10 @@ bool CAESinkALSA::Initialize(AEAudioFormat &format, std::string &device)
   }
 
   // we want it blocking
-  snd_pcm_nonblock(m_pcm, 0);
-  snd_pcm_prepare (m_pcm);
+  const int nonblockResult = snd_pcm_nonblock(m_pcm, 0);
+  const int prepareResult = snd_pcm_prepare(m_pcm);
+  AudioDiagnostics::Record({{AudioDiagnostics::Metric::AlsaNonblockResult, nonblockResult},
+                            {AudioDiagnostics::Metric::AlsaPrepareResult, prepareResult}});
 
   if (m_passthrough && inconfig.channels != outconfig.channels)
   {
@@ -932,6 +935,25 @@ bool CAESinkALSA::Initialize(AEAudioFormat &format, std::string &device)
 
   m_format              = format;
   m_formatSampleRateMul = 1.0 / (double)m_format.m_sampleRate;
+
+  if (AudioDiagnostics::Enabled())
+  {
+    using M = AudioDiagnostics::Metric;
+    AudioDiagnostics::Event("ALSA endpoint_requested=" + AudioDiagnostics::SafeEndpoint(m_initDevice) +
+                            " endpoint_actual=" + AudioDiagnostics::SafeEndpoint(device));
+    AudioDiagnostics::Event("ALSA format_requested=" + std::string(CAEUtil::DataFormatToStr(m_initFormat.m_dataFormat)) +
+                            " format_actual=" + CAEUtil::DataFormatToStr(format.m_dataFormat) +
+                            " layout_requested=" + std::string(m_initFormat.m_channelLayout) +
+                            " layout_actual=" + std::string(format.m_channelLayout));
+    AudioDiagnostics::Record({{M::AlsaRequestedRate, m_initFormat.m_sampleRate},
+                              {M::AlsaActualRate, format.m_sampleRate},
+                              {M::AlsaRequestedChannels, m_initFormat.m_channelLayout.Count()},
+                              {M::AlsaActualChannels, format.m_channelLayout.Count()},
+                              {M::AlsaRequestedFormat, m_initFormat.m_dataFormat},
+                              {M::AlsaActualFormat, format.m_dataFormat},
+                              {M::AlsaPeriod, format.m_frames}, {M::AlsaBuffer, m_bufferSize},
+                              {M::AlsaPassthrough, m_passthrough}});
+  }
 
   return true;
 }
@@ -1198,7 +1220,8 @@ void CAESinkALSA::Deinitialize()
   if (m_pcm)
   {
     Stop();
-    snd_pcm_close(m_pcm);
+    const int result = snd_pcm_close(m_pcm);
+    AudioDiagnostics::Record({{AudioDiagnostics::Metric::AlsaCloseResult, result}});
     m_pcm = NULL;
   }
 }
@@ -1207,22 +1230,28 @@ void CAESinkALSA::Stop()
 {
   if (!m_pcm)
     return;
-  snd_pcm_drop(m_pcm);
+  const int result = snd_pcm_drop(m_pcm);
+  AudioDiagnostics::Record({{AudioDiagnostics::Metric::AlsaDropResult, result}});
 }
 
 void CAESinkALSA::GetDelay(AEDelayStatus& status)
 {
   if (!m_pcm)
   {
+    AudioDiagnostics::Record({{AudioDiagnostics::Metric::AlsaNoPcm, 1}});
     status.SetDelay(0);
     return;
   }
   snd_pcm_sframes_t frames = 0;
-  snd_pcm_delay(m_pcm, &frames);
+  const int result = snd_pcm_delay(m_pcm, &frames);
+  AudioDiagnostics::Record({{AudioDiagnostics::Metric::AlsaDelayResult, result}});
+  if (result >= 0)
+    AudioDiagnostics::Record({{AudioDiagnostics::Metric::AlsaDelayFrames, frames}});
 
   if (frames < 0)
   {
-    snd_pcm_forward(m_pcm, -frames);
+    const auto forwarded = snd_pcm_forward(m_pcm, -frames);
+    AudioDiagnostics::Record({{AudioDiagnostics::Metric::AlsaForwardResult, forwarded}});
     frames = 0;
   }
 
@@ -1236,8 +1265,10 @@ double CAESinkALSA::GetCacheTotal()
 
 unsigned int CAESinkALSA::AddPackets(uint8_t **data, unsigned int frames, unsigned int offset)
 {
+  using M = AudioDiagnostics::Metric;
   if (!m_pcm)
   {
+    AudioDiagnostics::Record({{M::AlsaNoPcm, 1}});
     CLog::Log(LOGERROR, "CAESinkALSA - Tried to add packets without a sink");
     return INT_MAX;
   }
@@ -1247,6 +1278,27 @@ unsigned int CAESinkALSA::AddPackets(uint8_t **data, unsigned int frames, unsign
   int64_t data_left = (int64_t) frames;
   int frames_written = 0;
 
+  // Observe every existing write, including fallback retries, before ret is
+  // overwritten by recovery. No additional ALSA calls or recovery policy.
+  const auto write = [this](void* payload, unsigned int count) {
+    const int64_t start = AudioDiagnostics::Begin();
+    if (start)
+      AudioDiagnostics::Record({{M::AlsaWriteBeginFrames, count}});
+    const int ret = snd_pcm_writei(m_pcm, payload, count);
+    if (start)
+    {
+      AudioDiagnostics::Record({{M::AlsaWriteUs, AudioDiagnostics::NowUs() - start},
+                                {M::AlsaWantFrames, count},
+                                {M::AlsaWrittenFrames, std::max(ret, 0)},
+                                {M::AlsaShortFrames, ret > 0 && static_cast<unsigned int>(ret) < count
+                                                        ? count - ret : 0},
+                                {M::AlsaZero, ret == 0}});
+      if (ret < 0)
+        AudioDiagnostics::Record({{M::AlsaWriteError, ret}});
+    }
+    return ret;
+  };
+
   while (data_left > 0)
   {
     if (m_fragmented)
@@ -1254,16 +1306,20 @@ unsigned int CAESinkALSA::AddPackets(uint8_t **data, unsigned int frames, unsign
     else // take care as we can come here a second time if the sink does not eat all data
       amount = (unsigned int) data_left;
 
-    int ret = snd_pcm_writei(m_pcm, buffer, amount);
+    int ret = write(buffer, amount);
     if (ret < 0)
     {
       CLog::Log(LOGERROR, "CAESinkALSA - snd_pcm_writei({}) {} - trying to recover", ret,
                 snd_strerror(ret));
+      const int64_t recoveryStart = AudioDiagnostics::Begin();
       ret = snd_pcm_recover(m_pcm, ret, 1);
+      if (recoveryStart)
+        AudioDiagnostics::Record({{M::AlsaRecoverResult, ret},
+                                  {M::AlsaRecoverUs, AudioDiagnostics::NowUs() - recoveryStart}});
       if(ret < 0)
       {
         HandleError("snd_pcm_writei(1)", ret);
-        ret = snd_pcm_writei(m_pcm, buffer, amount);
+        ret = write(buffer, amount);
         if (ret < 0)
         {
           HandleError("snd_pcm_writei(2)", ret);
@@ -1272,8 +1328,16 @@ unsigned int CAESinkALSA::AddPackets(uint8_t **data, unsigned int frames, unsign
       }
     }
 
-    if ( ret > 0 && snd_pcm_state(m_pcm) == SND_PCM_STATE_PREPARED)
-      snd_pcm_start(m_pcm);
+    if (ret > 0)
+    {
+      const auto state = snd_pcm_state(m_pcm);
+      AudioDiagnostics::Record({{M::AlsaState, state}});
+      if (state == SND_PCM_STATE_PREPARED)
+      {
+        const int result = snd_pcm_start(m_pcm);
+        AudioDiagnostics::Record({{M::AlsaStartResult, result}});
+      }
+    }
 
     if (ret <= 0)
       break;
@@ -1287,11 +1351,14 @@ unsigned int CAESinkALSA::AddPackets(uint8_t **data, unsigned int frames, unsign
 
 void CAESinkALSA::HandleError(const char* name, int err)
 {
+  AudioDiagnostics::Record({{AudioDiagnostics::Metric::AlsaHandleError, err}});
   switch(err)
   {
     case -EPIPE:
       CLog::Log(LOGERROR, "CAESinkALSA::HandleError({}) - underrun", name);
-      if ((err = snd_pcm_prepare(m_pcm)) < 0)
+      err = snd_pcm_prepare(m_pcm);
+      AudioDiagnostics::Record({{AudioDiagnostics::Metric::AlsaPrepareResult, err}});
+      if (err < 0)
         CLog::Log(LOGERROR, "CAESinkALSA::HandleError({}) - snd_pcm_prepare returned {} ({})", name,
                   err, snd_strerror(err));
       break;
@@ -1300,14 +1367,24 @@ void CAESinkALSA::HandleError(const char* name, int err)
       CLog::Log(LOGINFO, "CAESinkALSA::HandleError({}) - Resuming after suspend", name);
 
       /* try to resume the stream */
-      while((err = snd_pcm_resume(m_pcm)) == -EAGAIN)
+      while (true)
+      {
+        err = snd_pcm_resume(m_pcm);
+        AudioDiagnostics::Record({{AudioDiagnostics::Metric::AlsaResumeResult, err}});
+        if (err != -EAGAIN)
+          break;
         KODI::TIME::Sleep(1ms);
+      }
 
       /* if the hardware doesn't support resume, prepare the stream */
       if (err == -ENOSYS)
-        if ((err = snd_pcm_prepare(m_pcm)) < 0)
+      {
+        err = snd_pcm_prepare(m_pcm);
+        AudioDiagnostics::Record({{AudioDiagnostics::Metric::AlsaPrepareResult, err}});
+        if (err < 0)
           CLog::Log(LOGERROR, "CAESinkALSA::HandleError({}) - snd_pcm_prepare returned {} ({})",
                     name, err, snd_strerror(err));
+      }
       break;
 
     default:
@@ -1322,8 +1399,10 @@ void CAESinkALSA::Drain()
   if (!m_pcm)
     return;
 
-  snd_pcm_drain(m_pcm);
-  snd_pcm_prepare(m_pcm);
+  const int drained = snd_pcm_drain(m_pcm);
+  const int prepared = snd_pcm_prepare(m_pcm);
+  AudioDiagnostics::Record({{AudioDiagnostics::Metric::AlsaDrainResult, drained},
+                            {AudioDiagnostics::Metric::AlsaPrepareResult, prepared}});
 }
 
 void CAESinkALSA::AppendParams(std::string &device, const std::string &params)

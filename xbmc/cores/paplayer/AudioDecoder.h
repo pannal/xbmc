@@ -11,6 +11,8 @@
 #include "threads/CriticalSection.h"
 #include "utils/RingBuffer.h"
 
+#include <atomic>
+
 struct AEAudioFormat;
 class CFileItem;
 class ICodec;
@@ -64,6 +66,7 @@ public:
   uint8_t* GetRawData(int &size);
   ICodec *GetCodec() const { return m_codec; }
   float GetReplayGain(float &peakVal);
+  void SetDiagnosticPlaying(bool playing) { m_diagnosticPlaying.store(playing, std::memory_order_relaxed); }
 
 private:
   // pcm buffer
@@ -88,4 +91,5 @@ private:
   ICodec* m_codec;
 
   CCriticalSection m_critSection;
+  std::atomic<bool> m_diagnosticPlaying{false};
 };
