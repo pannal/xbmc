@@ -85,6 +85,9 @@ namespace AudioDiagnostics
   X(SinkState, "sink.state") \
   X(SinkSignal, "sink.signal") \
   X(AlsaWriteUs, "alsa.write_us") \
+  X(AlsaPcmProbeBytes, "alsa.pcm_probe_bytes") \
+  X(AlsaPcmNonzeroProbes, "alsa.pcm_nonzero_probes") \
+  X(AlsaPcmZeroProbeBlocks, "alsa.pcm_zero_probe_blocks") \
   X(AlsaWriteBeginFrames, "alsa.write_begin_frames") \
   X(AlsaRecoverUs, "alsa.recover_us") \
   X(AlsaWantFrames, "alsa.want_frames") \

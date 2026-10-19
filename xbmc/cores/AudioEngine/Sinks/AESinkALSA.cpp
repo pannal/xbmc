@@ -1283,7 +1283,25 @@ unsigned int CAESinkALSA::AddPackets(uint8_t **data, unsigned int frames, unsign
   const auto write = [this](void* payload, unsigned int count) {
     const int64_t start = AudioDiagnostics::Begin();
     if (start)
+    {
       AudioDiagnostics::Record({{M::AlsaWriteBeginFrames, count}});
+      // At most16 byte probes per PCM write. Export only counts, never audio
+      // bytes/hashes. This detects sampled zero-filled payloads, not audibility.
+      if (!m_passthrough && payload && count && m_format.m_frameSize > 0 &&
+          m_format.m_frameSize <= 256 && count <= 1048576)
+      {
+        const size_t bytes = static_cast<size_t>(count) * m_format.m_frameSize;
+        const size_t probes = std::min<size_t>(16, bytes);
+        const size_t step = bytes / probes;
+        const auto* pcm = static_cast<const uint8_t*>(payload);
+        unsigned int nonzero = 0;
+        for (size_t i = 0; i < probes; ++i)
+          nonzero += pcm[i * step] != 0;
+        AudioDiagnostics::Record({{M::AlsaPcmProbeBytes, static_cast<int64_t>(probes)},
+                                  {M::AlsaPcmNonzeroProbes, nonzero},
+                                  {M::AlsaPcmZeroProbeBlocks, nonzero == 0}});
+      }
+    }
     const int ret = snd_pcm_writei(m_pcm, payload, count);
     if (start)
     {

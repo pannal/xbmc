@@ -86,6 +86,8 @@ struct State
   std::array<EventRecord, MAX_EVENTS> events{};
   size_t eventCount = 0;
   std::atomic<uint32_t> dropped{0};
+  std::atomic<uint32_t> eventLost{0};
+  std::atomic<uint32_t> eventOverflow{0};
   std::mutex wakeMutex;
   std::condition_variable wake;
   std::atomic<bool> stop{false};
@@ -132,6 +134,39 @@ void Worker(FILE* file, unsigned int seconds, int64_t start)
          << " capture_start_us=" << start << " max_bytes=" << MAX_BYTES << '\n'
          << "# metrics: window_start_us,end_us,name,count,sum,min,max,max_at_us,last,last_at_us,sum_saturated\n"
          << "# no observation is unavailable, not a healthy zero; aggregates may mix streams\n";
+#if defined(TARGET_LINUX)
+  // Cold worker path only. Fixed-size validated identity, no process/media dump.
+  char boot[37]{};
+  const int bootFd = open("/proc/sys/kernel/random/boot_id", O_RDONLY | O_CLOEXEC);
+  bool validBoot = bootFd >= 0 && read(bootFd, boot, 36) == 36;
+  if (bootFd >= 0)
+    close(bootFd);
+  for (size_t i = 0; validBoot && i < 36; ++i)
+    validBoot = (i == 8 || i == 13 || i == 18 || i == 23) ? boot[i] == '-'
+        : ((boot[i] >= '0' && boot[i] <= '9') || (boot[i] >= 'a' && boot[i] <= 'f'));
+  header << "IDENTITY boot_id=" << (validBoot ? boot : "unavailable")
+         << " pid=" << getpid();
+  char process[1024]{};
+  const int processFd = open("/proc/self/stat", O_RDONLY | O_CLOEXEC);
+  const auto processSize = processFd >= 0 ? read(processFd, process, sizeof(process) - 1) : -1;
+  if (processFd >= 0)
+    close(processFd);
+  uint64_t startTicks = 0;
+  const char* endName = processSize > 0 ? std::strrchr(process, ')') : nullptr;
+  if (endName)
+  {
+    std::istringstream fields(endName + 1);
+    std::string field;
+    for (unsigned int i = 0; i < 20 && fields >> field; ++i)
+      if (i == 19)
+      {
+        const auto parsed = std::from_chars(field.data(), field.data() + field.size(), startTicks);
+        if (parsed.ec != std::errc{} || parsed.ptr != field.data() + field.size())
+          startTicks = 0;
+      }
+  }
+  header << " start_ticks=" << startTicks << '\n';
+#endif
   bool writable = Write(file, bytes, header.str()) && std::fflush(file) == 0;
   const char* reason = "deadline";
   unsigned int sequence = 0;
@@ -146,6 +181,8 @@ void Worker(FILE* file, unsigned int seconds, int64_t start)
     std::array<EventRecord, MAX_EVENTS> events;
     size_t eventCount;
     uint32_t dropped;
+    uint32_t eventLost;
+    uint32_t eventOverflow;
     {
       // No filesystem/logging/audio calls while holding this lock. Producers
       // use try_lock and count missed observations rather than waiting for us.
@@ -157,10 +194,13 @@ void Worker(FILE* file, unsigned int seconds, int64_t start)
       eventCount = state.eventCount;
       state.eventCount = 0;
       dropped = state.dropped.exchange(0);
+      eventLost = state.eventLost.exchange(0);
+      eventOverflow = state.eventOverflow.exchange(0);
     }
     std::ostringstream text;
     text << "WINDOW seq=" << ++sequence << " start_us=" << previous << " end_us=" << now
-         << " dropped=" << dropped << '\n';
+         << " dropped=" << dropped << " event_lost=" << eventLost
+         << " event_overflow=" << eventOverflow << '\n';
     for (size_t bank = 0; bank < values.size(); ++bank)
     {
       for (size_t i = 0; i < METRICS; ++i)
@@ -258,6 +298,8 @@ void Start(const std::string& directory)
     state.previous = {};
     state.eventCount = 0;
     state.dropped = 0;
+    state.eventLost = 0;
+    state.eventOverflow = 0;
     start = NowUs();
   }
   state.stop = false;
@@ -371,12 +413,16 @@ void Event(const std::string& text) noexcept
   if (!lock.owns_lock() || state.eventCount == MAX_EVENTS)
   {
     state.dropped.fetch_add(1, std::memory_order_relaxed);
+    state.eventLost.fetch_add(1, std::memory_order_relaxed);
+    if (lock.owns_lock())
+      state.eventOverflow.fetch_add(1, std::memory_order_relaxed);
     return;
   }
   const int64_t now = NowUs();
   if (!Enabled() || !now)
   {
     state.dropped.fetch_add(1, std::memory_order_relaxed);
+    state.eventLost.fetch_add(1, std::memory_order_relaxed);
     return;
   }
   auto& event = state.events[state.eventCount++];

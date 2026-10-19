@@ -10,6 +10,7 @@ import datetime
 import errno
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,22 @@ TEMP = Path("/storage/.kodi/temp")
 LIMIT = 512 * 1024
 MAX_DIAGNOSTIC = 8 * 1024 * 1024
 AUDIO = re.compile(r"audio|alsa|snd_|hdmi|tdm|frddr|i2s|fifo|xrun", re.I)
+SYSTEM_ROOT = Path("/")
+
+
+def support_module():
+    path = Path(__file__).with_name("audio-diagnostic-system.py")
+    if not path.is_file():
+        raise RuntimeError("Place audio-diagnostic-system.py beside audio-diagnostic.py before collecting")
+    spec = importlib.util.spec_from_file_location("audio_diagnostic_system", path)
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+    return module
 
 
 def redact(text):
@@ -117,14 +134,18 @@ def read_node(path, limit=4096, owned=False):
             flags |= os.O_NOFOLLOW
         fd = os.open(path, flags)
         with os.fdopen(fd, "rb", buffering=0) as stream:
-            if owned and not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            info = os.fstat(stream.fileno())
+            if owned and not stat.S_ISREG(info.st_mode):
                 return {"available": False, "reason": "not_regular"}
             data = stream.read(limit + 1)
         if data is None:
             return {"available": False, "reason": "would_block"}
         if len(data) > limit:
             return {"available": False, "reason": "size_limit"}
-        return {"available": True, "text": redact(data.decode("utf-8", "replace"))}
+        result = {"available": True, "text": redact(data.decode("utf-8", "replace"))}
+        if owned:
+            result["file_identity"] = {"device": info.st_dev, "inode": info.st_ino}
+        return result
     except OSError as error:
         return {"available": False, "errno": error.errno}
 
@@ -157,18 +178,21 @@ class BoundedFile:
         self.limit = limit
         self.bytes = 0
         self.truncated = False
+        self.first_lost_mono_us = None
 
     def write(self, text):
         data = text.encode("utf-8")
         if self.truncated:
-            return
+            return False
         if self.bytes + len(data) > self.limit - 128:
             self.stream.write("\nTRUNCATED: output budget reached; remaining observations unavailable\n")
             self.truncated = True
-            return
+            self.first_lost_mono_us = time.monotonic_ns() // 1000
+            return False
         self.stream.write(text)
         self.stream.flush()
         self.bytes += len(data)
+        return True
 
     def close(self):
         self.stream.close()
@@ -210,11 +234,15 @@ def diagnostic_coverage(text, start_us, end_us, wall_start_ms):
             malformed = True
         if line.startswith("WINDOW "):
             match = re.fullmatch(r"WINDOW seq=(\d{1,20}) start_us=(\d{1,20}) "
-                                 r"end_us=(\d{1,20}) dropped=(\d{1,20})", line)
+                                 r"end_us=(\d{1,20}) dropped=(\d{1,20})"
+                                 r"(?: event_lost=(\d{1,20}) event_overflow=(\d{1,20}))?", line)
             if match:
-                seq, first, last, dropped = map(int, match.groups())
+                seq, first, last, dropped = map(int, match.groups()[:4])
                 if trace_start <= first < last <= end_us + 2000000:
                     windows.append((seq, first, last, dropped))
+                    if last >= start_us and first <= end_us and match[5] is not None:
+                        result["event_lost"] = result.get("event_lost", 0) + int(match[5])
+                        result["event_overflow"] = result.get("event_overflow", 0) + int(match[6])
                 else:
                     malformed = True
             else:
@@ -255,7 +283,29 @@ def diagnostic_coverage(text, start_us, end_us, wall_start_ms):
     return result
 
 
+def trace_prefix(text):
+    lines = text.splitlines()
+    selected = [line for line in lines[:8] if line.startswith(("AUDIO_DIAG ", "IDENTITY "))]
+    return hashlib.sha256("\n".join(selected).encode("ascii", "replace")).hexdigest()
+
+
+def trace_lifetime(text, before, after):
+    match = re.search(r"^IDENTITY boot_id=([0-9a-f-]{36}) pid=(\d{1,10}) start_ticks=(\d{1,20})$", text, re.M)
+    if not match:
+        return {"verified": False, "reason": "logger_identity_unavailable"}
+    boot, pid, ticks = match[1], int(match[2]), int(match[3])
+    for item in (before, after):
+        if not item.get("boot_id", {}).get("available") or not item.get("kodi", {}).get("available"):
+            return {"verified": False, "reason": "current_identity_unavailable"}
+        if (item["boot_id"]["value"], item["kodi"]["pid"], item["kodi"]["start_ticks"]) != (boot, pid, ticks):
+            return {"verified": False, "reason": "boot_or_kodi_lifetime_changed"}
+    return {"verified": True, "boot_id": boot, "pid": pid, "start_ticks": ticks}
+
+
 def collect(label, seconds):
+    support = support_module()
+    system_sampler = support.SystemSampler(SYSTEM_ROOT)
+    driver_capture = support.KernelCapture(SYSTEM_ROOT)
     start_us = time.monotonic_ns() // 1000
     wall_start_ms = time.time_ns() // 1000000
     TEMP.mkdir(parents=True, exist_ok=True)
@@ -264,6 +314,8 @@ def collect(label, seconds):
     directory.mkdir(mode=0o700)
     config = BoundedFile(directory / "configuration.jsonl")
     kernel = BoundedFile(directory / "kernel-audio.log")
+    system_log = BoundedFile(directory / "system.jsonl", 8 * 1024 * 1024)
+    driver_log = BoundedFile(directory / "driver.jsonl", 8 * 1024 * 1024)
     metadata = {"label": label, "seconds": seconds, "kernel_release": os.uname().release,
                 "release": read_node("/etc/release"), "kmsg": {"available": False},
                 "clock": "CLOCK_MONOTONIC", "marks": [],
@@ -272,6 +324,11 @@ def collect(label, seconds):
     preflight = diagnostic_coverage(initial["text"], start_us, start_us, wall_start_ms) if initial.get("available") else {
         "coverage": "unavailable", "reason": "trace_unavailable"}
     metadata["diagnostic_preflight"] = preflight
+    metadata["identity_start"] = support.identity(SYSTEM_ROOT)
+    if initial.get("available"):
+        preflight["lifetime"] = trace_lifetime(initial["text"], metadata["identity_start"], metadata["identity_start"])
+        if preflight["coverage"] == "current" and not preflight["lifetime"]["verified"]:
+            preflight.update(coverage="unavailable", reason=preflight["lifetime"]["reason"])
     selector = selectors.DefaultSelector()
     kmsg = None
     try:
@@ -296,17 +353,37 @@ def collect(label, seconds):
         metadata["mark_input"] = {"available": False}
     deadline = time.monotonic() + seconds
     next_config = 0.0
+    next_system = 0.0
     kernel_reads = 0
+    kernel_last_sequence = None
+    kernel_counts = {"records": 0, "retained": 0, "filtered": 0, "sequence_gaps": 0,
+                     "epipe": 0, "invalid_headers": 0, "sequence_resets": 0}
     try:
         print("Kodi diagnostic preflight: " + preflight["coverage"] + " (" + preflight["reason"] + ")", flush=True)
         if preflight["coverage"] != "current":
             print("WARNING: no verified fresh Kodi coverage. Enable/restart Kodi for a valid comparison; this command does not restart it.", flush=True)
         elif preflight.get("configured_deadline_us", 0) < start_us + seconds * 1000000:
             print("WARNING: Kodi diagnostic budget expires during this collection. Enable/restart Kodi before the comparison.", flush=True)
-        print(f"Collecting {label} for {seconds}s. Start the SAME track now.", flush=True)
+        print(f"Preparing {label} collection for {seconds}s.", flush=True)
         print("At a dropout press Enter, or enter e.g. '55 yes' (position, automatic recovery yes/no/unknown).", flush=True)
+        metadata["driver_start"] = driver_capture.start(max(1, int(seconds)))
+        print("Driver diagnostic window: " + str(metadata["driver_start"].get("reason", "unavailable")), flush=True)
+        if not metadata["driver_start"].get("available"):
+            print("WARNING: driver diagnostic window is unverified; driver observations may be incomplete.", flush=True)
+        system_log.write(json.dumps(system_sampler.sample(), separators=(",", ":")) + "\n")
+        driver_log.write(json.dumps({"mono_us": time.monotonic_ns() // 1000, "phase": "baseline",
+                                    "observations": driver_capture.sample()}, separators=(",", ":")) + "\n")
+        next_system = time.monotonic() + 1
+        print("Collection ready. Start the SAME track now.", flush=True)
         while time.monotonic() < deadline:
-            if time.monotonic() >= next_config:
+            if time.monotonic() >= next_system:
+                if not system_log.truncated:
+                    system_log.write(json.dumps(system_sampler.sample(), separators=(",", ":")) + "\n")
+                if not driver_log.truncated:
+                    driver_log.write(json.dumps({"mono_us": time.monotonic_ns() // 1000,
+                                                 "observations": driver_capture.sample()}, separators=(",", ":")) + "\n")
+                next_system = time.monotonic() + 1
+            if time.monotonic() >= next_config and not config.truncated:
                 sample = configuration()
                 config.write(json.dumps(sample, separators=(",", ":")) + "\n")
                 rates = sorted({int(value) for node in sample["nodes"].values()
@@ -339,9 +416,25 @@ def collect(label, seconds):
                     try:
                         kernel_reads += 1
                         line = os.read(kmsg, 8192).decode("utf-8", "replace")
+                        kernel_counts["records"] += bool(line)
+                        sequence = re.match(r"^\d{1,3},(\d{1,20}),", line)
+                        if sequence:
+                            value = int(sequence[1])
+                            if kernel_last_sequence is not None:
+                                if value > kernel_last_sequence:
+                                    kernel_counts["sequence_gaps"] += value - kernel_last_sequence - 1
+                                else:
+                                    kernel_counts["sequence_resets"] += 1
+                            kernel_last_sequence = value
+                        elif line:
+                            kernel_counts["invalid_headers"] += 1
                         event = kernel_event(line)
                         if event is not None:
-                            kernel.write(json.dumps(event, separators=(",", ":")) + "\n")
+                            saved = kernel.write(json.dumps(event, separators=(",", ":")) + "\n")
+                            kernel_counts["retained"] += bool(saved)
+                            kernel_counts["budget_discarded"] = kernel_counts.get("budget_discarded", 0) + (not saved)
+                        else:
+                            kernel_counts["filtered"] += bool(line)
                         if not line:
                             metadata["kmsg"]["available"] = False
                             metadata["kmsg"]["unexpected_eof"] = True
@@ -349,10 +442,15 @@ def collect(label, seconds):
                     except BlockingIOError:
                         pass
                     except OSError as error:
+                        kernel_counts["epipe"] += error.errno == errno.EPIPE
                         kernel.write(f"UNAVAILABLE mono_us={time.monotonic_ns() // 1000} kmsg errno={error.errno}\n")
                         if error.errno != errno.EPIPE:
                             metadata["kmsg"]["available"] = False
                             metadata["kmsg"]["runtime_error"] = error.errno
+                            selector.unregister(kmsg)
+                    if kernel.truncated:
+                        metadata["kmsg"].update(available=False, output_budget_exhausted=True)
+                        if kmsg in selector.get_map():
                             selector.unregister(kmsg)
                     if kernel_reads >= 4096:
                         kernel.write("UNAVAILABLE kernel read budget exhausted\n")
@@ -363,6 +461,24 @@ def collect(label, seconds):
     except KeyboardInterrupt:
         metadata["interrupted"] = True
     finally:
+        try:
+            if not driver_log.truncated:
+                driver_log.write(json.dumps({"mono_us": time.monotonic_ns() // 1000, "phase": "before_stop",
+                                             "observations": driver_capture.sample()}, separators=(",", ":")) + "\n")
+        except Exception:
+            metadata["driver_final_snapshot_error"] = True
+        try:
+            metadata["driver_stop"] = driver_capture.stop()
+        except BaseException:
+            # A failed diagnostic stop must not skip restoring the shared stdin
+            # flags or closing files. The kernel window still has its deadline.
+            metadata["driver_stop"] = {"available": False, "reason": "cleanup_failed_deadline_fallback"}
+        try:
+            if not driver_log.truncated:
+                driver_log.write(json.dumps({"mono_us": time.monotonic_ns() // 1000, "phase": "after_stop",
+                                             "observations": driver_capture.sample()}, separators=(",", ":")) + "\n")
+        except Exception:
+            metadata["driver_final_snapshot_error"] = True
         selector.close()
         if stdin_fd is not None and stdin_blocking is not None:
             try:
@@ -373,16 +489,33 @@ def collect(label, seconds):
             os.close(kmsg)
         config.close()
         kernel.close()
+        system_log.close()
+        driver_log.close()
     metadata["configuration_truncated"] = config.truncated
     metadata["kernel_truncated"] = kernel.truncated
     metadata["kmsg"]["read_attempts"] = kernel_reads
+    metadata["kmsg"]["counts"] = kernel_counts
+    metadata["output_budgets"] = {name: {"truncated": output.truncated,
+                                             "first_lost_mono_us": output.first_lost_mono_us}
+                                  for name, output in (("configuration", config), ("kernel", kernel),
+                                                       ("system", system_log), ("driver", driver_log))}
     end_us = time.monotonic_ns() // 1000
     metadata["collection_end_us"] = end_us
     metadata["collection_wall_end_ms"] = time.time_ns() // 1000000
+    metadata["identity_end"] = support.identity(SYSTEM_ROOT)
     diagnostic = read_node(TEMP / "audio-diagnostic.log", MAX_DIAGNOSTIC, owned=True)
     if diagnostic.get("available"):
         text = diagnostic.pop("text")
         diagnostic.update(diagnostic_coverage(text, start_us, end_us, wall_start_ms))
+        diagnostic["lifetime"] = trace_lifetime(text, metadata["identity_start"], metadata["identity_end"])
+        changed = (initial.get("available") and
+                   (initial.get("file_identity") != diagnostic.get("file_identity") or
+                    trace_prefix(initial["text"]) != trace_prefix(text)))
+        diagnostic["trace_replaced_or_restarted"] = bool(changed)
+        if changed:
+            diagnostic.update(coverage="partial", reason="trace_replaced_or_restarted")
+        elif diagnostic["coverage"] == "current" and not diagnostic["lifetime"]["verified"]:
+            diagnostic.update(coverage="unavailable", reason=diagnostic["lifetime"]["reason"])
         # Completion and current collection coverage are independent.
         (directory / "audio-diagnostic.log").write_text(text, encoding="utf-8")
         diagnostic["sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -396,6 +529,8 @@ def collect(label, seconds):
             output.write(path, arcname=path.name)
     os.chmod(archive, 0o600)
     print("Kodi diagnostic coverage: " + diagnostic["coverage"] + " (" + diagnostic["reason"] + ")")
+    if metadata["driver_stop"].get("reason") == "cleanup_failed_deadline_fallback":
+        print("WARNING: driver diagnostic stop was not verified; recording is bounded by its kernel deadline.")
     if diagnostic["coverage"] != "current":
         print("WARNING: this archive lacks verified Kodi coverage for the full collection; do not treat missing metrics as healthy.")
     print(f"Capture: {archive}\nSHA256: {hashlib.sha256(archive.read_bytes()).hexdigest()}")

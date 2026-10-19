@@ -79,6 +79,7 @@ struct CAESinkALSA {
   struct {int m_frameSize=4;} m_format;
   double m_formatSampleRateMul=1.0/44100.0;
   bool m_fragmented=false;
+  bool m_passthrough=false;
   unsigned int m_originalPeriodSize=16;
   void GetDelay(AEDelayStatus&);
   unsigned int AddPackets(uint8_t**, unsigned int, unsigned int);
@@ -194,6 +195,8 @@ int main(int argc, char** argv) {
     if(mode=="delay-error") {delayResult=-EIO;delayFrames=77;}
     if(mode=="delay-negative") delayFrames=-15;
     uint8_t storage[1024]{};uint8_t* data=storage;
+    if(mode=="pcm-nonzero") std::memset(storage,0x7f,sizeof(storage));
+    if(mode=="pcm-passthrough") sink.m_passthrough=true;
     std::cout << sink.AddPackets(&data,64,0) << ':';
     AEDelayStatus status;sink.GetDelay(status);sink.Drain();
     std::cout << status.delay;
@@ -258,6 +261,8 @@ int main(int argc, char** argv) {
         import re
         self.assertGreaterEqual(sum(map(int, re.findall(r"dropped=(\d+)", log))), 36)
         self.assertIn("END ", log)
+        self.assertRegex(log, r"IDENTITY boot_id=[0-9a-f-]{36} pid=\d+ start_ticks=[1-9]\d*")
+        self.assertRegex(log, r"event_lost=[1-9]\d* event_overflow=[1-9]\d*")
         self.assertLessEqual(len(log.encode()), 8 * 1024 * 1024)
 
     def test_window_boundaries_contain_their_observations(self):
@@ -337,6 +342,15 @@ int main(int argc, char** argv) {
                 self.assertEqual(off, original)
                 self.assertIn(metric, log)
 
+    def test_pcm_probes_export_counts_and_skip_passthrough(self):
+        _, zero = self.run_case("normal")
+        _, nonzero = self.run_case("pcm-nonzero")
+        _, raw = self.run_case("pcm-passthrough")
+        self.assertIn("alsa.pcm_probe_bytes,1,16,16,16,", zero)
+        self.assertIn("alsa.pcm_zero_probe_blocks,1,1,1,1,", zero)
+        self.assertIn("alsa.pcm_nonzero_probes,1,16,16,16,", nonzero)
+        self.assertNotIn("alsa.pcm_probe", raw)
+
     def test_submission_cost_is_measured(self):
         for on in (False, True):
             output, _ = self.run_case("bench", on)
@@ -374,6 +388,20 @@ class Collector(unittest.TestCase):
         self.assertEqual(stopped_near_end["coverage"], "partial")
         self.assertEqual(stopped_near_end["reason"], "recording_ended_during_collection")
         self.assertEqual(self.module.diagnostic_coverage(current, 5000000, 6000000, 5000)["coverage"], "none")
+        detailed = current.replace("dropped=2", "dropped=2 event_lost=2 event_overflow=1")
+        self.assertEqual(self.module.diagnostic_coverage(detailed, 2000000, 5000000, 2000)["event_overflow"], 1)
+
+    def test_trace_lifetime_and_replacement_identity(self):
+        boot = "01234567-89ab-cdef-0123-456789abcdef"
+        text = f"IDENTITY boot_id={boot} pid=12 start_ticks=34\n"
+        identity = {"boot_id": {"available": True, "value": boot},
+                    "kodi": {"available": True, "pid": 12, "start_ticks": 34}}
+        self.assertTrue(self.module.trace_lifetime(text, identity, identity)["verified"])
+        changed = {**identity, "kodi": {"available": True, "pid": 12, "start_ticks": 35}}
+        self.assertFalse(self.module.trace_lifetime(text, identity, changed)["verified"])
+        self.assertFalse(self.module.trace_lifetime("", identity, identity)["verified"])
+        self.assertNotEqual(self.module.trace_prefix("AUDIO_DIAG old\n" + text),
+                            self.module.trace_prefix("AUDIO_DIAG new\n" + text))
 
     def test_invalid_trace_and_clock_relationship_are_unavailable(self):
         header = ("AUDIO_DIAG schema=1 clock=CLOCK_MONOTONIC mono_us=1000000 "
