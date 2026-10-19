@@ -24413,7 +24413,7 @@ msgstr ""
 #. help text for setting audiooutput.omniphonydistance
 #: system/settings/settings.xml
 msgctxt "#39321"
-msgid "How far away the virtual speakers are placed. Larger values push the sound further out and make it wider; smaller values bring it closer to your head. Echoes and reverb grow with distance, so larger values also sound louder. With Room simulation off it changes little, and it does nothing with a custom room."
+msgid "How far away the virtual speakers are placed. Larger values push the sound further out and make it wider; smaller values bring it closer. Reverb grows with distance, and echoes do too once the room is at its largest, so larger values sound louder. It changes little with Room simulation off, and does nothing with a custom room."
 msgstr ""
 
 #. label for setting audiooutput.omniphonyreverb
