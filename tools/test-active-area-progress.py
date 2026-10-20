@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Connect the production progress dialog, player retirement and AML OSD publisher.
 
-The complete real dialog .cpp/.h and the extracted real player Finish method and
-AML OSD method run together. The GUI base fixture models its close animation as
-an explicit FinishClose step; assertions check the matching production base
-ordering. Labels, window visibility and sysfs are recording boundaries. This is
+The complete real dialog .cpp/.h, player wait/finish methods and AML OSD method
+run together, including startup-vs-background admission. The GUI base fixture
+models its close animation as an explicit FinishClose step; assertions check the
+matching production base ordering. Labels, window visibility and sysfs are recording boundaries. This is
 host lifecycle coverage, not a skin/GPU, HDMI or paused-frame driver reproduction.
 """
 import argparse
@@ -56,11 +56,15 @@ public:
 PRELUDE = r'''
 #include "dialogs/GUIDialogExtendedProgressBar.h"
 #include <atomic>
+#include <chrono>
 #include <iostream>
+using namespace std::chrono_literals;
+#define HAS_LIBAMCODEC 1
 CGUIDialogExtendedProgressBar progress;
 CGUIWindow home;
 struct WindowManager {
  bool genericDialogs=false,videoMenu=false;
+ template<class T>T* GetWindow(int id){return static_cast<T*>(GetWindow(id));}
  CGUIWindow* GetWindow(int id){if(id==WINDOW_DIALOG_EXT_PROGRESS)return &progress;assert(id==WINDOW_HOME);return &home;}
  bool HasVisibleDialog()const{return genericDialogs;}
  bool IsWindowVisible(int id)const{if(id==WINDOW_DIALOG_EXT_PROGRESS)return progress.visible;assert(id==WINDOW_VIDEO_MENU);return videoMenu;}
@@ -72,7 +76,31 @@ std::atomic_bool s_pm4kActive{false},s_discMenuVisible{false};
 int s_lastOsd=-1,emittedOsd=-1,osdWrites=0;
 struct CSysfsPath {CSysfsPath(const char* path,int value){assert(std::string(path)=="/sys/module/amdolby_vision/parameters/dolby_vision_xbmc_osd");emittedOsd=value;++osdWrites;}};
 void aml_dv_dump_state(const char*){}
-struct CVideoPlayer {CGUIDialogProgressBarHandle* m_activeAreaProgress=nullptr;void FinishActiveAreaProgress();};
+
+// Detector endpoints are controlled here; admission/worker tests exercise their
+// real ownership. This connects the real player decision to the real GUI/OSD.
+bool startupPending=false,externalPending=false,held=false;
+int completed=0,total=14,modes=2,holds=0;
+bool aml_subtitle_active_area_startup_progress(int,int& n,int& t){n=completed;t=total;return startupPending;}
+void aml_subtitle_active_area_startup_set_video_ready(int,bool){}
+bool aml_subtitle_active_area_startup_external_pending(int){return externalPending;}
+template<class F>bool aml_subtitle_active_area_startup_try_hold(int,F pause){pause();held=true;return true;}
+int aml_subtitle_active_area_startup_modes(int){return modes;}
+void aml_subtitle_active_area_startup_set_held(int,bool value){held=value;}
+void aml_subtitle_active_area_startup_complete(int){}
+struct IDVDStreamPlayer{static constexpr int SYNC_INSYNC=1;};
+constexpr int CACHESTATE_INIT=1;
+struct Localize{std::string Get(int id){return std::to_string(id);}}g_localizeStrings;
+struct StringUtils{static std::string Format(const std::string&,int n,int t){return std::to_string(n)+"/"+std::to_string(t);}};
+struct CVideoPlayer {
+ bool m_bAbortRequest=false,m_bStop=false,m_activeAreaVideoReady=true;
+ struct{bool streamsReady=true;}m_State;
+ struct{int id=0,syncState=1;struct{int subtitleProbeSource=1;}hint;}m_CurrentVideo;
+ std::chrono::steady_clock::time_point m_activeAreaWaitStart;
+ CGUIDialogProgressBarHandle* m_activeAreaProgress=nullptr;
+ void SetCaching(int state){assert(state==CACHESTATE_INIT);++holds;}
+ bool WaitForActiveAreaDetection();void FinishActiveAreaProgress();
+};
 '''
 TEST = r'''
 void Frame(unsigned int now){CDirtyRegionList dirty;progress.Process(now,dirty);aml_dv_set_xbmc_osd();}
@@ -91,6 +119,35 @@ void Complete(CVideoPlayer& player,unsigned int now){
  progress.FinishClose();Empty();
 }
 int main(){
+ // A bypass or ordinary background run has no requested startup progress.
+ // In particular, a later reset scan after an immediate crop bypass must not
+ // be mistaken for a rendered notification hidden by the L5 policy.
+ s_pm4kActive=true;home.SetProperty("script.plex.osd_active","0");
+ CVideoPlayer startup;
+ startup.m_activeAreaWaitStart=std::chrono::steady_clock::now()-600ms;
+ startupPending=false;assert(!startup.WaitForActiveAreaDetection());Frame(1);Empty();assert(holds==0);
+ // Cached/immediate admission (no distributed sample count) cannot flash.
+ startupPending=true;total=0;assert(startup.WaitForActiveAreaDetection());
+ assert(!startup.m_activeAreaProgress);Frame(2);Empty();
+ startupPending=false;assert(!startup.WaitForActiveAreaDetection());assert(!held);
+ // The real player method creates the detector-marked GUI handle only after
+ // actual scan progress and the delay, independently of PM4K's own OSD flag.
+ total=14;completed=6;startupPending=true;externalPending=true;
+ assert(!startup.WaitForActiveAreaDetection());Frame(3);Empty();
+ externalPending=false;startup.m_activeAreaVideoReady=false;
+ assert(!startup.WaitForActiveAreaDetection());Frame(4);Empty();
+ startup.m_activeAreaVideoReady=true;startup.m_activeAreaWaitStart={};
+ assert(startup.WaitForActiveAreaDetection()&&!startup.m_activeAreaProgress);Frame(5);Empty();
+ startup.m_activeAreaWaitStart=std::chrono::steady_clock::now()-600ms;
+ assert(startup.WaitForActiveAreaDetection());Frame(6);
+ assert(startup.m_activeAreaProgress&&progress.labels[30]=="69378"&&progress.labels[31]=="6/14");Expect(1);
+ startupPending=false;assert(!startup.WaitForActiveAreaDetection());
+ assert(progress.visible&&!progress.GetProperty("activeareastartup").asString().empty());Expect(1);
+ Frame(7);assert(progress.closing);Expect(1);progress.FinishClose();Empty();
+ // Abort through the real player gate retires an already rendered handle.
+ startupPending=true;assert(startup.WaitForActiveAreaDetection());Frame(8);Expect(1);
+ startup.m_bAbortRequest=true;assert(!startup.WaitForActiveAreaDetection());
+ Frame(9);assert(progress.closing);Expect(1);progress.FinishClose();Empty();startupPending=false;
  // Native and PM4K both publish the native detector signal; PM4K's own OSD
  // explicitly remains off throughout these paused/closing GUI frame steps.
  for(bool pm4k:{false,true}){
@@ -134,7 +191,7 @@ int main(){
  home.SetProperty("skin.codeclogosonscreen","1");Expect(1);
  home.SetProperty("skin.codeclogosonscreen","0");Expect(0);
  cache.avChange=true;Expect(1);home.SetProperty("skin.codeclogososd","1");Expect(0);
- std::cout<<"PASS: connected real progress/current handle -> player finish/cancel -> rendered close/deinit -> native/PM4K OSD sysfs publication\n";
+ std::cout<<"PASS: connected player startup/background -> real progress/current handle -> finish/cancel -> rendered close/deinit -> native/PM4K OSD sysfs publication\n";
 }
 '''
 
@@ -156,8 +213,9 @@ def sources():
                        'void CGUIWindowManager::AfterRender()')
     assert 'aml_dv_set_xbmc_osd();' in manager
     osd = function(aml, 'void aml_dv_set_xbmc_osd()')
+    wait = function(player, 'bool CVideoPlayer::WaitForActiveAreaDetection()')
     finish = function(player, 'void CVideoPlayer::FinishActiveAreaProgress()')
-    return header, dialog, PRELUDE + osd + '\n' + finish + '\n' + TEST
+    return header, dialog, PRELUDE + osd + '\n' + wait + '\n' + finish + '\n' + TEST
 
 
 def run(header, dialog, code, negative=False):
@@ -198,6 +256,10 @@ def main():
     args=parser.parse_args();header,dialog,code=sources();run(header,dialog,code)
     if args.negative_controls:
         controls=[
+            ('startup notification created for immediate result','code',
+             'if (total > 0 && !m_activeAreaProgress &&', 'if (!m_activeAreaProgress &&'),
+            ('startup notification bypasses scan delay','code',
+             'now - m_activeAreaWaitStart >= 500ms', 'true'),
             ('player clears signal before rendered frame retires','code',
              'm_activeAreaProgress->MarkFinished();','m_activeAreaProgress->MarkFinished();progress.SetProperty("activeareastartup", "");'),
             ('missing detector marker','dialog',
