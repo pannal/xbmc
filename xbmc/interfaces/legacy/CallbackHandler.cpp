@@ -12,8 +12,9 @@
 #include "commons/Exception.h"
 #include "utils/log.h"
 
+#include <cstdint>
+#include <map>
 #include <mutex>
-#include <vector>
 
 namespace XBMCAddon
 {
@@ -27,55 +28,56 @@ namespace XBMCAddon
   };
 
   //********************************************************************
-  // This holds the callback messages which will be executed. It doesn't
-  //  seem to work correctly with the Ref object so we'll go with Ref*'s
-  typedef std::vector<AddonClass::Ref<AsyncCallbackMessage> > CallbackQueue;
+  // Sequence keys preserve callback order across queue changes.
+  typedef std::map<std::uint64_t, AddonClass::Ref<AsyncCallbackMessage>> CallbackQueue;
+  // Each owner drains only the callbacks that the owner can run.
+  typedef std::map<const void*, CallbackQueue> OwnerQueues;
   //********************************************************************
 
   static CCriticalSection critSection;
-  static CallbackQueue g_callQueue;
+  static OwnerQueues g_callQueues;
+  static std::uint64_t g_nextCallbackId = 0;
 
   void RetardedAsyncCallbackHandler::invokeCallback(Callback* cb)
   {
     XBMC_TRACE;
     std::unique_lock<CCriticalSection> lock(critSection);
-    g_callQueue.push_back(new AsyncCallbackMessage(cb,this));
-  }
-
-  RetardedAsyncCallbackHandler::~RetardedAsyncCallbackHandler()
-  {
-    XBMC_TRACE;
-    std::unique_lock<CCriticalSection> lock(critSection);
-
-    // find any messages that might be there because of me ... and remove them
-    CallbackQueue::iterator iter = g_callQueue.begin();
-    while (iter != g_callQueue.end())
+    const AddonClass::Ref<AsyncCallbackMessage> message(new AsyncCallbackMessage(cb, this));
+    const auto [queue, created] = g_callQueues.try_emplace(owner);
+    try
     {
-      if ((*iter)->handler.get() == this) // then this message is because of me
-      {
-        g_callQueue.erase(iter);
-        iter = g_callQueue.begin();
-      }
-      else
-        ++iter;
+      queue->second.emplace(g_nextCallbackId++, message);
+    }
+    catch (...)
+    {
+      if (created)
+        g_callQueues.erase(queue);
+      throw;
     }
   }
 
-  void RetardedAsyncCallbackHandler::makePendingCalls()
+  RetardedAsyncCallbackHandler::~RetardedAsyncCallbackHandler() = default;
+
+  void RetardedAsyncCallbackHandler::makePendingCalls(const void* owner)
   {
     XBMC_TRACE;
     std::unique_lock<CCriticalSection> lock(critSection);
-    CallbackQueue::iterator iter = g_callQueue.begin();
-    while (iter != g_callQueue.end())
+    OwnerQueues::iterator queue = g_callQueues.find(owner);
+    if (queue == g_callQueues.end())
+      return;
+    CallbackQueue::iterator iter = queue->second.begin();
+    while (iter != queue->second.end())
     {
-      AddonClass::Ref<AsyncCallbackMessage> p(*iter);
+      AsyncCallbackMessage* message = iter->second.get();
 
       // only call when we are in the right thread state
-      if(p->handler->isStateOk(p->cb->getObject()))
+      if (message->handler->isStateOk(message->cb->getObject()))
       {
+        const auto sequence = iter->first;
+        AddonClass::Ref<AsyncCallbackMessage> p(message);
         // remove it from the queue. No matter what we're done with
         //  this. Even if it doesn't execute for some reason.
-        g_callQueue.erase(iter);
+        queue->second.erase(iter);
 
         // we need to release the critSection lock prior to grabbing the
         //  lock on the object. Not doing so results in deadlocks. We no
@@ -109,39 +111,51 @@ namespace XBMCAddon
                         reinterpret_cast<int64_t>(p->cb.get()));
             }
           }
+          // Release the selected message before the queue lock is reacquired.
+          p.reset();
         }
 
-        // since the state of the iterator may have been corrupted by
-        //  the changing state of the list from another thread during
-        //  the releasing fo the lock in the immediately preceeding
-        //  codeblock, we need to reset it before continuing the loop
-        iter = g_callQueue.begin();
+        // Callbacks can change or remove the owner queue while the lock is released.
+        queue = g_callQueues.find(owner);
+        if (queue == g_callQueues.end())
+          return;
+        // Resume after the selected sequence when callbacks change the queue.
+        iter = queue->second.upper_bound(sequence);
       }
       else // if we're not in the right thread for this callback...
         ++iter;
     }
+    if (queue->second.empty())
+      g_callQueues.erase(queue);
   }
 
   void RetardedAsyncCallbackHandler::clearPendingCalls(void* userData)
   {
     XBMC_TRACE;
+    // Release removed callbacks after the scan and the lock, because releases can reenter.
+    CallbackQueue removed;
     std::unique_lock<CCriticalSection> lock(critSection);
-    CallbackQueue::iterator iter = g_callQueue.begin();
-    while (iter != g_callQueue.end())
+    OwnerQueues::iterator queue = g_callQueues.begin();
+    while (queue != g_callQueues.end())
     {
-      AddonClass::Ref<AsyncCallbackMessage> p(*iter);
-
-      if(p->handler->shouldRemoveCallback(p->cb->getObject(),userData))
+      CallbackQueue::iterator iter = queue->second.begin();
+      while (iter != queue->second.end())
       {
+        AsyncCallbackMessage* p = iter->second.get();
+
+        if(p->handler->shouldRemoveCallback(p->cb->getObject(),userData))
+        {
 #ifdef ENABLE_XBMC_TRACE_API
-        CLog::Log(LOGDEBUG,
-                  "{}NEWADDON removing callback 0x{:x} for PyThreadState 0x{:x} from queue",
-                  _tg.getSpaces(), (long)(p->cb.get()), (long)userData);
+          CLog::Log(LOGDEBUG,
+                    "{}NEWADDON removing callback 0x{:x} for PyThreadState 0x{:x} from queue",
+                    _tg.getSpaces(), (long)(p->cb.get()), (long)userData);
 #endif
-        iter = g_callQueue.erase(iter);
+          removed.insert(queue->second.extract(iter++));
+        }
+        else
+          ++iter;
       }
-      else
-        ++iter;
+      queue = queue->second.empty() ? g_callQueues.erase(queue) : std::next(queue);
     }
   }
 }
