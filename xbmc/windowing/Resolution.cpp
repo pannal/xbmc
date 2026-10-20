@@ -81,7 +81,7 @@ RESOLUTION CResolutionUtils::ChooseBestResolution(float fps, int width, int heig
     }
   }
 
-  CLog::Log(LOGINFO, "Display resolution ADJUST : {} ({}) (weight: {:.3f})",
+  CLog::Log(LOGDEBUG, "Display resolution ADJUST : {} ({}) (weight: {:.3f})",
             CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo(res).strMode, res, weight);
   return res;
 }
@@ -119,7 +119,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
     }
   }
 
-  CLog::Log(LOGINFO,
+  CLog::Log(LOGDEBUG,
             "[WHITELIST] Searching the whitelist for: width: {}, height: {}, fps: {:0.3f}, 3D: {}:(0x{:x}), stereo mode: {:d}",
             width, height, fps, is3D ? "true" : "false", dwFlags, stereo_mode);
 
