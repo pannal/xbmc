@@ -1895,6 +1895,7 @@ void CApplication::UnlockFrameMoveGuard()
 
 void CApplication::FrameMove(bool processEvents, bool processGUI)
 {
+  GetComponent<CApplicationPowerHandling>()->ProcessDPMS();
   CRenderLifecycle::ProcessAll();
   if (auto* window = CServiceBroker::GetWinSystem())
     window->GetGfxContext().ProcessPendingVideoResolution();
@@ -2397,8 +2398,17 @@ bool CApplication::Stop(int exitCode)
     vExitCode["exitcode"] = exitCode;
     CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::System, "OnQuit", vExitCode);
 
-    // Abort any active screensaver
-    GetComponent<CApplicationPowerHandling>()->WakeUpScreenSaverAndDPMS();
+    // Abort any active screensaver before tearing down its services. When DPMS
+    // remains active, including after a failed persistent release, the combined
+    // wake can leave the screensaver active. Abort it independently without
+    // announcing DPMS wake or enabling rendering.
+    const auto appPower = GetComponent<CApplicationPowerHandling>();
+    // No further FrameMove runs after Stop. Release legacy automatic DPMS
+    // synchronously, without executing pending manual sleep requests.
+    appPower->ReleaseAutomaticDPMS();
+    appPower->WakeUpScreenSaverAndDPMS();
+    if (appPower->IsDPMSActive() && appPower->WakeUpScreenSaver())
+      appPower->AnnounceScreenSaverDeactivated(true);
 
     g_alarmClock.StopThread();
 

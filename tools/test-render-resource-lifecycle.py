@@ -142,7 +142,11 @@ bool IsFullscreenVideoActive(){return true;}
 void MarkGuiDirty(){events.push_back("dirty");}
 struct Gfx{int GetViewWindow(){return 0;}};
 struct Window{Gfx gfx;Gfx& GetGfxContext(){return gfx;}};
-struct CServiceBroker{static Window* GetWinSystem(){static Window window;return &window;}};
+// Successful DPMS release is a dependency; test-dpms-shutdown.sh covers failure
+// and state ordering with the actual sysfs adapter.
+struct CApplicationPowerHandling{bool ResetDPMS(){return true;}};
+struct Components{template<class T>std::shared_ptr<T> GetComponent(){static auto p=std::make_shared<T>();return p;}};
+struct CServiceBroker{static Window* GetWinSystem(){static Window window;return &window;}static Components& GetAppComponents(){static Components components;return components;}};
 using CDirtyRegion=int;
 using CDirtyRegionList=std::vector<int>;
 struct CEGLContextUtils

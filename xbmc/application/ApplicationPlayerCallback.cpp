@@ -15,6 +15,7 @@
 #include "URL.h"
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
+#include "application/ApplicationPowerHandling.h"
 #include "application/ApplicationStackHelper.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIMessage.h"
@@ -50,6 +51,7 @@ void CApplicationPlayerCallback::OnPlayBackEnded()
 
 void CApplicationPlayerCallback::OnPlayBackStarted(const CFileItem& file)
 {
+  CServiceBroker::GetAppComponents().GetComponent<CApplicationPowerHandling>()->WakeDPMS();
   CLog::LogF(LOGDEBUG, "CApplication::OnPlayBackStarted");
   std::shared_ptr<CFileItem> itemCurrentFile;
 
@@ -177,6 +179,7 @@ void CApplicationPlayerCallback::OnPlayBackPaused()
 
 void CApplicationPlayerCallback::OnPlayBackResumed()
 {
+  CServiceBroker::GetAppComponents().GetComponent<CApplicationPowerHandling>()->WakeDPMS();
 #ifdef HAS_PYTHON
   CServiceBroker::GetXBPython().OnPlayBackResumed();
 #endif

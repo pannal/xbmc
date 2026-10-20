@@ -9,6 +9,7 @@
 #pragma once
 
 #include "application/IApplicationComponent.h"
+#include "powermanagement/DPMSControl.h"
 
 #ifdef TARGET_WINDOWS
 #include "powermanagement/WinIdleTimer.h"
@@ -16,6 +17,8 @@
 #include "utils/Stopwatch.h"
 #include "windowing/OSScreenSaver.h"
 
+#include <atomic>
+#include <memory>
 #include <string>
 
 namespace ADDON
@@ -25,6 +28,7 @@ using AddonPtr = std::shared_ptr<IAddon>;
 } // namespace ADDON
 
 class CApplication;
+class CDPMSSupport;
 class CSetting;
 
 /*!
@@ -57,23 +61,34 @@ public:
 
   void ResetNavigationTimer();
 
-  bool IsDPMSActive() const { return m_dpmsIsActive; }
+  bool IsDPMSActive() const { return m_dpmsControl.GetState().active; }
+  // Returns request acceptance. Completion is reported by DPMS announcements.
   bool ToggleDPMS(bool manual);
+  // Playback wake applies only to backends that interrupt audio output.
+  bool WakeDPMS();
+  void ProcessDPMS();
+  bool ResetDPMS();
 
-  // Wakes up from the screensaver and / or DPMS. Returns true if woken up.
+  // Returns true when input should be consumed, including while wake is pending.
   bool WakeUpScreenSaverAndDPMS(bool bPowerOffKeyPressed = false);
 
   bool OnSettingChanged(const CSetting& setting);
   bool OnSettingAction(const CSetting& setting);
 
 protected:
+  // Terminal stop preserves manual sleep on nonpersistent backends and must
+  // never execute queued sleep. Persistent backends use window lifecycle reset.
+  void ReleaseAutomaticDPMS();
+  bool ReleaseDPMS(const std::shared_ptr<CDPMSSupport>& dpms);
   void ActivateScreenSaver(bool forceType = false);
   void CheckOSScreenSaverInhibitionSetting();
+  bool PlaybackPreventsDPMS() const;
   // Checks whether the screensaver and / or DPMS should become active.
   void CheckScreenSaverAndDPMS();
   void InhibitScreenSaver(bool inhibit);
   void ResetScreenSaverTimer();
   bool WakeUpScreenSaver(bool bPowerOffKeyPressed = false);
+  void AnnounceScreenSaverDeactivated(bool powerOff);
 
   void InhibitIdleShutdown(bool inhibit);
 
@@ -84,20 +99,22 @@ protected:
 
   float NavigationIdleTime();
 
-  bool m_renderGUI{false};
+  std::atomic<bool> m_renderGUI{false};
 
   bool m_bInhibitScreenSaver = false;
   bool m_bResetScreenSaver = false;
   ADDON::AddonPtr
       m_pythonScreenSaver; // @warning: Fallback for Python interface, for binaries not needed!
   bool m_screensaverActive = false;
+  // Snapshot for the current activation, not an attribution of playback to an add-on.
+  // Overwritten on every activation; ignored when no Python screensaver is active.
+  bool m_screensaverStartedWithPlayback{false};
   bool m_bScreenSaverWakingUp = false;
   // -1 = failed, 0 = locked, 1 = unlocked, 2 = check in progress
   int m_iScreenSaveLock = 0;
   std::string m_screensaverIdInUse;
 
-  bool m_dpmsIsActive = false;
-  bool m_dpmsIsManual = false;
+  CDPMSControl m_dpmsControl;
 
   bool m_bInhibitIdleShutdown = false;
   CStopWatch m_navigationTimer;

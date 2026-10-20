@@ -247,6 +247,12 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 
 bool CWinSystemAmlogicGLESContext::PrepareForShutdown()
 {
+  const auto power = CServiceBroker::GetAppComponents().GetComponent<CApplicationPowerHandling>();
+  // Output release is best effort during terminal teardown. ResetDPMS keeps
+  // failed release state honest; player and native lifetime gates still apply.
+  // Later teardown checkpoints retain another opportunity to release output.
+  if (power && !power->ResetDPMS())
+    CLog::Log(LOGERROR, "Amlogic: continuing shutdown with unresolved display power saving");
   GuiABFinish("shutdown");
   m_shutdownRequested = true;
   SetNativeGuiWait(false);

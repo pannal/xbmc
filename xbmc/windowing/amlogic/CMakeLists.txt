@@ -1,8 +1,10 @@
-set(SOURCES WinSystemAmlogic.cpp
+set(SOURCES AMLDPMSSupport.cpp
+            WinSystemAmlogic.cpp
             VideoSyncAML.cpp
             DolbyVisionAML.cpp)
 
-set(HEADERS AMLDeferredWork.h
+set(HEADERS AMLDPMSSupport.h
+            AMLDeferredWork.h
             AMLNativeTransaction.h
             WinSystemAmlogic.h
             VideoSyncAML.h

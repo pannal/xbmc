@@ -30,6 +30,9 @@ struct CLog{template<class...T>static void Log(T...){}};
 struct Metadata{bool has_level5_metadata=false;int level5_active_area_top_offset=0,level5_active_area_bottom_offset=0,level5_active_area_left_offset=0,level5_active_area_right_offset=0;bool level5_detected=false;};
 struct Cache{Metadata meta;Metadata GetVideoDoViFrameMetadata(){return meta;}void ClearVideoDoViFrameMetadata(){meta={};}}cache;
 struct CApplicationPlayer{bool IsPlaying(){return true;}int GetCacheLevel(){return 10;}};
+// Successful DPMS release is a dependency here; failure/state ordering is
+// exercised by test-dpms-shutdown.sh with the actual sysfs adapter.
+struct CApplicationPowerHandling{bool ResetDPMS(){return true;}};
 struct Components{template<class T>std::shared_ptr<T> GetComponent(){static auto p=std::make_shared<T>();return p;}}components;
 struct CServiceBroker{static Cache& GetDataCacheCore(){return cache;}static bool IsServiceManagerUp(){return true;}static Components& GetAppComponents(){return components;}};
 struct App{std::string CurrentFile(){return "fallback";}}g_application;

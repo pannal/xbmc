@@ -95,6 +95,10 @@ protected:
   bool IsPrimaryContextCurrent() const override;
   void SetVSyncImpl(bool enable) override;
   void PresentRenderImpl(bool rendered) override;
+  bool CanSleepDisplay() const override
+  {
+    return !m_shutdownRequested && !m_delayDispReset && m_displayLifecycle.Ready();
+  }
 
 private:
   struct GuiAB

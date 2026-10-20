@@ -7,6 +7,7 @@
  */
 
 #include "WinSystemAmlogic.h"
+#include "AMLDPMSSupport.h"
 #include "AMLNativeTransaction.h"
 #include "AMLHDRCapabilities.h"
 
@@ -81,6 +82,11 @@ bool CWinSystemAmlogic::InitWindowSystem()
 
 bool CWinSystemAmlogic::InitWindowSystem(CAMLSession::DisplayRequest display)
 {
+  auto dpms = std::make_shared<CAMLDPMSSupport>(
+      [this] { return CanSleepDisplay(); }, [this] { m_hdrRefreshPending = true; });
+  m_dpms = dpms;
+  if (!dpms->IsInitialized())
+    return false;
   RefreshHDRCapabilities();
 
   // Setup DV UI Elements etc.
@@ -89,6 +95,9 @@ bool CWinSystemAmlogic::InitWindowSystem(CAMLSession::DisplayRequest display)
     return false;
 
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+
+  if (auto displayOff = settings->GetSetting(CSettings::SETTING_POWERMANAGEMENT_DISPLAYSOFF))
+    displayOff->SetRequirementsMet(m_dpms->IsSupported());
 
   if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_NOISEREDUCTION))
   {

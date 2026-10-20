@@ -132,9 +132,7 @@ static int ToggleDPMS(const std::vector<std::string>& params)
 {
   auto& components = CServiceBroker::GetAppComponents();
   const auto appPower = components.GetComponent<CApplicationPowerHandling>();
-  appPower->ToggleDPMS(true);
-
-  return 0;
+  return appPower->ToggleDPMS(true) ? 0 : -1;
 }
 
 /*! \brief Send a WOL packet to a given host.

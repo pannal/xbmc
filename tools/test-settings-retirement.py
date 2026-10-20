@@ -177,9 +177,14 @@ struct CSettings {
 } settingsInstance;
 CSettings* settings(){return &settingsInstance;}
 struct DOVIStreamMetadata{int source_max_pq=333;};
+// Successful DPMS release is a dependency; test-dpms-shutdown.sh covers failure
+// and state ordering with the actual sysfs adapter.
+struct CApplicationPowerHandling{bool ResetDPMS(){return true;}};
+struct Components{template<class T>std::shared_ptr<T> GetComponent(){static auto p=std::make_shared<T>();return p;}};
 struct CServiceBroker {
   static inline bool alive=true;
   static CServiceBroker& GetDataCacheCore(){assert(alive);static CServiceBroker cache;return cache;}
+  static Components& GetAppComponents(){static Components components;return components;}
   DOVIStreamMetadata GetVideoDoViStreamMetadata(){return {};}
 };
 std::function<void(int,int,int)> payloadHook;
