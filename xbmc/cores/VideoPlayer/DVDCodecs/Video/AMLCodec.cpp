@@ -2186,6 +2186,7 @@ bool CAMLCodec::OpenDecoderInternal()
   m_decoder_minimum_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderMinimumBuffer;
   m_decoder_minimum_stream_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderMinimumStreamBuffer;
   m_buffer_level_ready = false;
+  m_dataLevel = 0.0f;
 
   CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder - Decoder settings: timeout: [{:d}s], drain timeout: [{:d}s], bypass buffer ready: [{:d}], buffer: [{:.1f}%], stream buffer: [{:.1f}%], minimum buffer: [{:.1f}%], minimum stream buffer: [{:.1f}%]",
     m_decoder_timeout,
@@ -2709,6 +2710,7 @@ void CAMLCodec::CloseDecoderInternal()
   m_dll->codec_close(&am_private->vcodec);
   dumpfile_close(am_private);
   m_opened = false;
+  m_dataLevel = 0.0f;
 
   // Reset VC1 deinterlace workaround
   if (am_private->video_format == VFORMAT_VC1 && aml_get_cpufamily_id() <= AML_SC2)
@@ -2806,6 +2808,7 @@ void CAMLCodec::ResetInternal()
   m_state = 0;
   m_stream_eof = false;
   m_buffer_level_ready = false;
+  m_dataLevel = 0.0f;
   m_no_data_since_reset = true;
   m_stillFrameDrain = {};
 
@@ -3130,6 +3133,11 @@ float CAMLCodec::GetBufferLevel()
   return GetBufferLevel(new_chunk, data_len, free_len);
 }
 
+float CAMLCodec::GetDataLevel() const
+{
+  return m_dataLevel;
+}
+
 float CAMLCodec::GetBufferLevel(int new_chunk, int &data_len, int &free_len)
 {
   struct buf_status bs;
@@ -3270,6 +3278,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
   struct vdec_info vi = {};
   int ret = EAGAIN;
   float buffer_level = GetBufferLevel();
+  m_dataLevel = buffer_level;
   // Startup detection intentionally stops presentation after the first picture.
   // Keep decoding admitted, but do not mistake that pause for a decoder stall.
   if (m_speed == DVD_PLAYSPEED_PAUSE &&

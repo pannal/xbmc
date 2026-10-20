@@ -280,6 +280,12 @@ public:
   * Indicates that the decoder supports extention streams.
   */
   virtual bool SupportsExtention() { return false; }
+
+  /**
+  * Hardware decoder input buffer fill level in percent (0 when empty or unknown).
+  * Call it from the video player thread only: the decoder is not thread safe.
+  */
+  virtual int GetDataLevel() const { return 0; }
 protected:
   CProcessInfo &m_processInfo;
   CDataCacheCore &m_dataCacheCore;
