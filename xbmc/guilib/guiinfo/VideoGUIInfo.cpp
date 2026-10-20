@@ -744,9 +744,6 @@ bool CVideoGUIInfo::GetPlaylistInfo(std::string& value, const CGUIInfo& info) co
 {
   const PLAYLIST::CPlayList& playlist =
       CServiceBroker::GetPlaylistPlayer().GetPlaylist(PLAYLIST::TYPE_VIDEO);
-  if (playlist.size() < 1)
-    return false;
-
   int index = info.GetData2();
   if (info.GetData1() == 1)
   { // relative index (requires current playlist is TYPE_VIDEO)
@@ -756,10 +753,9 @@ bool CVideoGUIInfo::GetPlaylistInfo(std::string& value, const CGUIInfo& info) co
     index = CServiceBroker::GetPlaylistPlayer().GetNextItemIdx(index);
   }
 
-  if (index < 0 || index >= playlist.size())
+  const CFileItemPtr playlistItem = playlist.TryGet(index);
+  if (!playlistItem)
     return false;
-
-  const CFileItemPtr playlistItem = playlist[index];
   // try to set a thumbnail
   if (!playlistItem->HasArt("thumb"))
   {

@@ -17,6 +17,7 @@
 #include "messaging/IMessageTarget.h"
 #include "playlists/PlayListTypes.h"
 #include "rendering/RenderResource.h"
+#include "threads/SingleLock.h"
 #include "threads/SystemClock.h"
 #include "utils/GlobalsHandling.h"
 #include "utils/Stopwatch.h"
@@ -201,6 +202,21 @@ public:
   \brief Unlocks calls from outside kodi (e.g. python).
   */
   void UnlockFrameMoveGuard();
+
+  class ScopedFrameMoveGuardExit
+  {
+  public:
+    explicit ScopedFrameMoveGuardExit(CApplication& application);
+    ScopedFrameMoveGuardExit(const ScopedFrameMoveGuardExit&) = delete;
+    ScopedFrameMoveGuardExit& operator=(const ScopedFrameMoveGuardExit&) = delete;
+    ScopedFrameMoveGuardExit(ScopedFrameMoveGuardExit&&) = delete;
+    ScopedFrameMoveGuardExit& operator=(ScopedFrameMoveGuardExit&&) = delete;
+
+  private:
+    // Reverse destruction restores the frame guard before graphics ownership.
+    std::optional<CSingleExit> m_graphicsExit;
+    std::optional<CSingleExit> m_frameMoveExit;
+  };
 
 protected:
   bool OnSettingsSaving() const override;

@@ -32,12 +32,13 @@ bool CPlaylistDirectory::GetDirectory(const CURL& url, CFileItemList &items)
     return false;
 
   const PLAYLIST::CPlayList& playlist = CServiceBroker::GetPlaylistPlayer().GetPlaylist(playlistId);
-  items.Reserve(playlist.size());
+  const auto entries = playlist.GetItems();
+  items.Reserve(entries.size());
 
-  for (int i = 0; i < playlist.size(); ++i)
+  for (size_t i = 0; i < entries.size(); ++i)
   {
-    CFileItemPtr item = playlist[i];
-    item->SetProperty("playlistposition", i);
+    const CFileItemPtr& item = entries[i];
+    item->SetProperty("playlistposition", static_cast<int>(i));
     item->SetProperty("playlisttype", playlistId);
     //item->m_iprogramCount = i; // the programCount is set as items are added!
     items.Add(item);
