@@ -7,6 +7,7 @@
  */
 
 #include "GUIWindow.h"
+#include "utils/DetectorAdmission.h"
 
 #include "GUIAudioManager.h"
 #include "GUIComponent.h"
@@ -1050,6 +1051,11 @@ void CGUIWindow::DumpTextureUse()
 void CGUIWindow::SetProperty(const std::string &strKey, const CVariant &value)
 {
   std::unique_lock<CCriticalSection> lock(*this);
+  if (GetID() == WINDOW_HOME && StringUtils::EqualsNoCase(strKey, DETECTOR_ADMISSION::PROPERTY))
+  {
+    DETECTOR_ADMISSION::Publish(value.asString());
+    return;
+  }
   m_mapProperties[strKey] = value;
   if (GetID() == WINDOW_HOME &&
       StringUtils::EqualsNoCase(strKey, "script.plex.playback_initializing"))
@@ -1059,6 +1065,8 @@ void CGUIWindow::SetProperty(const std::string &strKey, const CVariant &value)
 CVariant CGUIWindow::GetProperty(const std::string &strKey) const
 {
   std::unique_lock<CCriticalSection> lock(const_cast<CGUIWindow&>(*this));
+  if (GetID() == WINDOW_HOME && StringUtils::EqualsNoCase(strKey, DETECTOR_ADMISSION::PROPERTY))
+    return CVariant(DETECTOR_ADMISSION::Value());
   std::map<std::string, CVariant, icompare>::const_iterator iter = m_mapProperties.find(strKey);
   if (iter == m_mapProperties.end())
     return CVariant(CVariant::VariantTypeNull);
@@ -1071,7 +1079,10 @@ void CGUIWindow::ClearProperties()
   std::unique_lock<CCriticalSection> lock(*this);
   m_mapProperties.clear();
   if (GetID() == WINDOW_HOME)
+  {
+    DETECTOR_ADMISSION::Publish("");
     PM4K_STARTUP::Publish(false);
+  }
 }
 
 void CGUIWindow::SetRunActionsManually()

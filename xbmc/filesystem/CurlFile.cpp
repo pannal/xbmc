@@ -473,6 +473,7 @@ void CCurlFile::Close()
 
 void CCurlFile::SetCommonOptions(CReadState* state, bool failOnError /* = true */)
 {
+  state->m_readInterrupt = m_readInterrupt;
   CURL_HANDLE* h = state->m_easyHandle;
 
   g_curlInterface.easy_reset(h);
@@ -1693,7 +1694,7 @@ int8_t CCurlFile::CReadState::FillBuffer(unsigned int want)
   // doesn't exceed required size already
   while (m_buffer.getMaxReadSize() < want && m_buffer.getMaxWriteSize() > 0 )
   {
-    if (m_cancelled)
+    if (m_cancelled || (m_readInterrupt && m_readInterrupt()))
       return FILLBUFFER_NO_DATA;
 
     /* if there is data in overflow buffer, try to use that first */
@@ -1838,12 +1839,16 @@ int8_t CCurlFile::CReadState::FillBuffer(unsigned int want)
         long timeout = 0;
         if (CURLM_OK != g_curlInterface.multi_timeout(m_multiHandle, &timeout) || timeout == -1 || timeout < 200)
           timeout = 200;
+        if (m_readInterrupt)
+          timeout = std::min(timeout, 50L);
 
         XbmcThreads::EndTime<> endTime{std::chrono::milliseconds(timeout)};
         int rc;
 
         do
         {
+          if (m_readInterrupt && m_readInterrupt())
+            return FILLBUFFER_NO_DATA;
           /* On success the value of maxfd is guaranteed to be >= -1. We call
            * select(maxfd + 1, ...); specially in case of (maxfd == -1) there are
            * no fds ready yet so we call select(0, ...) --or Sleep() on Windows--
@@ -2090,6 +2095,15 @@ bool CCurlFile::GetCookies(const CURL &url, std::string &cookies)
 
 int CCurlFile::IoControl(EIoControl request, void* param)
 {
+  if (request == IOCTRL_READ_INTERRUPT)
+  {
+    m_readInterrupt = param ? *static_cast<std::function<bool()>*>(param) : std::function<bool()>{};
+    if (m_state)
+      m_state->m_readInterrupt = m_readInterrupt;
+    if (m_oldState)
+      m_oldState->m_readInterrupt = m_readInterrupt;
+    return 0;
+  }
   if (request == IOCTRL_SEEK_POSSIBLE)
     return m_seekable ? 1 : 0;
 

@@ -16,6 +16,7 @@
 #include <chrono>
 #include <map>
 #include <memory>
+#include <optional>
 
 class CAction;
 class CFileItem; typedef std::shared_ptr<CFileItem> CFileItemPtr;
@@ -68,7 +69,8 @@ public:
   bool Play(int index,
             const std::string& player,
             bool replace = false,
-            bool playPreviousOnFail = false);
+            bool playPreviousOnFail = false,
+            std::optional<bool> detectorSkip = std::nullopt);
 
   /*! \brief Returns the index of the current item in active playlist.
    \return Current item in the active playlist.

@@ -13,6 +13,7 @@
 #include "utils/RingBuffer.h"
 
 #include <map>
+#include <functional>
 #include <string>
 
 typedef void CURL_HANDLE;
@@ -109,6 +110,7 @@ namespace XFILE
           unsigned int m_overflowSize; // size of the overflow buffer
           int m_stillRunning; // Is background url fetch still in progress
           bool m_cancelled;
+          std::function<bool()> m_readInterrupt;
           int64_t m_fileSize;
           int64_t m_filePos;
           bool m_bFirstLoop;
@@ -187,6 +189,7 @@ namespace XFILE
       bool m_skipshout;
       bool m_postdataset;
       bool m_allowRetry;
+      std::function<bool()> m_readInterrupt;
       bool m_verifyPeer = true;
       bool m_failOnError = true;
       curl_slist* m_dnsCacheList = nullptr;

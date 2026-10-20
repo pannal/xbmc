@@ -24,6 +24,11 @@
 #include <thread>
 
 #include "AMLUtils.h"
+#include "utils/DetectorAdmission.h"
+#include "utils/ActiveAreaDetector.h"
+#include <map>
+#include "URL.h"
+#include "utils/URIUtils.h"
 #include "PM4KStartup.h"
 #include "ActiveAreaCache.h"
 #include "DVBackendState.h"
@@ -2781,6 +2786,13 @@ struct DetectSource
       selection(selected ? std::move(selected) : std::make_shared<const unsigned char>(0)),
       streamIndex(index), codecHint(codec), displayAspect(aspect),
       codedCrop(detect_coded_crop(w, h, aspect)) {}
+  std::shared_ptr<DETECTOR_ADMISSION::PlaybackPolicy> policy{std::make_shared<DETECTOR_ADMISSION::PlaybackPolicy>()};
+  bool standalone{false}; // explicit jobs never borrow playback state or publish L5
+  DETECTOR_ADMISSION::PositionDeadline positionDeadline;
+  std::atomic<bool> timedOut{false};
+  std::atomic<bool> uniqueStream{false};
+  std::atomic<int> scanState{DV_DETECT_RUNNING};
+  std::atomic<int> scannedWidth{0}, scannedHeight{0}, scannedStream{-1}, scannedCodec{0};
   const std::string path;
   const int width;
   const int height;
@@ -2811,6 +2823,18 @@ struct DetectSource
 };
 static std::mutex s_detectSourceMutex;
 static std::shared_ptr<DetectSource> s_detectSource = std::make_shared<DetectSource>("");
+// One scanner reservation across automatic playback and explicit jobs. A busy
+// caller never cancels or joins the other owner on its request thread.
+static std::atomic<bool> s_detectorScannerBusy{false};
+static std::shared_ptr<const void> detect_reserve_scanner()
+{
+  bool expected = false;
+  if (!s_detectorScannerBusy.compare_exchange_strong(expected, true))
+    return {};
+  static const unsigned char token = 0;
+  return std::shared_ptr<const void>(&token, [](const void*) { s_detectorScannerBusy.store(false); });
+}
+
 static std::atomic<bool> s_detectInjected{false};
 // Caller holds the source mutex and has entered native admission.
 static void detect_apply_l5_override_locked();
@@ -2876,6 +2900,7 @@ std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int
   if (streamIndex < 0 || s_detectSource->streamIndex != streamIndex ||
       s_detectSource->codecHint != codec)
   {
+    const auto policy = s_detectSource->policy;
     const auto pm4kStartupToken = s_detectSource->pm4kStartupToken;
     const auto startupWait = s_detectSource->startupWait;
     const auto startupAdmission = s_detectSource->startupAdmission;
@@ -2883,6 +2908,7 @@ std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int
     s_detectSource->superseded->store(true);
     s_detectSource = std::make_shared<DetectSource>(s_detectSource->path, 0, 0, false, false,
                                                    std::shared_ptr<const void>{}, streamIndex, codec);
+    s_detectSource->policy = policy;
     s_detectSource->pm4kStartupToken = pm4kStartupToken;
     s_detectSource->startupWait = startupWait;
     s_detectSource->startupAdmission = startupAdmission;
@@ -2905,18 +2931,20 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
                                                  nativeDV, allowProbe, expectedSource,
                                                  previous->streamIndex, previous->codecHint,
                                                  displayAspect);
+  s_detectSource->policy = previous->policy;
   s_detectSource->startupVideoReady = previous->startupVideoReady;
   s_detectSource->pm4kStartupToken = previous->pm4kStartupToken;
   s_detectSource->startupWait = previous->startupWait;
   s_detectSource->startupHeld = previous->startupHeld;
   s_detectSource->startupAdmission = previous->startupAdmission;
-  if (s_detectSource->codedCrop)
+  if (s_detectSource->codedCrop || s_detectSource->policy->Blocked())
   {
     s_detectSource->startupAdmission->store(false);
     s_detectSource->startupHeld->store(false);
-    s_detectState.store(DV_DETECT_SKIP_NON16X9);
+    s_detectState.store(s_detectSource->codedCrop ? DV_DETECT_SKIP_NON16X9 :
+                        s_detectSource->policy->timedOut ? DV_DETECT_TIMED_OUT : DV_DETECT_SKIPPED);
   }
-  if (allowProbe && !s_detectSource->codedCrop && previous->width == width &&
+  if (allowProbe && !s_detectSource->codedCrop && !s_detectSource->policy->Blocked() && previous->width == width &&
       previous->height == height && previous->displayAspect == displayAspect &&
       previous->nativeDV == nativeDV && previous->allowProbe == allowProbe)
   {
@@ -2937,6 +2965,7 @@ void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedS
   s_detectSource = std::make_shared<DetectSource>(previous->path, previous->width, previous->height,
       previous->nativeDV, previous->allowProbe, expectedSource,
       previous->streamIndex, previous->codecHint, previous->displayAspect);
+  s_detectSource->policy = previous->policy;
   s_detectSource->startupVideoReady = previous->startupVideoReady;
   s_detectSource->pm4kStartupToken = previous->pm4kStartupToken;
   s_detectSource->startupWait = previous->startupWait;
@@ -2990,7 +3019,7 @@ void aml_subtitle_active_area_startup_begin(uint64_t pm4kStartupToken)
       (settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) &&
        settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA) &&
        !aml_dv_l5_override_active());
-  const bool wait = requested && settings()->GetBool(CSettings::SETTING_SUBTITLES_WAITACTIVEAREA);
+  const bool wait = requested && !s_detectSource->policy->Blocked() && settings()->GetBool(CSettings::SETTING_SUBTITLES_WAITACTIVEAREA);
   s_detectSource->startupWait->store(wait);
   s_detectSource->startupHeld->store(false);
   s_detectSource->startupAdmission->store(wait);
@@ -3026,7 +3055,7 @@ void aml_subtitle_active_area_startup_set_held(const std::shared_ptr<const void>
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   if (expectedSource && expectedSource == s_detectSource->selection)
     s_detectSource->startupHeld->store(held && s_detectSource->startupWait->load() &&
-                                      !s_detectSource->codedCrop);
+                                      !s_detectSource->codedCrop && !s_detectSource->policy->Blocked());
 }
 
 bool aml_subtitle_active_area_startup_try_hold(const std::shared_ptr<const void>& expectedSource,
@@ -3034,7 +3063,7 @@ bool aml_subtitle_active_area_startup_try_hold(const std::shared_ptr<const void>
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   const auto& source = s_detectSource;
-  if (!expectedSource || expectedSource != source->selection || source->codedCrop ||
+  if (!expectedSource || expectedSource != source->selection || source->codedCrop || source->policy->Blocked() ||
       !source->startupWait->load() ||
       (!source->startupAdmission->load() &&
        (source->superseded->load() || !source->pending.load())) ||
@@ -3069,7 +3098,7 @@ bool aml_subtitle_active_area_startup_progress(const std::shared_ptr<const void>
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   completed = total = 0;
   if (!expectedSource || expectedSource != s_detectSource->selection ||
-      !s_detectSource->startupWait->load() || s_detectSource->codedCrop)
+      !s_detectSource->startupWait->load() || s_detectSource->codedCrop || s_detectSource->policy->Blocked())
     return false;
   // Cancelling one run for a seek is not completion of the startup selection.
   // total=0 distinguishes deferred admission from an actual 14-position scan.
@@ -3107,10 +3136,13 @@ static bool detect_startup_wait_active(const CAMLNativeWorker::Run& run)
          s_detectSource->pending.load();
 }
 
-static bool detect_wait_for_startup_hold(const CAMLNativeWorker::Run& run)
+static bool detect_wait_for_startup_hold(const CAMLNativeWorker::Run& run,
+                                         const std::function<bool()>& stop = {})
 {
   for (;;)
   {
+    if (stop && stop())
+      return false;
     {
       std::lock_guard<std::mutex> lock(s_detectSourceMutex);
       if (run.Cancelled())
@@ -3159,7 +3191,7 @@ bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
     if (subtitle)
       accepted = subtitle;
   }
-  if (!enabled || !source->allowProbe || !accepted ||
+  if (!enabled || !source->allowProbe || source->policy->Blocked() || !accepted ||
       source->width != width || source->height != height)
     return false;
   const auto& result = *accepted;
@@ -3175,7 +3207,7 @@ bool aml_dv_detect_active_area_override_get(int width, int height, uint16_t& top
   const auto& source = s_detectSource;
   const auto accepted = !source->superseded->load() && source->result ?
       source->result : source->retained;
-  if (!source->nativeDV || !source->allowProbe || !aml_dv_detect_active_area_enabled() ||
+  if (!source->nativeDV || !source->allowProbe || source->policy->Blocked() || !aml_dv_detect_active_area_enabled() ||
       source->width != width || source->height != height ||
       !accepted || !accepted->highConfidence)
     return false;
@@ -3187,7 +3219,8 @@ bool aml_dv_detect_active_area_override_get(int width, int height, uint16_t& top
 bool aml_dv_detect_active_area_stable()
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
-  return s_detectSource->nativeDV && !s_detectSource->superseded->load() && s_detectStable.load();
+  return s_detectSource->nativeDV && !s_detectSource->policy->Blocked() &&
+         !s_detectSource->superseded->load() && s_detectStable.load();
 }
 
 int aml_dv_detect_active_area_state()
@@ -3201,7 +3234,8 @@ void aml_dv_detect_active_area_get(uint16_t& top, uint16_t& bottom, uint16_t& le
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   top = bottom = left = right = 0;
-  if (s_detectSource->nativeDV && !s_detectSource->superseded->load() && s_detectSource->result)
+  if (s_detectSource->nativeDV && !s_detectSource->policy->Blocked() &&
+      !s_detectSource->superseded->load() && s_detectSource->result)
   {
     const auto& result = *s_detectSource->result;
     top = result.top; bottom = result.bottom; left = result.left; right = result.right;
@@ -3226,10 +3260,10 @@ static int64_t detect_steady_ms()
       std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-static int detect_interrupt_cb(void *opaque)
+static int detect_check_interrupted(void* opaque, const std::function<bool()>& stop)
 {
   const auto* run = static_cast<const CAMLNativeWorker::Run*>(opaque);
-  if (!run || !detect_wait_for_startup_hold(*run))
+  if ((stop && stop()) || !run || !detect_wait_for_startup_hold(*run, stop))
     return 1;
   /* Abort the in-flight read if playback's buffer goes critical.  Rate-limited:
    * the interrupt callback is polled in tight I/O loops, and the cache query
@@ -3247,7 +3281,7 @@ static int detect_interrupt_cb(void *opaque)
       {
         // A hold can be lost between the admission check and cache query.
         // Wait for resynchronization instead of terminating startup detection.
-        if (!detect_wait_for_startup_hold(*run))
+        if (!detect_wait_for_startup_hold(*run, stop))
           return 1;
         if (detect_startup_wait_active(*run))
           return 0;
@@ -3259,30 +3293,64 @@ static int detect_interrupt_cb(void *opaque)
   return 0;
 }
 
+static int detect_interrupt_cb(void* opaque)
+{
+  return detect_check_interrupted(opaque, {});
+}
+
 /* AVIO callbacks for reading through Kodi's VFS (handles nfs://, smb://, etc.) */
 struct DetectInput
 {
   XFILE::CFile& file;
   const CAMLNativeWorker::Run& run;
+  DetectSource* source{nullptr};
 };
+
+static bool detect_input_deadline(DetectInput& input)
+{
+  if (input.run.Cancelled())
+    return true;
+  if (!input.source || !input.source->positionDeadline.Expired())
+    return false;
+  input.source->timedOut.store(true);
+  // Only the exact current automatic run may poison this playback. A late
+  // completion/callback from a cancelled source cannot affect its replacement.
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  if (!input.run.Cancelled() && (input.source->standalone || input.source == s_detectSource.get()))
+    input.source->policy->timedOut.store(true);
+  return true;
+}
+
+static int detect_input_interrupt_cb(void* opaque)
+{
+  auto& input = *static_cast<DetectInput*>(opaque);
+  if (detect_input_deadline(input))
+    return 1;
+  if (input.source && input.source->standalone)
+    return 0; // no current player's buffer, startup or metadata belongs to a job
+  return detect_check_interrupted(const_cast<CAMLNativeWorker::Run*>(&input.run),
+                                 [&input] { return detect_input_deadline(input); });
+}
 
 static int detect_avio_read(void *opaque, uint8_t *buf, int size)
 {
   auto& input = *static_cast<DetectInput*>(opaque);
-  if (detect_interrupt_cb(const_cast<CAMLNativeWorker::Run*>(&input.run)))
+  if (detect_input_interrupt_cb(&input))
     return AVERROR_EXIT;
   int ret = input.file.Read(buf, size);
+  if (detect_input_interrupt_cb(&input))
+    return AVERROR_EXIT;
   return (ret == 0) ? AVERROR_EOF : ret;
 }
 
 static int64_t detect_avio_seek(void *opaque, int64_t pos, int whence)
 {
   auto& input = *static_cast<DetectInput*>(opaque);
-  if (detect_interrupt_cb(const_cast<CAMLNativeWorker::Run*>(&input.run)))
+  if (detect_input_interrupt_cb(&input))
     return AVERROR_EXIT;
-  if (whence == AVSEEK_SIZE)
-    return input.file.GetLength();
-  return input.file.Seek(pos, whence & ~AVSEEK_FORCE);
+  const auto result = whence == AVSEEK_SIZE ? input.file.GetLength() :
+      input.file.Seek(pos, whence & ~AVSEEK_FORCE);
+  return detect_input_interrupt_cb(&input) ? AVERROR_EXIT : result;
 }
 
 static bool detect_throttle_enabled()
@@ -3342,6 +3410,16 @@ static void detect_publish(const CAMLNativeWorker::Run& run,
 {
   {
     std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+    if (source->standalone)
+    {
+      if (!run.Cancelled() && !source->timedOut &&
+          detTop + detBottom < source->scannedHeight && detLeft + detRight < source->scannedWidth)
+      {
+        source->result = std::make_shared<const DetectResult>(DetectResult{detTop, detBottom, detLeft, detRight, highConfidence});
+        source->scanState.store(DV_DETECT_OK);
+      }
+      return;
+    }
     if (run.Cancelled() || source != s_detectSource || source->superseded->load() ||
         detTop + detBottom >= source->height || detLeft + detRight >= source->width)
       return;
@@ -3382,6 +3460,14 @@ static void detect_publish_subtitle(const CAMLNativeWorker::Run& run,
   // CPU-only storage: no native admission, native state, sysfs or public picture
   // geometry. The renderer must explicitly request this placement estimate.
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  if (source->standalone)
+  {
+    if (!run.Cancelled() && !source->timedOut &&
+        result.top + result.bottom < source->scannedHeight &&
+        result.left + result.right < source->scannedWidth)
+      source->subtitleResult = std::make_shared<const DetectResult>(result);
+    return;
+  }
   if (run.Cancelled() || source != s_detectSource || source->superseded->load() ||
       !source->allowProbe || result.top + result.bottom >= source->height ||
       result.left + result.right >= source->width)
@@ -4112,19 +4198,24 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
                                      const CAMLNativeWorker::Run& run)
 {
   const std::string& filePath = source->path;
+  const auto probeName = URIUtils::GetFileName(CURL(filePath).GetFileName());
   AVFormatContext* fmtCtx = nullptr;
   AVCodecContext* codecCtx = nullptr;
   AVFrame* frame = nullptr;
   AVPacket pkt;
   AVIOContext* avioCtx = nullptr;
   XFILE::CFile file;
-  DetectInput input{file, run};
+  DetectInput input{file, run, source.get()};
+  std::function<bool()> interrupted = [&input] { return detect_input_interrupt_cb(&input) != 0; };
+  bool retry = false;
+  auto& state = source->standalone ? source->scanState : s_detectState;
+  int codedWidth = source->width, codedHeight = source->height;
   uint8_t* avioBuf = nullptr;
   const int bufSize = 32768;
   int videoIdx = -1;
   uint16_t detTop = 0, detBottom = 0, detLeft = 0, detRight = 0;
   bool nativeHighConfidence = false;
-  const bool throttle = !source->nativeDV || detect_throttle_enabled();
+  const bool throttle = !source->standalone && (!source->nativeDV || detect_throttle_enabled());
   if (throttle)
     CLog::Log(LOGDEBUG, "DetectActiveArea: cache-aware I/O throttle enabled");
 
@@ -4136,11 +4227,11 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   {
     CLog::Log(LOGINFO, "DetectActiveArea: disc source ({}) — skipping",
               filePath.substr(0, filePath.find("//")+2));
-    s_detectState.store(DV_DETECT_SKIPPED);
+    state.store(DV_DETECT_SKIPPED);
     goto cleanup;
   }
 
-  if (!detect_wait_for_startup_hold(run))
+  if (!source->standalone && !detect_wait_for_startup_hold(run))
     goto cleanup;
 
   /* Cache-aware throttle: wait for playback to build a safety margin before we
@@ -4156,7 +4247,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     {
       CLog::Log(LOGINFO, "DetectActiveArea: playback cache stuck at {}% after wait — "
                 "device too slow to scan without starving playback, skipping", lvl);
-      s_detectState.store(DV_DETECT_SKIPPED);
+      state.store(DV_DETECT_SKIPPED);
       goto cleanup;
     }
     CLog::Log(LOGDEBUG, "DetectActiveArea: throttle — playback cache at {}%, starting scan", lvl);
@@ -4168,13 +4259,18 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   s_detectThrottleActive.store(throttle);
 
   /* Open through Kodi VFS — supports nfs://, smb://, local paths, etc. */
-  if (detect_interrupt_cb(const_cast<CAMLNativeWorker::Run*>(&run)))
+  if (detect_input_interrupt_cb(&input))
     goto cleanup;
   if (!file.Open(filePath, XFILE::READ_NO_CACHE))
   {
-    CLog::Log(LOGWARNING, "DetectActiveArea: failed to open {}", filePath);
+    CLog::Log(LOGWARNING, "DetectActiveArea: failed to open detector input");
     goto cleanup;
   }
+
+  // Optional same-thread backend polling. Curl supports it across reconnects;
+  // other synchronous VFS implementations may only be checked after return.
+  file.IoControl(XFILE::IOCTRL_READ_INTERRUPT, &interrupted);
+  file.IoControl(XFILE::IOCTRL_SET_RETRY, &retry);
 
   avioBuf = static_cast<uint8_t*>(av_malloc(bufSize));
   if (!avioBuf)
@@ -4198,15 +4294,15 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
    * stack VFS context to ffurl_close).  Set it explicitly so we own avioCtx on
    * every exit path. */
   fmtCtx->flags |= AVFMT_FLAG_CUSTOM_IO;
-  fmtCtx->interrupt_callback.callback = detect_interrupt_cb;
-  fmtCtx->interrupt_callback.opaque = const_cast<CAMLNativeWorker::Run*>(&run);
+  fmtCtx->interrupt_callback.callback = detect_input_interrupt_cb;
+  fmtCtx->interrupt_callback.opaque = &input;
 
   if (run.Cancelled())
     goto cleanup;
 
-  if (avformat_open_input(&fmtCtx, filePath.c_str(), nullptr, nullptr) < 0)
+  if (avformat_open_input(&fmtCtx, probeName.c_str(), nullptr, nullptr) < 0)
   {
-    CLog::Log(LOGWARNING, "DetectActiveArea: failed to open input {}", filePath);
+    CLog::Log(LOGWARNING, "DetectActiveArea: failed to probe detector input");
     goto cleanup;
   }
 
@@ -4219,7 +4315,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   {
     CLog::Log(LOGINFO, "DetectActiveArea: MPEG-TS container ({}) — skipping, "
               "seek unreliable", fmtCtx->iformat->name);
-    s_detectState.store(DV_DETECT_SKIPPED);
+    state.store(DV_DETECT_SKIPPED);
     goto cleanup;
   }
 
@@ -4229,6 +4325,9 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     goto cleanup;
   }
 
+  source->uniqueStream = std::count_if(fmtCtx->streams, fmtCtx->streams + fmtCtx->nb_streams,
+      [](const AVStream* stream) { return stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+          !(stream->disposition & AV_DISPOSITION_ATTACHED_PIC); }) == 1;
   for (unsigned i = 0; i < fmtCtx->nb_streams; i++)
   {
     if (fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
@@ -4239,7 +4338,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
       // Without a selected-demux-stream identity, multi-video files are ambiguous.
       if (videoIdx >= 0)
       {
-        s_detectState.store(DV_DETECT_SKIPPED);
+        state.store(DV_DETECT_SKIPPED);
         goto cleanup;
       }
       videoIdx = i;
@@ -4254,7 +4353,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   if (source->codecHint > 0 &&
       fmtCtx->streams[videoIdx]->codecpar->codec_id != source->codecHint)
   {
-    s_detectState.store(DV_DETECT_SKIPPED);
+    state.store(DV_DETECT_SKIPPED);
     goto cleanup;
   }
 
@@ -4286,6 +4385,16 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
       goto cleanup;
     }
   }
+
+  if (source->standalone)
+  {
+    codedWidth = codecCtx->width;
+    codedHeight = codecCtx->height;
+  }
+  source->scannedWidth = codedWidth;
+  source->scannedHeight = codedHeight;
+  source->scannedStream = videoIdx;
+  source->scannedCodec = codecCtx->codec_id;
 
   CLog::Log(LOGDEBUG, "DetectActiveArea: opened {}x{} codec id {} for scanning",
             codecCtx->width, codecCtx->height, codecCtx->codec_id);
@@ -4341,6 +4450,9 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
       if (throttle && s > 0 && detect_wait_for_cache(run, kDetectCacheTargetPct, 8000) < 0)
         break; /* cancelled */
 
+      // One budget covers this requested position and all scene retries.
+      // Deliberate admission/cache waiting above is outside that budget.
+      source->positionDeadline.Start(std::chrono::seconds(source->policy->seconds));
       bool usable = false;
       int measuredSeekPct = seekPercents[s];
 
@@ -4348,8 +4460,8 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
       {
         /* detect_interrupt_cb aborts an in-flight read on critical cache; stop
          * retrying immediately rather than re-seek and thrash the device more. */
-        if (s_detectCacheStarved.load())
-          break;
+        if (detect_input_interrupt_cb(&input))
+          goto cleanup;
         int seekPct = seekPercents[s] + retry;
         if (seekPct > 90) break;
 
@@ -4359,6 +4471,8 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
           av_seek_frame(fmtCtx, -1,
                         fmtCtx->duration * seekPct / 100,
                         AVSEEK_FLAG_BACKWARD);
+          if (detect_input_interrupt_cb(&input))
+            goto cleanup;
         }
         else if (s > 0 || retry > 0)
           break; /* unseekable — one attempt only */
@@ -4370,8 +4484,19 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
         bool gotFrame = false;
         for (int vidPkts = 0; vidPkts < 50 && !gotFrame; )
         {
+          if (detect_input_interrupt_cb(&input))
+            goto cleanup;
           if (av_read_frame(fmtCtx, &pkt) < 0)
+          {
+            if (detect_input_interrupt_cb(&input))
+              goto cleanup;
             break;
+          }
+          if (detect_input_interrupt_cb(&input))
+          {
+            av_packet_unref(&pkt);
+            goto cleanup;
+          }
           if (pkt.stream_index != videoIdx)
           {
             av_packet_unref(&pkt);
@@ -4380,6 +4505,8 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
           vidPkts++;
           avcodec_send_packet(codecCtx, &pkt);
           av_packet_unref(&pkt);
+          if (detect_input_interrupt_cb(&input))
+            goto cleanup;
           while (avcodec_receive_frame(codecCtx, frame) == 0)
           {
             gotFrame = true;
@@ -4391,22 +4518,28 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
          * packet (dual-RPU DV, B-frame reordering). Send NULL to drain. */
         if (!gotFrame)
         {
+          if (detect_input_interrupt_cb(&input))
+            goto cleanup;
           avcodec_send_packet(codecCtx, nullptr);
+          if (detect_input_interrupt_cb(&input))
+            goto cleanup;
           if (avcodec_receive_frame(codecCtx, frame) == 0)
             gotFrame = true;
         }
 
+        if (detect_input_interrupt_cb(&input))
+          goto cleanup;
         if (!gotFrame || !frame->data[0] || frame->width < 64 || frame->height < 64)
           continue;
 
-        if (frame->width != source->width || frame->height != source->height ||
+        if (frame->width != codedWidth || frame->height != codedHeight ||
             (frame->format != AV_PIX_FMT_YUV420P && frame->format != AV_PIX_FMT_YUVJ420P &&
              frame->format != AV_PIX_FMT_YUV422P && frame->format != AV_PIX_FMT_YUVJ422P &&
              frame->format != AV_PIX_FMT_YUV444P && frame->format != AV_PIX_FMT_YUVJ444P &&
              frame->format != AV_PIX_FMT_NV12 && frame->format != AV_PIX_FMT_NV21 &&
              frame->format != AV_PIX_FMT_YUV420P10LE && frame->format != AV_PIX_FMT_P010LE))
         {
-          s_detectState.store(DV_DETECT_SKIPPED);
+          state.store(DV_DETECT_SKIPPED);
           goto cleanup;
         }
         lastWidth = frame->width;
@@ -4417,7 +4550,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
         const bool is10bit = isP010 || frame->format == AV_PIX_FMT_YUV420P10LE;
         if (stride < lastWidth * (is10bit ? 2 : 1))
         {
-          s_detectState.store(DV_DETECT_SKIPPED);
+          state.store(DV_DETECT_SKIPPED);
           goto cleanup;
         }
         const int shift = isP010 ? 8 : (is10bit ? 2 : 0);
@@ -4478,14 +4611,19 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
         measuredSeekPct = seekPct;
       }
 
+      if (detect_input_interrupt_cb(&input))
+        goto cleanup;
       if (staleAbort)
       {
-        s_detectState.store(DV_DETECT_FAILED);
+        state.store(DV_DETECT_FAILED);
         goto cleanup;
       }
 
       if (!usable)
+      {
+        source->positionDeadline.Clear();
         continue;
+      }
 
       /* Re-derive frame accessors from the decoded frame (still valid) */
       const int stride = frame->linesize[0];
@@ -4651,7 +4789,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
       // Current source metadata keeps native authority. Adapted text still
       // needs an independent bounded pixel scan when authored offsets are too
       // small; it cannot replace native L5 or an explicit manual override.
-      if (source->nativeDV)
+      if (source->nativeDV && !source->standalone)
       {
         const auto srcMeta = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
         if (srcMeta.has_level5_metadata && !srcMeta.level5_detected &&
@@ -4663,19 +4801,22 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
               !settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA))
           {
             CLog::Log(LOGINFO, "DetectActiveArea: source L5 present; subtitle detection disabled");
-            s_detectState.store(DV_DETECT_SKIPPED);
+            state.store(DV_DETECT_SKIPPED);
             s_detectStable.store(true);
             goto cleanup;
           }
         }
       }
+      if (detect_input_interrupt_cb(&input))
+        goto cleanup;
+      source->positionDeadline.Clear();
     }
 
     if (s_detectCacheStarved.load())
     {
       CLog::Log(LOGINFO, "DetectActiveArea: aborted mid-scan — playback buffer went "
                 "critical; device too slow to scan concurrently, skipping");
-      s_detectState.store(DV_DETECT_SKIPPED);
+      state.store(DV_DETECT_SKIPPED);
       goto cleanup;
     }
 
@@ -4705,7 +4846,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
                              validSamples != numSeeks || !spatialAccepted || !spatialInvariant))
     {
       CLog::Log(LOGINFO, "DetectActiveArea: source L5 retained; pixel estimate used only for text");
-      s_detectState.store(DV_DETECT_SKIPPED);
+      state.store(DV_DETECT_SKIPPED);
       s_detectStable.store(true);
       goto cleanup;
     }
@@ -4727,7 +4868,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
       {
         CLog::Log(LOGINFO, "DetectActiveArea: variable or incomplete distributed evidence; "
                   "subtitle envelope only, no native crop");
-        s_detectState.store(DV_DETECT_SKIP_IMAX);
+        state.store(DV_DETECT_SKIP_IMAX);
         goto cleanup;
       }
       if (provenVertical || provenHorizontal)
@@ -4751,7 +4892,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
         CLog::Log(LOGINFO, "DetectActiveArea: insufficient coverage ({}/{} positions usable, "
                   "need {}) — skipping to avoid uncertain detection",
                   validSamples, numSeeks, minUsable);
-        s_detectState.store(DV_DETECT_SKIPPED);
+        state.store(DV_DETECT_SKIPPED);
         goto cleanup;
       }
     }
@@ -4770,7 +4911,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     {
       CLog::Log(LOGINFO, "DetectActiveArea: rejected spatial evidence among {} positions — "
                 "retaining uncertainty; no conservative geometry published", validSamples);
-      s_detectState.store(DV_DETECT_SKIPPED);
+      state.store(DV_DETECT_SKIPPED);
       goto cleanup;
     }
 
@@ -4780,7 +4921,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     {
       CLog::Log(LOGINFO, "DetectActiveArea: no conservative paired border consensus in {} samples — "
                 "skipping uncertain or variable framing", validSamples);
-      s_detectState.store(DV_DETECT_SKIP_IMAX);
+      state.store(DV_DETECT_SKIP_IMAX);
       goto cleanup;
     }
     nativeHighConfidence = validSamples == numSeeks && spatialAccepted && spatialInvariant &&
@@ -4790,7 +4931,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
                      [](bool rejected) { return rejected; });
     if (authoredPositive && !nativeHighConfidence)
     {
-      s_detectState.store(DV_DETECT_SKIPPED);
+      state.store(DV_DETECT_SKIPPED);
       goto cleanup;
     }
     detTop = consensus.top;
@@ -4804,7 +4945,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     {
       // A strict zero and a corroborated positive spatial mode disagree.
       // Keep the text estimate separate instead of making either a native crop.
-      s_detectState.store(DV_DETECT_SKIPPED);
+      state.store(DV_DETECT_SKIPPED);
       goto cleanup;
     }
     if (!(detTop || detBottom || detLeft || detRight))
@@ -4879,23 +5020,35 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   if (source->nativeDV &&
       (std::max(0, (source->width * 9 / 16 - source->height) / 2) > 20 ||
        std::max(0, (source->height * 16 / 9 - source->width) / 2) > 20))
-    s_detectState.store(DV_DETECT_SKIP_NON16X9);
+    state.store(DV_DETECT_SKIP_NON16X9);
   else
     detect_publish(run, source, detTop, detBottom, detLeft, detRight, nativeHighConfidence);
 
 cleanup:
+  source->positionDeadline.Clear();
+  if (source->timedOut.load())
+  {
+    state.store(DV_DETECT_TIMED_OUT);
+    std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+    source->result.reset();
+    source->subtitleResult.reset();
+    source->retained.reset();
+    source->retainedSubtitle.reset();
+    CLog::Log(LOGWARNING, "DetectActiveArea: position deadline expired after {} seconds; scan abandoned",
+              source->policy->seconds);
+  }
   s_detectThrottleActive.store(false); /* disarm the mid-read guard */
 
   /* A read aborted because playback's buffer went critical (e.g. during open or
    * find-stream-info) lands here with state still RUNNING — classify as skipped
    * (device too slow), not a hard failure. */
-  if (s_detectCacheStarved.load() && s_detectState.load() == DV_DETECT_RUNNING)
-    s_detectState.store(DV_DETECT_SKIPPED);
+  if (s_detectCacheStarved.load() && state.load() == DV_DETECT_RUNNING)
+    state.store(DV_DETECT_SKIPPED);
 
   /* Any exit path that didn't set a specific state leaves RUNNING — fall
    * back to FAILED so the skin doesn't show a perpetual spinner. */
-  if (s_detectState.load() == DV_DETECT_RUNNING)
-    s_detectState.store(DV_DETECT_FAILED);
+  if (state.load() == DV_DETECT_RUNNING)
+    state.store(DV_DETECT_FAILED);
 
   if (frame)
     av_frame_free(&frame);
@@ -4911,6 +5064,9 @@ cleanup:
     av_freep(&avioCtx->buffer);
     avio_context_free(&avioCtx);
   }
+  file.IoControl(XFILE::IOCTRL_READ_INTERRUPT, nullptr);
+  file.Close(); // retire the callback while its stack context is still alive
+
 }
 
 void aml_dv_detect_set_file(const std::string& path)
@@ -4918,6 +5074,21 @@ void aml_dv_detect_set_file(const std::string& path)
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   s_detectSource->superseded->store(true);
   s_detectSource = std::make_shared<DetectSource>(path);
+  s_detectStable.store(false);
+  CServiceBroker::GetDataCacheCore().ClearVideoDoViFrameMetadata();
+}
+
+void aml_dv_detect_set_playback_file(const std::string& path, bool skip)
+{
+  // The path has already been resolved/substituted by the playback request.
+  // No media probe is needed to snapshot HTTP policy for this entire playback.
+  const bool excluded = settings()->GetBool(CSettings::SETTING_SUBTITLES_EXCLUDEHTTPACTIVEAREA) &&
+                        URIUtils::IsHTTP(path, true);
+  const int seconds = std::clamp(settings()->GetInt(CSettings::SETTING_SUBTITLES_ACTIVEAREATIMEOUT), 1, 60);
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  s_detectSource->superseded->store(true);
+  s_detectSource = std::make_shared<DetectSource>(path);
+  s_detectSource->policy = std::make_shared<DETECTOR_ADMISSION::PlaybackPolicy>(skip || excluded, seconds);
   s_detectStable.store(false);
   CServiceBroker::GetDataCacheCore().ClearVideoDoViFrameMetadata();
 }
@@ -4954,7 +5125,7 @@ void aml_dv_detect_active_area_start()
                           "superseded={} restart_pending={}", source->completedPositions.load(),
                   s_detectState.load(), source->superseded->load(), source->startupAdmission->load());
     });
-    source->pending.store(!source->codedCrop);
+    source->pending.store(!source->codedCrop && !source->policy->Blocked());
     source->startupScan = source->startupWait->load();
     source->startupAdmission->store(false);
     source->result.reset();
@@ -4968,6 +5139,11 @@ void aml_dv_detect_active_area_start()
   s_detectStable.store(false);
   s_detectState.store(DV_DETECT_FAILED);
   detect_clear_injection(source->nativeDV);
+  if (source->policy->Blocked())
+  {
+    s_detectState.store(source->policy->timedOut ? DV_DETECT_TIMED_OUT : DV_DETECT_SKIPPED);
+    return; // playback vetoes and terminal timeouts precede cache identity I/O
+  }
   if (source->codedCrop)
   {
     s_detectState.store(DV_DETECT_SKIP_NON16X9);
@@ -4979,10 +5155,16 @@ void aml_dv_detect_active_area_start()
       source->width < 64 || source->height < 64 ||
       source->width > 65535 || source->height > 65535 || source->path.empty())
     return;
+  const auto reservation = detect_reserve_scanner();
+  if (!reservation)
+  {
+    s_detectState.store(DV_DETECT_SKIPPED);
+    return;
+  }
   // Known player padding is already represented by the renderer video rectangle.
   s_detectState.store(DV_DETECT_RUNNING);
   const bool cacheEnabled = settings()->GetBool(CSettings::SETTING_SUBTITLES_CACHEACTIVEAREA);
-  s_detectWorker.Start([source, cacheEnabled, completion](const CAMLNativeWorker::Run& run) {
+  s_detectWorker.Start([source, cacheEnabled, completion, reservation](const CAMLNativeWorker::Run& run) {
     ACTIVE_AREA_CACHE::Identity identity;
     identity.path = source->path;
     identity.streamIndex = source->streamIndex;
@@ -4994,6 +5176,7 @@ void aml_dv_detect_active_area_start()
     ACTIVE_AREA_CACHE::Record saved;
     if (identified && !run.Cancelled() && ACTIVE_AREA_CACHE::Load(identity, saved))
     {
+      source->uniqueStream = saved.uniqueStream;
       if (saved.hasSubtitle)
         detect_publish_subtitle(run, source,
             {saved.subtitle[0], saved.subtitle[1], saved.subtitle[2], saved.subtitle[3]});
@@ -5043,7 +5226,7 @@ void aml_dv_detect_active_area_start()
       }
       DetectActiveAreaFromFile(source, run);
     }
-    if (identified && !run.Cancelled())
+    if (identified && !run.Cancelled() && !source->timedOut.load())
     {
       ACTIVE_AREA_CACHE::Record record;
       {
@@ -5051,6 +5234,7 @@ void aml_dv_detect_active_area_start()
         if (source != s_detectSource || source->superseded->load())
           return;
         record.state = s_detectState.load();
+        record.uniqueStream = source->uniqueStream.load();
         if (source->result)
         {
           record.hasStrict = true;
@@ -5082,17 +5266,267 @@ void aml_dv_detect_active_area_stop()
   detect_clear_injection(nativeSource);
 }
 
+namespace
+{
+enum class DetectorJobState { QUEUED, RUNNING, FINISHED };
+struct DetectorJob
+{
+  std::shared_ptr<DetectSource> source;
+  std::atomic<DetectorJobState> state{DetectorJobState::QUEUED};
+  std::atomic<bool> cacheHit{false};
+  std::atomic<bool> cancelled{false};
+  std::atomic<bool> busy{false};
+};
+std::mutex s_detectorJobsMutex;
+std::map<std::string, std::shared_ptr<DetectorJob>> s_detectorJobs;
+std::shared_ptr<DetectorJob> s_runningDetectorJob;
+uint64_t s_nextDetectorJob{0};
+CAMLNativeWorker s_explicitDetectorWorker;
+
+CVariant DetectorReply(const std::string& status)
+{
+  CVariant reply(CVariant::VariantTypeObject);
+  reply["status"] = status;
+  reply["version"] = 1;
+  return reply;
+}
+
+void DetectorCoordinates(CVariant& output, const std::shared_ptr<const DetectResult>& value,
+                         int width, int height, bool subtitle)
+{
+  output["valid"] = static_cast<bool>(value);
+  if (!value)
+    return;
+  output["units"] = "source_pixels";
+  output["width"] = width;
+  output["height"] = height;
+  output["confidence"] = subtitle ? "placement_only" :
+      (value->highConfidence ? "invariant" : "conservative");
+  output["offsets"]["top"] = value->top;
+  output["offsets"]["bottom"] = value->bottom;
+  output["offsets"]["left"] = value->left;
+  output["offsets"]["right"] = value->right;
+  output["rectangle"]["x1"] = value->left;
+  output["rectangle"]["y1"] = value->top;
+  output["rectangle"]["x2"] = width - value->right;
+  output["rectangle"]["y2"] = height - value->bottom;
+  output["rectangle"]["bounds"] = "exclusive_end";
+}
+} // namespace
+
+CVariant aml_detector_start_job(const std::string& path, int streamIndex, bool allowHTTP)
+{
+  if (path.empty() || path.size() > 32768 || streamIndex < -1)
+    return DetectorReply("invalid_input");
+  if (!allowHTTP && settings()->GetBool(CSettings::SETTING_SUBTITLES_EXCLUDEHTTPACTIVEAREA) &&
+      URIUtils::IsHTTP(path, true))
+    return DetectorReply("http_excluded");
+  const int seconds = std::clamp(settings()->GetInt(CSettings::SETTING_SUBTITLES_ACTIVEAREATIMEOUT), 1, 60);
+  const bool cacheEnabled = settings()->GetBool(CSettings::SETTING_SUBTITLES_CACHEACTIVEAREA);
+  std::lock_guard<std::mutex> lock(s_detectorJobsMutex);
+  if (s_explicitDetectorWorker.Closed())
+    return DetectorReply("shutdown");
+  if (s_runningDetectorJob && s_runningDetectorJob->state != DetectorJobState::FINISHED)
+    return DetectorReply("busy");
+  // No source path or credentials are retained in public replies.
+  auto job = std::make_shared<DetectorJob>();
+  job->source = std::make_shared<DetectSource>(path, 0, 0, false, true,
+      std::shared_ptr<const void>{}, streamIndex);
+  job->source->standalone = true;
+  job->source->policy = std::make_shared<DETECTOR_ADMISSION::PlaybackPolicy>(false, seconds);
+  const auto id = std::to_string(++s_nextDetectorJob);
+  while (s_detectorJobs.size() >= 16)
+    s_detectorJobs.erase(s_detectorJobs.begin());
+  s_detectorJobs.emplace(id, job);
+  s_runningDetectorJob = job;
+  try
+  {
+    if (!s_explicitDetectorWorker.Start([job, cacheEnabled](const CAMLNativeWorker::Run& run) {
+      // The VFS/curl diagnostics can contain query credentials or raw headers.
+      // Keep this explicit job's supplied input out of CLog, including identity
+      // checks, FFmpeg callbacks and cleanup. Status remains available by ID.
+      const CScopedLogSilence sensitiveInput;
+      const auto& source = job->source;
+      // Finish publication occurs only after owned I/O and cleanup return. A
+      // requested cancel cannot release busy status while a backend is blocked.
+      auto complete = std::shared_ptr<const void>(nullptr, [job, &run](const void*) {
+        job->cancelled = run.Cancelled();
+        job->state = DetectorJobState::FINISHED;
+      });
+      job->state = DetectorJobState::RUNNING;
+      ACTIVE_AREA_CACHE::Identity identity;
+      ACTIVE_AREA_CACHE::Record saved;
+      if (cacheEnabled && ACTIVE_AREA_CACHE::Find(source->path, source->streamIndex, identity, saved))
+      {
+        if (run.Cancelled())
+          return;
+        std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+        source->scannedWidth = identity.width;
+        source->scannedHeight = identity.height;
+        source->scannedStream = identity.streamIndex;
+        source->scannedCodec = identity.codec;
+        source->uniqueStream = saved.uniqueStream;
+        if (saved.hasStrict)
+          source->result = std::make_shared<const DetectResult>(DetectResult{
+              saved.strict[0], saved.strict[1], saved.strict[2], saved.strict[3], saved.highConfidence});
+        if (saved.hasSubtitle)
+          source->subtitleResult = std::make_shared<const DetectResult>(DetectResult{
+              saved.subtitle[0], saved.subtitle[1], saved.subtitle[2], saved.subtitle[3]});
+        source->scanState = saved.state;
+        job->cacheHit = true;
+        return;
+      }
+      const auto reservation = detect_reserve_scanner();
+      if (!reservation)
+      {
+        job->busy = true;
+        return;
+      }
+      if (run.Cancelled())
+        return;
+      // Freeze content identity before the scan, then revalidate during Store.
+      // Stream geometry is derived from this job's probe, never another player.
+      identity.path = source->path;
+      const bool identified = cacheEnabled && ACTIVE_AREA_CACHE::ReadContentIdentity(identity);
+      if (!PERFORMANCE_CORES::ApplyDetectionCurrentThread())
+      {
+        source->scanState = DV_DETECT_SKIPPED;
+        return;
+      }
+      s_detectThrottleActive = false;
+      s_detectCacheStarved = false;
+      DetectActiveAreaFromFile(source, run);
+      if (!identified || run.Cancelled() || source->timedOut)
+        return;
+      identity.path = source->path;
+      identity.streamIndex = source->scannedStream;
+      identity.codec = source->scannedCodec;
+      identity.width = source->scannedWidth;
+      identity.height = source->scannedHeight;
+      identity.nativeDV = false; // explicit jobs do not consult authored-player L5
+      if (run.Cancelled())
+        return;
+      ACTIVE_AREA_CACHE::Record record;
+      {
+        std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+        record.state = source->scanState;
+        record.uniqueStream = source->uniqueStream;
+        if (source->result)
+        {
+          record.hasStrict = true;
+          record.highConfidence = source->result->highConfidence;
+          record.strict = {source->result->top, source->result->bottom,
+                           source->result->left, source->result->right};
+        }
+        if (source->subtitleResult)
+        {
+          record.hasSubtitle = true;
+          record.subtitle = {source->subtitleResult->top, source->subtitleResult->bottom,
+                             source->subtitleResult->left, source->subtitleResult->right};
+        }
+      }
+      if (!run.Cancelled() && settings()->GetBool(CSettings::SETTING_SUBTITLES_CACHEACTIVEAREA))
+        ACTIVE_AREA_CACHE::Store(identity, record);
+    }, job->source->superseded))
+    {
+      job->source->scanState = DV_DETECT_FAILED;
+      job->state = DetectorJobState::FINISHED;
+      return DetectorReply("shutdown");
+    }
+  }
+  catch (...)
+  {
+    job->source->scanState = DV_DETECT_FAILED;
+    job->state = DetectorJobState::FINISHED;
+    return DetectorReply("failed");
+  }
+  auto reply = DetectorReply("accepted");
+  reply["requestid"] = id;
+  return reply;
+}
+
+CVariant aml_detector_job_status(const std::string& id)
+{
+  std::shared_ptr<DetectorJob> job;
+  {
+    std::lock_guard<std::mutex> lock(s_detectorJobsMutex);
+    const auto found = s_detectorJobs.find(id);
+    if (found == s_detectorJobs.end())
+      return DetectorReply("not_found");
+    job = found->second;
+  }
+  auto reply = DetectorReply("queued");
+  reply["requestid"] = id;
+  // Observe completion before its published fields. Reading cacheHit first
+  // could report completed + cachehit=false for a concurrently finishing hit.
+  const auto jobState = job->state.load();
+  reply["cachehit"] = job->cacheHit.load();
+  const auto& source = job->source;
+  reply["progress"]["completed"] = source->completedPositions.load();
+  reply["progress"]["total"] = 14;
+  if (jobState != DetectorJobState::FINISHED)
+  {
+    reply["status"] = source->superseded->load() ? "cancelling" :
+        (jobState == DetectorJobState::RUNNING ? "running" : "queued");
+    return reply;
+  }
+  if (job->cancelled)
+  {
+    reply["status"] = "cancelled";
+    return reply;
+  }
+  if (job->busy)
+  {
+    reply["status"] = "busy";
+    return reply;
+  }
+  if (source->timedOut)
+  {
+    reply["status"] = "timed_out";
+    return reply;
+  }
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  const auto state = source->scanState.load();
+  reply["status"] = source->result || source->subtitleResult ? "completed" :
+      (state == DV_DETECT_RUNNING || state == DV_DETECT_FAILED ? "failed" : "skipped");
+  reply["outcome"] = state;
+  reply["streamindex"] = source->scannedStream.load();
+  DetectorCoordinates(reply["strict"], source->result, source->scannedWidth, source->scannedHeight, false);
+  DetectorCoordinates(reply["subtitle"], source->subtitleResult, source->scannedWidth, source->scannedHeight, true);
+  return reply;
+}
+
+CVariant aml_detector_cancel_job(const std::string& id)
+{
+  {
+    std::lock_guard<std::mutex> lock(s_detectorJobsMutex);
+    const auto found = s_detectorJobs.find(id);
+    if (found == s_detectorJobs.end())
+      return DetectorReply("not_found");
+    if (found->second->state != DetectorJobState::FINISHED)
+      found->second->source->superseded->store(true);
+  }
+  return aml_detector_job_status(id);
+}
+
+bool aml_detector_retire_jobs()
+{
+  return s_explicitDetectorWorker.Retire();
+}
+
+
 bool aml_dv_retire_background_work()
 {
   // Poll both participants even while settings/codec owners are still draining.
   // No display fence or native acquisition may precede their cancellation.
   const bool watcher = s_autoLbWorker.Retire();
   const bool detector = s_detectWorker.Retire();
+  const bool jobs = aml_detector_retire_jobs();
   if (watcher && s_autoLbWorker.Failure())
     CLog::Log(LOGERROR, "AML: auto-letterbox worker failed before retirement");
   if (detector && s_detectWorker.Failure())
     CLog::Log(LOGERROR, "AML: active-area detector failed before retirement");
-  return watcher && detector;
+  return watcher && detector && jobs;
 }
 
 enum DV_MODE aml_dv_mode()

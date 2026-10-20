@@ -14,6 +14,7 @@ function,run=fixture['function'],fixture['run']
 PREFIX=r'''
 #include "utils/AMLNativeWorker.h"
 #include "utils/PM4KStartup.h"
+#include "utils/DetectorAdmission.h"
 void aml_subtitle_active_area_startup_begin(uint64_t pm4kStartupToken = 0);
 @CACHE_HEADER@
 #include "windowing/amlogic/AMLDisplayLifecycle.h"
@@ -42,6 +43,7 @@ struct CSettings {static constexpr int SETTING_COREELEC_AMLOGIC_DV_L5_AUTO_LETTE
 struct Settings {bool detect=true,wait=false,dvRequested=true;bool GetBool(int id){return id==5?wait:id==2?detect:(id>=6?dvRequested:id<3);}} settingsValue;
 Settings* settings(){return &settingsValue;}
 bool aml_dv_l5_override_active(){return false;}
+bool aml_detector_retire_jobs(){return true;}
 @CONSTANTS@
 @GEOMETRY@
 bool aml_dv_auto_letterbox_active(){uint16_t t,b,l,r;return _auto_letterbox_geometry(t,b,l,r);}
@@ -232,11 +234,11 @@ def source():
       'void aml_dv_detect_active_area_stop()', 'bool aml_dv_retire_background_work()'))
     # Wiring into FFmpeg's interrupt and final publication; the full scan is not host-compiled.
     scan=function(aml,'static void DetectActiveAreaFromFile(')
-    assert 'fmtCtx->interrupt_callback.opaque = const_cast<CAMLNativeWorker::Run*>(&run);' in scan
+    assert 'fmtCtx->interrupt_callback.opaque = &input;' in scan
     confidence='aml_dv_detect_active_area_override_get(' in (ROOT/'xbmc/utils/AMLUtils.h').read_text()
     expected_publication='detect_publish(run, source, detTop, detBottom, detLeft, detRight'+(', nativeHighConfidence' if confidence else '')+');'
     assert expected_publication in scan
-    assert 'if (source->nativeDV &&' in scan and 's_detectState.store(DV_DETECT_SKIP_NON16X9);' in scan
+    assert 'if (source->nativeDV &&' in scan and 'state.store(DV_DETECT_SKIP_NON16X9);' in scan
     assert 's_detectCancel' not in aml
     base=(ROOT/'xbmc/windowing/amlogic/WinSystemAmlogic.cpp').read_text()
     window=(ROOT/'xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp').read_text()
@@ -251,7 +253,7 @@ inline bool ReadIdentity(Identity&){assert(false);return false;}
 inline bool Load(const Identity&,Record&){assert(false);return false;}
 inline bool Store(const Identity&,const Record&){assert(false);return false;}
 }''' if cache_header else ''
-    return PREFIX.replace('@CACHE_HEADER@',cache_header).replace('@CACHE_BOUNDARY@',cache_boundary).replace('@DETECT_ENUM@',detector_enum).replace('@CONSTANTS@',constants).replace('@GEOMETRY@',function(aml,'static bool _auto_letterbox_geometry(')).replace('@SAMPLE@',function(aml,'static int _auto_letterbox_duplicate_sample(')).replace('@AUTO_GLOBALS@',globals).replace('@DETECT_GLOBALS@',detector).replace('@IO@','\n'.join(function(aml,sig) for sig in ('static int64_t detect_steady_ms()', 'static int detect_interrupt_cb(', 'static int detect_wait_for_cache('))).replace('@PUBLISH@',function(aml,'static void detect_publish(')).replace('@METHODS@',methods).replace('@RETIRE@',function(base,'bool CWinSystemAmlogic::RetireNativeTransactions()')).replace('@PREPARE@',function(window,'bool CWinSystemAmlogicGLESContext::PrepareForShutdown()'))+TESTS
+    return PREFIX.replace('@CACHE_HEADER@',cache_header).replace('@CACHE_BOUNDARY@',cache_boundary).replace('@DETECT_ENUM@',detector_enum).replace('@CONSTANTS@',constants).replace('@GEOMETRY@',function(aml,'static bool _auto_letterbox_geometry(')).replace('@SAMPLE@',function(aml,'static int _auto_letterbox_duplicate_sample(')).replace('@AUTO_GLOBALS@',globals).replace('@DETECT_GLOBALS@',detector).replace('@IO@','\n'.join(function(aml,sig) for sig in ('static int64_t detect_steady_ms()', 'static int detect_check_interrupted(', 'static int detect_interrupt_cb(', 'static int detect_wait_for_cache('))).replace('@PUBLISH@',function(aml,'static void detect_publish(')).replace('@METHODS@',methods).replace('@RETIRE@',function(base,'bool CWinSystemAmlogic::RetireNativeTransactions()')).replace('@PREPARE@',function(window,'bool CWinSystemAmlogicGLESContext::PrepareForShutdown()'))+TESTS
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--negative-controls',action='store_true');args=parser.parse_args()

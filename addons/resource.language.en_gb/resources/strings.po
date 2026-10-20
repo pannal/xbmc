@@ -26523,7 +26523,7 @@ msgstr ""
 #. "Dolby Vision Detect Active Area Help"
 #: system/settings/settings.xml
 msgctxt "#60195"
-msgid "Scan Dolby Vision files for stable encoded black borders. High-confidence detection takes priority over embedded Level 5 areas; explicit Level 5 overrides remain highest priority. The bounded scan cannot follow live aspect-ratio changes. Known already-cropped square-pixel video bypasses scanning, the detection cache and startup pause. Missing or non-square pixel-aspect information does not prove a crop. The selected video stream is matched and attached cover images are ignored. Blu-ray/BDMV and DVD playback, MPEG-TS (.ts/.m2ts) files, unsupported pixel formats, ambiguous stream selection and resolution changes are skipped. Separate reads and software decoding add load; detection I/O throttling is recommended for slow storage during background scans. Disable for reference videos with intentionally varying Level 5 metadata. This native Dolby Vision L5 detector is enabled independently of 'Detect active picture for subtitles'. Both detectors share the cache, startup pause and A53 core settings under Subtitles; these also apply when only this detector is enabled."
+msgid "Scan Dolby Vision files for stable encoded black borders. High-confidence detection takes priority over embedded Level 5 areas; explicit Level 5 overrides remain highest priority. The bounded scan cannot follow live aspect-ratio changes. Known already-cropped square-pixel video bypasses scanning, the detection cache and startup pause. Missing or non-square pixel-aspect information does not prove a crop. The selected video stream is matched and attached cover images are ignored. Blu-ray/BDMV and DVD playback, MPEG-TS (.ts/.m2ts) files, unsupported pixel formats, ambiguous stream selection and resolution changes are skipped. Separate reads and software decoding add load; detection I/O throttling is recommended for slow storage during background scans. Disable for reference videos with intentionally varying Level 5 metadata. This native Dolby Vision L5 detector is enabled independently of 'Detect active picture for subtitles'. Both detectors share the cache, startup pause, A53 core, HTTP exclusion and per-position timeout settings under Subtitles; these also apply when only this detector is enabled. An addon request to skip automatic detection applies to both."
 msgstr ""
 
 #. "Dolby Vision Detect Active Area Throttle Label"
@@ -27859,7 +27859,7 @@ msgstr ""
 #. Subtitle placement
 #: system/settings/settings.xml
 msgctxt "#69336"
-msgid "Detect black borders encoded in video files during Amlogic SDR, HDR and Dolby Vision playback. Enable 'Restrict subtitles to active picture' to use the detected area for subtitle confinement. Player-added bars need no scan. Known already-cropped square-pixel video bypasses scanning, the detection cache and startup pause. Missing or non-square pixel-aspect information does not prove a crop. Blu-ray/BDMV and DVD playback, and MPEG-TS (.ts/.m2ts) files, are not scanned. The bounded scan samples several positions and does not track aspect-ratio changes live. If detection is inconclusive, existing picture bounds are used. Manual Dolby Vision active-area overrides take priority. Extra file reads and software decoding can compete with playback. This setting enables subtitle detection only; 'Detect Dolby Vision active area' enables native L5 detection independently. Both detectors share the cache, startup pause and A53 core settings. Turning this off leaves enabled L5 detection and those shared settings active. Changes apply on next playback."
+msgid "Detect black borders encoded in video files during Amlogic SDR, HDR and Dolby Vision playback. Enable 'Restrict subtitles to active picture' to use the detected area for subtitle confinement. Player-added bars need no scan. Known already-cropped square-pixel video bypasses scanning, the detection cache and startup pause. Missing or non-square pixel-aspect information does not prove a crop. Blu-ray/BDMV and DVD playback, and MPEG-TS (.ts/.m2ts) files, are not scanned. The bounded scan samples several positions and does not track aspect-ratio changes live. If detection is inconclusive, existing picture bounds are used. Manual Dolby Vision active-area overrides take priority. Extra file reads and software decoding can compete with playback. This setting enables subtitle detection only; 'Detect Dolby Vision active area' enables native L5 detection independently. Both detectors share the cache, startup pause, A53 core, HTTP exclusion and per-position timeout settings. Turning this off leaves enabled L5 detection and those shared settings active. Changes apply on next playback. An addon request to skip automatic detection applies to both."
 msgstr ""
 
 #. SDR bitmap subtitle colour
@@ -28037,7 +28037,7 @@ msgstr ""
 #. Active picture detection cache
 #: system/settings/settings.xml
 msgctxt "#69371"
-msgid "Shared by 'Detect active picture for subtitles' and 'Detect Dolby Vision active area', which are enabled separately. This setting still applies to enabled native Dolby Vision L5 detection when subtitle detection is off. Known already-cropped video bypasses detection and this cache. Save successful detections in the Kodi profile and reuse them without scanning when the validated file identity and selected video stream match. Validation uses file size together with timestamps or a strong HTTP ETag. HTTP sources without a usable modification timestamp or strong ETag are scanned again. Incompatible cache or detector versions are invalidated and their old cache files are removed automatically; results are recalculated on next playback. Enabled by default. Changes apply on next playback."
+msgid "Shared by 'Detect active picture for subtitles' and 'Detect Dolby Vision active area', which are enabled separately. This setting still applies to enabled native Dolby Vision L5 detection when subtitle detection is off. Known already-cropped video bypasses detection and this cache. Save successful detections in the Kodi profile and reuse them without scanning when the validated file identity and selected video stream match. Validation uses file size together with timestamps or a strong HTTP ETag. HTTP sources without a usable modification timestamp or strong ETag are scanned again. Incompatible cache or detector versions are invalidated and their old cache files are removed automatically; results are recalculated on next playback. Enabled by default. This cache setting also controls explicit detector API jobs: validated results return without sampling, and successful new results are saved. Changes apply to new playback or API jobs."
 msgstr ""
 
 #. Optional active picture detection CPU isolation
@@ -28049,7 +28049,7 @@ msgstr ""
 #. Optional active picture detection CPU isolation
 #: system/settings/settings.xml
 msgctxt "#69373"
-msgid "Shared by 'Detect active picture for subtitles' and 'Detect Dolby Vision active area', which are enabled separately. This setting still applies to enabled native Dolby Vision L5 detection when subtitle detection is off. Run detection and its decoder threads on the two slower Cortex-A53 cores (CPUs 0-1) of the S922X, keeping this work off the faster Cortex-A73 cores used for video output and presentation. Detection takes longer. Current playback CPU masks are checked; detection is skipped if no separate CPU can be used. Cached results still avoid scanning. Disabled by default. Changes apply to the next scan."
+msgid "Shared by 'Detect active picture for subtitles' and 'Detect Dolby Vision active area', which are enabled separately. This setting still applies to enabled native Dolby Vision L5 detection when subtitle detection is off. Run detection and its decoder threads on the two slower Cortex-A53 cores (CPUs 0-1) of the S922X, keeping this work off the faster Cortex-A73 cores used for video output and presentation. Detection takes longer. Current playback CPU masks are checked; detection is skipped if no separate CPU can be used. Cached results still avoid scanning. Disabled by default. Changes apply to the next scan. This setting also applies to explicit detector API jobs."
 msgstr ""
 
 #. Optional startup wait for black-border detection
@@ -28061,7 +28061,7 @@ msgstr ""
 #. Optional startup wait for black-border detection
 #: system/settings/settings.xml
 msgctxt "#69375"
-msgid "Shared by 'Detect active picture for subtitles' and 'Detect Dolby Vision active area', which are enabled separately. This setting still applies to enabled native Dolby Vision L5 detection when subtitle detection is off. Known already-cropped video starts without a detector pause or progress notification. After startup seeks finish and the current video is synchronized, pause until enabled detection finishes, fails or is skipped. A still frame and detection progress may be visible while waiting. Cached results are reused after file validation and avoid a new scan. While detection holds playback, scanning runs without the playback I/O throttle. A pause you request is preserved. Enabled by default. Changes apply on next playback."
+msgid "Shared by 'Detect active picture for subtitles' and 'Detect Dolby Vision active area', which are enabled separately. This setting still applies to enabled native Dolby Vision L5 detection when subtitle detection is off. Known already-cropped video starts without a detector pause or progress notification. After startup seeks finish and the current video is synchronized, pause until enabled detection finishes, fails or is skipped. A still frame and detection progress may be visible while waiting. Cached results are reused after file validation and avoid a new scan. While detection holds playback, scanning runs without the playback I/O throttle. A pause you request is preserved. Enabled by default. Changes apply on next playback. This pause applies to automatic playback detection only; explicit detector API jobs never pause playback."
 msgstr ""
 
 #. Optional startup wait for black-border detection
@@ -28086,4 +28086,24 @@ msgstr ""
 #: xbmc/cores/VideoPlayer/VideoPlayer.cpp
 msgctxt "#69379"
 msgid "Detecting black borders and DV L5 active area..."
+msgstr ""
+
+#. Shared border detector controls
+msgctxt "#69380"
+msgid "Skip HTTP(S) border detection"
+msgstr ""
+
+#. Shared border detector controls
+msgctxt "#69381"
+msgid "Shared by subtitle black-border and native Dolby Vision L5 detection, which are enabled separately. Skip automatic detection and its cache, startup pause and progress for resolved HTTP(S) inputs, including supported HTTP wrappers. Local files and mapped NFS/SMB paths remain eligible. Geometry-generated padding, manual overrides and authored metadata are unaffected. Off by default. Changes apply to the next playback. Explicit detector API jobs respect this exclusion unless they request an HTTP override."
+msgstr ""
+
+#. Shared border detector controls
+msgctxt "#69382"
+msgid "Border detection time per position"
+msgstr ""
+
+#. Shared border detector controls
+msgctxt "#69383"
+msgid "Shared by subtitle black-border detection, native Dolby Vision L5 detection and explicit detector API jobs. Maximum time in seconds for each requested scan position, including seeking, reads, decoding and all retries. Admission and deliberate pre-position cache waiting are excluded. A timeout abandons the whole scan without caching partial results; automatic detection stays stopped for this playback. Default: 5 seconds; range: 1–60. Blocking storage, network backends or decoder calls may return after the deadline; detection then stops without visiting further positions. Opening and initial stream probing are separate and are not bounded by this per-position limit. Changes apply to new playback or API requests."
 msgstr ""

@@ -7,6 +7,10 @@
  */
 
 #include "Application.h"
+#include "utils/DetectorAdmission.h"
+#if defined(HAS_LIBAMCODEC)
+#include "utils/ActiveAreaDetector.h"
+#endif
 
 #include "Autorun.h"
 #include "CompileInfo.h"
@@ -2117,6 +2121,10 @@ int CApplication::Run()
 
 bool CApplication::Cleanup()
 {
+#if defined(HAS_LIBAMCODEC)
+  if (!aml_detector_retire_jobs())
+    return false; // keep VFS/settings/network alive until owned I/O retires
+#endif
   // Also fence direct/failed-startup cleanup before any dependent service or
   // render resource is released. Normal Stop has already acquired this gate.
   if (auto* window = CServiceBroker::GetWinSystem(); window && !window->PrepareForShutdown())
@@ -2332,6 +2340,13 @@ bool CApplication::Stop(int exitCode)
       m_pendingStop = exitCode;
     return false;
   }
+#if defined(HAS_LIBAMCODEC)
+  if (!aml_detector_retire_jobs())
+  {
+    m_pendingStop = exitCode;
+    return false;
+  }
+#endif
   // Shutdown supersedes window cleanup; release retired callers before services stop.
   appPlayer->CompleteCloseCompletions();
 #ifdef HAVE_LIBBLURAY
@@ -2512,6 +2527,13 @@ private:
 
 bool CApplication::PlayMedia(CFileItem& item, const std::string& player, PLAYLIST::Id playlistId)
 {
+  // Preserve the existing resolver/MIME updates to reusable metadata. Only the
+  // detector decision belongs to a separate, immutable playback request.
+  CFileItem admission(item);
+  DETECTOR_ADMISSION::CaptureItem(admission);
+  const std::optional<bool> detectorSkip = admission.HasProperty(DETECTOR_ADMISSION::ITEM_SKIP) ?
+      std::optional<bool>(admission.GetProperty(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean()) : std::nullopt;
+  item.ClearProperty(DETECTOR_ADMISSION::ITEM_SKIP);
   // if the item is a plugin we need to resolve the plugin paths
   if (URIUtils::HasPluginPath(item) && !XFILE::CPluginDirectory::GetResolvedPluginResult(item))
     return false;
@@ -2533,7 +2555,7 @@ bool CApplication::PlayMedia(CFileItem& item, const std::string& player, PLAYLIS
           smartpl.GetType() == "artists")
         smartplPlaylistId = PLAYLIST::TYPE_MUSIC;
 
-      return ProcessAndStartPlaylist(smartpl.GetName(), playlist, smartplPlaylistId);
+      return ProcessAndStartPlaylist(smartpl.GetName(), playlist, smartplPlaylistId, 0, detectorSkip);
     }
   }
   else if (item.IsPlayList() || item.IsInternetStream())
@@ -2565,7 +2587,7 @@ bool CApplication::PlayMedia(CFileItem& item, const std::string& player, PLAYLIS
         int track=0;
         if (item.HasProperty("playlist_starting_track"))
           track = (int)item.GetProperty("playlist_starting_track").asInteger();
-        return ProcessAndStartPlaylist(item.GetPath(), *playlist, playlistId, track);
+        return ProcessAndStartPlaylist(item.GetPath(), *playlist, playlistId, track, detectorSkip);
       }
       else
       {
@@ -2574,13 +2596,21 @@ bool CApplication::PlayMedia(CFileItem& item, const std::string& player, PLAYLIS
                   "to use, playing first item",
                   item.GetPath());
         if (playlist->size())
-          return PlayFile(*(*playlist)[0], "", false);
+        {
+          CFileItem request(*(*playlist)[0]);
+          if (detectorSkip)
+            request.SetProperty(DETECTOR_ADMISSION::ITEM_SKIP, *detectorSkip);
+          return PlayFile(request, "", false);
+        }
       }
     }
   }
   else if (item.IsPVR())
   {
-    return CServiceBroker::GetPVRManager().Get<PVR::GUI::Playback>().PlayMedia(item);
+    CFileItem request(item);
+    if (detectorSkip)
+      request.SetProperty(DETECTOR_ADMISSION::ITEM_SKIP, *detectorSkip);
+    return CServiceBroker::GetPVRManager().Get<PVR::GUI::Playback>().PlayMedia(request);
   }
 
   CURL path(item.GetPath());
@@ -2596,7 +2626,10 @@ bool CApplication::PlayMedia(CFileItem& item, const std::string& player, PLAYLIS
   }
 
   //nothing special just play
-  return PlayFile(item, player, false);
+  CFileItem request(item);
+  if (detectorSkip)
+    request.SetProperty(DETECTOR_ADMISSION::ITEM_SKIP, *detectorSkip);
+  return PlayFile(request, player, false);
 }
 
 // PlayStack()
@@ -2621,6 +2654,9 @@ bool CApplication::PlayStack(CFileItem& item, bool bRestart)
   }
 
   CFileItem selectedStackPart = stackHelper->GetCurrentStackPartFileItem();
+  if (item.HasProperty(DETECTOR_ADMISSION::ITEM_SKIP))
+    selectedStackPart.SetProperty(DETECTOR_ADMISSION::ITEM_SKIP,
+                                  item.GetProperty(DETECTOR_ADMISSION::ITEM_SKIP));
   selectedStackPart.SetStartOffset(startoffset.value());
 
   if (item.HasProperty("savedplayerstate"))
@@ -2634,6 +2670,7 @@ bool CApplication::PlayStack(CFileItem& item, bool bRestart)
 
 bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRestart)
 {
+  DETECTOR_ADMISSION::CaptureItem(item);
   // Ensure the MIME type has been retrieved for http:// and shout:// streams
   if (item.GetMimeType().empty())
     item.FillInMimeType();
@@ -3964,7 +4001,8 @@ void CApplication::UpdateCurrentPlayArt()
 bool CApplication::ProcessAndStartPlaylist(const std::string& strPlayList,
                                            PLAYLIST::CPlayList& playlist,
                                            PLAYLIST::Id playlistId,
-                                           int track)
+                                           int track,
+                                           std::optional<bool> detectorSkip)
 {
   CLog::Log(LOGDEBUG, "CApplication::ProcessAndStartPlaylist({}, {})", strPlayList, playlistId);
 
@@ -3993,7 +4031,7 @@ bool CApplication::ProcessAndStartPlaylist(const std::string& strPlayList,
     // start playing it
     CServiceBroker::GetPlaylistPlayer().SetCurrentPlaylist(playlistId);
     CServiceBroker::GetPlaylistPlayer().Reset();
-    CServiceBroker::GetPlaylistPlayer().Play(track, "");
+    CServiceBroker::GetPlaylistPlayer().Play(track, "", false, false, detectorSkip);
     return true;
   }
   return false;

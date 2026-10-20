@@ -24,7 +24,7 @@ namespace ACTIVE_AREA_CACHE
 namespace
 {
 // Bump when detection policy or the meaning of stored geometry changes.
-constexpr int CACHE_VERSION = 3;
+constexpr int CACHE_VERSION = 4;
 constexpr auto CACHE_DIRECTORY = "special://profile/active-area-cache/";
 std::mutex maintenanceMutex;
 
@@ -61,10 +61,15 @@ void CleanObsoleteEntries(const std::string& directory)
   for (const auto& item : items.GetList())
   {
     const auto name = URIUtils::GetFileName(item->GetPath());
-    if (item->m_bIsFolder || name.size() != 68 || name.substr(64) != ".dat" ||
-        !std::all_of(
-            name.begin(), name.begin() + 64, [](unsigned char c)
-            { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }))
+    const auto hex = [](unsigned char c) {
+      return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    };
+    const bool legacy = name.size() == 68 && name.substr(64) == ".dat" &&
+                        std::all_of(name.begin(), name.begin() + 64, hex);
+    const bool current = name.size() == 133 && name[64] == '-' && name.substr(129) == ".dat" &&
+                         std::all_of(name.begin(), name.begin() + 64, hex) &&
+                         std::all_of(name.begin() + 65, name.begin() + 129, hex);
+    if (item->m_bIsFolder || (!legacy && !current))
       continue;
     if ((!ReadVersion(item->GetPath(), version) || version != CACHE_VERSION) &&
         !XFILE::CFile::Delete(item->GetPath()))
@@ -144,6 +149,12 @@ bool StrongETag(const std::string& tag)
          });
 }
 
+std::string SourceKey(const std::string& path)
+{
+  using KODI::UTILITY::CDigest;
+  return CDigest::Calculate(CDigest::Type::SHA256, StablePath(path));
+}
+
 std::string Key(const Identity& identity, const std::string& directory)
 {
   // Source URLs may contain credentials. Persist only a digest of the key.
@@ -151,7 +162,8 @@ std::string Key(const Identity& identity, const std::string& directory)
                    std::to_string(identity.codec) + '\n' + std::to_string(identity.width) + '\n' +
                    std::to_string(identity.height) + '\n' + std::to_string(identity.nativeDV);
   using KODI::UTILITY::CDigest;
-  return directory + CDigest::Calculate(CDigest::Type::SHA256, key) + ".dat";
+  return directory + SourceKey(identity.path) + "-" +
+         CDigest::Calculate(CDigest::Type::SHA256, key) + ".dat";
 }
 
 bool Valid(const Identity& identity, const Record& record)
@@ -167,6 +179,40 @@ bool Valid(const Identity& identity, const Record& record)
          (!record.hasStrict || validOffsets(record.strict)) &&
          (!record.hasSubtitle || validOffsets(record.subtitle));
 }
+bool ReadEntry(const std::string& path, Identity& stored, Record& candidate)
+{
+  XFILE::CFile file;
+  if (!file.Open(path))
+    return false;
+  const auto length = file.GetLength();
+  if (length <= 0 || length > 512)
+    return false;
+  std::string data(static_cast<size_t>(length), '\0');
+  if (file.Read(data.data(), data.size()) != length)
+    return false;
+  std::istringstream input(data);
+  int version;
+  std::string sourceKey;
+  if (!(input >> version >> sourceKey >> stored.streamIndex >> stored.codec >> stored.width >>
+        stored.height >> stored.nativeDV >> candidate.uniqueStream >> stored.size >> stored.modified >>
+        stored.created >> stored.device >> stored.inode >> stored.validator >> candidate.state >>
+        candidate.hasStrict >> candidate.hasSubtitle >> candidate.highConfidence) ||
+      version != CACHE_VERSION || sourceKey != SourceKey(stored.path) ||
+      stored.streamIndex < 0 || stored.codec <= 0 || stored.width < 64 || stored.height < 64 ||
+      stored.width > 65535 || stored.height > 65535)
+    return false;
+  if (stored.validator == "-")
+    stored.validator.clear();
+  for (auto& offset : candidate.strict)
+    if (!(input >> offset))
+      return false;
+  for (auto& offset : candidate.subtitle)
+    if (!(input >> offset))
+      return false;
+  input >> std::ws;
+  return input.eof() && Valid(stored, candidate);
+}
+
 } // namespace
 
 bool Identity::operator==(const Identity& other) const
@@ -183,6 +229,13 @@ bool ReadIdentity(Identity& identity)
   if (identity.path.empty() || identity.streamIndex < 0 || identity.codec <= 0 ||
       identity.width < 64 || identity.height < 64 || identity.width > 65535 ||
       identity.height > 65535)
+    return false;
+  return ReadContentIdentity(identity);
+}
+
+bool ReadContentIdentity(Identity& identity)
+{
+  if (identity.path.empty())
     return false;
   struct __stat64 info{};
   identity.validator.clear();
@@ -218,37 +271,51 @@ bool Load(const Identity& identity, Record& record)
   if (directory.empty())
     return false;
   CleanObsoleteEntries(directory);
-  XFILE::CFile file;
-  if (!file.Open(Key(identity, directory)))
-    return false;
-  const auto length = file.GetLength();
-  if (length <= 0 || length > 512)
-    return false;
-  std::string data(static_cast<size_t>(length), '\0');
-  if (file.Read(data.data(), data.size()) != length)
-    return false;
-  std::istringstream input(data);
-  int version;
   Identity stored = identity;
   Record candidate;
-  if (!(input >> version >> stored.size >> stored.modified >> stored.created >> stored.device >>
-        stored.inode >> stored.validator >> candidate.state >> candidate.hasStrict >>
-        candidate.hasSubtitle >> candidate.highConfidence) ||
-      version != CACHE_VERSION)
-    return false;
-  if (stored.validator == "-")
-    stored.validator.clear();
-  for (auto& offset : candidate.strict)
-    if (!(input >> offset))
-      return false;
-  for (auto& offset : candidate.subtitle)
-    if (!(input >> offset))
-      return false;
-  input >> std::ws;
-  if (!input.eof() || !(stored == identity) || !Valid(identity, candidate))
+  if (!ReadEntry(Key(identity, directory), stored, candidate) || !(stored == identity))
     return false;
   record = candidate;
   return true;
+}
+
+bool Find(const std::string& path, int streamIndex, Identity& identity, Record& record)
+{
+  const auto directory = CSpecialProtocol::TranslatePath(CACHE_DIRECTORY);
+  if (directory.empty())
+    return false;
+  CleanObsoleteEntries(directory);
+  CFileItemList items;
+  if (!XFILE::CDirectory::GetDirectory(directory, items, ".dat",
+          XFILE::DIR_FLAG_NO_FILE_DIRS | XFILE::DIR_FLAG_NO_FILE_INFO | XFILE::DIR_FLAG_BYPASS_CACHE))
+    return false;
+  bool found = false;
+  const auto prefix = SourceKey(path) + "-";
+  size_t examined = 0;
+  for (const auto& item : items.GetList())
+  {
+    if (item->m_bIsFolder || URIUtils::GetFileName(item->GetPath()).compare(0, prefix.size(), prefix) != 0)
+      continue;
+    if (++examined > 4096)
+      break; // bound per-source corrupt/duplicate records, not unrelated media
+    Identity stored;
+    stored.path = path;
+    Record candidate;
+    if (!ReadEntry(item->GetPath(), stored, candidate) ||
+        (streamIndex >= 0 ? stored.streamIndex != streamIndex : !candidate.uniqueStream))
+      continue;
+    Identity current = stored;
+    if (!ReadIdentity(current) || !(current == stored))
+      continue;
+    // Prefer geometry produced outside native metadata policy when both exist.
+    if (!found || (identity.nativeDV && !stored.nativeDV))
+    {
+      identity = std::move(stored);
+      record = candidate;
+      found = true;
+    }
+  }
+  return found;
 }
 
 bool Store(const Identity& identity, const Record& record)
@@ -261,7 +328,9 @@ bool Store(const Identity& identity, const Record& record)
     return false;
   CleanObsoleteEntries(directory);
   std::ostringstream output;
-  output << CACHE_VERSION << ' ' << identity.size << ' ' << identity.modified << ' '
+  output << CACHE_VERSION << ' ' << SourceKey(identity.path) << ' ' << identity.streamIndex << ' '
+         << identity.codec << ' ' << identity.width << ' ' << identity.height << ' '
+         << identity.nativeDV << ' ' << record.uniqueStream << ' ' << identity.size << ' ' << identity.modified << ' '
          << identity.created << ' ' << identity.device << ' ' << identity.inode << ' '
          << (identity.validator.empty() ? "-" : identity.validator) << ' '
          << record.state << ' ' << record.hasStrict << ' ' << record.hasSubtitle << ' '

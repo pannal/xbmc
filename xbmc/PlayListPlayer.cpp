@@ -8,6 +8,8 @@
 
 #include "PlayListPlayer.h"
 
+#include "utils/DetectorAdmission.h"
+
 #include "FileItem.h"
 #include "GUIUserMessages.h"
 #include "PartyModeManager.h"
@@ -324,7 +326,8 @@ bool CPlayListPlayer::Play(const CFileItemPtr& pItem, const std::string& player)
 bool CPlayListPlayer::Play(int iSong,
                            const std::string& player,
                            bool bAutoPlay /* = false */,
-                           bool bPlayPrevious /* = false */)
+                           bool bPlayPrevious /* = false */,
+                           std::optional<bool> detectorSkip)
 {
   const Id playlistId = m_iCurrentPlayList.load();
   if (playlistId == TYPE_NONE)
@@ -360,7 +363,12 @@ bool CPlayListPlayer::Play(int iSong,
   m_bPlaybackStarted = false;
 
   const auto playAttempt = std::chrono::steady_clock::now();
-  bool ret = g_application.PlayFile(*item, player, bAutoPlay);
+  // A submitted request owns its snapshot; playlist metadata must be reusable.
+  CFileItem request(*item);
+  item->ClearProperty(DETECTOR_ADMISSION::ITEM_SKIP);
+  if (detectorSkip)
+    request.SetProperty(DETECTOR_ADMISSION::ITEM_SKIP, *detectorSkip);
+  bool ret = g_application.PlayFile(request, player, bAutoPlay);
   // OpenFile can release GUI ownership while Python changes the playlist.
   const auto selectionIsCurrent = [&]() {
     return m_iCurrentPlayList.load() == playlistId &&
@@ -878,10 +886,9 @@ void PLAYLIST::CPlayListPlayer::OnApplicationMessage(KODI::MESSAGING::ThreadMess
     // Select and play in one message so Stop cannot reset the selection between calls.
     if (pMsg->param2 == TYPE_MUSIC || pMsg->param2 == TYPE_VIDEO)
       SetCurrentPlaylist(pMsg->param2);
-    if (pMsg->param1 != -1)
-      Play(pMsg->param1, "");
-    else
-      Play();
+    Play(pMsg->param1 == -1 ? 0 : pMsg->param1, "", false, false,
+         pMsg->strParam == DETECTOR_ADMISSION::PLAYLIST_SKIP ? std::optional<bool>(true) :
+         pMsg->strParam == DETECTOR_ADMISSION::PLAYLIST_KEEP ? std::optional<bool>(false) : std::nullopt);
     break;
 
   case TMSG_PLAYLISTPLAYER_PLAY_ITEM_ID:
@@ -1084,7 +1091,9 @@ void PLAYLIST::CPlayListPlayer::OnApplicationMessage(KODI::MESSAGING::ThreadMess
                       false);
 
           Add(playlistId, (*list));
-          Play(pMsg->param1, pMsg->strParam);
+          const std::optional<bool> detectorSkip = list->HasProperty(DETECTOR_ADMISSION::ITEM_SKIP) ?
+              std::optional<bool>(list->GetProperty(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean()) : std::nullopt;
+          Play(pMsg->param1, pMsg->strParam, false, false, detectorSkip);
         }
       }
 
@@ -1095,7 +1104,8 @@ void PLAYLIST::CPlayListPlayer::OnApplicationMessage(KODI::MESSAGING::ThreadMess
       if (GetCurrentPlaylist() != pMsg->param1)
         SetCurrentPlaylist(pMsg->param1);
 
-      CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, pMsg->param2);
+      CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, pMsg->param2, -1,
+                                               nullptr, pMsg->strParam);
     }
   }
   break;

@@ -195,7 +195,7 @@ int main(int argc,char** argv){
    assert(bytes.find("synthetic-secret")==std::string::npos);
    assert(bytes.find("fake.example")==std::string::npos);
    assert(bytes.find("synthetic-private-validator")==std::string::npos);
-   assert(entry.path().filename()=="version"||entry.path().filename().string().size()==68);
+   assert(entry.path().filename()=="version"||entry.path().filename().string().size()==133);
   }
  };
  // Synthetic URLs: retained bytes, order, duplicates, escaped values, headers and
@@ -299,6 +299,7 @@ int main(int argc,char** argv){
 
 LIFECYCLE = r'''
 #include "utils/ActiveAreaCache.h"
+#include "utils/DetectorAdmission.h"
 #include "filesystem/File.h"
 #include "filesystem/CurlFile.h"
 #include <atomic>
@@ -309,13 +310,15 @@ LIFECYCLE = r'''
 #include <memory>
 #include <mutex>
 enum {DV_DETECT_FAILED=0,DV_DETECT_SKIP_NON16X9=1,DV_DETECT_SKIP_IMAX=2,
- DV_DETECT_OK=3,DV_DETECT_SKIPPED=4,DV_DETECT_INACTIVE=5,DV_DETECT_RUNNING=6,
+ DV_DETECT_OK=3,DV_DETECT_SKIPPED=4,DV_DETECT_INACTIVE=5,DV_DETECT_RUNNING=6,DV_DETECT_TIMED_OUT=7,
  LOGDEBUG=0,LOGERROR=1,LOGINFO=2};
 namespace PERFORMANCE_CORES {bool allowed=true;bool ApplyDetectionCurrentThread(){return allowed;}}
 struct DetectResult {uint16_t top,bottom,left,right;bool highConfidence=false;};
 struct DetectSource {
  std::string path;int streamIndex=0,codecHint=173,width=1920,height=1080;
  bool nativeDV=false,allowProbe=true,codedCrop=false;
+ std::shared_ptr<DETECTOR_ADMISSION::PlaybackPolicy> policy=std::make_shared<DETECTOR_ADMISSION::PlaybackPolicy>();
+ std::atomic<bool> timedOut{false},uniqueStream{false};
  std::atomic<bool> pending{false};bool startupScan=false;
  std::shared_ptr<std::atomic<bool>> startupWait=std::make_shared<std::atomic<bool>>(false),startupAdmission=std::make_shared<std::atomic<bool>>(false);
  std::atomic<int> completedPositions{0};
@@ -340,6 +343,7 @@ struct Settings {
 Settings* settings(){return &setting;}
 bool aml_dv_detect_active_area_enabled(){return setting.dvEnabled;}
 void detect_clear_injection(bool){}
+std::shared_ptr<const void> detect_reserve_scanner(){static int token;return std::shared_ptr<const void>(&token,[](const void*){});}
 struct CLog {template<class... T>static void Log(T...) {}};
 int scans=0,scanMode=0;
 void detect_publish_subtitle(const CAMLNativeWorker::Run&,const std::shared_ptr<DetectSource>& source,DetectResult result){
@@ -540,6 +544,51 @@ int main(int argc,char** argv){
 }
 '''
 
+FIND_TEST = r'''
+#include "utils/ActiveAreaCache.h"
+#include "filesystem/File.h"
+#include "filesystem/CurlFile.h"
+#include <cassert>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+using namespace ACTIVE_AREA_CACHE;
+int main(int argc,char** argv){
+ assert(argc==2);const auto profile=std::string(argv[1])+"/find-profile";
+ std::filesystem::create_directories(profile);setenv("CACHE_TEST_PROFILE",profile.c_str(),1);
+ const auto media=profile+"/selected.mkv";std::ofstream(media)<<"synthetic identity only";
+ Identity id;id.path=media;id.streamIndex=2;id.codec=173;id.width=1920;id.height=1080;assert(ReadIdentity(id));
+ Record saved,loaded;saved.hasStrict=true;saved.hasSubtitle=true;saved.state=3;saved.highConfidence=true;
+ saved.strict={0,0,0,0};saved.subtitle={30,30,0,0};assert(Store(id,saved));Identity found;
+ assert(!Find(media,-1,found,loaded)); // unspecified stream needs proven uniqueness
+ assert(!Find(media,0,found,loaded));
+ assert(Find(media,2,found,loaded)&&found==id&&loaded.hasStrict&&loaded.strict[0]==0&&loaded.highConfidence);
+ saved.uniqueStream=true;assert(Store(id,saved));assert(Find(media,-1,found,loaded)&&loaded.uniqueStream);
+ // Prefer metadata-independent sampling over a native-policy cache record.
+ auto native=id;native.nativeDV=true;saved.strict={90,90,0,0};assert(Store(native,saved));
+ assert(Find(media,-1,found,loaded)&&!found.nativeDV&&loaded.strict[0]==0&&loaded.subtitle[0]==30);
+ // Text-only evidence stays text-only in discovery as in ordinary reuse.
+ saved.hasStrict=false;saved.highConfidence=false;saved.state=2;assert(Store(id,saved));
+ assert(Find(media,-1,found,loaded)&&!loaded.hasStrict&&loaded.hasSubtitle&&loaded.state==2);
+ // Discovery revalidates original content; geometry is unavailable until probing.
+ Identity frozen;frozen.path=media;assert(ReadContentIdentity(frozen)&&frozen.streamIndex==-1);
+ std::ofstream(media)<<"changed size during decoder probing";
+ frozen.streamIndex=2;frozen.codec=173;frozen.width=1920;frozen.height=1080;
+ assert(!Store(frozen,saved)&&!Find(media,2,found,loaded));
+ // Stable Plex identity retains validators and the exact current request URL.
+ const std::string base="https://test.invalid/library/parts/12/34/original.mkv?X-Plex-Token=fake";
+ const auto first=base+"&X-Plex-Session-Id=first",second=base+"&X-Plex-Session-Id=second";
+ XFILE::httpResources[first]={1000,0,"\"strong\""};XFILE::httpResources[second]=XFILE::httpResources[first];
+ id.path=first;assert(ReadIdentity(id)&&Store(id,saved));
+ assert(Find(second,-1,found,loaded)&&found.path==second&&XFILE::lastHttpRequest==second);
+ XFILE::httpResources[second].tag="\"replacement\"";assert(!Find(second,-1,found,loaded));
+ XFILE::httpResources[second].tag="W/\"weak\"";assert(!Find(second,-1,found,loaded));
+ std::cout<<"PASS: actual cache discovery, selected/unique streams, valid zero, strict/text separation, native preference, frozen content and stable HTTP validation\n";
+}
+'''
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cxx', default='g++')
@@ -586,8 +635,27 @@ struct CSpecialProtocol{static std::string TranslatePath(const std::string& path
         upgrade_argv = [str(work/'upgrade.cpp') if value==str(work/'test.cpp') else str(work/'upgrade') if value==str(work/'test') else value for value in argv]
         subprocess.run(upgrade_argv,check=True)
         subprocess.run([str(work/'upgrade'),str(work)],check=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'},timeout=30)
+        (work / 'find.cpp').write_text(FIND_TEST)
+        find_argv = [str(work/'find.cpp') if value==str(work/'test.cpp') else str(work/'find') if value==str(work/'test') else value for value in argv]
+        subprocess.run(find_argv,check=True)
+        subprocess.run([str(work/'find'),str(work)],check=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'},timeout=30)
         if args.negative_controls:
             actual=(ROOT/'xbmc/utils/ActiveAreaCache.cpp').read_text()
+            for index,(label,old,new) in enumerate([
+                ('unspecified stream ignores ambiguity', ': !candidate.uniqueStream)', ': false)'),
+                ('discovery ignores changed content', 'if (!ReadIdentity(current) || !(current == stored))', 'if (!ReadIdentity(current))'),
+            ]):
+                assert old in actual,label
+                broken=work/'broken-find-cache.cpp';broken.write_text(actual.replace(old,new,1))
+                broken_argv=[str(broken) if value==str(ROOT/'xbmc/utils/ActiveAreaCache.cpp') else value for value in find_argv]
+                broken_argv[1:1]=['-iquote',str(ROOT/'xbmc/utils')]
+                subprocess.run(broken_argv,check=True)
+                target=work/('find-negative-'+str(index));target.mkdir()
+                result=subprocess.run([str(work/'find'),str(target)],text=True,capture_output=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'},timeout=30)
+                assert result.returncode!=0 and 'Assertion' in result.stderr,(label,result.stdout,result.stderr)
+                assert 'AddressSanitizer' not in result.stderr and 'runtime error:' not in result.stderr,result.stderr
+                print('REJECTED:',label)
+
             for index,(label,old,new) in enumerate([
                 ('HTTP session identity remains volatile',
                  'StablePath(identity.path) +', 'StablePath(identity.path) + identity.path +'),
@@ -618,7 +686,7 @@ struct CSpecialProtocol{static std::string TranslatePath(const std::string& path
                 ('cleanup omitted','if (ReadVersion(marker, version) && version == CACHE_VERSION)','if (true || (ReadVersion(marker, version) && version == CACHE_VERSION))'),
                 ('current entries deleted','(!ReadVersion(item->GetPath(), version) || version != CACHE_VERSION)','(!ReadVersion(item->GetPath(), version) || version == CACHE_VERSION)'),
                 ('failed cleanup stamped complete','if (!complete)','if (!complete && false)'),
-                ('unrelated files removed',ownership,'    if (item->m_bIsFolder || name.empty())\n      continue;'),
+                ('unrelated files removed',ownership,'    if (item->m_bIsFolder || name.empty() || (legacy && current))\n      continue;'),
                 ('directory rescanned on every hit','if (ReadVersion(marker, version) && version == CACHE_VERSION)','if (false && ReadVersion(marker, version) && version == CACHE_VERSION)'),
             ]:
                 assert old in actual,label

@@ -11,6 +11,7 @@ function, run = FIXTURE['function'], FIXTURE['run']
 
 BOUNDARY = r'''
 #include "utils/PM4KStartup.h"
+#include "utils/DetectorAdmission.h"
 #include <algorithm>
 #include <cassert>
 #include <cctype>
@@ -22,7 +23,9 @@ using CCriticalSection=std::mutex;
 constexpr int WINDOW_HOME=10000,TMSG_MEDIA_PLAY=1;
 struct CVariant {
  std::string text;uint64_t token=0;
- CVariant()=default;CVariant(const char* s):text(s){}CVariant(uint64_t t):token(t){}
+ enum {VariantTypeNull};
+ CVariant()=default;CVariant(int t):token(t){}CVariant(const char* s):text(s){}CVariant(const std::string& s):text(s){}CVariant(uint64_t t):token(t){}
+ bool asBoolean()const{return token!=0;}
  std::string asString()const{return text;}
 };
 struct StringUtils {static bool EqualsNoCase(std::string a,std::string b){
@@ -30,15 +33,19 @@ struct StringUtils {static bool EqualsNoCase(std::string a,std::string b){
  for(auto& c:b)c=std::tolower(static_cast<unsigned char>(c));
  return a==b;
 }};
+using icompare=std::less<std::string>;
 struct CGUIWindow:CCriticalSection {
  int id=WINDOW_HOME;int GetID()const{return id;}
- std::map<std::string,CVariant>m_mapProperties;
- void SetProperty(const std::string&,const CVariant&);void ClearProperties();
+ std::map<std::string,CVariant,icompare>m_mapProperties;
+ void SetProperty(const std::string&,const CVariant&);CVariant GetProperty(const std::string&)const;void ClearProperties();
 };
 @GUI@
 struct CFileItem {
  std::string path;std::map<std::string,CVariant>properties;
  CFileItem(const std::string& p,bool):path(p){}void SetPath(const char* p){path=p;}
+ bool HasProperty(const char* p)const{return properties.count(p);}
+ bool IsAudio()const{return path.find(".mp3")!=std::string::npos;}bool IsVideo()const{return path.find(".mkv")!=std::string::npos;}
+ bool IsGame()const{return false;}bool IsPicture()const{return false;}bool IsPlayList()const{return false;}bool IsSmartPlayList()const{return false;}
  void SetProperty(const char* p,const CVariant& v){properties[p]=v;}
 };
 struct CFileItemList {std::vector<std::shared_ptr<CFileItem>>items;void Add(std::shared_ptr<CFileItem>p){items.push_back(p);}};
@@ -83,6 +90,24 @@ int main(){
  assert(!PM4K_STARTUP::Claim(orphan,now+PM4K_STARTUP::MAX_WAIT));
  player.languageHook=nullptr;player.playStream("native-reuse",&li,false);assert(!messenger.last->properties[PM4K_STARTUP::ITEM_TOKEN].token);
  PM4K_STARTUP::Publish(false);
+ // A generic addon publishes the one-shot property. It is captured into each
+ // actual queued Python request, including false, before any later publication.
+ hook.addon="any.addon";player.languageHook=&hook;
+ home.SetProperty(DETECTOR_ADMISSION::PROPERTY,"1");
+ player.playStream("audio.mp3",nullptr,false);assert(home.GetProperty(DETECTOR_ADMISSION::PROPERTY).asString()=="1");
+ player.playStream("first.mkv",&li,false);auto firstRequest=messenger.last;
+ assert(firstRequest->properties.at(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean());
+ assert(home.GetProperty(DETECTOR_ADMISSION::PROPERTY).asString().empty());
+ player.playStream("second.mkv",&li,false);auto secondRequest=messenger.last;
+ assert(!secondRequest->properties.at(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean());
+ home.SetProperty(DETECTOR_ADMISSION::PROPERTY,"1");
+ DETECTOR_ADMISSION::CaptureItem(*secondRequest); // delayed open cannot steal it
+ assert(home.GetProperty(DETECTOR_ADMISSION::PROPERTY).asString()=="1");
+ assert(firstRequest->properties.at(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean());
+ player.playStream("third.mkv",nullptr,false);assert(messenger.last->properties.at(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean());
+ home.SetProperty(DETECTOR_ADMISSION::PROPERTY,"01");player.playStream("normal.mkv",nullptr,false);
+ assert(!messenger.last->properties.at(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean());
+ home.ClearProperties();assert(home.GetProperty(DETECTOR_ADMISSION::PROPERTY).asString().empty());
  std::cout<<"PASS: actual Home publication/clear and Python play ownership, pre-release interpreter access, missing/native/stale/replay/overwrite/timeout\n";
 }
 '''
@@ -91,7 +116,7 @@ int main(){
 def source():
     gui = (ROOT / 'xbmc/guilib/GUIWindow.cpp').read_text()
     player = (ROOT / 'xbmc/interfaces/legacy/Player.cpp').read_text()
-    methods = '\n'.join(function(gui, marker) for marker in ('void CGUIWindow::SetProperty(', 'void CGUIWindow::ClearProperties()'))
+    methods = '\n'.join(function(gui, marker) for marker in ('void CGUIWindow::SetProperty(', 'CVariant CGUIWindow::GetProperty(', 'void CGUIWindow::ClearProperties()'))
     return BOUNDARY.replace('@GUI@', methods).replace('@PLAYER@', function(player, 'void Player::playStream('))
 
 

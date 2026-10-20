@@ -264,9 +264,10 @@ void aml_dv_detect_active_area_get(uint16_t& top, uint16_t& bottom, uint16_t& le
 enum DvDetectState { DV_DETECT_FAILED = 0, DV_DETECT_SKIP_NON16X9 = 1,
                      DV_DETECT_SKIP_IMAX = 2, DV_DETECT_OK = 3,
                      DV_DETECT_SKIPPED = 4, DV_DETECT_INACTIVE = 5,
-                     DV_DETECT_RUNNING = 6 };
+                     DV_DETECT_RUNNING = 6, DV_DETECT_TIMED_OUT = 7 };
 int aml_dv_detect_active_area_state();
 void aml_dv_detect_set_file(const std::string& path);
+void aml_dv_detect_set_playback_file(const std::string& path, bool skip);
 // Startup hold is selection-bound and independent of the DV-only status label.
 void aml_subtitle_active_area_startup_begin(uint64_t pm4kStartupToken = 0);
 // Bit 0: subtitle detection; bit 1: native DV L5 detection for this selection.

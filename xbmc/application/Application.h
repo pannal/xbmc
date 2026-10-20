@@ -135,7 +135,8 @@ public:
   bool ProcessAndStartPlaylist(const std::string& strPlayList,
                                PLAYLIST::CPlayList& playlist,
                                PLAYLIST::Id playlistId,
-                               int track = 0);
+                               int track = 0,
+                               std::optional<bool> detectorSkip = std::nullopt);
   bool PlayFile(CFileItem item, const std::string& player, bool bRestart = false);
   void StopPlaying(std::shared_ptr<CEvent> completion = {});
   void Restart(bool bSamePosition = true);

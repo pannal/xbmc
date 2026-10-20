@@ -28,7 +28,7 @@ def source():
     code = code.replace('inline bool Store(const Identity&,Record&){assert(false);return false;}', 'inline bool Store(const Identity&,Record&){return true;}')
     # VFS operations count actual callback admissions, not hypothetical samples.
     callbacks = function(aml, 'struct DetectInput')+';\n'
-    callbacks += '\n'.join(function(aml, marker) for marker in ('static int detect_avio_read(', 'static int64_t detect_avio_seek('))
+    callbacks += '\n'.join(function(aml, marker) for marker in ('static bool detect_input_deadline(', 'static int detect_input_interrupt_cb(', 'static int detect_avio_read(', 'static int64_t detect_avio_seek('))
     support = r'''
 constexpr int AVERROR_EOF=-1,AVERROR_EXIT=-2,AVSEEK_SIZE=0x10000,AVSEEK_FORCE=0x20000;
 std::atomic<int> reads{0},seeks{0},entries{0},gateChecks{0};
@@ -43,15 +43,20 @@ struct StringUtils {static bool StartsWithNoCase(const std::string& s,const std:
     # disc branch that must precede it. A wiring change must break this fixture.
     scanner = function(aml, 'static void DetectActiveAreaFromFile(')
     disc = function(scanner, '  if (StringUtils::StartsWithNoCase(filePath, "bluray://")')
-    gate = '  if (!detect_wait_for_startup_hold(run))\n    goto cleanup;'
+    gate = '  if (!source->standalone && !detect_wait_for_startup_hold(run))\n    goto cleanup;'
     assert gate in scanner
     before_open = scanner.index('if (!file.Open(')
     assert scanner.index(disc) < scanner.index(gate) < before_open
     assert 'avio_alloc_context(avioBuf, bufSize, 0, &input,' in scanner
-    replacement = 'void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source,const CAMLNativeWorker::Run& state){\nconst auto& run=state;const auto& filePath=source->path;\n' + disc + '\n' + gate + '\ns_detectThrottleActive=true;++entries;scanHook(source,run);\ncleanup:return;\n}'
-    # Instrument entry into the real wait to prove the worker reached deferral.
-    code = code.replace('static bool detect_wait_for_startup_hold(const CAMLNativeWorker::Run& run)\n{',
-                        'static bool detect_wait_for_startup_hold(const CAMLNativeWorker::Run& run)\n{\n  ++gateChecks;')
+    replacement = 'void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source,const CAMLNativeWorker::Run& runState){\nconst auto& run=runState;auto& state=s_detectState;const auto& filePath=source->path;\n' + disc + '\n' + gate + '\ns_detectThrottleActive=true;++entries;scanHook(source,run);\ncleanup:return;\n}'
+    # Instrument the actual wait after its optional stop-predicate signature.
+    wait_start = code.index('static bool detect_wait_for_startup_hold(')
+    # The optional callback has a braced default argument. Start extraction at
+    # the actual body, not that initializer, before adding observation counters.
+    wait_body = code.index('\n{', wait_start) + 1
+    wait = code[wait_start:wait_body] + function(code[wait_body:], '{')
+    assert 'for (;;)' in wait and 'if (stop && stop())' in wait
+    code = code.replace(wait, wait.replace('  for (;;)', '  ++gateChecks;\n  for (;;)', 1), 1)
     old = function(code, 'void DetectActiveAreaFromFile(')
     # Counters/types must precede production wait and interrupt helpers.
     index = code.index('static bool detect_wait_for_startup_hold(')

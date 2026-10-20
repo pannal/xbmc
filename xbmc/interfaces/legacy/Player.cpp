@@ -24,6 +24,7 @@
 #include "messaging/ApplicationMessenger.h"
 #include "settings/MediaSettings.h"
 #include "utils/PM4KStartup.h"
+#include "utils/DetectorAdmission.h"
 
 namespace
 {
@@ -106,6 +107,7 @@ namespace XBMCAddon
           // set m_strPath to the passed url
           listitem->item->SetPath(item.c_str());
           auto* file = new CFileItem(*listitem->item);
+          DETECTOR_ADMISSION::CaptureItem(*file);
           file->SetProperty(PM4K_STARTUP::ITEM_TOKEN, CVariant(startupToken));
           CServiceBroker::GetAppMessenger()->PostMsg(TMSG_MEDIA_PLAY, 0, 0,
                                                    static_cast<void*>(file));
@@ -114,6 +116,7 @@ namespace XBMCAddon
         {
           CFileItemList *l = new CFileItemList; //don't delete,
           auto file = std::make_shared<CFileItem>(item, false);
+          DETECTOR_ADMISSION::CaptureItem(*file);
           file->SetProperty(PM4K_STARTUP::ITEM_TOKEN, CVariant(startupToken));
           l->Add(file);
           CServiceBroker::GetAppMessenger()->PostMsg(TMSG_MEDIA_PLAY, -1, -1,
@@ -137,7 +140,9 @@ namespace XBMCAddon
         current = CServiceBroker::GetPlaylistPlayer().GetCurrentItemIdx();
       }
       DelayedCallGuard dc(languageHook);
-      CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, current, iPlayList);
+      const std::string detectorDecision = DETECTOR_ADMISSION::CapturePlaylist(iPlayList == PLAYLIST::TYPE_VIDEO);
+      CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, current, iPlayList,
+                                               nullptr, detectorDecision);
     }
 
     void Player::playPlaylist(const PlayList* playlist, bool windowed, int startpos)
@@ -154,7 +159,9 @@ namespace XBMCAddon
           iPlayList = playlist->getPlayListId();
         }
         DelayedCallGuard dc(languageHook);
-        CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, startpos, iPlayList);
+        const std::string detectorDecision = DETECTOR_ADMISSION::CapturePlaylist(iPlayList == PLAYLIST::TYPE_VIDEO);
+        CServiceBroker::GetAppMessenger()->SendMsg(TMSG_PLAYLISTPLAYER_PLAY, startpos, iPlayList,
+                                                 nullptr, detectorDecision);
       }
       else
         playCurrent(windowed);

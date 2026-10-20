@@ -34,6 +34,7 @@ struct Record
   int state{4}; // DvDetectState: preserve why native geometry was withheld.
   bool hasStrict{false};
   bool hasSubtitle{false};
+  bool uniqueStream{false}; // excludes attached pictures; safe default-stream cache discovery
   bool highConfidence{false}; // Strict evidence may replace authored native L5.
   std::array<uint16_t, 4> strict{};
   std::array<uint16_t, 4> subtitle{};
@@ -42,6 +43,11 @@ struct Record
 // HTTP needs size and a modification time or strong ETag; other files need stat
 // timestamps. Missing content/stream identity disables persistence. No media writes.
 bool ReadIdentity(Identity& identity);
+// Validation before stream discovery; the caller supplies stream fields later.
+bool ReadContentIdentity(Identity& identity);
 bool Load(const Identity& identity, Record& record);
+// Discover validated stream geometry without opening/decoding the media.
+// Unknown stream selection requires a record proven to have one video stream.
+bool Find(const std::string& path, int streamIndex, Identity& identity, Record& record);
 bool Store(const Identity& identity, const Record& record);
 } // namespace ACTIVE_AREA_CACHE

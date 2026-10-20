@@ -28,6 +28,7 @@
 #include "settings/lib/ISettingsHandler.h"
 #include "settings/lib/SettingDefinitions.h"
 #include "utils/IPlatformLog.h"
+#include "utils/ScopedLogSilence.h"
 #include "utils/logtypes.h"
 
 #include <string>
@@ -109,6 +110,8 @@ public:
                          const std::string_view& format,
                          Args&&... args)
   {
+    if (CScopedLogSilence::Active())
+      return;
     GetInstance().FormatAndLogInternal(level, format, std::forward<Args>(args)...);
   }
 

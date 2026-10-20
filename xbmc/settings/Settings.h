@@ -168,6 +168,8 @@ public:
   static constexpr auto SETTING_SUBTITLES_BITMAPSDRSATURATION = "subtitles.bitmapsdrsaturation";
   static constexpr auto SETTING_SUBTITLES_BITMAPSDRPEAK = "subtitles.bitmapsdrpeak";
   static constexpr auto SETTING_SUBTITLES_PGSHDRTOSDR_PEAK = "subtitles.pgshdrtosdr.peak";
+  static constexpr auto SETTING_SUBTITLES_EXCLUDEHTTPACTIVEAREA = "subtitles.excludehttpactivearea";
+  static constexpr auto SETTING_SUBTITLES_ACTIVEAREATIMEOUT = "subtitles.activeareatimeout";
   static constexpr auto SETTING_SUBTITLES_DETECTACTIVEAREA = "subtitles.detectactivearea";
   static constexpr auto SETTING_SUBTITLES_CACHEACTIVEAREA = "subtitles.cacheactivearea";
   static constexpr auto SETTING_SUBTITLES_ISOLATEACTIVEAREA = "subtitles.isolateactivearea";

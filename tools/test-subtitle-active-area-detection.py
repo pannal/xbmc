@@ -20,7 +20,7 @@ def source(aml=None):
     if aml is None:
         aml = (ROOT / 'xbmc/utils/AMLUtils.cpp').read_text()
     scan = function(aml, 'static void DetectActiveAreaFromFile(')
-    admit = scan[scan.index('        if (frame->width != source->width'):scan.index('        lastWidth = frame->width;')]
+    admit = scan[scan.index('        if (frame->width != codedWidth'):scan.index('        lastWidth = frame->width;')]
     access_start = scan.index('        const int stride = frame->linesize[0];')
     access_end = scan.index('        CLog::Log(LOGDEBUG, "DetectActiveArea: sample at ', access_start)
     access = scan[access_start:access_end]
@@ -32,8 +32,8 @@ def source(aml=None):
         end = edges.index('      sTop = measurements[0].value;', start)
         edges = edges[:start] + edges[end:]
     code = PREFIX
-    code += 'bool AdmitFrame(Frame* frame,Source* source){\n' + admit + 'return true;cleanup:return false;}\n'
-    code += 'uint32_t Contrast(Frame* frame){int lastWidth=frame->width,lastHeight=frame->height;{\n'
+    code += 'bool AdmitFrame(Frame* frame,Source* source){int codedWidth=source->width,codedHeight=source->height;auto& state=s_detectState;\n' + admit + 'return true;cleanup:return false;}\n'
+    code += 'uint32_t Contrast(Frame* frame){auto& state=s_detectState;int lastWidth=frame->width,lastHeight=frame->height;{\n'
     code += access + '(void)sampleW;(void)sampleStartX;return contrast;}cleanup:return 0;}\n'
     typed = 'struct DetectEdgeMeasurement' in aml
     if typed:
@@ -78,7 +78,7 @@ def source(aml=None):
     # End at the enclosing scan scope before native publication, independent of comments.
     final = scan[final_start:scan.rindex('\n  }', final_start, publication)]
     code += 'bool Select(const uint16_t* samples_top,const uint16_t* samples_bottom,const uint16_t* samples_left,const uint16_t* samples_right,int validSamples,int lastWidth,int lastHeight,DetectResult& result,const bool* rejected=nullptr){\n'
-    code += 'bool known[7]{};const bool* samples_rejected=rejected?rejected:known;(void)samples_rejected;\n'
+    code += 'auto& state=s_detectState;bool known[7]{};const bool* samples_rejected=rejected?rejected:known;(void)samples_rejected;\n'
     if 'static bool detect_subtitle_consensus(' in aml:
         code += '(void)detect_subtitle_consensus;\n'
     code += 'constexpr int numSeeks=7;uint16_t detTop=0,detBottom=0,detLeft=0,detRight=0;{\n'
@@ -91,9 +91,9 @@ def source(aml=None):
     code += function(cache, 'DOVIFrameMetadata CDataCacheCore::GetVideoDoViFrameMetadata(double pts)') + '\n'
     code += function(cache, 'void CDataCacheCore::ClearVideoDoViFrameMetadata()')
     # Retain production throttle/coverage/format/VFS and injection wiring.
-    assert 'const bool throttle = !source->nativeDV || detect_throttle_enabled();' in scan
+    assert 'const bool throttle = !source->standalone && (!source->nativeDV || detect_throttle_enabled());' in scan
     assert 'fmtCtx->flags |= AVFMT_FLAG_CUSTOM_IO;' in scan
-    assert 'fmtCtx->interrupt_callback.opaque = const_cast<CAMLNativeWorker::Run*>(&run);' in scan
+    assert 'fmtCtx->interrupt_callback.opaque = &input;' in scan
     assert 'av_freep(&avioCtx->buffer);' in scan and 'av_free(avioBuf);' in scan
     assert 'detect_samples_consensus(samples_top, samples_bottom, samples_left, samples_right,' in scan
     assert 'validSamples < minUsable' in scan and 'contrast < minContrast' in scan
@@ -380,7 +380,7 @@ def main():
             ('snap bypassed', 'detTop = tb; detBottom = tb; detLeft = 0; detRight = 0;', 'detLeft = 0; detRight = 0; (void)tb;'),
             ('dark coverage accepted', 'if (count < 6 || count > 14)', 'if (count < 1 || count > 14)'),
             ('latest metadata borrowed', '.find(static_cast<uint64_t>(pts))', '.findOrLatest(static_cast<uint64_t>(pts))'),
-            ('source dimensions ignored', 'frame->width != source->width || frame->height != source->height ||', '(frame->width != source->width && false) || (frame->height != source->height && false) ||'),
+            ('source dimensions ignored', 'frame->width != codedWidth || frame->height != codedHeight ||', '(frame->width != codedWidth && false) || (frame->height != codedHeight && false) ||'),
         ]:
             assert old in code
             run(code.replace(old, new, 1), True)

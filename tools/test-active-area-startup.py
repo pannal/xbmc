@@ -275,7 +275,7 @@ struct CacheTimer{void Set(std::chrono::milliseconds){} bool IsTimePast()const{r
     code += methods + PLAYER_TEST
     # These call sites are essential: decoding/configuration must remain active.
     open_file = function(source, 'bool CVideoPlayer::OpenFile(')
-    assert 'aml_dv_detect_set_file(' in open_file
+    assert 'aml_dv_detect_set_playback_file(' in open_file and 'DETECTOR_ADMISSION::ITEM_SKIP' in open_file
     prepare = function(source, 'void CVideoPlayer::Prepare()')
     assert prepare.index('m_State.Clear();') < prepare.index('aml_subtitle_active_area_startup_begin(')
     assert 'Prepare();' in function(source, 'void CVideoPlayer::CompleteFileReplacement()')

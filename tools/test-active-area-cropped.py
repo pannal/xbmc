@@ -256,7 +256,7 @@ def main():
             ('crop worker bypass removed','if (source->codedCrop)\n  {\n    s_detectState.store(DV_DETECT_SKIP_NON16X9);','if (false)\n  {\n    s_detectState.store(DV_DETECT_SKIP_NON16X9);'),
             ('non-square DAR ignored','std::abs(displayAspect * height - width) > 1.0','false'),
             ('unknown DAR accepted','!std::isfinite(displayAspect) || displayAspect <= 0.0 ||\n      std::abs(displayAspect * height - width) > 1.0','(std::isfinite(displayAspect) && displayAspect > 0.0 && std::abs(displayAspect * height - width) > 1.0)'),
-            ('retained geometry survives crop','allowProbe && !s_detectSource->codedCrop && previous->width == width &&\n      previous->height == height && previous->displayAspect == displayAspect &&','allowProbe &&'),
+            ('retained geometry survives crop','allowProbe && !s_detectSource->codedCrop && !s_detectSource->policy->Blocked() && previous->width == width &&\n      previous->height == height && previous->displayAspect == displayAspect &&','allowProbe &&'),
             ('software aspect change ignored','m_subtitleProbeAspect == aspect','true'),
         ]
         for name,old,new in controls:

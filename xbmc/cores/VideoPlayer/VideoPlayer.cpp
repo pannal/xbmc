@@ -55,6 +55,7 @@
 #include "threads/SingleLock.h"
 #include "utils/AMLUtils.h"
 #include "utils/PM4KStartup.h"
+#include "utils/DetectorAdmission.h"
 #include "utils/FontUtils.h"
 #include "utils/JobManager.h"
 #include "utils/LangCodeExpander.h"
@@ -850,7 +851,8 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   m_playerOptions = options;
   m_processInfo->SetFullscreen(options.fullscreen);
   FinishActiveAreaProgress();
-  aml_dv_detect_set_file(file.GetDynPath());
+  aml_dv_detect_set_playback_file(file.GetDynPath(),
+      file.GetProperty(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean());
   m_activeAreaWaitStart = {};
 
   m_processInfo->SetPlayTimes(0,0,0,0);
@@ -3963,7 +3965,8 @@ void CVideoPlayer::HandleMessages()
       });
 
       m_item = msg.GetItem();
-      aml_dv_detect_set_file(m_item.GetDynPath());
+      aml_dv_detect_set_playback_file(m_item.GetDynPath(),
+          m_item.GetProperty(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean());
       m_playerOptions = msg.GetOptions();
 
       m_processInfo->SetPlayTimes(0,0,0,0);

@@ -8,6 +8,8 @@
 
 #include "PlayerOperations.h"
 
+#include "utils/DetectorAdmission.h"
+
 #include "AudioLibrary.h"
 #include "FileItem.h"
 #include "GUIInfoManager.h"
@@ -818,7 +820,8 @@ JSONRPC_STATUS CPlayerOperations::Open(const std::string &method, ITransportLaye
       case PLAYLIST::TYPE_MUSIC:
       case PLAYLIST::TYPE_VIDEO:
         CServiceBroker::GetAppMessenger()->PostMsg(TMSG_MEDIA_PLAY, playlistid,
-                                                   playlistStartPosition);
+                                                   playlistStartPosition, nullptr,
+            DETECTOR_ADMISSION::CapturePlaylist(playlistid == PLAYLIST::TYPE_VIDEO));
         break;
 
       case PLAYLIST::TYPE_PICTURE:
@@ -1000,6 +1003,19 @@ JSONRPC_STATUS CPlayerOperations::Open(const std::string &method, ITransportLaye
 
         auto l = new CFileItemList(); //don't delete
         l->Copy(list);
+        if (l->Size() == 1)
+          DETECTOR_ADMISSION::CaptureItem(*(*l)[0]);
+        else
+        {
+          for (const auto& item : l->GetList())
+          {
+            if (item->IsVideo() || (!item->IsAudio() && !item->IsGame() && !item->IsPicture()))
+            {
+              l->SetProperty(DETECTOR_ADMISSION::ITEM_SKIP, DETECTOR_ADMISSION::Capture());
+              break;
+            }
+          }
+        }
         CServiceBroker::GetAppMessenger()->PostMsg(TMSG_MEDIA_PLAY, -1, -1, static_cast<void*>(l),
                                                    playername);
       }
