@@ -3507,9 +3507,11 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
       else
         videoPicture.mpeg2OutputMode = MPEG2OutputMode::UNKNOWN;
     }
-    if (vi.ratio_control) {
-      m_hints.aspect = 65536.0 / vi.ratio_control;
-      m_processInfo.SetVideoDAR(m_hints.aspect);
+    if (vi.ratio_control)
+    {
+      // Decoder output DAR can be rounded. Keep the live source aspect intact:
+      // reset uses it to distinguish coded crops from anamorphic video.
+      m_processInfo.SetVideoDAR(65536.0 / vi.ratio_control);
     }
 
     CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::GetPicture: index: {:d}, pts: {:.3f}, dur:{:.3f}ms ar:{:.2f} elf:{:d}ms",

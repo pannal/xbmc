@@ -2,7 +2,7 @@
 """Known coded crops bypass the connected detector startup before any work.
 
 Real source/configuration, worker, parent hold/progress and scanner I/O gates;
-actual hardware open/reset call sites and complete software probe owner methods.
+actual hardware open/output/reset call sites and complete software probe owner methods.
 Transport, sample decode and GUI/clock endpoints are recording fixtures. Explicit
 DAR is required: decoded display dimensions alone may be a square-pixel fallback.
 """
@@ -34,15 +34,27 @@ static RecordingWorker s_detectWorker;
     pending=function(code,'bool aml_subtitle_active_area_startup_progress(const std::shared_ptr<const void>& selected,')
     code=code.replace(pending, 'std::function<void()> afterProgress;\n'+pending.replace('return ::aml_subtitle_active_area_startup_progress(selected,n,total);','const bool result=::aml_subtitle_active_area_startup_progress(selected,n,total);if(afterProgress)afterProgress();return result;'))
     aml = (ROOT/'xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp').read_text()
-    # Execute exactly the actual configure/start statement at both hardware sites.
-    for name, variable in [('HardwareOpen','hints'),('HardwareReset','m_hints')]:
+    header = (ROOT/'xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h').read_text()
+    assert 'CDVDStreamInfo  &m_hints;' in header and ', m_hints(hints)' in aml
+    # Keep the actual caller-owned hints alive across output and reset. A fresh
+    # local hints object per call hides hardware writes to source geometry.
+    code += r'''
+struct Hardware {
+ struct Hints{int width,height;double aspect;struct{int dv_profile=8;}dovi;std::shared_ptr<const void> subtitleProbeSource;};
+ Hints hints;Hints& m_hints=hints;
+ struct{double dar=0.0;void SetVideoDAR(double value){dar=value;}}m_processInfo;
+ Hardware(int w,int h,double dar,const std::shared_ptr<const void>& selected):hints{w,h,dar,{},selected}{}
+'''
+    for name, variable in [('Open','hints'),('Reset','m_hints')]:
         start = aml.index('  if (aml_subtitle_active_area_configure('+variable+'.width,')
         end = aml.index('aml_dv_detect_active_area_start();',start)+len('aml_dv_detect_active_area_start();')
         statement = aml[start:end]
         assert variable+'.aspect' in statement
-        code += '\nvoid '+name+'(int w,int h,double dar,bool nativeDV,const std::shared_ptr<const void>& selected){\n'
-        code += 'struct{int width,height;double aspect;struct{int dv_profile=8;}dovi;std::shared_ptr<const void> subtitleProbeSource;}'+variable+'{w,h,dar,{},selected};\n'
-        code += statement+'\n}\n'
+        code += '\nvoid '+name+'(bool nativeDV){\n'+statement+'\n}\n'
+    code += 'void Picture(int ratio){struct{int ratio_control;}vi{ratio};\n'
+    code += function(aml,'    if (vi.ratio_control)')+'\n}\n};\n'
+    for name in ('Open','Reset'):
+        code += 'void Hardware'+name+'(int w,int h,double dar,bool nativeDV,const std::shared_ptr<const void>& selected){Hardware hardware(w,h,dar,selected);hardware.'+name+'(nativeDV); }\n'
     owner = (ROOT/'xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp').read_text()
     code += r'''
 namespace SOFTWARE {
@@ -116,6 +128,45 @@ int main(){
    }
   }
  }
+ // Reported source dimensions/DAR, then a deliberately different hardware DAR.
+ // ratio_control is a synthetic stimulus: the runtime log has no reset DAR.
+ settingsValue.detect=true;dvDetection=true;settingsValue.cache=true;settingsValue.wait=true;
+ aml_dv_detect_set_file("Spider-Man-reset");aml_subtitle_active_area_startup_begin();
+ auto spider=aml_subtitle_active_area_source(0,173);Counters();
+ CVideoPlayerVideo spiderVideo;Parent spiderParent(spiderVideo);ReadyParent(spiderParent,spider);
+ const int spiderShown=PLAYER_FIXTURE::notifications;
+ Hardware hardware(3832,1600,3832.0/1600.0,spider);
+ {CAMLNativeTransaction owner;assert(owner.TryBegin());hardware.Open(true);}
+ NoWork(spiderParent,spiderShown);
+ for(int n=0;n<4;++n){
+  hardware.Picture(27307);assert(hardware.m_processInfo.dar==65536.0/27307);
+  aml_subtitle_active_area_invalidate(true,true);
+  {CAMLNativeTransaction owner;assert(owner.TryBegin());hardware.Reset(true);}
+  NoWork(spiderParent,spiderShown);
+  assert(hardware.hints.aspect==3832.0/1600.0);
+ }
+ // Padding is geometry-generated: the fixture has no authored RPU L5 block.
+ aml_dv_set_active_area_geometry(3832,1600,true);uint16_t st,sb,sl,sr;
+ assert(aml_dv_auto_letterbox_get(st,sb,sl,sr)&&st==277&&sb==277&&sl==0&&sr==0);
+ // Legitimate changes update the same live hints (as sequence parsing does).
+ // An old cropped decision must not survive a source DAR/SAR or size change.
+ settingsValue.wait=false;settingsValue.cache=false;scanHook=scan;
+ for(int change=0;change<4;++change){
+  hardware.hints.width=3832;hardware.hints.height=1600;
+  hardware.hints.aspect=change==0?16.0/9.0:change==1?0.0:change==2?NAN:16.0/9.0;
+  if(change==3){hardware.hints.width=1920;hardware.hints.height=1080;}
+  hardware.Picture(27307);
+  {CAMLNativeTransaction owner;assert(owner.TryBegin());hardware.Reset(true);}
+  until([&]{return !s_detectSource->pending.load();});s_detectWorker.Stop();
+  assert(!s_detectSource->codedCrop&&s_detectSource->completedPositions==14);
+  assert(workerStarts==change+1&&entries==change+1&&reads==(change+1)*14);
+ }
+ // A different stream selection must be evaluated using its own hints.
+ const auto replaced=aml_subtitle_active_area_source(1,173);
+ Hardware replacement(1920,1080,16.0/9.0,replaced);
+ {CAMLNativeTransaction owner;assert(owner.TryBegin());replacement.Open(true);}
+ until([&]{return !s_detectSource->pending.load();});s_detectWorker.Stop();
+ assert(s_detectSource->selection==replaced&&!s_detectSource->codedCrop&&workerStarts==5);
  // Reconfigure after the parent's pending snapshot but before pause. Current
  // eligibility must be rechecked atomically with applying/publishing the hold.
  settingsValue.detect=true;dvDetection=true;settingsValue.cache=true;settingsValue.wait=true;
@@ -187,7 +238,7 @@ int main(){
  picture={1920,1080,1920,1080};software.UpdateSubtitleProbe(picture);
  until([&]{return !s_detectSource->pending.load();});s_detectWorker.Stop();assert(workerStarts==4&&!s_detectSource->codedCrop);
  software.StopSubtitleProbe();assert(!s_detectSource->result);
- std::cout<<"PASS: known crops bypass worker/cache/I/O/hold/toast at hardware open/reset and software geometry admission; retained/cache isolation, native padding and uncropped/anamorphic/unknown paths\n";
+ std::cout<<"PASS: known crops bypass worker/cache/I/O/hold/toast at hardware open/output/reset and software geometry admission; retained/cache isolation, native padding and uncropped/anamorphic/unknown paths\n";
 }
 '''
 
@@ -200,6 +251,7 @@ def main():
     run(code)
     if args.negative_controls:
         controls=[
+            ('hardware DAR overwrites source evidence','m_processInfo.SetVideoDAR(65536.0 / vi.ratio_control);','m_hints.aspect = 65536.0 / vi.ratio_control; m_processInfo.SetVideoDAR(m_hints.aspect);'),
             ('stale pending snapshot pauses a crop','if (held && aml_subtitle_active_area_startup_try_hold(\n                  m_CurrentVideo.hint.subtitleProbeSource, [this] { SetCaching(CACHESTATE_INIT); }))','if (held && ([this] { SetCaching(CACHESTATE_INIT); return true; }()))'),
             ('crop worker bypass removed','if (source->codedCrop)\n  {\n    s_detectState.store(DV_DETECT_SKIP_NON16X9);','if (false)\n  {\n    s_detectState.store(DV_DETECT_SKIP_NON16X9);'),
             ('non-square DAR ignored','std::abs(displayAspect * height - width) > 1.0','false'),
