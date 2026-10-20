@@ -160,10 +160,17 @@ void CTCPServer::Process()
               if (websocket != NULL)
               {
                 // Replace the CTCPClient with a CWebSocketClient
-                CWebSocketClient *websocketClient = new CWebSocketClient(websocket, *(m_connections[i]));
-                delete m_connections[i];
-                m_connections.erase(m_connections.begin() + i);
-                m_connections.insert(m_connections.begin() + i, websocketClient);
+                std::shared_ptr<CTCPClient> websocketClient =
+                    std::make_shared<CWebSocketClient>(websocket, *m_connections[i]);
+                {
+                  // An announcement snapshot can still hold the replaced client. Detach the
+                  // replaced client from the socket, so a late announcement cannot write to
+                  // the socket after the WebSocket client closes the socket.
+                  std::unique_lock<CCriticalSection> clientLock(m_connections[i]->m_critSection);
+                  m_connections[i]->m_socket = INVALID_SOCKET;
+                }
+                std::unique_lock<CCriticalSection> lock(m_connectionsLock);
+                m_connections[i].swap(websocketClient);
               }
             }
 
@@ -178,8 +185,9 @@ void CTCPServer::Process()
           if (close)
           {
             CLog::Log(LOGINFO, "JSONRPC Server: Disconnection detected");
-            m_connections[i]->Disconnect();
-            delete m_connections[i];
+            std::shared_ptr<CTCPClient> client = m_connections[i];
+            client->Disconnect();
+            std::unique_lock<CCriticalSection> lock(m_connectionsLock);
             m_connections.erase(m_connections.begin() + i);
           }
         }
@@ -190,7 +198,7 @@ void CTCPServer::Process()
         if (FD_ISSET(it, &rfds))
         {
           CLog::Log(LOGDEBUG, "JSONRPC Server: New connection detected");
-          CTCPClient *newconnection = new CTCPClient();
+          auto newconnection = std::make_shared<CTCPClient>();
           newconnection->m_socket =
               accept(it, (sockaddr*)&newconnection->m_cliaddr, &newconnection->m_addrlen);
 
@@ -207,7 +215,8 @@ void CTCPServer::Process()
           else
           {
             CLog::Log(LOGINFO, "JSONRPC Server: New connection added");
-            m_connections.push_back(newconnection);
+            std::unique_lock<CCriticalSection> lock(m_connectionsLock);
+            m_connections.push_back(std::move(newconnection));
           }
         }
       }
@@ -237,20 +246,25 @@ void CTCPServer::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
                           const std::string& message,
                           const CVariant& data)
 {
-  if (m_connections.empty())
+  std::vector<std::shared_ptr<CTCPClient>> connections;
+  {
+    std::unique_lock<CCriticalSection> lock(m_connectionsLock);
+    connections = m_connections;
+  }
+  if (connections.empty())
     return;
 
   std::string str = IJSONRPCAnnouncer::AnnouncementToJSONRPC(flag, sender, message, data, CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_jsonOutputCompact);
 
-  for (unsigned int i = 0; i < m_connections.size(); i++)
+  for (const auto& connection : connections)
   {
     {
-      std::unique_lock<CCriticalSection> lock(m_connections[i]->m_critSection);
-      if ((m_connections[i]->GetAnnouncementFlags() & flag) == 0)
+      std::unique_lock<CCriticalSection> lock(connection->m_critSection);
+      if ((connection->GetAnnouncementFlags() & flag) == 0)
         continue;
     }
 
-    m_connections[i]->Send(str.c_str(), str.size());
+    connection->Send(str.c_str(), str.size());
   }
 }
 
@@ -479,13 +493,13 @@ bool CTCPServer::InitializeTCP()
 
 void CTCPServer::Deinitialize()
 {
-  for (unsigned int i = 0; i < m_connections.size(); i++)
+  std::vector<std::shared_ptr<CTCPClient>> connections;
   {
-    m_connections[i]->Disconnect();
-    delete m_connections[i];
+    std::unique_lock<CCriticalSection> lock(m_connectionsLock);
+    connections.swap(m_connections);
   }
-
-  m_connections.clear();
+  for (const auto& connection : connections)
+    connection->Disconnect();
 
   for (unsigned int i = 0; i < m_servers.size(); i++)
     closesocket(m_servers[i]);
@@ -537,6 +551,8 @@ int CTCPServer::CTCPClient::GetAnnouncementFlags()
 
 bool CTCPServer::CTCPClient::SetAnnouncementFlags(int flags)
 {
+  // Announce reads the flags under m_critSection on the announcement thread.
+  std::unique_lock<CCriticalSection> lock(m_critSection);
   m_announcementflags = flags;
   return true;
 }
@@ -547,7 +563,19 @@ void CTCPServer::CTCPClient::Send(const char *data, unsigned int size)
   do
   {
     std::unique_lock<CCriticalSection> lock(m_critSection);
-    sent += send(m_socket, data + sent, size - sent, 0);
+    const ssize_t result = send(m_socket, data + sent, size - sent, 0);
+#ifndef TARGET_WINDOWS
+    // A send interrupted by a signal moved no data; retry at the same offset.
+    // Windows reports socket errors through WSAGetLastError rather than errno,
+    // and an interrupted Windows call means a blocking-call cancellation, so a
+    // retry belongs to POSIX only. Any other failure, or a send to a
+    // disconnected client (INVALID_SOCKET), ends the message.
+    if (result < 0 && errno == EINTR)
+      continue;
+#endif
+    if (result <= 0)
+      return;
+    sent += static_cast<unsigned int>(result);
   } while (sent < size);
 }
 
