@@ -9,6 +9,7 @@
 #include "JSONServiceDescription.h"
 
 #include "AddonsOperations.h"
+#include "DetectorOperations.h"
 #include "ApplicationOperations.h"
 #include "AudioLibrary.h"
 #include "FavouritesOperations.h"
@@ -50,6 +51,14 @@ JsonRpcMethodMap CJSONServiceDescription::m_methodMaps[] = {
   { "JSONRPC.GetConfiguration",                     CJSONRPC::GetConfiguration },
   { "JSONRPC.SetConfiguration",                     CJSONRPC::SetConfiguration },
   { "JSONRPC.NotifyAll",                            CJSONRPC::NotifyAll },
+
+// Explicit detector jobs and owned one-shot admission
+  { "P3I.Detector.GetCapabilities", CDetectorOperations::GetCapabilities },
+  { "P3I.Detector.Start", CDetectorOperations::Start },
+  { "P3I.Detector.GetStatus", CDetectorOperations::GetStatus },
+  { "P3I.Detector.Cancel", CDetectorOperations::Cancel },
+  { "P3I.Detector.SetSkipNext", CDetectorOperations::SetSkipNext },
+  { "P3I.Detector.ClearSkipNext", CDetectorOperations::ClearSkipNext },
 
 // Player
   { "Player.GetActivePlayers",                      CPlayerOperations::GetActivePlayers },

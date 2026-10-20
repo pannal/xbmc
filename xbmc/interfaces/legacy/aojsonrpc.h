@@ -19,6 +19,7 @@ public:
   bool PrepareDownload(const char *path, CVariant &details, std::string &protocol) override { return false; }
   bool Download(const char *path, CVariant& result) override { return false; }
   int GetCapabilities() override { return JSONRPC::Response; }
+  bool IsLocal() const override { return true; }
 
   class CAddOnClient : public JSONRPC::IClient
   {

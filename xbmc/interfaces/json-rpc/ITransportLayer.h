@@ -31,5 +31,8 @@ namespace JSONRPC
     virtual bool PrepareDownload(const char *path, CVariant &details, std::string &protocol) = 0;
     virtual bool Download(const char *path, CVariant &result) = 0;
     virtual int GetCapabilities() = 0;
+    // In-process addon calls already possess local VFS access. Remote detector
+    // jobs follow the normal shared-source policy instead.
+    virtual bool IsLocal() const { return false; }
   };
 }

@@ -36,6 +36,29 @@
 using namespace KODI;
 using namespace JSONRPC;
 
+namespace
+{
+CVariant DetectorLogRequest(const CVariant& request)
+{
+  if (request.isArray())
+  {
+    CVariant safe(CVariant::VariantTypeArray);
+    for (auto it = request.begin_array(); it != request.end_array(); ++it)
+      safe.append(DetectorLogRequest(*it));
+    return safe;
+  }
+  if (request.isObject() && request["method"].isString() &&
+      StringUtils::StartsWithNoCase(request["method"].asString(), "P3I.Detector."))
+  {
+    CVariant safe(CVariant::VariantTypeObject);
+    safe["method"] = request["method"];
+    safe["params"] = "[omitted]";
+    return safe;
+  }
+  return request;
+}
+} // namespace
+
 bool CJSONRPC::m_initialized = false;
 
 void CJSONRPC::Initialize()
@@ -244,10 +267,11 @@ std::string CJSONRPC::MethodCall(const std::string &inputString, ITransportLayer
   CVariant inputroot, outputroot, result;
   bool hasResponse = false;
 
-  CLog::Log(LOGDEBUG, LOGJSONRPC, "JSONRPC: Incoming request: {}", inputString);
-
   if (CJSONVariantParser::Parse(inputString, inputroot) && !inputroot.isNull())
   {
+    std::string safeRequest;
+    CJSONVariantWriter::Write(DetectorLogRequest(inputroot), safeRequest, true);
+    CLog::Log(LOGDEBUG, LOGJSONRPC, "JSONRPC: Incoming request: {}", safeRequest);
     if (inputroot.isArray())
     {
       if (inputroot.size() <= 0)
@@ -275,7 +299,7 @@ std::string CJSONRPC::MethodCall(const std::string &inputString, ITransportLayer
   }
   else
   {
-    CLog::Log(LOGERROR, "JSONRPC: Failed to parse '{}'", inputString);
+    CLog::Log(LOGERROR, "JSONRPC: Failed to parse request (payload omitted)");
     BuildResponse(inputroot, ParseError, CVariant(), outputroot);
     hasResponse = true;
   }
@@ -311,7 +335,7 @@ bool CJSONRPC::HandleMethodCall(const CVariant& request, CVariant& response, ITr
   else
   {
     std::string str;
-    CJSONVariantWriter::Write(request, str, true);
+    CJSONVariantWriter::Write(DetectorLogRequest(request), str, true);
 
     CLog::Log(LOGERROR, "JSONRPC: Failed to parse '{}'", str);
     errorCode = InvalidRequest;

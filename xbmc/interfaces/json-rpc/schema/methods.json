@@ -1,4 +1,126 @@
 {
+  "P3I.Detector.GetCapabilities": {
+    "type": "method",
+    "description": "Version 1 detector and owned automatic-admission capabilities. Unsupported builds return supported=false.",
+    "transport": "Response",
+    "permission": "ReadData",
+    "params": [],
+    "returns": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "P3I.Detector.Start": {
+    "type": "method",
+    "description": "Start an isolated asynchronous FFmpeg detector job. Cache is validated/reused/stored when the shared cache setting is enabled. No playback or L5 application. Remote transports require a shared source; in-process addons retain local VFS access.",
+    "transport": "Response",
+    "permission": [
+      "ReadData",
+      "ControlSystem"
+    ],
+    "params": [
+      {
+        "name": "path",
+        "type": "string",
+        "required": true,
+        "minLength": 1,
+        "maxLength": 32768
+      },
+      {
+        "name": "options",
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "properties": {
+          "streamindex": {
+            "type": "integer",
+            "default": -1,
+            "minimum": -1,
+            "maximum": 2147483647
+          },
+          "allowhttp": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      }
+    ],
+    "returns": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "P3I.Detector.GetStatus": {
+    "type": "method",
+    "description": "Read bounded request status, progress and separate strict/subtitle source-pixel coordinates; rectangle end bounds are exclusive. Zero offsets may be valid.",
+    "transport": "Response",
+    "permission": "ReadData",
+    "params": [
+      {
+        "name": "requestid",
+        "type": "string",
+        "required": true,
+        "minLength": 1,
+        "maxLength": 32
+      }
+    ],
+    "returns": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "P3I.Detector.Cancel": {
+    "type": "method",
+    "description": "Request cancellation without joining blocked I/O. Busy ownership persists until the worker finishes.",
+    "transport": "Response",
+    "permission": [
+      "ReadData",
+      "ControlSystem"
+    ],
+    "params": [
+      {
+        "name": "requestid",
+        "type": "string",
+        "required": true,
+        "minLength": 1,
+        "maxLength": 32
+      }
+    ],
+    "returns": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "P3I.Detector.SetSkipNext": {
+    "type": "method",
+    "description": "Atomically set Home p3i.detector.skip_next to 1 and return an ownership token. Next applicable video submission consumes it.",
+    "transport": "Response",
+    "permission": "ControlPlayback",
+    "params": [],
+    "returns": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "P3I.Detector.ClearSkipNext": {
+    "type": "method",
+    "description": "Clear an unconsumed one-shot signal only if this publication still owns it. Stale tokens cannot clear a newer signal.",
+    "transport": "Response",
+    "permission": "ControlPlayback",
+    "params": [
+      {
+        "name": "token",
+        "type": "string",
+        "required": true,
+        "minLength": 1,
+        "maxLength": 20
+      }
+    ],
+    "returns": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
   "JSONRPC.Introspect": {
     "type": "method",
     "description": "Enumerates all actions and descriptions",
