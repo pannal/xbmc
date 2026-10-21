@@ -109,14 +109,29 @@ namespace KODI::UTILITY {class CDigest {public:enum class Type {SHA256};
 '''
 TEST = r'''
 #include "utils/ActiveAreaCache.h"
+#include <algorithm>
 #include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
 #include <iostream>
+#include <sstream>
 #include <utime.h>
+#include <vector>
 using namespace ACTIVE_AREA_CACHE;
 void Write(const std::string& p,const std::string& s) {std::ofstream(p,std::ios::binary)<<s;}
+std::string CacheEntry(const std::vector<std::filesystem::path>& entries,const Identity& expected) {
+ std::string match;
+ for(const auto& entry:entries) {
+  std::ifstream input(entry);int version,stream,codec,width,height;bool native;std::string key;
+  assert(input>>version>>key>>stream>>codec>>width>>height>>native);
+  if(stream==expected.streamIndex&&codec==expected.codec&&width==expected.width&&
+     height==expected.height&&native==expected.nativeDV) {
+   assert(match.empty());match=entry.string();
+  }
+ }
+ return match;
+}
 int main(int argc,char** argv) {
  assert(argc==2);const std::string root=argv[1];setenv("CACHE_TEST_PROFILE",root.c_str(),1);
  const auto media=root+"/fake-video.mkv";Write(media,"test file identity only");
@@ -164,12 +179,19 @@ int main(int argc,char** argv) {
  assert(!loaded.highConfidence);text.highConfidence=true;assert(!Store(id,text));text.highConfidence=false;
  auto directory=root+"/active-area-cache";
  std::string entry;
+ std::vector<std::filesystem::path> entries;
  for(auto const& p:std::filesystem::directory_iterator(directory)) {
   if(p.path().filename()=="version")continue;
-  assert(p.path().extension()==".dat");entry=p.path().string();
-  std::ifstream in(entry);std::string data((std::istreambuf_iterator<char>(in)),{});
+  assert(p.path().extension()==".dat");entries.push_back(p.path());
+  std::ifstream in(p.path());std::string data((std::istreambuf_iterator<char>(in)),{});
   assert(data.find(media)==std::string::npos); // source paths are not persisted
  }
+ assert(entries.size()==2);
+ // The corruption target must be the original record in either iteration order.
+ std::sort(entries.begin(),entries.end());entry=CacheEntry(entries,id);
+ const auto cropEntry=CacheEntry(entries,crop);assert(!cropEntry.empty()&&cropEntry!=entry);
+ std::reverse(entries.begin(),entries.end());
+ assert(CacheEntry(entries,id)==entry&&CacheEntry(entries,crop)==cropEntry);
  assert(!entry.empty());
  Write(entry,"1 123 truncated");assert(!Load(id,loaded));
  Write(entry,std::string(513,'x'));assert(!Load(id,loaded));
@@ -646,6 +668,23 @@ struct CSpecialProtocol{static std::string TranslatePath(const std::string& path
         # LeakSanitizer cannot inspect threads under the tool's ptrace sandbox.
         subprocess.run([str(work / 'test'), str(work)], check=True,
                        env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'}, timeout=30)
+        if args.negative_controls:
+            # Reintroduce the old last-entry target without depending on the
+            # filesystem's directory order. Both distinct identities must fail
+            # to resolve independently when the selector ignores its match.
+            old=' return match;'
+            assert TEST.count(old)==1
+            broken=work/'wrong-target.cpp'
+            broken.write_text(TEST.replace(old,' return entries.back().string();',1))
+            broken_argv=[str(broken) if value==str(work/'test.cpp') else
+                         str(work/'wrong-target') if value==str(work/'test') else value for value in argv]
+            subprocess.run(broken_argv,check=True)
+            target=work/'target-negative';target.mkdir()
+            result=subprocess.run([str(work/'wrong-target'),str(target)],text=True,capture_output=True,
+                                  env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'},timeout=30)
+            assert result.returncode!=0 and 'Assertion' in result.stderr,(result.stdout,result.stderr)
+            assert 'AddressSanitizer' not in result.stderr and 'runtime error:' not in result.stderr,result.stderr
+            print('REJECTED: corruption target uses last directory entry')
         (work / 'http.cpp').write_text(HTTP_TEST)
         http_argv = [str(work/'http.cpp') if value==str(work/'test.cpp') else
                      str(work/'http') if value==str(work/'test') else value for value in argv]
