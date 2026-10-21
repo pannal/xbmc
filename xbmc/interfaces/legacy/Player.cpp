@@ -108,6 +108,8 @@ namespace XBMCAddon
           listitem->item->SetPath(item.c_str());
           auto* file = new CFileItem(*listitem->item);
           DETECTOR_ADMISSION::CaptureItem(*file);
+          listitem->item->ClearProperty(DETECTOR_PLAYBACK::PROPERTY);
+          listitem->item->SetDetectorBinding({});
           file->SetProperty(PM4K_STARTUP::ITEM_TOKEN, CVariant(startupToken));
           CServiceBroker::GetAppMessenger()->PostMsg(TMSG_MEDIA_PLAY, 0, 0,
                                                    static_cast<void*>(file));

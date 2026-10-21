@@ -365,9 +365,12 @@ bool CPlayListPlayer::Play(int iSong,
   const auto playAttempt = std::chrono::steady_clock::now();
   // A submitted request owns its snapshot; playlist metadata must be reusable.
   CFileItem request(*item);
-  item->ClearProperty(DETECTOR_ADMISSION::ITEM_SKIP);
   if (detectorSkip)
     request.SetProperty(DETECTOR_ADMISSION::ITEM_SKIP, *detectorSkip);
+  DETECTOR_ADMISSION::CaptureItem(request);
+  item->ClearProperty(DETECTOR_ADMISSION::ITEM_SKIP);
+  item->ClearProperty(DETECTOR_PLAYBACK::PROPERTY);
+  item->SetDetectorBinding({});
   bool ret = g_application.PlayFile(request, player, bAutoPlay);
   // OpenFile can release GUI ownership while Python changes the playlist.
   const auto selectionIsCurrent = [&]() {

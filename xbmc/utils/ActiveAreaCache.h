@@ -36,6 +36,8 @@ struct Record
   bool hasSubtitle{false};
   bool uniqueStream{false}; // excludes attached pictures; safe default-stream cache discovery
   bool highConfidence{false}; // Strict evidence may replace authored native L5.
+  bool preCropped{false}; // Geometry-only full coded frame, never sampled L5.
+  double displayAspect{0.0}; // Zero means unknown; never proof of square pixels.
   std::array<uint16_t, 4> strict{};
   std::array<uint16_t, 4> subtitle{};
 };

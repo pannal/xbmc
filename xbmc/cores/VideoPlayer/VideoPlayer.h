@@ -476,6 +476,7 @@ protected:
   void FinishActiveAreaProgress();
   bool m_activeAreaVideoReady{false};
   std::chrono::steady_clock::time_point m_activeAreaWaitStart;
+  std::atomic<uint64_t> m_detectorPlaybackId{0};
   CGUIDialogProgressBarHandle* m_activeAreaProgress{nullptr}; // dialog owns the handle
 
   double GetQueueTime();

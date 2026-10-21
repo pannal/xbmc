@@ -46,7 +46,7 @@ void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source,const 
     # Actual path classifier is exercised separately. This boundary records only
     # the explicit-job exclusion wiring rather than reimplementing URIUtils.
     code += 'struct URIUtils{static bool IsHTTP(const std::string& path,bool){return path=="HTTP-input";}};\n'
-    code += function(aml,'void aml_dv_detect_set_playback_file(')+'\n'
+    code += 'uint64_t aml_dv_detect_set_playback_file(const std::string&,bool,std::shared_ptr<DETECTOR_PLAYBACK::Binding> = {});\n'+function(aml,'uint64_t aml_dv_detect_set_playback_file(')+'\n'
     start = aml.index('namespace\n{\nenum class DetectorJobState')
     end = aml.index('\n\nbool aml_dv_retire_background_work()',start)
     return code+aml[start:end]+TEST
@@ -61,11 +61,12 @@ CVariant done(const std::string& id){
  until([&]{result=aml_detector_job_status(id);const auto status=result["status"].asString();return status!="queued"&&status!="running"&&status!="cancelling";});return result;
 }
 void normal(const std::shared_ptr<DetectSource>& source,const CAMLNativeWorker::Run& r){
- source->scannedWidth=1280;source->scannedHeight=720;source->scannedStream=2;source->scannedCodec=173;source->uniqueStream=true;
+ source->scannedWidth=1280;source->scannedHeight=720;source->scannedAspect=1280.0/720.0;source->scannedStream=2;source->scannedCodec=173;source->uniqueStream=true;
  for(int n=1;n<=14;++n)source->completedPositions=n;
  detect_publish_subtitle(r,source,{30,30,0,0});detect_publish(r,source,0,0,0,0,true);
 }
 struct Item {
+ void CaptureDetectorBinding(){}
  bool audio=false,video=true,game=false,playlist=false,smart=false;
  std::map<std::string,CVariant> props;
  bool HasProperty(const std::string& k)const{return props.count(k);}
@@ -107,12 +108,14 @@ int main(){
  assert(result["strict"]["valid"].asBoolean()&&result["strict"]["offsets"]["top"].asInteger()==0);
  assert(result["strict"]["width"].asInteger()==1280&&result["strict"]["rectangle"]["x2"].asInteger()==1280);
  assert(result["strict"]["confidence"].asString()=="invariant"&&result["subtitle"]["confidence"].asString()=="placement_only");
+ assert(result["provenance"].asString()=="scanned"&&result["sampled"].asBoolean()&&!result["geometry"]["valid"].asBoolean());
  assert(s_detectSource==active&&s_detectState==activeState&&!active->result&&!active->subtitleResult);
  assert(writes==beforeWrites&&watchWrites==beforeWatch&&DETECTOR_ADMISSION::Value()=="1");
  // Shared cache ON returns a validated record without a scanner reservation.
  cacheHit=true;auto reserved=detect_reserve_scanner();assert(reserved);const auto priorEntries=entries.load();id=start("cached");result=done(id);s_explicitDetectorWorker.Stop();
  assert(result["status"].asString()=="completed"&&result["cachehit"].asBoolean()&&entries==priorEntries);
  assert(result["progress"]["completed"].asInteger()==0&&result["subtitle"]["offsets"]["top"].asInteger()==30);
+ assert(result["provenance"].asString()=="cached"&&!result["sampled"].asBoolean());
  // A miss cannot cancel an automatic owner; an OFF cache does no identity I/O.
  cacheHit=false;id=start("busy");assert(done(id)["status"].asString()=="busy");s_explicitDetectorWorker.Stop();assert(entries==priorEntries);
  reserved.reset();settingsValue.cache=false;const auto offFinds=finds.load(),offIdentities=identities.load(),offStores=stores.load();

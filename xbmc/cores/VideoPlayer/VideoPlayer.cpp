@@ -851,8 +851,8 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   m_playerOptions = options;
   m_processInfo->SetFullscreen(options.fullscreen);
   FinishActiveAreaProgress();
-  aml_dv_detect_set_playback_file(file.GetDynPath(),
-      file.GetProperty(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean());
+  m_detectorPlaybackId = aml_dv_detect_set_playback_file(file.GetDynPath(),
+      file.GetProperty(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean(), file.GetDetectorBinding());
   m_activeAreaWaitStart = {};
 
   m_processInfo->SetPlayTimes(0,0,0,0);
@@ -883,6 +883,7 @@ bool CVideoPlayer::CloseFile(bool reopen)
   CSingleExit graphics(CServiceBroker::GetWinSystem()->GetGfxContext());
   if (m_closeStage == CloseStage::NONE)
   {
+    aml_detector_end_playback(m_detectorPlaybackId);
     m_bAbortRequest = true;
     m_bCloseRequest = true;
     if (m_pDemuxer)
@@ -3776,6 +3777,7 @@ void CVideoPlayer::OnExit()
 
   CloseStream(m_CurrentAudio, !m_bAbortRequest);
   CloseStream(m_CurrentVideo, !m_bAbortRequest);
+  aml_detector_end_playback(m_detectorPlaybackId);
   CloseStream(m_CurrentTeletext,!m_bAbortRequest);
   CloseStream(m_CurrentRadioRDS, !m_bAbortRequest);
   CloseStream(m_CurrentAudioID3, !m_bAbortRequest);
@@ -3965,8 +3967,8 @@ void CVideoPlayer::HandleMessages()
       });
 
       m_item = msg.GetItem();
-      aml_dv_detect_set_playback_file(m_item.GetDynPath(),
-          m_item.GetProperty(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean());
+      m_detectorPlaybackId = aml_dv_detect_set_playback_file(m_item.GetDynPath(),
+          m_item.GetProperty(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean(), m_item.GetDetectorBinding());
       m_playerOptions = msg.GetOptions();
 
       m_processInfo->SetPlayTimes(0,0,0,0);

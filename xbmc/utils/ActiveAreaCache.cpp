@@ -15,6 +15,8 @@
 #include "utils/URIUtils.h"
 
 #include <algorithm>
+#include <cmath>
+#include <iomanip>
 #include <mutex>
 #include <sstream>
 #include <sys/stat.h>
@@ -24,7 +26,7 @@ namespace ACTIVE_AREA_CACHE
 namespace
 {
 // Bump when detection policy or the meaning of stored geometry changes.
-constexpr int CACHE_VERSION = 4;
+constexpr int CACHE_VERSION = 5;
 constexpr auto CACHE_DIRECTORY = "special://profile/active-area-cache/";
 std::mutex maintenanceMutex;
 
@@ -174,7 +176,13 @@ bool Valid(const Identity& identity, const Record& record)
   };
   return (record.hasStrict ? record.state == 3
                            : (record.state == 1 || record.state == 2 || record.state == 4)) &&
-         (record.hasStrict || record.hasSubtitle) &&
+         (record.hasStrict || record.hasSubtitle || record.preCropped) &&
+         std::isfinite(record.displayAspect) && record.displayAspect >= 0.0 &&
+         (!record.preCropped || (!record.hasStrict && !record.hasSubtitle && record.state == 1 &&
+          record.displayAspect > 0.0 &&
+          std::abs(record.displayAspect * identity.height - identity.width) <= 1.0 &&
+          ((identity.width * 9 / 16 - identity.height) / 2 > 20 ||
+           (identity.height * 16 / 9 - identity.width) / 2 > 20))) &&
          (!record.highConfidence || record.hasStrict) &&
          (!record.hasStrict || validOffsets(record.strict)) &&
          (!record.hasSubtitle || validOffsets(record.subtitle));
@@ -196,7 +204,8 @@ bool ReadEntry(const std::string& path, Identity& stored, Record& candidate)
   if (!(input >> version >> sourceKey >> stored.streamIndex >> stored.codec >> stored.width >>
         stored.height >> stored.nativeDV >> candidate.uniqueStream >> stored.size >> stored.modified >>
         stored.created >> stored.device >> stored.inode >> stored.validator >> candidate.state >>
-        candidate.hasStrict >> candidate.hasSubtitle >> candidate.highConfidence) ||
+        candidate.hasStrict >> candidate.hasSubtitle >> candidate.highConfidence >>
+        candidate.preCropped >> candidate.displayAspect) ||
       version != CACHE_VERSION || sourceKey != SourceKey(stored.path) ||
       stored.streamIndex < 0 || stored.codec <= 0 || stored.width < 64 || stored.height < 64 ||
       stored.width > 65535 || stored.height > 65535)
@@ -334,7 +343,8 @@ bool Store(const Identity& identity, const Record& record)
          << identity.created << ' ' << identity.device << ' ' << identity.inode << ' '
          << (identity.validator.empty() ? "-" : identity.validator) << ' '
          << record.state << ' ' << record.hasStrict << ' ' << record.hasSubtitle << ' '
-         << record.highConfidence;
+         << record.highConfidence << ' ' << record.preCropped << ' '
+         << std::setprecision(17) << record.displayAspect;
   for (const auto offset : record.strict)
     output << ' ' << offset;
   for (const auto offset : record.subtitle)

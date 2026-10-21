@@ -19,6 +19,7 @@ extern "C" {
 #include <memory>
 #include <string>
 #include <vector>
+namespace DETECTOR_PLAYBACK { struct Binding; }
 
 enum AML_DEVICE_TYPE
 {
@@ -267,7 +268,9 @@ enum DvDetectState { DV_DETECT_FAILED = 0, DV_DETECT_SKIP_NON16X9 = 1,
                      DV_DETECT_RUNNING = 6, DV_DETECT_TIMED_OUT = 7 };
 int aml_dv_detect_active_area_state();
 void aml_dv_detect_set_file(const std::string& path);
-void aml_dv_detect_set_playback_file(const std::string& path, bool skip);
+uint64_t aml_dv_detect_set_playback_file(const std::string& path, bool skip,
+    std::shared_ptr<DETECTOR_PLAYBACK::Binding> binding = {});
+void aml_detector_end_playback(uint64_t playback);
 // Startup hold is selection-bound and independent of the DV-only status label.
 void aml_subtitle_active_area_startup_begin(uint64_t pm4kStartupToken = 0);
 // Bit 0: subtitle detection; bit 1: native DV L5 detection for this selection.

@@ -2531,6 +2531,9 @@ bool CApplication::PlayMedia(CFileItem& item, const std::string& player, PLAYLIS
   // detector decision belongs to a separate, immutable playback request.
   CFileItem admission(item);
   DETECTOR_ADMISSION::CaptureItem(admission);
+  const auto detectorBinding = admission.GetDetectorBinding();
+  item.SetDetectorBinding({});
+  item.ClearProperty(DETECTOR_PLAYBACK::PROPERTY);
   const std::optional<bool> detectorSkip = admission.HasProperty(DETECTOR_ADMISSION::ITEM_SKIP) ?
       std::optional<bool>(admission.GetProperty(DETECTOR_ADMISSION::ITEM_SKIP).asBoolean()) : std::nullopt;
   item.ClearProperty(DETECTOR_ADMISSION::ITEM_SKIP);
@@ -2627,6 +2630,7 @@ bool CApplication::PlayMedia(CFileItem& item, const std::string& player, PLAYLIS
 
   //nothing special just play
   CFileItem request(item);
+  request.SetDetectorBinding(detectorBinding);
   if (detectorSkip)
     request.SetProperty(DETECTOR_ADMISSION::ITEM_SKIP, *detectorSkip);
   return PlayFile(request, player, false);

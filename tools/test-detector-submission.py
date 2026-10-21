@@ -24,6 +24,9 @@ PREFIX=r'''
 #include <optional>
 #include <vector>
 struct CFileItem {
+ std::shared_ptr<DETECTOR_PLAYBACK::Binding> binding;
+ auto GetDetectorBinding()const{return binding;}void SetDetectorBinding(std::shared_ptr<DETECTOR_PLAYBACK::Binding> b){binding=std::move(b);}
+ void CaptureDetectorBinding(){if(!binding&&HasProperty(DETECTOR_PLAYBACK::PROPERTY)){auto token=GetProperty(DETECTOR_PLAYBACK::PROPERTY).asString();ClearProperty(DETECTOR_PLAYBACK::PROPERTY);binding=DETECTOR_PLAYBACK::Consume(token,path);}}
  CFileItem()=default;explicit CFileItem(const std::shared_ptr<CFileItem>&){}
  std::string path="file.mkv",mime;bool audio=false,plugin=false,fail=false,list=false,pvr=false;
  std::map<std::string,CVariant>props;int resolved=0;

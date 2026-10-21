@@ -129,6 +129,22 @@ int main(int argc,char** argv) {
  assert(Load(id,loaded));
  assert(!loaded.highConfidence);record.highConfidence=true;
  assert(Store(id,record));assert(Load(id,loaded));assert(loaded.highConfidence);
+ record.displayAspect=16.0/9.0;assert(Store(id,record));assert(Load(id,loaded));
+ assert(loaded.displayAspect==record.displayAspect);
+ // Geometry-only persistence is distinct from sampled strict/subtitle evidence.
+ Identity crop=id;crop.width=3832;crop.height=1600;assert(ReadIdentity(crop));
+ Record geometry;geometry.state=1;geometry.preCropped=true;geometry.uniqueStream=true;
+ geometry.displayAspect=3832.0/1600.0;
+ assert(Store(crop,geometry));assert(Load(crop,loaded));
+ assert(loaded.preCropped&&!loaded.hasStrict&&!loaded.hasSubtitle&&!loaded.highConfidence);
+ assert(loaded.displayAspect==geometry.displayAspect&&loaded.uniqueStream);
+ auto badGeometry=geometry;badGeometry.displayAspect=0.0;assert(!Store(crop,badGeometry));
+ badGeometry=geometry;badGeometry.displayAspect=2.0;assert(!Store(crop,badGeometry));
+ badGeometry=geometry;badGeometry.hasStrict=true;assert(!Store(crop,badGeometry));
+ badGeometry=geometry;badGeometry.highConfidence=true;assert(!Store(crop,badGeometry));
+ auto full=crop;full.width=1920;full.height=1080;
+ badGeometry=geometry;badGeometry.displayAspect=16.0/9.0;assert(!Store(full,badGeometry));
+
  for(int field=0;field<9;field++) {
   auto different=id;
   switch(field) {case 0:different.size++;break;case 1:different.modified++;break;
@@ -316,9 +332,10 @@ namespace PERFORMANCE_CORES {bool allowed=true;bool ApplyDetectionCurrentThread(
 struct DetectResult {uint16_t top,bottom,left,right;bool highConfidence=false;};
 struct DetectSource {
  std::string path;int streamIndex=0,codecHint=173,width=1920,height=1080;
- bool nativeDV=false,allowProbe=true,codedCrop=false;
+ bool nativeDV=false,allowProbe=true,codedCrop=false,boundUsable=false;double displayAspect=0.0;
  std::shared_ptr<DETECTOR_ADMISSION::PlaybackPolicy> policy=std::make_shared<DETECTOR_ADMISSION::PlaybackPolicy>();
  std::atomic<bool> timedOut{false},uniqueStream{false};
+ std::atomic<int> scanState{0};
  std::atomic<bool> pending{false};bool startupScan=false;
  std::shared_ptr<std::atomic<bool>> startupWait=std::make_shared<std::atomic<bool>>(false),startupAdmission=std::make_shared<std::atomic<bool>>(false);
  std::atomic<int> completedPositions{0};
@@ -343,6 +360,10 @@ struct Settings {
 Settings* settings(){return &setting;}
 bool aml_dv_detect_active_area_enabled(){return setting.dvEnabled;}
 void detect_clear_injection(bool){}
+void detect_clear_injection_locked(bool){}
+void detect_binding_failed_locked(const std::shared_ptr<DetectSource>&){assert(false);}
+bool detect_install_binding_locked(const std::shared_ptr<DetectSource>&){assert(false);return false;}
+bool detect_schedule_binding(){assert(false);return false;}
 std::shared_ptr<const void> detect_reserve_scanner(){static int token;return std::shared_ptr<const void>(&token,[](const void*){});}
 struct CLog {template<class... T>static void Log(T...) {}};
 int scans=0,scanMode=0;

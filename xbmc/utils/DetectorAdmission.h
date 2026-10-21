@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #pragma once
+#include "DetectorPlayback.h"
 
 #include <atomic>
 #include <chrono>
@@ -34,8 +35,10 @@ struct PlaybackPolicy
   PlaybackPolicy(bool skip = false, int seconds = 5) : skip(skip), seconds(seconds) {}
   const bool skip;
   const int seconds;
+  const uint64_t id{DETECTOR_PLAYBACK::NextIdentity()};
   std::atomic<bool> timedOut{false};
-  bool Blocked() const { return skip || timedOut.load(); }
+  std::atomic<bool> ended{false};
+  bool Blocked() const { return skip || timedOut.load() || ended.load(); }
 };
 
 struct Signal
@@ -99,8 +102,12 @@ void CaptureItem(Item& item)
 {
   // False is a captured decision too: queued/deferred opens must not consume
   // a flag published after this request. Known audio/game requests leave it.
-  if (!item.HasProperty(ITEM_SKIP) && (!item.IsAudio() || item.IsVideo()) && !item.IsGame() &&
+  if ((!item.IsAudio() || item.IsVideo()) && !item.IsGame() &&
       !item.IsPicture() && !item.IsPlayList() && !item.IsSmartPlayList())
-    item.SetProperty(ITEM_SKIP, Capture());
+  {
+    item.CaptureDetectorBinding();
+    if (!item.HasProperty(ITEM_SKIP))
+      item.SetProperty(ITEM_SKIP, Capture());
+  }
 }
 } // namespace DETECTOR_ADMISSION

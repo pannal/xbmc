@@ -7,6 +7,7 @@
  */
 
 #include "FileItem.h"
+#include "utils/DetectorPlayback.h"
 
 #include "CueDocument.h"
 #include "ServiceBroker.h"
@@ -448,6 +449,7 @@ CFileItem& CFileItem::operator=(const CFileItem& item)
     return *this;
 
   CGUIListItem::operator=(item);
+  m_detectorBinding = item.m_detectorBinding;
   m_bLabelPreformatted=item.m_bLabelPreformatted;
   FreeMemory();
   m_strPath = item.m_strPath;
@@ -565,6 +567,7 @@ void CFileItem::Initialize()
 
 void CFileItem::Reset()
 {
+  m_detectorBinding.reset();
   // CGUIListItem members...
   m_strLabel2.clear();
   SetLabel("");
@@ -601,9 +604,23 @@ void CFileItem::Reset()
   SetInvalid();
 }
 
+void CFileItem::CaptureDetectorBinding()
+{
+  if (m_detectorBinding || !HasProperty(DETECTOR_PLAYBACK::PROPERTY))
+    return;
+  const auto token = GetProperty(DETECTOR_PLAYBACK::PROPERTY).asString();
+  ClearProperty(DETECTOR_PLAYBACK::PROPERTY);
+  m_detectorBinding = DETECTOR_PLAYBACK::Consume(token, GetDynPath());
+}
+
 void CFileItem::Archive(CArchive& ar)
 {
   CGUIListItem::Archive(ar);
+  if (ar.IsLoading())
+  {
+    m_detectorBinding.reset();
+    ClearProperty(DETECTOR_PLAYBACK::PROPERTY); // process-local tokens are never restored
+  }
 
   if (ar.IsStoring())
   {

@@ -29,6 +29,10 @@
 #include <vector>
 
 enum class VideoDbContentType;
+namespace DETECTOR_PLAYBACK
+{
+struct Binding;
+}
 
 namespace ADDON
 {
@@ -140,6 +144,9 @@ public:
   const CURL GetDynURL() const;
   void SetDynURL(const CURL& url);
   const std::string &GetDynPath() const;
+  void CaptureDetectorBinding();
+  const std::shared_ptr<DETECTOR_PLAYBACK::Binding>& GetDetectorBinding() const { return m_detectorBinding; }
+  void SetDetectorBinding(std::shared_ptr<DETECTOR_PLAYBACK::Binding> binding) { m_detectorBinding = std::move(binding); }
   void SetDynPath(const std::string &path);
 
   /*! \brief reset class to it's default values as per construction.
@@ -634,6 +641,7 @@ public:
   bool HasCueDocument() const;
   bool LoadTracksFromCueDocument(CFileItemList& scannedItems);
 private:
+  std::shared_ptr<DETECTOR_PLAYBACK::Binding> m_detectorBinding;
   /*! \brief initialize all members of this class (not CGUIListItem members) to default values.
    Called from constructors, and from Reset()
    \sa Reset, CGUIListItem

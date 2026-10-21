@@ -20,6 +20,7 @@ PREFIX=r'''
 #include <mutex>
 #include <string>
 #include <vector>
+#include "utils/DetectorPlayback.h"
 using u16=uint16_t;using u32=uint32_t;
 constexpr int LOGDEBUG=0,ETSI_META_OFFSET=71,CORE_META_LENGTH=2048,LEVEL_5_LENGTH=13;
 bool xbmc_detect_active_area=true,xbmc_force_l5_override=false,xbmc_l5_override_additive=false;
@@ -36,12 +37,18 @@ void dump_buffer(const char*,unsigned char*,size_t){}
 #define pr_err(...) ((void)0)
 struct CLog{template<class... T>static void Log(T...) {}};
 struct DetectResult{u16 top,bottom,left,right;bool highConfidence=false;};
-struct DetectSource{bool nativeDV=true,allowProbe=true;std::shared_ptr<std::atomic<bool>> superseded=std::make_shared<std::atomic<bool>>(false);std::shared_ptr<DetectResult> result;};
+struct DetectSource{bool nativeDV=true,allowProbe=true,boundUsable=false;std::shared_ptr<std::atomic<bool>> superseded=std::make_shared<std::atomic<bool>>(false);std::shared_ptr<DetectResult> result;std::shared_ptr<DETECTOR_PLAYBACK::Binding> binding;};
 auto s_detectSource=std::make_shared<DetectSource>();std::mutex s_detectSourceMutex;
 bool nativeEnabled=true,manual=false,autoLetterbox=false;std::array<u16,4> manualOffsets{},autoOffsets{68,68,0,0};std::atomic<bool> s_autoLbAdditive{true};
 bool _l5_override_parse(u16& t,u16& b,u16& l,u16& r){if(!manual)return false;t=manualOffsets[0];b=manualOffsets[1];l=manualOffsets[2];r=manualOffsets[3];return true;}
 bool _auto_letterbox_geometry(u16& t,u16& b,u16& l,u16& r){if(!autoLetterbox)return false;t=autoOffsets[0];b=autoOffsets[1];l=autoOffsets[2];r=autoOffsets[3];return true;}
 bool aml_dv_detect_active_area_enabled(){return nativeEnabled&&!manual;}
+bool aml_dv_l5_override_active(){return manual;}
+constexpr int DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL=1;
+int s_dvModeCached=DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
+struct CSettings{static constexpr int SETTING_COREELEC_AMLOGIC_DV_LEVEL5=1;};
+struct Settings{bool GetBool(int){return true;}}settingsValue;
+Settings* settings(){return &settingsValue;}
 struct CSysfsPath{CSysfsPath(const char* path,int value){std::string name=path;name=name.substr(name.find_last_of('/')+1);
  if(name=="xbmc_force_l5_override")xbmc_force_l5_override=value;
  else if(name=="xbmc_l5_override_additive")xbmc_l5_override_additive=value;
@@ -89,11 +96,11 @@ int main(){
 def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--kernel-source',type=pathlib.Path,required=True);p.add_argument('--output',type=pathlib.Path,required=True);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
  aml=(ROOT/'xbmc/utils/AMLUtils.cpp').read_text();kernel=a.kernel_source.read_text();code=PREFIX
- for signature in ['static void detect_apply_l5_override_locked()','void aml_dv_apply_l5_override_sysfs()']:code+='\n'+F(aml,signature)
+ for signature in ['static bool detect_native_result_enabled(','static void detect_apply_l5_override_locked()','void aml_dv_apply_l5_override_sysfs()']:code+='\n'+F(aml,signature)
  for signature in ['static inline void build_level_5_data_from(','static inline void build_level_5_data(','static inline void build_level_5_override_data(','static inline u16 l5_saturating_add(','static inline void build_level_5_additive_data(','static inline void build_level_5_data_select(','static inline bool is_level_5_all_zero(','static inline void source_meta_copy(']:code+='\n'+F(kernel,signature)
- cpp=a.output/'repro.cpp';cpp.write_text(code+'\n'+TEST);exe=a.output/'repro';argv=['g++','-std=c++17','-O1','-Wall','-Wextra','-Werror','-Wno-unused-variable','-Wno-unused-but-set-variable','-fsanitize=address,undefined','-fno-omit-frame-pointer','-fno-pie','-no-pie',str(cpp),'-o',str(exe)]
+ cpp=a.output/'repro.cpp';cpp.write_text(code+'\n'+TEST);exe=a.output/'repro';argv=['g++','-std=c++17','-O1','-Wall','-Wextra','-Werror','-Wno-unused-variable','-Wno-unused-but-set-variable','-fsanitize=address,undefined','-fno-omit-frame-pointer','-fno-pie','-no-pie','-I',str(ROOT/'xbmc'),str(cpp),'-o',str(exe)]
  with (a.output/'compile.log').open('w') as log:subprocess.run(argv,stdout=log,stderr=subprocess.STDOUT,check=True)
  import os
  with (a.output/'result.log').open('w') as log:subprocess.run([str(exe)],stdout=log,stderr=subprocess.STDOUT,check=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'})
- (a.output/'verification.json').write_text(json.dumps(dict(result='PASS',compiler_argv=argv,kernel_source=str(a.kernel_source),source_sha256={str(path):hashlib.sha256(path.read_bytes()).hexdigest() for path in [ROOT/'xbmc/utils/AMLUtils.cpp',a.kernel_source,cpp]},driver_register_packing_stubbed=True,device_verified=False),indent=2));print((a.output/'result.log').read_text().strip())
+ (a.output/'verification.json').write_text(json.dumps(dict(result='PASS',compiler_argv=argv,kernel_source=str(a.kernel_source),source_sha256={str(path):hashlib.sha256(path.read_bytes()).hexdigest() for path in [ROOT/'xbmc/utils/AMLUtils.cpp',ROOT/'xbmc/utils/DetectorPlayback.h',pathlib.Path(__file__),a.kernel_source,cpp]},driver_register_packing_stubbed=True,device_verified=False),indent=2));print((a.output/'result.log').read_text().strip())
 if __name__=='__main__':main()

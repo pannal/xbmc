@@ -2758,6 +2758,13 @@ static std::atomic<uint16_t> s_detectedLeft{0};
 static std::atomic<uint16_t> s_detectedRight{0};
 
 static CAMLNativeWorker s_detectWorker;
+static CAMLNativeWorker s_bindingWorker;
+static std::mutex s_bindingDispatchMutex;
+static std::condition_variable s_bindingChanged;
+static bool s_bindingStarted{false};
+static bool s_bindingRequested{false};
+static bool detect_schedule_binding();
+static void detect_clear_injection_locked(bool nativeSource);
 struct DetectResult
 {
   uint16_t top, bottom, left, right;
@@ -2787,8 +2794,15 @@ struct DetectSource
       streamIndex(index), codecHint(codec), displayAspect(aspect),
       codedCrop(detect_coded_crop(w, h, aspect)) {}
   std::shared_ptr<DETECTOR_ADMISSION::PlaybackPolicy> policy{std::make_shared<DETECTOR_ADMISSION::PlaybackPolicy>()};
+  std::shared_ptr<DETECTOR_PLAYBACK::Binding> binding;
+  uint64_t selectionId{DETECTOR_PLAYBACK::NextIdentity()};
+  std::atomic<bool> boundUsable{false}; // selected stream/geometry validated
   bool standalone{false}; // explicit jobs never borrow playback state or publish L5
   DETECTOR_ADMISSION::PositionDeadline positionDeadline;
+  DETECTOR_ADMISSION::PositionDeadline metadataDeadline;
+  std::atomic<bool> metadataTimedOut{false};
+  std::atomic<bool> preCropped{false};
+  double scannedAspect{0.0}; // published under the source mutex before completion
   std::atomic<bool> timedOut{false};
   std::atomic<bool> uniqueStream{false};
   std::atomic<int> scanState{DV_DETECT_RUNNING};
@@ -2823,6 +2837,83 @@ struct DetectSource
 };
 static std::mutex s_detectSourceMutex;
 static std::shared_ptr<DetectSource> s_detectSource = std::make_shared<DetectSource>("");
+
+static void detect_binding_failed_locked(const std::shared_ptr<DetectSource>& source)
+{
+  if (!source->binding)
+    return;
+  source->binding->state = DETECTOR_PLAYBACK::State::FAILED;
+  source->boundUsable = false;
+  source->result.reset();
+  source->subtitleResult.reset();
+  source->retained.reset();
+  source->retainedSubtitle.reset();
+  source->binding->subtitleAvailable = false;
+  source->binding->nativeAvailable = false;
+  source->binding->geometryAvailable = false;
+  if (source == s_detectSource)
+  {
+    s_detectStable = false;
+    s_detectState = DV_DETECT_FAILED;
+  }
+}
+
+// CPU-only validation/publication. The independent application worker performs
+// any native effects; merely asking for status or binding never touches sysfs.
+static bool detect_install_binding_locked(const std::shared_ptr<DetectSource>& source)
+{
+  source->boundUsable = false;
+  const auto binding = source->binding;
+  if (!binding)
+    return false;
+  binding->subtitleAvailable = false;
+  binding->nativeAvailable = false;
+  binding->geometryAvailable = false;
+  if (source->policy->ended || binding->state == DETECTOR_PLAYBACK::State::STALE ||
+      binding->state == DETECTOR_PLAYBACK::State::INCOMPATIBLE ||
+      binding->state == DETECTOR_PLAYBACK::State::FAILED)
+    return false;
+  if (binding->state == DETECTOR_PLAYBACK::State::APPLIED)
+    binding->state = DETECTOR_PLAYBACK::State::ACCEPTED;
+  if (source->width == 0 && source->height == 0)
+    return false; // temporary decoder-close suspension, not a new geometry
+  const auto& value = *binding->result;
+  if (!value.Valid() || binding->target != source->path || binding->stream != source->streamIndex ||
+      value.codec != source->codecHint || value.width != source->width || value.height != source->height ||
+      !std::isfinite(source->displayAspect) || source->displayAspect <= 0.0 ||
+      std::abs(value.displayAspect - source->displayAspect) * source->height > 1.0)
+  {
+    binding->state = DETECTOR_PLAYBACK::State::INCOMPATIBLE;
+    return false;
+  }
+  if (!source->allowProbe)
+    return false; // unsupported decoder route; data must not bypass that contract
+  source->boundUsable = true;
+  binding->playback = source->policy->id;
+  binding->selection = source->selectionId;
+  binding->state = DETECTOR_PLAYBACK::State::ACCEPTED;
+  if (value.hasStrict)
+    source->result = std::make_shared<const DetectResult>(DetectResult{
+        value.strict[0], value.strict[1], value.strict[2], value.strict[3], value.highConfidence});
+  if (value.hasSubtitle)
+    source->subtitleResult = std::make_shared<const DetectResult>(DetectResult{
+        value.subtitle[0], value.subtitle[1], value.subtitle[2], value.subtitle[3]});
+  s_detectStable = value.hasStrict;
+  s_detectState = value.hasStrict ? DV_DETECT_OK : value.preCropped ? DV_DETECT_SKIP_NON16X9 : DV_DETECT_SKIPPED;
+  source->startupAdmission->store(false);
+  source->startupHeld->store(false);
+  source->startupWait->store(false);
+  return true;
+}
+
+static bool detect_native_result_enabled(const std::shared_ptr<DetectSource>& source)
+{
+  if (source->binding && source->binding->state == DETECTOR_PLAYBACK::State::FAILED)
+    return false;
+  return aml_dv_detect_active_area_enabled() || (source->boundUsable && source->nativeDV &&
+      s_dvModeCached == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL &&
+      settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) && !aml_dv_l5_override_active());
+}
 // One scanner reservation across automatic playback and explicit jobs. A busy
 // caller never cancels or joins the other owner on its request thread.
 static std::atomic<bool> s_detectorScannerBusy{false};
@@ -2852,7 +2943,7 @@ static void detect_apply_l5_override_locked()
     autoLb = _auto_letterbox_geometry(top, bottom, left, right);
     active = autoLb;
   }
-  if (!active && aml_dv_detect_active_area_enabled() && s_detectSource->nativeDV &&
+  if (!active && detect_native_result_enabled(s_detectSource) && s_detectSource->nativeDV &&
       s_detectSource->allowProbe && !s_detectSource->superseded->load() &&
       s_detectSource->result && s_detectSource->result->highConfidence)
   {
@@ -2900,6 +2991,9 @@ std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int
   if (streamIndex < 0 || s_detectSource->streamIndex != streamIndex ||
       s_detectSource->codecHint != codec)
   {
+    const auto binding = s_detectSource->streamIndex < 0 ? s_detectSource->binding : nullptr;
+    if (!binding)
+      DETECTOR_PLAYBACK::Retire(s_detectSource->binding);
     const auto policy = s_detectSource->policy;
     const auto pm4kStartupToken = s_detectSource->pm4kStartupToken;
     const auto startupWait = s_detectSource->startupWait;
@@ -2909,6 +3003,7 @@ std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int
     s_detectSource = std::make_shared<DetectSource>(s_detectSource->path, 0, 0, false, false,
                                                    std::shared_ptr<const void>{}, streamIndex, codec);
     s_detectSource->policy = policy;
+    s_detectSource->binding = binding;
     s_detectSource->pm4kStartupToken = pm4kStartupToken;
     s_detectSource->startupWait = startupWait;
     s_detectSource->startupAdmission = startupAdmission;
@@ -2932,6 +3027,8 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
                                                  previous->streamIndex, previous->codecHint,
                                                  displayAspect);
   s_detectSource->policy = previous->policy;
+  s_detectSource->binding = previous->binding;
+  s_detectSource->selectionId = previous->selectionId;
   s_detectSource->startupVideoReady = previous->startupVideoReady;
   s_detectSource->pm4kStartupToken = previous->pm4kStartupToken;
   s_detectSource->startupWait = previous->startupWait;
@@ -2952,6 +3049,8 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
     s_detectSource->retainedSubtitle = previous->retainedSubtitle;
   }
   s_detectStable.store(false);
+  if (detect_install_binding_locked(s_detectSource) && !detect_schedule_binding())
+    detect_binding_failed_locked(s_detectSource);
   return true;
 }
 
@@ -2966,6 +3065,8 @@ void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedS
       previous->nativeDV, previous->allowProbe, expectedSource,
       previous->streamIndex, previous->codecHint, previous->displayAspect);
   s_detectSource->policy = previous->policy;
+  s_detectSource->binding = previous->binding;
+  s_detectSource->selectionId = previous->selectionId;
   s_detectSource->startupVideoReady = previous->startupVideoReady;
   s_detectSource->pm4kStartupToken = previous->pm4kStartupToken;
   s_detectSource->startupWait = previous->startupWait;
@@ -2973,6 +3074,8 @@ void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedS
   s_detectSource->startupAdmission = previous->startupAdmission;
   s_detectSource->retained = previous->retained;
   s_detectSource->retainedSubtitle = previous->retainedSubtitle;
+  if (detect_install_binding_locked(s_detectSource) && !detect_schedule_binding())
+    detect_binding_failed_locked(s_detectSource);
 }
 
 void aml_subtitle_active_area_invalidate(bool preserveGeometry, bool restartProbe)
@@ -3019,7 +3122,7 @@ void aml_subtitle_active_area_startup_begin(uint64_t pm4kStartupToken)
       (settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) &&
        settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA) &&
        !aml_dv_l5_override_active());
-  const bool wait = requested && !s_detectSource->policy->Blocked() && settings()->GetBool(CSettings::SETTING_SUBTITLES_WAITACTIVEAREA);
+  const bool wait = requested && !s_detectSource->binding && !s_detectSource->policy->Blocked() && settings()->GetBool(CSettings::SETTING_SUBTITLES_WAITACTIVEAREA);
   s_detectSource->startupWait->store(wait);
   s_detectSource->startupHeld->store(false);
   s_detectSource->startupAdmission->store(wait);
@@ -3174,8 +3277,10 @@ bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   const auto& source = s_detectSource;
   const bool subtitleDetection = settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA);
-  const bool enabled = source->nativeDV ? (aml_dv_detect_active_area_enabled() ||
-      (allowSubtitleEstimate && subtitleDetection)) : subtitleDetection;
+  if (source->binding && source->binding->state == DETECTOR_PLAYBACK::State::FAILED)
+    return false;
+  const bool enabled = source->boundUsable || (source->nativeDV ? (aml_dv_detect_active_area_enabled() ||
+      (allowSubtitleEstimate && subtitleDetection)) : subtitleDetection);
   // Retention is only set by an explicit pure seek/reset and remains bound to
   // this selection/dimension/native/probe identity, independent of worker state.
   auto accepted = !source->superseded->load() && source->result ?
@@ -3191,7 +3296,7 @@ bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
     if (subtitle)
       accepted = subtitle;
   }
-  if (!enabled || !source->allowProbe || source->policy->Blocked() || !accepted ||
+  if (!enabled || !source->allowProbe || (!source->boundUsable && source->policy->Blocked()) || !accepted ||
       source->width != width || source->height != height)
     return false;
   const auto& result = *accepted;
@@ -3207,7 +3312,7 @@ bool aml_dv_detect_active_area_override_get(int width, int height, uint16_t& top
   const auto& source = s_detectSource;
   const auto accepted = !source->superseded->load() && source->result ?
       source->result : source->retained;
-  if (!source->nativeDV || !source->allowProbe || source->policy->Blocked() || !aml_dv_detect_active_area_enabled() ||
+  if (!source->nativeDV || !source->allowProbe || (!source->boundUsable && source->policy->Blocked()) || !detect_native_result_enabled(source) ||
       source->width != width || source->height != height ||
       !accepted || !accepted->highConfidence)
     return false;
@@ -3219,14 +3324,19 @@ bool aml_dv_detect_active_area_override_get(int width, int height, uint16_t& top
 bool aml_dv_detect_active_area_stable()
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
-  return s_detectSource->nativeDV && !s_detectSource->policy->Blocked() &&
+  return s_detectSource->nativeDV && (s_detectSource->boundUsable || !s_detectSource->policy->Blocked()) &&
          !s_detectSource->superseded->load() && s_detectStable.load();
 }
 
 int aml_dv_detect_active_area_state()
 {
-  if (!aml_dv_detect_active_area_enabled() || !aml_subtitle_native_dv())
+  if (!aml_subtitle_native_dv())
     return DV_DETECT_INACTIVE;
+  {
+    std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+    if (!detect_native_result_enabled(s_detectSource))
+      return DV_DETECT_INACTIVE;
+  }
   return s_detectState.load();
 }
 
@@ -3234,7 +3344,7 @@ void aml_dv_detect_active_area_get(uint16_t& top, uint16_t& bottom, uint16_t& le
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   top = bottom = left = right = 0;
-  if (s_detectSource->nativeDV && !s_detectSource->policy->Blocked() &&
+  if (s_detectSource->nativeDV && (s_detectSource->boundUsable || !s_detectSource->policy->Blocked()) &&
       !s_detectSource->superseded->load() && s_detectSource->result)
   {
     const auto& result = *s_detectSource->result;
@@ -3310,7 +3420,15 @@ static bool detect_input_deadline(DetectInput& input)
 {
   if (input.run.Cancelled())
     return true;
-  if (!input.source || !input.source->positionDeadline.Expired())
+  if (!input.source)
+    return false;
+  if (input.source->metadataDeadline.Expired())
+  {
+    input.source->metadataTimedOut = true;
+    input.source->timedOut = true;
+    return true;
+  }
+  if (!input.source->positionDeadline.Expired())
     return false;
   input.source->timedOut.store(true);
   // Only the exact current automatic run may poison this playback. A late
@@ -3424,20 +3542,21 @@ static void detect_publish(const CAMLNativeWorker::Run& run,
         detTop + detBottom >= source->height || detLeft + detRight >= source->width)
       return;
     source->result = std::make_shared<const DetectResult>(DetectResult{detTop, detBottom, detLeft, detRight, highConfidence});
+    source->scanState.store(DV_DETECT_OK);
     s_detectedTop.store(detTop); s_detectedBottom.store(detBottom);
     s_detectedLeft.store(detLeft); s_detectedRight.store(detRight);
     s_detectState.store(DV_DETECT_OK);
     s_detectStable.store(true);
   }
   // Geometry-only scans never enter native admission or write Dolby state.
-  if (!source->nativeDV || !aml_dv_detect_active_area_enabled())
+  if (!source->nativeDV || !detect_native_result_enabled(source))
     return;
   CAMLNativeTransaction native;
   if (!run.Admit(native))
     return;
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   if (run.Cancelled() || source != s_detectSource || source->superseded->load() ||
-      !aml_dv_detect_active_area_enabled())
+      !detect_native_result_enabled(source))
     return;
   const auto metadata = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
   if (!highConfidence && metadata.has_level5_metadata && !metadata.level5_detected &&
@@ -3473,6 +3592,127 @@ static void detect_publish_subtitle(const CAMLNativeWorker::Run& run,
       result.left + result.right >= source->width)
     return;
   source->subtitleResult = std::make_shared<const DetectResult>(result);
+}
+
+static bool detect_schedule_binding()
+{
+  std::lock_guard<std::mutex> dispatch(s_bindingDispatchMutex);
+  if (s_bindingWorker.Closed())
+    return false;
+  if (!s_bindingStarted)
+  {
+    // One joinable dispatcher for the process. No RPC thread ever joins a
+    // scanner blocked in VFS. Retirement still waits for owned work to finish.
+    try
+    {
+      s_bindingStarted = s_bindingWorker.Start(
+          [](const CAMLNativeWorker::Run& run)
+          {
+            while (!run.Cancelled())
+            {
+              {
+                std::unique_lock<std::mutex> guard(s_bindingDispatchMutex);
+                s_bindingChanged.wait_for(guard, std::chrono::milliseconds(100),
+                                          [&run] { return s_bindingRequested || run.Cancelled(); });
+                if (run.Cancelled())
+                  break;
+                if (!s_bindingRequested)
+                  continue;
+                s_bindingRequested = false;
+              }
+              // The displaced source is already superseded. Never stop the global
+              // automatic worker here: this queued request may outlive replacement
+              // and that worker may now belong to an unrelated playback.
+              if (run.Cancelled())
+                break;
+              std::shared_ptr<DetectSource> source;
+              try
+              {
+                {
+                  std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+                  source = s_detectSource;
+                  if (source->superseded->load() || !source->boundUsable || !source->binding ||
+                      source->binding->state != DETECTOR_PLAYBACK::State::ACCEPTED)
+                    continue;
+                  detect_install_binding_locked(source);
+                }
+                const auto value = source->binding->result;
+                if (source->nativeDV)
+                {
+                  CAMLNativeTransaction native;
+                  if (!run.Admit(native))
+                    break;
+                  std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+                  if (source != s_detectSource || source->superseded->load())
+                    continue;
+                  detect_clear_injection_locked(true);
+                }
+                if (value->hasSubtitle)
+                  detect_publish_subtitle(run, source,
+                                          {value->subtitle[0], value->subtitle[1],
+                                           value->subtitle[2], value->subtitle[3]});
+                if (value->hasStrict)
+                  detect_publish(run, source, value->strict[0], value->strict[1], value->strict[2],
+                                 value->strict[3], value->highConfidence);
+                // Even a geometry-only completion uses existing native padding/owner
+                // selection. It never presents coded zero offsets as sampled evidence.
+                CAMLNativeTransaction native;
+                if (source->nativeDV && !run.Admit(native))
+                  break;
+                std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+                if (run.Cancelled() || source != s_detectSource || source->superseded->load() ||
+                    !source->boundUsable ||
+                    source->binding->state != DETECTOR_PLAYBACK::State::ACCEPTED)
+                  continue;
+                if (source->nativeDV)
+                  detect_apply_l5_override_locked();
+                source->binding->subtitleAvailable = value->hasStrict || value->hasSubtitle;
+                source->binding->geometryAvailable = value->preCropped;
+                source->binding->nativeAvailable = source->nativeDV && value->hasStrict &&
+                                                   detect_native_result_enabled(source) &&
+                                                   s_detectInjected.load();
+                source->binding->state = DETECTOR_PLAYBACK::State::APPLIED;
+              }
+              catch (...)
+              {
+                {
+                  std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+                  if (source && source == s_detectSource && !source->superseded->load())
+                    detect_binding_failed_locked(source);
+                }
+                // Publication can fail after a partial native write. Drop the
+                // failed result before restoring the manual/padding owner, and
+                // never clear parameters after a newer source has taken over.
+                try
+                {
+                  CAMLNativeTransaction native;
+                  if (source && source->nativeDV && run.Admit(native))
+                  {
+                    std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+                    if (source == s_detectSource && !source->superseded->load() &&
+                        source->binding->state == DETECTOR_PLAYBACK::State::FAILED)
+                      detect_clear_injection_locked(true);
+                  }
+                }
+                catch (...)
+                {
+                  CLog::Log(LOGERROR, "DetectActiveArea: failed to restore native result ownership");
+                }
+                CLog::Log(LOGERROR, "DetectActiveArea: explicit result application failed");
+              }
+            }
+          });
+    }
+    catch (...)
+    {
+      return false;
+    }
+  }
+  if (!s_bindingStarted)
+    return false;
+  s_bindingRequested = true;
+  s_bindingChanged.notify_one();
+  return true;
 }
 
 enum class DetectEdgeReason
@@ -4194,6 +4434,65 @@ struct DetectPositionProgress
   ~DetectPositionProgress() { completed.store(position); }
 };
 
+static void detect_finish_scan_state(const std::shared_ptr<DetectSource>& source,
+                                     const CAMLNativeWorker::Run& run)
+{
+  if (!source->standalone)
+  {
+    std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+    if (!run.Cancelled() && source == s_detectSource && !source->superseded->load())
+      s_detectState.store(source->scanState.load());
+  }
+}
+
+// Container headers can prove a crop without opening a decoder or seeking any
+// sample frames. Unknown/conflicting/anamorphic aspect is deliberately not proof.
+static bool detect_metadata_crop(const std::shared_ptr<DetectSource>& source,
+                                 const AVFormatContext* context)
+{
+  if (!source->standalone || !context ||
+      (source->streamIndex < 0 && (context->ctx_flags & AVFMTCTX_NOHEADER)))
+    return false;
+  int selected = -1;
+  int videos = 0;
+  for (unsigned i = 0; i < context->nb_streams; ++i)
+  {
+    const auto* stream = context->streams[i];
+    if (stream->codecpar->codec_type != AVMEDIA_TYPE_VIDEO ||
+        (stream->disposition & AV_DISPOSITION_ATTACHED_PIC))
+      continue;
+    ++videos;
+    if (source->streamIndex >= 0 && source->streamIndex != static_cast<int>(i))
+      continue;
+    if (selected >= 0)
+      return false;
+    selected = static_cast<int>(i);
+  }
+  if (selected < 0)
+    return false;
+  const auto* stream = context->streams[selected];
+  const auto* parameters = stream->codecpar;
+  const auto sar = stream->sample_aspect_ratio.num > 0 && stream->sample_aspect_ratio.den > 0 ?
+      stream->sample_aspect_ratio : parameters->sample_aspect_ratio;
+  const auto parameterSAR = parameters->sample_aspect_ratio;
+  if (sar.num <= 0 || sar.den <= 0 || sar.num != sar.den ||
+      (parameterSAR.num > 0 && parameterSAR.den > 0 && parameterSAR.num != parameterSAR.den) ||
+      parameters->codec_id <= 0 || parameters->height <= 0)
+    return false;
+  const double aspect = static_cast<double>(parameters->width) / parameters->height;
+  if (!detect_coded_crop(parameters->width, parameters->height, aspect))
+    return false;
+  source->scannedWidth = parameters->width;
+  source->scannedHeight = parameters->height;
+  source->scannedStream = selected;
+  source->scannedCodec = parameters->codec_id;
+  source->scannedAspect = aspect;
+  source->uniqueStream = videos == 1 && !(context->ctx_flags & AVFMTCTX_NOHEADER);
+  source->preCropped = true;
+  source->scanState = DV_DETECT_SKIP_NON16X9;
+  return true;
+}
+
 static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source,
                                      const CAMLNativeWorker::Run& run)
 {
@@ -4208,7 +4507,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   DetectInput input{file, run, source.get()};
   std::function<bool()> interrupted = [&input] { return detect_input_interrupt_cb(&input) != 0; };
   bool retry = false;
-  auto& state = source->standalone ? source->scanState : s_detectState;
+  auto& state = source->scanState;
   int codedWidth = source->width, codedHeight = source->height;
   uint8_t* avioBuf = nullptr;
   const int bufSize = 32768;
@@ -4259,9 +4558,11 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   s_detectThrottleActive.store(throttle);
 
   /* Open through Kodi VFS — supports nfs://, smb://, local paths, etc. */
+  if (source->standalone)
+    source->metadataDeadline.Start(std::chrono::seconds(10));
   if (detect_input_interrupt_cb(&input))
     goto cleanup;
-  if (!file.Open(filePath, XFILE::READ_NO_CACHE))
+  if (!file.Open(filePath, XFILE::READ_NO_CACHE) || detect_input_interrupt_cb(&input))
   {
     CLog::Log(LOGWARNING, "DetectActiveArea: failed to open detector input");
     goto cleanup;
@@ -4300,11 +4601,19 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   if (run.Cancelled())
     goto cleanup;
 
-  if (avformat_open_input(&fmtCtx, probeName.c_str(), nullptr, nullptr) < 0)
+  // A standalone header-only crop probe has a separate ten-second soft budget.
+  // Synchronous VFS calls can overrun; callbacks/post-call checks still cancel
+  // safely. The ordinary scanner's open/find-info contract is unchanged.
+  if (avformat_open_input(&fmtCtx, probeName.c_str(), nullptr, nullptr) < 0 ||
+      detect_input_interrupt_cb(&input))
   {
     CLog::Log(LOGWARNING, "DetectActiveArea: failed to probe detector input");
     goto cleanup;
   }
+
+  if (detect_metadata_crop(source, fmtCtx))
+    goto cleanup;
+  source->metadataDeadline.Clear();
 
   /* MPEG-TS (m2ts/ts) has no reliable seek index — byte-position estimation
    * often produces stale frames (decoder returns same frame repeatedly).
@@ -4325,9 +4634,16 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     goto cleanup;
   }
 
+  if (source->streamIndex < 0 && (fmtCtx->ctx_flags & AVFMTCTX_NOHEADER))
+  {
+    state.store(DV_DETECT_SKIPPED); // future streams can invalidate default selection
+    goto cleanup;
+  }
+
   source->uniqueStream = std::count_if(fmtCtx->streams, fmtCtx->streams + fmtCtx->nb_streams,
       [](const AVStream* stream) { return stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
-          !(stream->disposition & AV_DISPOSITION_ATTACHED_PIC); }) == 1;
+          !(stream->disposition & AV_DISPOSITION_ATTACHED_PIC); }) == 1 &&
+      !(fmtCtx->ctx_flags & AVFMTCTX_NOHEADER);
   for (unsigned i = 0; i < fmtCtx->nb_streams; i++)
   {
     if (fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
@@ -4395,6 +4711,13 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
   source->scannedHeight = codedHeight;
   source->scannedStream = videoIdx;
   source->scannedCodec = codecCtx->codec_id;
+  {
+    const auto sar = fmtCtx->streams[videoIdx]->sample_aspect_ratio;
+    const auto fallback = codecCtx->sample_aspect_ratio;
+    const auto pixelAspect = sar.num > 0 && sar.den > 0 ? sar : fallback;
+    source->scannedAspect = pixelAspect.num > 0 && pixelAspect.den > 0 && codedHeight > 0 ?
+        static_cast<double>(codedWidth) * pixelAspect.num / pixelAspect.den / codedHeight : 0.0;
+  }
 
   CLog::Log(LOGDEBUG, "DetectActiveArea: opened {}x{} codec id {} for scanning",
             codecCtx->width, codecCtx->height, codecCtx->codec_id);
@@ -5026,6 +5349,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
 
 cleanup:
   source->positionDeadline.Clear();
+  source->metadataDeadline.Clear();
   if (source->timedOut.load())
   {
     state.store(DV_DETECT_TIMED_OUT);
@@ -5050,6 +5374,8 @@ cleanup:
   if (state.load() == DV_DETECT_RUNNING)
     state.store(DV_DETECT_FAILED);
 
+  detect_finish_scan_state(source, run);
+
   if (frame)
     av_frame_free(&frame);
   if (codecCtx)
@@ -5072,13 +5398,15 @@ cleanup:
 void aml_dv_detect_set_file(const std::string& path)
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  DETECTOR_PLAYBACK::Retire(s_detectSource->binding);
   s_detectSource->superseded->store(true);
   s_detectSource = std::make_shared<DetectSource>(path);
   s_detectStable.store(false);
   CServiceBroker::GetDataCacheCore().ClearVideoDoViFrameMetadata();
 }
 
-void aml_dv_detect_set_playback_file(const std::string& path, bool skip)
+uint64_t aml_dv_detect_set_playback_file(const std::string& path, bool skip,
+    std::shared_ptr<DETECTOR_PLAYBACK::Binding> binding)
 {
   // The path has already been resolved/substituted by the playback request.
   // No media probe is needed to snapshot HTTP policy for this entire playback.
@@ -5086,14 +5414,34 @@ void aml_dv_detect_set_playback_file(const std::string& path, bool skip)
                         URIUtils::IsHTTP(path, true);
   const int seconds = std::clamp(settings()->GetInt(CSettings::SETTING_SUBTITLES_ACTIVEAREATIMEOUT), 1, 60);
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  DETECTOR_PLAYBACK::Retire(s_detectSource->binding);
   s_detectSource->superseded->store(true);
   s_detectSource = std::make_shared<DetectSource>(path);
   s_detectSource->policy = std::make_shared<DETECTOR_ADMISSION::PlaybackPolicy>(skip || excluded, seconds);
+  s_detectSource->binding = std::move(binding);
   s_detectStable.store(false);
   CServiceBroker::GetDataCacheCore().ClearVideoDoViFrameMetadata();
+  return s_detectSource->policy->id;
 }
 
-static void detect_clear_injection(bool nativeSource)
+void aml_detector_end_playback(uint64_t playback)
+{
+  std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+  if (playback == s_detectSource->policy->id)
+  {
+    s_detectSource->policy->ended = true;
+    DETECTOR_PLAYBACK::Retire(s_detectSource->binding);
+    s_detectSource->boundUsable = false;
+    s_detectSource->result.reset();
+    s_detectSource->subtitleResult.reset();
+    s_detectSource->retained.reset();
+    s_detectSource->retainedSubtitle.reset();
+    s_detectStable = false;
+    s_detectSource->superseded->store(true);
+  }
+}
+
+static void detect_clear_injection_locked(bool nativeSource)
 {
   // Module parameters can outlive a crashed Kodi process. A native source must
   // clear old injection even when this process never owned a published result.
@@ -5103,7 +5451,13 @@ static void detect_clear_injection(bool nativeSource)
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_bottom", 0);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_left", 0);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_right", 0);
-  aml_dv_apply_l5_override_sysfs(); // restore manual/auto padding or clear stale detected force
+  detect_apply_l5_override_locked(); // restore manual/auto padding or clear stale detected force
+}
+
+static void detect_clear_injection(bool nativeSource)
+{
+  std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+  detect_clear_injection_locked(nativeSource);
 }
 
 void aml_dv_detect_active_area_start()
@@ -5116,6 +5470,13 @@ void aml_dv_detect_active_area_start()
     source = s_detectSource;
     if (source->superseded->load())
       return; // only its replacement may resolve a restarting admission
+    if (source->boundUsable)
+    {
+      detect_install_binding_locked(source);
+      if (!detect_schedule_binding())
+        detect_binding_failed_locked(source);
+      return; // explicit results precede all automatic admission/cache/scan I/O
+    }
     // Keep the admission-to-worker handoff atomic for the player's query.
     // The guard also releases synchronous skips and failed thread launches.
     completion = std::shared_ptr<const void>(nullptr, [source](const void*) {
@@ -5123,7 +5484,7 @@ void aml_dv_detect_active_area_start()
       if (source->startupWait->load())
         CLog::Log(LOGINFO, "DetectActiveArea: startup attempt ended positions={}/14 state={} "
                           "superseded={} restart_pending={}", source->completedPositions.load(),
-                  s_detectState.load(), source->superseded->load(), source->startupAdmission->load());
+                  source->scanState.load(), source->superseded->load(), source->startupAdmission->load());
     });
     source->pending.store(!source->codedCrop && !source->policy->Blocked());
     source->startupScan = source->startupWait->load();
@@ -5134,19 +5495,33 @@ void aml_dv_detect_active_area_start()
   }
   if (s_detectWorker.Closed())
     return;
-  s_detectThrottleActive.store(false);
-  s_detectCacheStarved.store(false);
-  s_detectStable.store(false);
-  s_detectState.store(DV_DETECT_FAILED);
-  detect_clear_injection(source->nativeDV);
+  {
+    std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+    if (source != s_detectSource || source->superseded->load())
+      return;
+    s_detectThrottleActive.store(false);
+    s_detectCacheStarved.store(false);
+    s_detectStable.store(false);
+    source->scanState.store(DV_DETECT_FAILED);
+    s_detectState.store(DV_DETECT_FAILED);
+    detect_clear_injection_locked(source->nativeDV);
+  }
+  const auto publishState = [source](int state) {
+    std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+    if (source != s_detectSource || source->superseded->load())
+      return false;
+    source->scanState.store(state);
+    s_detectState.store(state);
+    return true;
+  };
   if (source->policy->Blocked())
   {
-    s_detectState.store(source->policy->timedOut ? DV_DETECT_TIMED_OUT : DV_DETECT_SKIPPED);
+    publishState(source->policy->timedOut ? DV_DETECT_TIMED_OUT : DV_DETECT_SKIPPED);
     return; // playback vetoes and terminal timeouts precede cache identity I/O
   }
   if (source->codedCrop)
   {
-    s_detectState.store(DV_DETECT_SKIP_NON16X9);
+    publishState(DV_DETECT_SKIP_NON16X9);
     return; // no worker, cache lookup, file reads or software decoding
   }
   const bool enabled = settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
@@ -5158,11 +5533,12 @@ void aml_dv_detect_active_area_start()
   const auto reservation = detect_reserve_scanner();
   if (!reservation)
   {
-    s_detectState.store(DV_DETECT_SKIPPED);
+    publishState(DV_DETECT_SKIPPED);
     return;
   }
   // Known player padding is already represented by the renderer video rectangle.
-  s_detectState.store(DV_DETECT_RUNNING);
+  if (!publishState(DV_DETECT_RUNNING))
+    return;
   const bool cacheEnabled = settings()->GetBool(CSettings::SETTING_SUBTITLES_CACHEACTIVEAREA);
   s_detectWorker.Start([source, cacheEnabled, completion, reservation](const CAMLNativeWorker::Run& run) {
     ACTIVE_AREA_CACHE::Identity identity;
@@ -5187,7 +5563,10 @@ void aml_dv_detect_active_area_start()
       {
         std::lock_guard<std::mutex> lock(s_detectSourceMutex);
         if (!run.Cancelled() && source == s_detectSource && !source->superseded->load())
+        {
+          source->scanState.store(saved.state);
           s_detectState.store(saved.state);
+        }
       }
       CLog::Log(LOGDEBUG, "DetectActiveArea: reused saved stream {} geometry", source->streamIndex);
       return;
@@ -5210,7 +5589,10 @@ void aml_dv_detect_active_area_start()
     {
       std::lock_guard<std::mutex> lock(s_detectSourceMutex);
       if (!run.Cancelled() && source == s_detectSource && !source->superseded->load())
+      {
+        source->scanState.store(DV_DETECT_SKIPPED);
         s_detectState.store(DV_DETECT_SKIPPED); // no conservative/native result
+      }
     }
     else
     {
@@ -5220,7 +5602,10 @@ void aml_dv_detect_active_area_start()
       {
         std::lock_guard<std::mutex> lock(s_detectSourceMutex);
         if (!run.Cancelled() && source == s_detectSource && !source->superseded->load())
+        {
+          source->scanState.store(DV_DETECT_SKIPPED);
           s_detectState.store(DV_DETECT_SKIPPED);
+        }
         CLog::Log(LOGERROR, "DetectActiveArea: skipping scan; CPU separation unavailable");
         return;
       }
@@ -5235,6 +5620,7 @@ void aml_dv_detect_active_area_start()
           return;
         record.state = s_detectState.load();
         record.uniqueStream = source->uniqueStream.load();
+        record.displayAspect = source->displayAspect;
         if (source->result)
         {
           record.hasStrict = true;
@@ -5366,6 +5752,8 @@ CVariant aml_detector_start_job(const std::string& path, int streamIndex, bool a
         source->scannedStream = identity.streamIndex;
         source->scannedCodec = identity.codec;
         source->uniqueStream = saved.uniqueStream;
+        source->scannedAspect = saved.displayAspect;
+        source->preCropped = saved.preCropped;
         if (saved.hasStrict)
           source->result = std::make_shared<const DetectResult>(DetectResult{
               saved.strict[0], saved.strict[1], saved.strict[2], saved.strict[3], saved.highConfidence});
@@ -5411,6 +5799,8 @@ CVariant aml_detector_start_job(const std::string& path, int streamIndex, bool a
         std::lock_guard<std::mutex> guard(s_detectSourceMutex);
         record.state = source->scanState;
         record.uniqueStream = source->uniqueStream;
+        record.displayAspect = source->scannedAspect;
+        record.preCropped = source->preCropped;
         if (source->result)
         {
           record.hasStrict = true;
@@ -5483,17 +5873,180 @@ CVariant aml_detector_job_status(const std::string& id)
   if (source->timedOut)
   {
     reply["status"] = "timed_out";
+    reply["phase"] = source->metadataTimedOut ? "metadata" : "positions";
     return reply;
   }
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   const auto state = source->scanState.load();
-  reply["status"] = source->result || source->subtitleResult ? "completed" :
+  reply["status"] = source->result || source->subtitleResult || source->preCropped ? "completed" :
       (state == DV_DETECT_RUNNING || state == DV_DETECT_FAILED ? "failed" : "skipped");
   reply["outcome"] = state;
   reply["streamindex"] = source->scannedStream.load();
+  reply["provenance"] = job->cacheHit ? "cached" : source->preCropped ? "pre_cropped" : "scanned";
+  reply["sampled"] = source->completedPositions.load() > 0;
+  reply["displayaspect"] = source->scannedAspect;
   DetectorCoordinates(reply["strict"], source->result, source->scannedWidth, source->scannedHeight, false);
   DetectorCoordinates(reply["subtitle"], source->subtitleResult, source->scannedWidth, source->scannedHeight, true);
+  reply["geometry"]["valid"] = source->preCropped.load();
+  if (source->preCropped)
+  {
+    const int width = source->scannedWidth, height = source->scannedHeight;
+    DetectorCoordinates(reply["geometry"], std::make_shared<const DetectResult>(DetectResult{}),
+                        width, height, false);
+    reply["geometry"]["confidence"] = "geometry";
+    reply["geometry"]["kind"] = "pre_cropped";
+    // This is the existing auto-letterbox integer reference, not bars inside
+    // the coded frame and not necessarily the actual output/display dimensions.
+    const int refWidth = std::max(width, height * 16 / 9);
+    const int refHeight = std::max(height, width * 9 / 16);
+    reply["padding"]["units"] = "padding_reference_pixels";
+    reply["padding"]["width"] = refWidth;
+    reply["padding"]["height"] = refHeight;
+    reply["padding"]["top"] = reply["padding"]["bottom"] = (refHeight - height) / 2;
+    reply["padding"]["left"] = reply["padding"]["right"] = (refWidth - width) / 2;
+  }
   return reply;
+}
+
+CVariant aml_detector_binding_status(const std::string& id)
+{
+  const auto binding = DETECTOR_PLAYBACK::Find(id);
+  if (!binding)
+    return DetectorReply("not_found");
+  if (binding->state == DETECTOR_PLAYBACK::State::ACCEPTED && binding->playback == 0 &&
+      binding.use_count() == 2)
+    binding->state = DETECTOR_PLAYBACK::State::STALE; // failed/abandoned request lost its lease
+  auto reply = DetectorReply(DETECTOR_PLAYBACK::Name(binding->state.load()));
+  reply["bindingid"] = binding->id;
+  reply["playbackid"] = std::to_string(binding->playback.load());
+  reply["selectionid"] = std::to_string(binding->selection.load());
+  reply["effects"]["subtitle"] = binding->subtitleAvailable.load();
+  reply["effects"]["native_l5"] = binding->nativeAvailable.load();
+  reply["effects"]["geometry"] = binding->geometryAvailable.load();
+  return reply;
+}
+
+CVariant aml_detector_bind_job(const std::string& id, const std::string& path,
+                               int streamIndex, bool sameVideo)
+{
+  if (path.empty() || path.size() > 32768 || streamIndex < -1)
+    return DetectorReply("invalid_input");
+  std::shared_ptr<DetectorJob> job;
+  {
+    std::lock_guard<std::mutex> guard(s_detectorJobsMutex);
+    const auto found = s_detectorJobs.find(id);
+    if (found == s_detectorJobs.end())
+      return DetectorReply("not_found");
+    job = found->second;
+  }
+  if (job->state != DetectorJobState::FINISHED)
+    return DetectorReply("not_ready");
+  if (job->cancelled || job->busy || job->source->timedOut)
+    return DetectorReply("unusable_result");
+  const auto& source = job->source;
+  if ((!sameVideo && (path != source->path ||
+       (streamIndex >= 0 && streamIndex != source->scannedStream))) ||
+      (sameVideo && streamIndex < 0))
+    return DetectorReply("association_required");
+  auto value = std::make_shared<DETECTOR_PLAYBACK::Result>();
+  {
+    std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+    value->width = source->scannedWidth;
+    value->height = source->scannedHeight;
+    value->streamIndex = source->scannedStream;
+    value->codec = source->scannedCodec;
+    value->displayAspect = source->scannedAspect;
+    value->preCropped = source->preCropped;
+    if (source->result)
+    {
+      value->hasStrict = true;
+      value->highConfidence = source->result->highConfidence;
+      value->strict = {source->result->top, source->result->bottom,
+                       source->result->left, source->result->right};
+    }
+    if (source->subtitleResult)
+    {
+      value->hasSubtitle = true;
+      value->subtitle = {source->subtitleResult->top, source->subtitleResult->bottom,
+                         source->subtitleResult->left, source->subtitleResult->right};
+    }
+  }
+  if (!value->Valid())
+    return DetectorReply("unusable_result");
+  const auto binding = std::make_shared<DETECTOR_PLAYBACK::Binding>(value, path,
+      streamIndex < 0 ? value->streamIndex : streamIndex);
+  if (!DETECTOR_PLAYBACK::Register(binding))
+    return DetectorReply("busy");
+  auto reply = aml_detector_binding_status(binding->id);
+  reply["property"] = DETECTOR_PLAYBACK::PROPERTY;
+  return reply;
+}
+
+CVariant aml_detector_playback_status()
+{
+  std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+  const auto& source = s_detectSource;
+  if (source->path.empty() || source->superseded->load() || source->policy->ended)
+    return DetectorReply("inactive");
+  auto reply = DetectorReply(source->width > 0 && source->allowProbe ? "ready" : "opening");
+  reply["playbackid"] = std::to_string(source->policy->id);
+  reply["selectionid"] = std::to_string(source->selectionId);
+  reply["streamindex"] = source->streamIndex;
+  reply["width"] = source->width;
+  reply["height"] = source->height;
+  if (source->binding)
+    reply["bindingid"] = source->binding->id;
+  return reply;
+}
+
+CVariant aml_detector_apply_binding(const std::string& id, const std::string& playback,
+                                    const std::string& selection)
+{
+  const auto binding = DETECTOR_PLAYBACK::Find(id);
+  if (!binding)
+    return DetectorReply("not_found");
+  if (s_bindingWorker.Closed())
+    return DetectorReply("shutdown");
+  {
+    std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+    const auto previous = s_detectSource;
+    if (previous->superseded->load() || previous->path.empty() || previous->policy->ended ||
+        playback != std::to_string(previous->policy->id) ||
+        selection != std::to_string(previous->selectionId))
+      return DetectorReply("stale");
+    if (previous->width <= 0 || previous->height <= 0 || !previous->allowProbe)
+      return DetectorReply("not_ready");
+    if (binding->state != DETECTOR_PLAYBACK::State::READY)
+      return DetectorReply("already_used");
+    if (binding->target != previous->path)
+      return DetectorReply("incompatible");
+    if (!DETECTOR_PLAYBACK::Consume(id, previous->path))
+      return DetectorReply("already_used");
+    const auto source = std::make_shared<DetectSource>(previous->path, previous->width,
+        previous->height, previous->nativeDV, previous->allowProbe, previous->selection,
+        previous->streamIndex, previous->codecHint, previous->displayAspect);
+    source->policy = previous->policy;
+    source->selectionId = previous->selectionId;
+    source->binding = binding;
+    if (!detect_install_binding_locked(source))
+      return DetectorReply("incompatible");
+    DETECTOR_PLAYBACK::Retire(previous->binding);
+    previous->superseded->store(true);
+    s_detectSource = source;
+  }
+  if (!detect_schedule_binding())
+  {
+    std::lock_guard<std::mutex> guard(s_detectSourceMutex);
+    if (s_detectSource->binding == binding)
+      detect_binding_failed_locked(s_detectSource);
+  }
+  // Application may finish before this response. Report its observed state.
+  return aml_detector_binding_status(id);
+}
+
+CVariant aml_detector_release_binding(const std::string& id)
+{
+  return DetectorReply(DETECTOR_PLAYBACK::Release(id) ? "released" : "not_found");
 }
 
 CVariant aml_detector_cancel_job(const std::string& id)
@@ -5522,11 +6075,12 @@ bool aml_dv_retire_background_work()
   const bool watcher = s_autoLbWorker.Retire();
   const bool detector = s_detectWorker.Retire();
   const bool jobs = aml_detector_retire_jobs();
+  const bool bindings = s_bindingWorker.Retire();
   if (watcher && s_autoLbWorker.Failure())
     CLog::Log(LOGERROR, "AML: auto-letterbox worker failed before retirement");
   if (detector && s_detectWorker.Failure())
     CLog::Log(LOGERROR, "AML: active-area detector failed before retirement");
-  return watcher && detector && jobs;
+  return watcher && detector && jobs && bindings;
 }
 
 enum DV_MODE aml_dv_mode()
