@@ -16,6 +16,7 @@ class DetectorClientTest(unittest.TestCase):
         self.calls = []
         self.replies = {}
         self.aborted = False
+        self.play_calls = []
         def execute(raw):
             request = json.loads(raw)
             self.calls.append(request)
@@ -23,7 +24,8 @@ class DetectorClientTest(unittest.TestCase):
             value = self.replies[method].pop(0)
             return value if isinstance(value, str) else json.dumps({'result': value})
         fake = SimpleNamespace(executeJSONRPC=execute, Monitor=lambda: SimpleNamespace(
-            waitForAbort=lambda timeout: self.aborted))
+            waitForAbort=lambda timeout: self.aborted),
+            Player=lambda: SimpleNamespace(play=lambda path,item: self.play_calls.append((path,item))))
         with patch.dict(sys.modules, xbmc=fake):
             self.client = runpy.run_path(str(ROOT/'tools/examples/detector-api.py'))
         self.replies = {'GetCapabilities': [{'version': 1, 'supported': True}],
@@ -74,6 +76,56 @@ class DetectorClientTest(unittest.TestCase):
         self.replies['Start'] = [{'status': 'busy'}]
         self.assertEqual(self.client['detect']('video')['status'], 'busy')
         self.assertNotIn('GetStatus', self.methods())
+
+    def test_complete_geometry_no_scan_flows_to_its_item_without_settings(self):
+        result = {'status': 'completed', 'requestid': 'job', 'cachehit': False,
+                  'provenance': 'pre_cropped', 'sampled': False,
+                  'geometry': {'valid': True, 'width': 3832, 'height': 1600},
+                  'strict': {'valid': False}, 'subtitle': {'valid': False}}
+        self.replies['GetCapabilities'] += [{'version': 1, 'resultbinding': 1}]
+        self.replies['GetStatus'] = [result]
+        self.replies['Bind'] = [{'status': 'ready', 'bindingid': 'bound',
+                                'property': 'p3i.detector.binding'}]
+        class Item:
+            def __init__(self, path):
+                self.path, self.properties = path, {}
+            def setProperty(self, key, value):
+                self.properties[key] = value
+        with patch.dict(sys.modules, xbmcgui=SimpleNamespace(ListItem=Item)):
+            reply = self.client['play_detected']('/cropped.mkv')
+        self.assertEqual(reply['status'], 'accepted')
+        self.assertEqual(reply['result'], result)
+        path, item = self.play_calls[0]
+        self.assertEqual(path, '/cropped.mkv')
+        self.assertEqual(item.properties, {'p3i.detector.binding': 'bound'})
+        self.assertEqual(self.methods(), ['GetCapabilities', 'Start', 'GetStatus', 'GetCapabilities', 'Bind'])
+        self.assertFalse(any('Settings' in m for m in self.methods()))
+
+    def test_remux_binding_uses_explicit_association_and_target_stream(self):
+        self.replies['GetCapabilities'] = [{'version': 1, 'resultbinding': 1}]
+        self.replies['Bind'] = [{'status': 'ready', 'bindingid': 'bound'}]
+        result = {'status': 'completed', 'requestid': 'source-job'}
+        self.assertEqual(self.client['bind'](result, 'https://remux.invalid/play', 2, True)['status'], 'ready')
+        self.assertEqual(self.calls[-1]['params'], {'requestid': 'source-job',
+            'path': 'https://remux.invalid/play', 'options': {'streamindex': 2, 'association': 'same_video'}})
+
+    def test_active_application_fences_both_ids_and_releases_rejected_binding(self):
+        self.replies['GetPlayback'] = [{'status': 'ready', 'playbackid': 'session', 'selectionid': 'stream'}]
+        self.replies['GetCapabilities'] = [{'version': 1, 'resultbinding': 1}]
+        self.replies['Bind'] = [{'status': 'ready', 'bindingid': 'bound'}]
+        self.replies['Apply'] = [{'status': 'stale'}]
+        self.replies['ReleaseBinding'] = [{'status': 'released'}]
+        reply = self.client['apply_detected']({'status': 'completed', 'requestid': 'job'}, '/video.mkv')
+        self.assertEqual(reply['status'], 'stale')
+        self.assertEqual(self.calls[-2]['params'], {'bindingid': 'bound', 'playbackid': 'session', 'selectionid': 'stream'})
+        self.assertEqual(self.calls[-1]['params'], {'bindingid': 'bound'})
+        self.assertEqual(self.play_calls, [])
+
+    def test_active_application_waits_for_ready_without_binding_or_playing(self):
+        self.replies['GetPlayback'] = [{'status': 'opening'}]
+        self.assertEqual(self.client['apply_detected']({'status': 'completed'}, '/video.mkv')['status'], 'opening')
+        self.assertEqual(self.methods(), ['GetPlayback'])
+        self.assertEqual(self.play_calls, [])
 
     def test_stock_malformed_unknown_version_and_unsupported(self):
         for capability in ('invalid JSON', {}, {'version': 2, 'supported': True},

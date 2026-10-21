@@ -14,6 +14,16 @@ public:
       const std::string&, ITransportLayer*, IClient*, const CVariant&, CVariant&);
   static JSONRPC_STATUS Cancel(
       const std::string&, ITransportLayer*, IClient*, const CVariant&, CVariant&);
+  static JSONRPC_STATUS Bind(
+      const std::string&, ITransportLayer*, IClient*, const CVariant&, CVariant&);
+  static JSONRPC_STATUS GetBinding(
+      const std::string&, ITransportLayer*, IClient*, const CVariant&, CVariant&);
+  static JSONRPC_STATUS GetPlayback(
+      const std::string&, ITransportLayer*, IClient*, const CVariant&, CVariant&);
+  static JSONRPC_STATUS Apply(
+      const std::string&, ITransportLayer*, IClient*, const CVariant&, CVariant&);
+  static JSONRPC_STATUS ReleaseBinding(
+      const std::string&, ITransportLayer*, IClient*, const CVariant&, CVariant&);
   static JSONRPC_STATUS SetSkipNext(
       const std::string&, ITransportLayer*, IClient*, const CVariant&, CVariant&);
   static JSONRPC_STATUS ClearSkipNext(

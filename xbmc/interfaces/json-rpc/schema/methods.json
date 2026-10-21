@@ -1,4 +1,137 @@
 {
+  "P3I.Detector.Bind": {
+    "type": "method",
+    "description": "Create a single-use immutable playback binding from a completed usable job. No cache or native effects. Different target URLs require an explicit same_video association and selected target stream; actual geometry/codec/aspect are validated on playback.",
+    "transport": "Response",
+    "permission": [
+      "ReadData",
+      "ControlPlayback"
+    ],
+    "params": [
+      {
+        "name": "requestid",
+        "type": "string",
+        "required": true,
+        "minLength": 1,
+        "maxLength": 32
+      },
+      {
+        "name": "path",
+        "type": "string",
+        "required": true,
+        "minLength": 1,
+        "maxLength": 32768
+      },
+      {
+        "name": "options",
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "properties": {
+          "streamindex": {
+            "type": "integer",
+            "default": -1,
+            "minimum": -1,
+            "maximum": 2147483647
+          },
+          "association": {
+            "type": "string",
+            "default": "source",
+            "enum": [
+              "source",
+              "same_video"
+            ]
+          }
+        }
+      }
+    ],
+    "returns": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "P3I.Detector.GetBinding": {
+    "type": "method",
+    "description": "Read binding lifecycle and consumer availability. Accepted is not applied. Bound data survives job-history eviction and handle release.",
+    "transport": "Response",
+    "permission": "ReadData",
+    "params": [
+      {
+        "name": "bindingid",
+        "type": "string",
+        "required": true,
+        "minLength": 1,
+        "maxLength": 32
+      }
+    ],
+    "returns": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "P3I.Detector.GetPlayback": {
+    "type": "method",
+    "description": "Read current detector playback and selected-stream identities for explicit application. No source credentials are returned.",
+    "transport": "Response",
+    "permission": "ReadData",
+    "params": [],
+    "returns": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "P3I.Detector.Apply": {
+    "type": "method",
+    "description": "Queue a binding for the exact current playback and selection. No media I/O or native effects on the RPC thread. Poll GetBinding for applied/stale/incompatible.",
+    "transport": "Response",
+    "permission": "ControlPlayback",
+    "params": [
+      {
+        "name": "bindingid",
+        "type": "string",
+        "required": true,
+        "minLength": 1,
+        "maxLength": 32
+      },
+      {
+        "name": "playbackid",
+        "type": "string",
+        "required": true,
+        "minLength": 1,
+        "maxLength": 32
+      },
+      {
+        "name": "selectionid",
+        "type": "string",
+        "required": true,
+        "minLength": 1,
+        "maxLength": 32
+      }
+    ],
+    "returns": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "P3I.Detector.ReleaseBinding": {
+    "type": "method",
+    "description": "Release an unused binding or its public status handle. Already captured playback retains immutable data.",
+    "transport": "Response",
+    "permission": "ControlPlayback",
+    "params": [
+      {
+        "name": "bindingid",
+        "type": "string",
+        "required": true,
+        "minLength": 1,
+        "maxLength": 32
+      }
+    ],
+    "returns": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
   "P3I.Detector.GetCapabilities": {
     "type": "method",
     "description": "Version 1 detector and owned automatic-admission capabilities. Unsupported builds return supported=false.",

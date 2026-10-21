@@ -57,6 +57,11 @@ JsonRpcMethodMap CJSONServiceDescription::m_methodMaps[] = {
   { "P3I.Detector.Start", CDetectorOperations::Start },
   { "P3I.Detector.GetStatus", CDetectorOperations::GetStatus },
   { "P3I.Detector.Cancel", CDetectorOperations::Cancel },
+  { "P3I.Detector.Bind", CDetectorOperations::Bind },
+  { "P3I.Detector.GetBinding", CDetectorOperations::GetBinding },
+  { "P3I.Detector.GetPlayback", CDetectorOperations::GetPlayback },
+  { "P3I.Detector.Apply", CDetectorOperations::Apply },
+  { "P3I.Detector.ReleaseBinding", CDetectorOperations::ReleaseBinding },
   { "P3I.Detector.SetSkipNext", CDetectorOperations::SetSkipNext },
   { "P3I.Detector.ClearSkipNext", CDetectorOperations::ClearSkipNext },
 

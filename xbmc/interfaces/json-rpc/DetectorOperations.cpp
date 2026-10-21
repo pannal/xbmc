@@ -36,6 +36,10 @@ JSONRPC_STATUS CDetectorOperations::GetCapabilities(
   result["maxjobs"] = 16;
   result["maxscanners"] = 1;
   result["cache"] = "shared_validated";
+  result["geometryresults"] = Supported();
+  result["resultbinding"] = Supported() ? 1 : 0;
+  result["bindingproperty"] = DETECTOR_PLAYBACK::PROPERTY;
+  result["maxbindings"] = 64;
   return OK;
 }
 JSONRPC_STATUS CDetectorOperations::Start(const std::string&,
@@ -107,5 +111,66 @@ JSONRPC_STATUS CDetectorOperations::ClearSkipNext(
   {
     return InvalidParams;
   }
+  return OK;
+}
+JSONRPC_STATUS CDetectorOperations::Bind(const std::string&, ITransportLayer* transport,
+    IClient*, const CVariant& params, CVariant& result)
+{
+  const CScopedLogSilence sensitiveInput;
+  if (!Supported())
+    Reply(result, "unsupported");
+#if defined(HAS_LIBAMCODEC)
+  else if (!transport || (!transport->IsLocal() &&
+           !CFileUtils::RemoteAccessAllowed(params["path"].asString())))
+    Reply(result, "path_not_shared");
+  else
+    result = aml_detector_bind_job(params["requestid"].asString(), params["path"].asString(),
+        static_cast<int>(params["options"]["streamindex"].asInteger()),
+        params["options"]["association"].asString() == "same_video");
+#endif
+  return OK;
+}
+JSONRPC_STATUS CDetectorOperations::GetBinding(
+    const std::string&, ITransportLayer*, IClient*, const CVariant& params, CVariant& result)
+{
+  if (!Supported())
+    Reply(result, "unsupported");
+#if defined(HAS_LIBAMCODEC)
+  else
+    result = aml_detector_binding_status(params["bindingid"].asString());
+#endif
+  return OK;
+}
+JSONRPC_STATUS CDetectorOperations::GetPlayback(
+    const std::string&, ITransportLayer*, IClient*, const CVariant& /*params*/, CVariant& result)
+{
+  if (!Supported())
+    Reply(result, "unsupported");
+#if defined(HAS_LIBAMCODEC)
+  else
+    result = aml_detector_playback_status();
+#endif
+  return OK;
+}
+JSONRPC_STATUS CDetectorOperations::Apply(
+    const std::string&, ITransportLayer*, IClient*, const CVariant& params, CVariant& result)
+{
+  if (!Supported())
+    Reply(result, "unsupported");
+#if defined(HAS_LIBAMCODEC)
+  else
+    result = aml_detector_apply_binding(params["bindingid"].asString(), params["playbackid"].asString(), params["selectionid"].asString());
+#endif
+  return OK;
+}
+JSONRPC_STATUS CDetectorOperations::ReleaseBinding(
+    const std::string&, ITransportLayer*, IClient*, const CVariant& params, CVariant& result)
+{
+  if (!Supported())
+    Reply(result, "unsupported");
+#if defined(HAS_LIBAMCODEC)
+  else
+    result = aml_detector_release_binding(params["bindingid"].asString());
+#endif
   return OK;
 }
