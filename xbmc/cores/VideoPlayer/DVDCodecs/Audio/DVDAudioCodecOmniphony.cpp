@@ -13,7 +13,6 @@
 #include "DVDStreamInfo.h"
 #include "OmniphonyConfig.h"
 #include "OmniphonyPcmSource.h"
-#include "OmniphonyRoomPreset.h"
 #include "ServiceBroker.h"
 #include "cores/AudioEngine/Omniphony/OmniphonyCache.h"
 #include "cores/AudioEngine/Omniphony/OmniphonyHrtf.h"
@@ -451,7 +450,44 @@ constexpr double OMNI_LFE_MAX_DB = 10.0;
 constexpr double OMNI_DISTANCE_M = 2.0;
 constexpr double OMNI_DISTANCE_MIN_M = 1.0;
 constexpr double OMNI_DISTANCE_MAX_M = 6.0;
-constexpr int OMNI_REVERB_PERCENT = 20;
+constexpr int OMNI_REVERB_PERCENT = 10;
+
+//! The room presets - see RoomFor. Order matches the options in settings.xml.
+enum RoomPreset
+{
+  ROOM_OFF = 0,
+  ROOM_SMALL = 1,
+  ROOM_MEDIUM = 2,
+  ROOM_LARGE = 3,
+};
+
+//! Shoebox dimensions in metres; a zero width means no room simulation.
+struct Room
+{
+  double width;
+  double depth;
+  double height;
+};
+
+/*!
+ * \brief The shoebox each preset stands for.
+ *
+ * Three rooms rather than a pair of dimension sliders, because what a listener
+ * can judge is whether the space sounds right, not whether it is 4.2 m across.
+ * Carried over unchanged from the in-process renderer, where they were tuned.
+ */
+const Room& RoomFor(int preset)
+{
+  static const Room rooms[] = {
+      {0.0, 0.0, 0.0}, // off
+      {3.0, 3.5, 2.4}, // small
+      {4.0, 5.0, 2.7}, // medium
+      {6.0, 8.0, 3.2}, // large
+  };
+  if (preset < ROOM_OFF || preset > ROOM_LARGE)
+    preset = ROOM_MEDIUM;
+  return rooms[preset];
+}
 
 void PutU32(uint8_t* p, uint32_t v)
 {
@@ -1277,6 +1313,13 @@ std::string OmniphonyRenderYaml(const OmniphonyRenderChoices& choices,
   // comes back, so one loud transient would quieten everything after it. The
   // limiter in GetData does this job instead, and releases.
   yaml += "  auto_gain: false\n";
+  // Where objects are panned onto loudspeakers - cascaded, and a room's
+  // measured ones: VBAP that also weighs how far inside the loudspeakers an
+  // object sits, so an object crossing the room moves through it rather than
+  // jumping across. The direct path places each object itself and does not
+  // read it. The gain ramps are left to the engine, whose default is per
+  // sample.
+  yaml += "  render_backend: volumetric\n";
   yaml += "  binaural:\n";
   yaml += "    output_mode: binaural\n";
   if (choices.cascade)
@@ -1340,9 +1383,37 @@ std::string OmniphonyRenderYaml(const OmniphonyRenderChoices& choices,
   // against does not move.
   yaml += "    diffuse_field_eq: true\n";
 
-  // The room grows with the distance - see OmniphonyRoomFor for why that is
-  // what keeps the reflections from colouring dialogue.
-  yaml += OmniphonyRoomYaml(choices.roomPreset, choices.distanceM, choices.reverbPercent);
+  const Room& r = RoomFor(choices.roomPreset);
+  if (r.width <= 0.0)
+  {
+    yaml += "    reflections:\n";
+    yaml += "      enabled: false\n";
+  }
+  else
+  {
+    yaml += "    reflections:\n";
+    yaml += "      enabled: true\n";
+    yaml += "      room_width_m: " + StringUtils::Format("{:.2f}", r.width) + "\n";
+    yaml += "      room_depth_m: " + StringUtils::Format("{:.2f}", r.depth) + "\n";
+    yaml += "      room_height_m: " + StringUtils::Format("{:.2f}", r.height) + "\n";
+    yaml += "      level: 0.5\n";
+  }
+
+  // Reverb is the tail, reflections are the room; the tail without the room
+  // sounds like an effect rather than a place, so it follows the room away.
+  if (choices.reverbPercent <= 0 || r.width <= 0.0)
+  {
+    yaml += "    reverb:\n";
+    yaml += "      enabled: false\n";
+  }
+  else
+  {
+    yaml += "    reverb:\n";
+    yaml += "      enabled: true\n";
+    yaml += "      level: " + StringUtils::Format("{:.2f}", choices.reverbPercent / 100.0) + "\n";
+    yaml += "      rt60_s: 0.35\n";
+    yaml += "      predelay_ms: 20\n";
+  }
   return yaml;
 }
 

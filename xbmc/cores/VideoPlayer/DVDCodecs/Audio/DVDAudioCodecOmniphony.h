@@ -111,9 +111,9 @@ std::string OmniphonyYamlQuote(const std::string& value);
  */
 struct OmniphonyRenderChoices
 {
-  int roomPreset{2}; //!< the synthetic room - see OmniphonyRoomFor
+  int roomPreset{2}; //!< the synthetic room - see RoomFor
   double distanceM{2.0};
-  int reverbPercent{20};
+  int reverbPercent{10};
   double levelDb{-3.0}; //!< as set, before the match terms - see WriteConfig
   bool maintainVolume{false};
   double lfeDb{0.0};

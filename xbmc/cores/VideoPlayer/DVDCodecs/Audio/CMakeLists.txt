@@ -20,14 +20,12 @@ if(CORE_SYSTEM_NAME STREQUAL linux)
                       OmniphonyPcmSource.cpp
                       OmniphonyPcmStream.cpp
                       OmniphonyRateCheck.cpp
-                      OmniphonyRoomPreset.cpp
                       OmniphonyTimeline.cpp)
   list(APPEND HEADERS DVDAudioCodecOmniphony.h
                       OmniphonyCommandQueue.h
                       OmniphonyConfig.h
                       OmniphonyPcmSource.h
                       OmniphonyPcmStream.h
-                      OmniphonyRoomPreset.h
                       OmniphonyTimeline.h)
 endif()
 
