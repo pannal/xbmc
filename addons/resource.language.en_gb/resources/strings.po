@@ -26154,6 +26154,18 @@ msgctxt "#60636"
 msgid "Use per-frame metadata for SDR conversion"
 msgstr ""
 
+#. "Use the newer Dolby library for SDR conversion"
+#: system/settings/settings.xml
+msgctxt "#60665"
+msgid "Use the newer Dolby library for SDR conversion"
+msgstr ""
+
+#. Help text for setting "Use the newer Dolby library for SDR conversion" of label #60665
+#: system/settings/settings.xml
+msgctxt "#60666"
+msgid "Experimental. Converts native Dolby Vision to SDR with the newer Dolby library (dovi5, CMv4.0 display management: Level 3 and Level 8 trims) instead of the original one (CMv2.9, Level 2 trims only), and shows the CMv4.0 options for SDR output. Only shown when the kernel provides the xbmc_dv_new_sdr_route parameter; if the newer library rejects a title, playback falls back to the original one. With this route, Smart compares each frame's Level 1 peak with the 100-nit VS10 SDR target. Applies from the next playback."
+msgstr ""
+
 #. "Dolby Vision VS10 SDR Per-Frame Metadata"
 #: system/settings/settings.xml
 msgctxt "#60637"
@@ -26649,7 +26661,7 @@ msgid "CMv4.0 smart bypass threshold (%)"
 msgstr ""
 
 msgctxt "#60333"
-msgid "Only applies to Smart. Bypass CMv4.0 append when a frame's Level 1 peak exceeds the display's peak brightness plus this percentage. The display peak uses reported Dolby Vision luminance, then HDR luminance, or 1000 nits if neither is available. Custom VSVDB injection or EDID override uses the configured peak instead. This does not change the VSVDB payload. At 20%, a frame above 1200 nits bypasses append on a 1000-nit display. Metadata without L2 trims or usable peak information is still upgraded. Existing CMv4.0 metadata is preserved."
+msgid "Only applies to Smart. Bypass CMv4.0 append when a frame's Level 1 peak exceeds the display's peak brightness plus this percentage. The display peak uses reported Dolby Vision luminance, then HDR luminance, or 1000 nits if neither is available. Custom VSVDB injection or EDID override uses the configured peak instead. With the newer Dolby library for SDR conversion, the 100-nit VS10 SDR target is used instead. This does not change the VSVDB payload. At 20%, a frame above 1200 nits bypasses append on a 1000-nit display. Metadata without L2 trims or usable peak information is still upgraded. Existing CMv4.0 metadata is preserved."
 msgstr ""
 
 msgctxt "#60334"

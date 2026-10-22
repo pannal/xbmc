@@ -119,6 +119,8 @@ bool aml_support_av1();
 bool aml_support_dolby_vision();
 // Cached native initialization result; never reads sysfs from settings callers.
 bool aml_dv_new_backend_available();
+// Cached at Setup: new backend available and the kernel has the SDR route node.
+bool aml_dv_new_sdr_route_available();
 bool aml_dv_graphics_stability_supported();
 void aml_dv_apply_graphics_stability();
 // Enables automatic eligible routing; caller holds native Setup admission.
@@ -217,6 +219,7 @@ void aml_dv_set_hdr10_osd_brightness(int nits);
 int  aml_dv_sdr_boost_param();
 void aml_dv_set_sdr_source_max_nits(int value);
 void aml_dv_set_sdr_keep_ext(bool keep);
+void aml_dv_set_sdr_new_backend(bool enable);
 void aml_dv_set_target_min_lum(int value);
 bool aml_is_dv_enable();
 void aml_dv_display_trigger();
