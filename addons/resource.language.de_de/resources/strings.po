@@ -20705,6 +20705,30 @@ msgctxt "#69365"
 msgid "{0:.1f} %"
 msgstr "{0:.1f} %"
 
+#. System information, video section: size the GUI is rendered at
+#: xbmc/windows/GUIWindowSystemInfo.cpp
+msgctxt "#69366"
+msgid "GUI resolution:"
+msgstr "GUI-Auflösung:"
+
+#. System information, video section: mode the display driver currently outputs
+#: xbmc/windows/GUIWindowSystemInfo.cpp
+msgctxt "#69367"
+msgid "Display output mode:"
+msgstr "Ausgabemodus der Anzeige:"
+
+#. GUI resolution suffix: GUI rendered at the output size
+#: xbmc/guilib/guiinfo/SystemGUIInfo.cpp
+msgctxt "#69368"
+msgid "native"
+msgstr "nativ"
+
+#. GUI resolution suffix: GUI rendered smaller and scaled up to the output size
+#: xbmc/guilib/guiinfo/SystemGUIInfo.cpp
+msgctxt "#69369"
+msgid "scaled"
+msgstr "skaliert"
+
 #. Active picture detection cache
 #: system/settings/settings.xml
 msgctxt "#69370"
