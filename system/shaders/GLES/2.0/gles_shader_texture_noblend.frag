@@ -28,12 +28,23 @@ precision mediump float;
 uniform sampler2D m_samp0;
 varying vec4 m_cord0;
 uniform float m_sdrPeak;
+#if defined(KODI_GUI_TEXTURE)
+// Ordinary GUI textures use straight alpha and neutral subtitle controls.
+const float m_pma = 0.0;
+const float m_subtitlePeak = 1.0;
+#else
 uniform float m_pma;
 uniform float m_subtitlePeak;
+#endif
 
 #if !defined(KODI_PQ_TO_SDR)
+#if defined(KODI_GUI_TEXTURE)
+const float m_sdrBrightness = 1.0;
+const float m_sdrSaturation = 1.0;
+#else
 uniform float m_sdrBrightness;
 uniform float m_sdrSaturation;
+#endif
 #endif
 
 #if defined(KODI_PQ_TO_SDR)

@@ -192,6 +192,34 @@ def verify(gl, helper, fragments, baseline, full=True):
     return checks
 
 
+def verify_gui_texture(gl, helper, fragment):
+    """The GUI-only program must preserve pixels and exclude subtitle controls."""
+    checks = 0
+    for variant in range(8):
+        defines = ('#define KODI_LIMITED_RANGE 1\n' if variant & 1 else '') + (
+            '#define KODI_TRANSFER_PQ 1\n' if variant & 2 else '') + (
+            '#define KODI_GUI_COLOUR 1\n' if variant & 4 else '')
+        rich = gl.program(fragment, defines, helper)
+        gui_defines = defines + '#define KODI_GUI_TEXTURE 1\n'
+        gui = gl.program(fragment, gui_defines, helper)
+        for vertex in ('gles_shader.vert', 'gles_shader_clip.vert'):
+            gl.program(fragment, gui_defines, helper, (SHADERS / vertex).read_text())
+        for name in (b'm_pma', b'm_sdrBrightness', b'm_sdrSaturation', b'm_subtitlePeak'):
+            assert gl.glGetUniformLocation(gui, name) == -1, name
+            assert gl.glGetUniformLocation(rich, name) >= 0, name
+        for alpha in (0, 1, 32, 128, 255):
+            for rgb in ((0, 0, 0), (10, 200, 40), (240, 60, 30), (127, 127, 127), (255, 255, 255)):
+                args = rgb + (alpha,), (1, 1, 1, 1), (255, 255, 255, 255)
+                for white, saturation in ((1, 1), (0, 1), (.25, 1), (1, 0), (1, .5), (1, 2)):
+                    tuning = dict(white=white, saturation=saturation)
+                    want = gl.pixel(rich, *args, **tuning)
+                    assert gl.pixel(gui, *args, **tuning) == want
+                    assert gl.pixel(gui, *args, bitmap_brightness=2, bitmap_saturation=0,
+                                    bitmap_peak=.3, pma=1, **tuning) == want
+                    checks += 1
+    return checks
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--baseline-ref', default='58aafcddf7ec471961bac4aa7405e9a99e4296a7')
@@ -211,8 +239,11 @@ def main():
     gl = GUI()
     try:
         count = verify(gl, helper, fragments, baseline)
+        gui_count = verify_gui_texture(gl, helper, fragments['texture_noblend'])
         print(f'PASS: {count} real GLES GUI/overlay pixel cases, seven fragments/four variants; '
               'both production vertices link, parent neutral bytes/alpha unchanged')
+        print(f'PASS: {gui_count} GUI-only texture pixel cases across eight variants; '
+              'subtitle controls compiled out, rich neutral output preserved')
         if args.mutations:
             mutations = {
                 'ignore-white': ('return rgb * m_guiPeak;', 'return rgb;'),

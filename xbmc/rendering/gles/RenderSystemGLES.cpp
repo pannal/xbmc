@@ -623,6 +623,18 @@ void CRenderSystemGLES::InitialiseShaders()
     CLog::Log(LOGERROR, "GUI Shader gles_shader_texture_noblend.frag - compile and link failed");
   }
 
+  // GUI textures use neutral subtitle controls. Compile those values out of
+  // their program while retaining the adjustable bitmap-subtitle program above.
+  m_pShader[ShaderMethodGLES::SM_TEXTURE_NOBLEND_GUI] = std::make_unique<CGLESShader>(
+      "gles_shader_texture_noblend.frag", defines + "#define KODI_GUI_TEXTURE 1\n");
+  if (!m_pShader[ShaderMethodGLES::SM_TEXTURE_NOBLEND_GUI]->CompileAndLink())
+  {
+    m_pShader[ShaderMethodGLES::SM_TEXTURE_NOBLEND_GUI]->Free();
+    m_pShader[ShaderMethodGLES::SM_TEXTURE_NOBLEND_GUI].reset();
+    CLog::Log(LOGERROR,
+              "GUI Shader gles_shader_texture_noblend.frag (GUI) - compile and link failed");
+  }
+
   // PQ-to-SDR variant for PGS subtitles rendered on SDR OSD (e.g. DV G_SDR_RGB mode).
   // Always exclude KODI_LIMITED_RANGE and KODI_TRANSFER_PQ — the PQ→SDR conversion
   // produces full-range SDR output that Core2 processes directly via g_2_l.

@@ -175,6 +175,8 @@ void checkDefines(const CRenderSystemGLES& r,unsigned int variant)
       assert((prefix.find("KODI_TRANSFER_PQ")!=std::string::npos)==((variant&2)!=0));
       assert((prefix.find("KODI_GUI_COLOUR")!=std::string::npos)==((variant&4)!=0));
     }
+    assert((prefix.find("KODI_GUI_TEXTURE")!=std::string::npos)==
+           (shader.first==ShaderMethodGLES::SM_TEXTURE_NOBLEND_GUI));
   }
 }
 void checkBind(CRenderSystemGLES& r,ShaderMethodGLES method,std::pair<float,float> expected)
@@ -188,7 +190,8 @@ void checkBind(CRenderSystemGLES& r,ShaderMethodGLES method,std::pair<float,floa
 void checkFrameColour(bool oes)
 {
   CRenderSystemGLES r;r.oes=oes;select(0);r.InitialiseShaders();
-  const int count=oes?15:13,start=compiles-count,deleted=deletions;
+  const int count=static_cast<int>(ShaderMethodGLES::SM_MAX)-(oes?0:2);
+  const int start=compiles-count,deleted=deletions;
   std::array<Ids,8> expected;
   for(unsigned int v=0;v<8;++v)
   {
@@ -226,7 +229,8 @@ int main()
   for(bool oes:{false,true})
   {
     CRenderSystemGLES r;r.oes=oes;select(0);r.InitialiseShaders();
-    const int count=oes?15:13,start=compiles-count,deleted=deletions;
+    const int count=static_cast<int>(ShaderMethodGLES::SM_MAX)-(oes?0:2);
+    const int start=compiles-count,deleted=deletions;
     std::array<Ids,4> expected;
     for(unsigned int v=0;v<4;++v)
     {
@@ -260,7 +264,8 @@ int main()
     assert(deletions==before && livePrograms.empty());currentContext=1;
   }
   // Every mandatory/optional compile failure is retried on reentry, not per frame.
-  for(int failed=1;failed<=15;++failed)
+  const int allCount=static_cast<int>(ShaderMethodGLES::SM_MAX);
+  for(int failed=1;failed<=allCount;++failed)
   {
     CRenderSystemGLES r;r.oes=true;select(0);failAt=compiles+failed;
     r.InitialiseShaders();assert(std::count_if(r.m_pShader.begin(),r.m_pShader.end(),
@@ -269,10 +274,10 @@ int main()
     for(int frame=0;frame<1000;++frame)assert(r.BeginRender());
     assert(compiles==before);
     select(2);assert(r.BeginRender());assert(r.m_shaderVariants[0].empty());
-    select(0);assert(r.BeginRender());assert(compiles==before+30);checkDefines(r,0);
+    select(0);assert(r.BeginRender());assert(compiles==before+2*allCount);checkDefines(r,0);
     const auto recovered=programs(r);
     select(2);assert(r.BeginRender());select(0);assert(r.BeginRender());
-    assert(programs(r)==recovered && compiles==before+30);
+    assert(programs(r)==recovered && compiles==before+2*allCount);
     r.ReleaseShaders();assert(livePrograms.empty());failAt=0;
   }
   // Context loss abandons active and inactive names without issuing GL deletes.
@@ -280,7 +285,7 @@ int main()
   for(unsigned int v=1;v<4;++v){select(v);assert(r.BeginRender());}
   const int beforeDelete=deletions,beforeAbandon=abandons;
   currentContext=0;r.ReleaseShaders(true);
-  assert(deletions==beforeDelete && abandons-beforeAbandon==52 && livePrograms.empty());
+  assert(deletions==beforeDelete && abandons-beforeAbandon==4*(allCount-2) && livePrograms.empty());
   currentContext=1;checkFrameColour(false);checkFrameColour(true);
 }
 '''

@@ -86,7 +86,7 @@ void CGUITextureGLES::Begin(UTILS::COLOR::Color color)
   {
     if (m_col[0] == 255 && m_col[1] == 255 && m_col[2] == 255 && m_col[3] == 255)
     {
-      m_renderSystem->EnableGUIShader(ShaderMethodGLES::SM_TEXTURE_NOBLEND);
+      m_renderSystem->EnableGUIShader(ShaderMethodGLES::SM_TEXTURE_NOBLEND_GUI);
     }
     else
     {
