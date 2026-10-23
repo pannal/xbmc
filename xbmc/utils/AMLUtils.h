@@ -354,6 +354,7 @@ void aml_dv_send_el_type();
 void aml_dv_send_profile(int dvprofile);
 void set_vsvdb_payload_ver(enum DV_TYPE dv_type, int max_lum_nits_value, int source_max_pq,
                            const AMLDVCapability& cap);
+void aml_dv_refresh_vsvdb_live();
 void CalculateVSVDBPayload(const AMLDVCapability& cap);
 void CalculateVSVDBPayload_2(const AMLDVCapability& cap);
 void aml_dv_enable_fel();

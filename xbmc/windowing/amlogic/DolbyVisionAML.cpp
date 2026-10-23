@@ -980,6 +980,7 @@ void CDolbyVisionAML::schedule_vsvdb_payload_apply()
       throw;
     }
     m_applying_vsvdb = false;
+    aml_dv_refresh_vsvdb_live();
   }))
     m_vsvdb_apply_scheduled = false;
 }
