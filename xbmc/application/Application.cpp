@@ -3325,6 +3325,9 @@ bool CApplication::OnMessage(CGUIMessage& message)
     ResetCurrentItem();
     PlaybackCleanup();
     GetComponent<CApplicationPlayer>()->CompleteCloseCompletions();
+#ifdef HAS_LIBAMCODEC
+    aml_native_gui_playback_stopped();
+#endif
 #ifdef HAS_PYTHON
     CServiceBroker::GetXBPython().OnPlayBackStopped();
 #endif
@@ -3345,6 +3348,9 @@ bool CApplication::OnMessage(CGUIMessage& message)
                                                        m_itemCurrentFile, data);
 
     m_playerEvent.Set();
+#ifdef HAS_LIBAMCODEC
+    aml_native_gui_playback_stopped();
+#endif
     const auto stackHelper = GetComponent<CApplicationStackHelper>();
     if (stackHelper->IsPlayingRegularStack() && stackHelper->HasNextStackPartFileItem())
     { // just play the next item in the stack

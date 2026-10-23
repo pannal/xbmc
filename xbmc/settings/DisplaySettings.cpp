@@ -32,6 +32,7 @@
 #include "windowing/WinSystem.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <float.h>
 #include <fstream>
@@ -256,8 +257,47 @@ bool CDisplaySettings::Save(TiXmlNode *settings) const
   if (pRoot == NULL)
     return false;
 
+  ResolutionInfos calibrations = m_calibrations;
+#if defined(HAS_LIBAMCODEC)
+  // A calibration of a native GUI ("Disable GUI scaling", 3840x2160 GUI of a
+  // 2160p mode) is stored in the 1920x1080 GUI units of the upscaled GUI, so
+  // a build without the native GUI reads it right. ApplyCalibrations scales
+  // it back to the native GUI size on load (half-pixel rounding).
+  for (auto& cal : calibrations)
+  {
+    int screenW = cal.iScreenWidth;
+    int screenH = cal.iScreenHeight;
+    bool native = cal.iWidth > 0 && cal.iWidth == cal.iScreenWidth && cal.iHeight == cal.iScreenHeight;
+    if (cal.iWidth == 0)
+    {
+      // loaded and not updated since: its units are those of the closer GUI size
+      if (m_resolutions.size() <= RES_DESKTOP)
+        continue;
+      const auto res = std::find_if(m_resolutions.cbegin() + RES_DESKTOP, m_resolutions.cend(),
+          [&](const RESOLUTION_INFO& info) { return StringUtils::EqualsNoCase(cal.strMode, info.strMode); });
+      if (res == m_resolutions.cend())
+        continue;
+      screenW = res->iScreenWidth;
+      screenH = res->iScreenHeight;
+      native = std::abs(cal.Overscan.right - screenW) < std::abs(cal.Overscan.right - std::min(screenW, 1920)) &&
+               std::abs(cal.Overscan.bottom - screenH) < std::abs(cal.Overscan.bottom - std::min(screenH, 1080));
+    }
+    const int guiW = std::min(screenW, 1920);
+    const int guiH = std::min(screenH, 1080);
+    if (!native || guiW == screenW || guiH == screenH)
+      continue;
+    const float sx = static_cast<float>(guiW) / screenW;
+    const float sy = static_cast<float>(guiH) / screenH;
+    cal.Overscan.left = std::lround(cal.Overscan.left * sx);
+    cal.Overscan.right = std::lround(cal.Overscan.right * sx);
+    cal.Overscan.top = std::lround(cal.Overscan.top * sy);
+    cal.Overscan.bottom = std::lround(cal.Overscan.bottom * sy);
+    cal.iSubtitles = std::lround(cal.iSubtitles * sy);
+  }
+#endif
+
   // save calibrations
-  for (ResolutionInfos::const_iterator it = m_calibrations.begin(); it != m_calibrations.end(); ++it)
+  for (ResolutionInfos::const_iterator it = calibrations.begin(); it != calibrations.end(); ++it)
   {
     // Write the resolution tag
     TiXmlElement resElement("resolution");
@@ -616,13 +656,39 @@ void CDisplaySettings::ApplyCalibrations()
 {
   std::unique_lock<CCriticalSection> lock(m_critical);
   // apply all calibrations to the resolutions
-  for (ResolutionInfos::const_iterator itCal = m_calibrations.begin(); itCal != m_calibrations.end(); ++itCal)
+  for (ResolutionInfos::iterator itCal = m_calibrations.begin(); itCal != m_calibrations.end(); ++itCal)
   {
     // find resolutions
     for (size_t res = RES_DESKTOP; res < m_resolutions.size(); ++res)
     {
       if (StringUtils::EqualsNoCase(itCal->strMode, m_resolutions[res].strMode))
       {
+#if defined(HAS_LIBAMCODEC)
+        // "Disable GUI scaling" changes the GUI size of a 2160p mode (1920x1080
+        // upscaled <-> native 3840x2160) while calibrations stay keyed by mode,
+        // so one saved for the other GUI size would clip or shrink the GUI.
+        // Rescale it to the current GUI size (Save stores native ones in
+        // 1920x1080 GUI units again).
+        {
+          const RESOLUTION_INFO& cur = m_resolutions[res];
+          const int otherW = cur.iWidth == cur.iScreenWidth ? std::min(cur.iScreenWidth, 1920) : cur.iScreenWidth;
+          const int otherH = cur.iHeight == cur.iScreenHeight ? std::min(cur.iScreenHeight, 1080) : cur.iScreenHeight;
+          if (otherW != cur.iWidth && otherH != cur.iHeight &&
+              std::abs(itCal->Overscan.right - otherW) < std::abs(itCal->Overscan.right - cur.iWidth) &&
+              std::abs(itCal->Overscan.bottom - otherH) < std::abs(itCal->Overscan.bottom - cur.iHeight))
+          {
+            const float sx = static_cast<float>(cur.iWidth) / otherW;
+            const float sy = static_cast<float>(cur.iHeight) / otherH;
+            itCal->Overscan.left = std::lround(itCal->Overscan.left * sx);
+            itCal->Overscan.right = std::lround(itCal->Overscan.right * sx);
+            itCal->Overscan.top = std::lround(itCal->Overscan.top * sy);
+            itCal->Overscan.bottom = std::lround(itCal->Overscan.bottom * sy);
+            itCal->iSubtitles = std::lround(itCal->iSubtitles * sy);
+            CLog::Log(LOGINFO, "CDisplaySettings: calibration of {} rescaled from a {}x{} to a {}x{} GUI",
+                      itCal->strMode, otherW, otherH, cur.iWidth, cur.iHeight);
+          }
+        }
+#endif
         // overscan
         m_resolutions[res].Overscan.left = itCal->Overscan.left;
         if (m_resolutions[res].Overscan.left < -m_resolutions[res].iWidth/4)

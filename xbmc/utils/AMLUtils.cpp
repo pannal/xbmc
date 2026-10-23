@@ -19,6 +19,7 @@
 #include <numeric>
 #include <cmath>
 #include <algorithm>
+#include <linux/version.h>
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -48,6 +49,8 @@
 #include "filesystem/SpecialProtocol.h"
 #include "rendering/RenderSystem.h"
 #include "settings/DisplaySettings.h"
+#include "messaging/ApplicationMessenger.h"
+#include "windowing/WinSystem.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "guilib/GUIComponent.h"
@@ -2124,6 +2127,8 @@ bool aml_is_dv_enable()
 // Recover via s_lastDisplayMode (the last canonical target we wrote)
 // instead. If we have nothing to recover to (first call before any
 // target was ever written), skip the write entirely.
+static void aml_reapply_native_gui_osd(const char* fn);
+
 static void aml_display_mode_round_trip(const char* fn)
 {
   CSysfsPath display_mode{"/sys/class/display/mode"};
@@ -2132,6 +2137,7 @@ static void aml_display_mode_round_trip(const char* fn)
   if (cur != "null" && !cur.empty())
   {
     display_mode.Set(cur);
+    aml_reapply_native_gui_osd(fn);
     return;
   }
   std::lock_guard<std::mutex> lk(s_lastDisplayModeMutex);
@@ -2142,6 +2148,7 @@ static void aml_display_mode_round_trip(const char* fn)
               "recovering to last-known [{}] instead of re-asserting null",
               fn, cur.empty() ? "(empty)" : cur, s_lastDisplayMode);
     display_mode.Set(s_lastDisplayMode);
+    aml_reapply_native_gui_osd(fn);
   }
   else
   {
@@ -6671,12 +6678,294 @@ bool aml_set_display_resolution(const RESOLUTION_INFO &res, std::string framebuf
   return true;
 }
 
+// Kernel 4.9 OSD driver, non-hwc path: the OSD blend, the OSD scaler input
+// and the DV core2 graphic size stay at their 1920x1080 boot values when the
+// framebuffer grows to a native GUI size, so the TV shows a cropped or
+// shrunken GUI. Its "fb display" hwc mode sizes all of them from the
+// free_scale axes and passes the size on to the DV driver, so switch to it
+// for a native GUI above 1080p and restore the boot values otherwise. The
+// mode switch resets these, hence this runs on every resolution change.
+
+// native GUI size currently set up by aml_handle_native_gui_osd, 0 when none
+static int s_nativeGuiWidth = 0;
+static int s_nativeGuiHeight = 0;
+
+// While the GUI changes size the OSD is kept blanked (video stays visible)
+// until GUI frames of the new size are on screen, see aml_native_gui_osd_present.
+static std::atomic<bool> s_nativeGuiOsdHold{false};
+
+static void aml_native_gui_osd_unblank(const std::string& fb0)
+{
+  if (!s_nativeGuiOsdHold)
+    CSysfsPath(fb0 + "blank", 0);
+}
+
+static void aml_apply_native_gui_osd(const std::string& fb0, int width, int height)
+{
+  const std::string axis = StringUtils::Format("0 0 {} {}", width - 1, height - 1);
+  CSysfsPath(fb0 + "free_scale", 0);
+  CSysfsPath(fb0 + "free_scale_axis", axis);
+  CSysfsPath(fb0 + "window_axis", axis);
+  CSysfsPath(fb0 + "free_scale", 0x10001);
+  CSysfsPath(fb0 + "osd_background_size",
+             StringUtils::Format("{0} {1} {0} {1} 0 0 {0} {1}", width, height));
+  CSysfsPath(fb0 + "fix_target_size", StringUtils::Format("{} {}", width, height));
+  CSysfsPath(fb0 + "osd_display_fb", 1);
+  CSysfsPath(fb0 + "osd_hwc_enable", 1);
+  // the blend and DV sizes are only recomputed when the OSD is (re)enabled
+  CSysfsPath(fb0 + "blank", 1);
+  aml_native_gui_osd_unblank(fb0);
+}
+
+static void aml_handle_native_gui_osd(const RESOLUTION_INFO &res)
+{
+  if (((LINUX_VERSION_CODE >> 16) & 0xFF) >= 5)
+    return;
+
+  static const char* const nodes[] = {"osd_background_size", "fix_target_size",
+                                      "osd_display_fb", "osd_hwc_enable"};
+  static std::vector<std::string> bootValues;
+  const std::string fb0 = "/sys/class/graphics/fb0/";
+  const bool native4k = res.iWidth == res.iScreenWidth && res.iWidth > 1920;
+
+  if (!native4k)
+  {
+    if (bootValues.empty())
+      return;
+    for (size_t i = 0; i < bootValues.size(); i++)
+      CSysfsPath(fb0 + nodes[i], bootValues[i]);
+    bootValues.clear();
+    s_nativeGuiWidth = s_nativeGuiHeight = 0;
+    CSysfsPath(fb0 + "blank", 1);
+    aml_native_gui_osd_unblank(fb0);
+    CLog::Log(LOGDEBUG, "AMLUtils::{}: OSD back to its boot configuration", __FUNCTION__);
+    return;
+  }
+
+  if (bootValues.empty())
+  {
+    for (const char* node : nodes)
+    {
+      CSysfsPath path{fb0 + node};
+      std::string value = path.Exists() ? path.Get<std::string>().value_or("") : "";
+      bootValues.push_back(StringUtils::Trim(value));
+    }
+    // reject a partial read rather than restore garbage later
+    if (std::any_of(bootValues.begin(), bootValues.end(), [](const std::string& v) { return v.empty(); }))
+    {
+      CLog::Log(LOGWARNING, "AMLUtils::{}: OSD sysfs nodes missing, native GUI left as is", __FUNCTION__);
+      bootValues.clear();
+      return;
+    }
+  }
+
+  aml_apply_native_gui_osd(fb0, res.iWidth, res.iHeight);
+  s_nativeGuiWidth = res.iWidth;
+  s_nativeGuiHeight = res.iHeight;
+
+  CLog::Log(LOGDEBUG, "AMLUtils::{}: OSD set up for a native {}x{} GUI", __FUNCTION__,
+            res.iWidth, res.iHeight);
+}
+
+// Kernel 4.9: a write to display/mode, even of the current mode, makes the OSD
+// driver's logo freescaler (osd_logo.c) reset osd0 to the boot logo geometry
+// (1920x1080 scaled to the output), which stretches a native GUI.
+static void aml_reapply_native_gui_osd(const char* fn)
+{
+  if (s_nativeGuiWidth == 0)
+    return;
+  aml_apply_native_gui_osd("/sys/class/graphics/fb0/", s_nativeGuiWidth, s_nativeGuiHeight);
+  CLog::Log(LOGDEBUG, "AMLUtils::{}: native {}x{} GUI OSD set up again after the mode write",
+            fn, s_nativeGuiWidth, s_nativeGuiHeight);
+}
+
 void aml_handle_scale(const RESOLUTION_INFO &res)
 {
   if (res.iScreenWidth > res.iWidth && res.iScreenHeight > res.iHeight)
     aml_enable_freeScale(res);
   else
     aml_disable_freeScale();
+
+  aml_handle_native_gui_osd(res);
+}
+
+// Kernel 4.9: a DV FEL stream (dual-layer decode through the DV core) or an 8K
+// video (~5-7 GB/s measured) with a native 2160p GUI scanned out above 30 Hz
+// runs short of memory bandwidth and the OSD glitches, mostly while it is
+// redrawn. A 4K video through the DV core in Player-Led LLDV output glitches
+// too at a normal bus load (~3.5 GB/s), while a 1080p one is clean. So any
+// video larger than 1080p (or FEL) counts; a 1920x1080 GUI scaled to the
+// output is clean. While such a stream plays, the native GUI is suspended: the
+// GUI size of the 2160p entries of the resolution list drops to 1920x1080
+// (their calibration with it) and the resolution is set again. The display
+// mode stays, so aml_set_display_resolution() writes no display/mode and only
+// the framebuffer and the OSD scaling change: no HDMI handshake.
+static std::atomic<bool> s_heavyVideo{false};
+static std::atomic<bool> s_nativeGuiSuspended{false}; // written on the main thread only
+
+struct NativeGuiCalibration
+{
+  size_t index;
+  std::string strMode;
+  OVERSCAN overscan;
+  EdgeInsets guiInsets;
+  int subtitles;
+};
+static std::vector<NativeGuiCalibration> s_nativeGuiCalibrations;
+
+void aml_native_gui_set_heavy_video(bool playing)
+{
+  s_heavyVideo = playing;
+}
+
+static bool aml_native_gui_suspend_wanted(RESOLUTION res)
+{
+  if (((LINUX_VERSION_CODE >> 16) & 0xFF) >= 5 || !s_heavyVideo || res < RES_DESKTOP ||
+      !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+          CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING))
+    return false;
+  const RESOLUTION_INFO& info = CDisplaySettings::GetInstance().GetResolutionInfo(res);
+  return info.iScreenWidth > 1920 && info.iScreenHeight > 1080 && info.fRefreshRate > 30.0f;
+}
+
+bool aml_native_gui_needs_update(RESOLUTION res)
+{
+  return aml_native_gui_suspend_wanted(res) != s_nativeGuiSuspended;
+}
+
+static bool s_nativeGuiSuspendedBefore = false;
+// the GUI size changed in the resolution list, the OSD is blanked only once the
+// display transaction is admitted (aml_native_gui_commit)
+static bool s_nativeGuiBlankPending = false;
+static std::chrono::steady_clock::time_point s_nativeGuiOsdHoldStart;
+static int s_nativeGuiOsdHoldSwaps = 0;
+
+static void aml_native_gui_apply(bool suspend)
+{
+  if (!suspend && !s_nativeGuiSuspended)
+    return;
+
+  // idempotent: entries rebuilt by UpdateResolutions() meanwhile are resized too
+  CDisplaySettings& displaySettings = CDisplaySettings::GetInstance();
+  const bool nativeGui = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+      CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING);
+  if (suspend && !s_nativeGuiSuspended)
+    s_nativeGuiCalibrations.clear();
+  for (size_t i = RES_DESKTOP; i < displaySettings.ResolutionInfoSize(); i++)
+  {
+    RESOLUTION_INFO& info = displaySettings.GetResolutionInfo(i);
+    if (info.iScreenWidth <= 1920 || info.iScreenHeight <= 1080)
+      continue;
+    const int width = suspend || !nativeGui ? 1920 : info.iScreenWidth;
+    const int height = suspend || !nativeGui ? 1080 : info.iScreenHeight;
+    if (info.iWidth == width && info.iHeight == height)
+      continue;
+
+    auto saved = std::find_if(s_nativeGuiCalibrations.begin(), s_nativeGuiCalibrations.end(),
+                              [&](const NativeGuiCalibration& c)
+                              { return c.index == i && c.strMode == info.strMode; });
+    if (suspend)
+    {
+      if (saved == s_nativeGuiCalibrations.end() && info.iWidth == info.iScreenWidth)
+        s_nativeGuiCalibrations.push_back({i, info.strMode, info.Overscan, info.guiInsets, info.iSubtitles});
+    }
+    else if (saved != s_nativeGuiCalibrations.end())
+    {
+      info.iWidth = width;
+      info.iHeight = height;
+      info.Overscan = saved->overscan;
+      info.guiInsets = saved->guiInsets;
+      info.iSubtitles = saved->subtitles;
+      continue;
+    }
+
+    const float sx = static_cast<float>(width) / info.iWidth;
+    const float sy = static_cast<float>(height) / info.iHeight;
+    info.Overscan.left = std::lround(info.Overscan.left * sx);
+    info.Overscan.right = std::lround(info.Overscan.right * sx);
+    info.Overscan.top = std::lround(info.Overscan.top * sy);
+    info.Overscan.bottom = std::lround(info.Overscan.bottom * sy);
+    info.guiInsets = EdgeInsets(info.guiInsets.left * sx, info.guiInsets.top * sy,
+                                info.guiInsets.right * sx, info.guiInsets.bottom * sy);
+    info.iSubtitles = std::lround(info.iSubtitles * sy);
+    info.iWidth = width;
+    info.iHeight = height;
+  }
+  if (!suspend)
+    s_nativeGuiCalibrations.clear();
+
+  if (suspend != s_nativeGuiSuspended)
+  {
+    CLog::Log(LOGINFO, "AMLUtils::{}: native GUI {} (DV FEL or video above 1080p, above 30 Hz)", __FUNCTION__,
+              suspend ? "suspended, GUI at 1920x1080" : "resumed");
+    s_nativeGuiBlankPending = suspend != s_nativeGuiSuspendedBefore;
+  }
+  s_nativeGuiSuspended = suspend;
+}
+
+// Provisional: only the resolution list changes here, no device write. The
+// framebuffer is touched once the display transaction is admitted.
+void aml_native_gui_prepare(RESOLUTION res)
+{
+  s_nativeGuiSuspendedBefore = s_nativeGuiSuspended;
+  s_nativeGuiBlankPending = false;
+  aml_native_gui_apply(aml_native_gui_suspend_wanted(res));
+}
+
+void aml_native_gui_commit()
+{
+  if (!s_nativeGuiBlankPending)
+    return;
+  s_nativeGuiBlankPending = false;
+  // hide the OSD while the window is recreated at the new size, otherwise the
+  // old frame shows rescaled for a moment
+  s_nativeGuiOsdHoldStart = std::chrono::steady_clock::now();
+  s_nativeGuiOsdHoldSwaps = 0;
+  s_nativeGuiOsdHold = true;
+  CSysfsPath("/sys/class/graphics/fb0/blank", 1);
+}
+
+void aml_native_gui_prepare_failed()
+{
+  // the window was not recreated (display busy): the GUI size must follow the
+  // window, and the caller retries with the state it still sees as needed
+  if (s_nativeGuiSuspended == s_nativeGuiSuspendedBefore)
+    return;
+  CLog::Log(LOGINFO, "AMLUtils::{}: window not updated, GUI size change undone", __FUNCTION__);
+  aml_native_gui_apply(s_nativeGuiSuspendedBefore);
+  // nothing was written to the framebuffer for a refused transition
+  s_nativeGuiBlankPending = false;
+}
+
+bool aml_native_gui_size_changing()
+{
+  return s_nativeGuiSuspended != s_nativeGuiSuspendedBefore;
+}
+
+void aml_native_gui_osd_present(bool swapped)
+{
+  if (!s_nativeGuiOsdHold)
+    return;
+  // two GUI frames of the new size, or a 1 s fallback should the GUI not redraw
+  if (swapped)
+    s_nativeGuiOsdHoldSwaps++;
+  if (s_nativeGuiOsdHoldSwaps < 2 &&
+      std::chrono::steady_clock::now() - s_nativeGuiOsdHoldStart < std::chrono::seconds(1))
+    return;
+  s_nativeGuiOsdHold = false;
+  CSysfsPath("/sys/class/graphics/fb0/blank", 0);
+  CLog::Log(LOGDEBUG, "AMLUtils::{}: OSD shown again after the GUI size change ({} frames)",
+            __FUNCTION__, s_nativeGuiOsdHoldSwaps);
+}
+
+void aml_native_gui_playback_stopped()
+{
+  // the decoder is closed by now; also covers a stop with the GUI shown
+  s_heavyVideo = false;
+  if (s_nativeGuiSuspended)
+    CServiceBroker::GetAppMessenger()->PostMsg(
+        TMSG_SETVIDEORESOLUTION,
+        CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution(), 1);
 }
 
 void aml_handle_display_stereo_mode(const int stereo_mode)
