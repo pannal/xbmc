@@ -121,6 +121,8 @@ bool aml_support_dolby_vision();
 bool aml_dv_new_backend_available();
 // Cached at Setup: new backend available and the kernel has the SDR route node.
 bool aml_dv_new_sdr_route_available();
+// DV types the SDR route is offered for; the setting keeps its value when hidden.
+bool aml_dv_sdr_new_backend_type_ok(int type);
 bool aml_dv_graphics_stability_supported();
 void aml_dv_apply_graphics_stability();
 // Enables automatic eligible routing; caller holds native Setup admission.

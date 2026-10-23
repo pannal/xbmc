@@ -866,6 +866,12 @@ bool aml_dv_new_sdr_route_available()
   return s_dvNewSdrRouteSupported.load(std::memory_order_acquire) && aml_dv_new_backend_available();
 }
 
+bool aml_dv_sdr_new_backend_type_ok(int type)
+{
+  return type == DV_TYPE_PLAYER_LED_LLDV || type == DV_TYPE_PLAYER_LED_HDR ||
+         type == DV_TYPE_PLAYER_LED_HDR2;
+}
+
 bool aml_support_dolby_vision()
 {
   static int support_dv = -1;
@@ -1292,7 +1298,8 @@ unsigned int aml_dv_on(unsigned int mode, bool force_hdmi)
   // skipped (e.g. VP enabled while playing HDR10->SDR).
   aml_dv_set_sdr_source_max_nits(aml_dv_sdr_boost_param());
   aml_dv_set_sdr_keep_ext(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_PER_FRAME_METADATA));
-  aml_dv_set_sdr_new_backend(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND));
+  aml_dv_set_sdr_new_backend(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND) &&
+                             aml_dv_sdr_new_backend_type_ok(dv_type));
   aml_dv_set_target_min_lum(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_TARGET_MIN_LUM));
 
   if (dv_vp != 0)
