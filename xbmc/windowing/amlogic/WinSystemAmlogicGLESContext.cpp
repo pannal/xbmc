@@ -368,8 +368,13 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   // get current used resolution
   if (!aml_get_native_resolution(&current_resolution))
   {
-    CLog::Log(LOGERROR, "CWinSystemAmlogicGLESContext::{}: failed to receive current resolution", __FUNCTION__);
-    return false;
+    // display/mode reads "null" when a mode was set while no EDID was known
+    // (box booted with the AVR/display off) and stays so after the hotplug.
+    // Failing here made every Kodi restart exit; treat the current mode as
+    // unknown instead, so the requested mode is written below.
+    CLog::Log(LOGWARNING, "CWinSystemAmlogicGLESContext::{}: failed to receive current resolution, forcing the requested mode", __FUNCTION__);
+    current_resolution = RESOLUTION_INFO();
+    current_resolution.iWidth = current_resolution.iHeight = 0;
   }
 
   CLog::Log(LOGDEBUG, "CWinSystemAmlogicGLESContext::{}: "
