@@ -266,6 +266,7 @@ CDVDVideoCodecAmlogic::CDVDVideoCodecAmlogic(CProcessInfo &processInfo)
         CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR,
         CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE,
         CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV,
+        CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND,
         CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_STRIP,
         CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5_OVERRIDE,
         CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE,
@@ -315,17 +316,23 @@ void CDVDVideoCodecAmlogic::UpdateAppendCMv40SettingCache()
       const bool playerLed = type == DV_TYPE_PLAYER_LED_LLDV ||
                              type == DV_TYPE_PLAYER_LED_HDR || type == DV_TYPE_PLAYER_LED_HDR2;
       const int output = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
+      const bool sdrNewBackend =
+          (output == DOLBY_VISION_OUTPUT_MODE_SDR10 || output == DOLBY_VISION_OUTPUT_MODE_SDR8) &&
+          settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND) &&
+          aml_dv_new_sdr_route_available();
       const bool nativeOutput = output == DOLBY_VISION_OUTPUT_MODE_IPT ||
-                                output == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
+                                output == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL || sdrNewBackend;
       const bool metadataOutput = type == DV_TYPE_DISPLAY_LED ||
                                   (playerLed && nativeOutput && aml_dv_new_backend_available());
       if (!metadataOutput || m_originalSourceHdrType.load() != StreamHdrType::HDR_TYPE_DOLBYVISION ||
           settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE) == DV_MODE_OFF ||
           settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR) != 0)
         cmv40 = 0;
-      m_smartDisplayNits.store(settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM));
+      // The SDR route tone maps to the VS10 SDR target (100 nits), not to the sink's VSVDB.
+      m_smartDisplayNits.store(
+          sdrNewBackend ? 100 : settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM));
       m_smartUseConfiguredPeak.store(
-          settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_INJECT) ||
+          sdrNewBackend || settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_INJECT) ||
           settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_OVERRIDE_EDID));
       m_smartThresholdPct.store(settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_SMART_THRESHOLD));
       m_cmv40AutoTriggerSetting.store(settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER));
@@ -347,8 +354,12 @@ void CDVDVideoCodecAmlogic::UpdateStripCMv40SettingCache()
       const bool playerLed = type == DV_TYPE_PLAYER_LED_LLDV ||
                              type == DV_TYPE_PLAYER_LED_HDR || type == DV_TYPE_PLAYER_LED_HDR2;
       const int output = settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
+      const bool sdrNewBackend =
+          (output == DOLBY_VISION_OUTPUT_MODE_SDR10 || output == DOLBY_VISION_OUTPUT_MODE_SDR8) &&
+          settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND) &&
+          aml_dv_new_sdr_route_available();
       const bool nativeOutput = output == DOLBY_VISION_OUTPUT_MODE_IPT ||
-                                output == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
+                                output == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL || sdrNewBackend;
       const bool metadataOutput = type == DV_TYPE_DISPLAY_LED ||
                                   (playerLed && nativeOutput && aml_dv_new_backend_available());
       if (!metadataOutput || m_originalSourceHdrType.load() != StreamHdrType::HDR_TYPE_DOLBYVISION ||
@@ -403,12 +414,14 @@ void CDVDVideoCodecAmlogic::OnSettingChanged(const std::shared_ptr<const CSettin
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV ||
+      id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_INJECT ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_OVERRIDE_EDID)
     UpdateAppendCMv40SettingCache();
   if (id == CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_STRIP ||
+      id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE ||
       id == CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV ||
