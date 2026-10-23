@@ -319,7 +319,7 @@ void CDVDVideoCodecAmlogic::UpdateAppendCMv40SettingCache()
       const bool sdrNewBackend =
           (output == DOLBY_VISION_OUTPUT_MODE_SDR10 || output == DOLBY_VISION_OUTPUT_MODE_SDR8) &&
           settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND) &&
-          aml_dv_new_sdr_route_available();
+          aml_dv_sdr_new_backend_type_ok(type) && aml_dv_new_sdr_route_available();
       const bool nativeOutput = output == DOLBY_VISION_OUTPUT_MODE_IPT ||
                                 output == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL || sdrNewBackend;
       const bool metadataOutput = type == DV_TYPE_DISPLAY_LED ||
@@ -357,7 +357,7 @@ void CDVDVideoCodecAmlogic::UpdateStripCMv40SettingCache()
       const bool sdrNewBackend =
           (output == DOLBY_VISION_OUTPUT_MODE_SDR10 || output == DOLBY_VISION_OUTPUT_MODE_SDR8) &&
           settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND) &&
-          aml_dv_new_sdr_route_available();
+          aml_dv_sdr_new_backend_type_ok(type) && aml_dv_new_sdr_route_available();
       const bool nativeOutput = output == DOLBY_VISION_OUTPUT_MODE_IPT ||
                                 output == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL || sdrNewBackend;
       const bool metadataOutput = type == DV_TYPE_DISPLAY_LED ||
