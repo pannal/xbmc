@@ -930,14 +930,41 @@ namespace VIDEO
     {
       std::map<int, std::map<std::string, std::string>> seasonArt;
       m_database.GetTvShowSeasonArt(showID, seasonArt);
+      const std::vector<std::string> artTypes = CVideoThumbLoader::GetArtTypes(MediaTypeSeason);
 
-      bool updateSeasonArt = false;
-      for (std::map<int, std::map<std::string, std::string>>::const_iterator i = seasonArt.begin(); i != seasonArt.end(); ++i)
+      // seasons without any art yet, online art fills the types local art leaves out below
+      std::set<int> emptySeasons;
+      for (const auto& [season, art] : seasonArt)
       {
-        if (i->second.empty())
+        if (art.empty())
+          emptySeasons.insert(season);
+      }
+      const bool updateSeasonArt = !emptySeasons.empty();
+
+      // local season art (seasonNN-poster.jpg etc.) takes precedence over online art stored
+      // earlier, e.g. when the scraper already listed a season before it was on disk
+      bool localArtChanged = false;
+      if (useLocal && !item->IsPlugin())
+      {
+        CVideoInfoTag localShow; // path only, so GetSeasonThumbs() adds no online art
+        localShow.m_strPath = showInfo.m_strPath;
+        std::map<int, std::map<std::string, std::string>> localArt;
+        GetSeasonThumbs(localShow, localArt, artTypes);
+        for (const auto& [season, art] : localArt)
         {
-          updateSeasonArt = true;
-          break;
+          auto current = seasonArt.find(season);
+          if (current == seasonArt.end())
+            continue;
+          for (const auto& [type, url] : art)
+          {
+            auto it = current->second.find(type);
+            // keep identical art and art that isn't an online URL, e.g. another file the user
+            // picked; online art, picked or scraped, gives way to the local file
+            if (it != current->second.end() && (it->second == url || !URIUtils::IsHTTP(it->second)))
+              continue;
+            current->second[type] = url;
+            localArtChanged = true;
+          }
         }
       }
 
@@ -946,9 +973,44 @@ namespace VIDEO
         if (!item->IsPlugin() || scraper->ID() != "metadata.local")
         {
           CVideoInfoDownloader loader(scraper);
+          const std::string showPath = showInfo.m_strPath;
+          const std::map<std::string, std::string> uniqueIDs = showInfo.GetUniqueIDs();
           loader.GetArtwork(showInfo);
+          // Python scrapers replace the whole tag, keep the show folder for the local lookup
+          showInfo.m_strPath = showPath;
+
+          // the artwork reply of some Python scrapers carries no season art, so a new season
+          // would get no online art: take the season art from the show details
+          const auto& urls = showInfo.m_strPictureURL.GetUrls();
+          const bool hasSeasonUrls =
+              std::any_of(urls.begin(), urls.end(), [](const CScraperUrl::SUrlEntry& url)
+                          { return url.m_type == CScraperUrl::UrlType::Season; });
+          if (scraper->IsPython() && !hasSeasonUrls && !artTypes.empty() && !uniqueIDs.empty())
+          {
+            // only for seasons with episodes in the library, not empty rows such as unused
+            // specials; the file names don't carry the season for date or title matches
+            CFileItemList seasons;
+            m_database.GetSeasonsNav(StringUtils::Format("videodb://tvshows/titles/{}/", showID),
+                                     seasons, -1, -1, -1, -1, showID, false);
+            const bool hasNewSeason =
+                std::any_of(seasons.cbegin(), seasons.cend(),
+                            [&emptySeasons](const CFileItemPtr& season)
+                            {
+                              return season->HasVideoInfoTag() &&
+                                     season->GetVideoInfoTag()->m_iSeason >= 0 &&
+                                     emptySeasons.count(season->GetVideoInfoTag()->m_iSeason) > 0;
+                            });
+            CVideoInfoTag details;
+            if (hasNewSeason &&
+                loader.GetDetails({uniqueIDs.begin(), uniqueIDs.end()}, CScraperUrl(), details))
+              showInfo.m_strPictureURL = details.m_strPictureURL;
+          }
         }
-        GetSeasonThumbs(showInfo, seasonArt, CVideoThumbLoader::GetArtTypes(MediaTypeSeason), useLocal && !item->IsPlugin());
+        GetSeasonThumbs(showInfo, seasonArt, artTypes, useLocal && !item->IsPlugin());
+      }
+
+      if (updateSeasonArt || localArtChanged)
+      {
         for (std::map<int, std::map<std::string, std::string> >::const_iterator i = seasonArt.begin(); i != seasonArt.end(); ++i)
         {
           int seasonID = m_database.AddSeason(showID, i->first);
