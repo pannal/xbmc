@@ -18111,8 +18111,8 @@ msgid "- Speaker distance"
 msgstr "- Lautsprecherabstand"
 
 msgctxt "#39321"
-msgid "How far away the virtual speakers are placed. Larger values push the sound further out and make it wider; smaller values bring it closer. Reverb grows with distance, and echoes do too once the room is at its largest, so larger values sound louder. It changes little with Room simulation off, and does nothing with a custom room."
-msgstr "Wie weit entfernt die virtuellen Lautsprecher stehen. Größere Werte rücken den Klang weiter weg und machen ihn breiter; kleinere holen ihn näher. Der Nachhall wächst mit dem Abstand, ab der maximalen Raumgröße auch die Echos, daher klingen größere Werte lauter. Ohne Raumsimulation ändert es wenig, mit einem eigenen Raum gar nichts."
+msgid "How far away the virtual speakers are placed. Larger values push the sound further out and make it wider; smaller values bring it closer. Reverb grows with distance, echoes slightly and then more once the room is at its largest, so larger values sound louder. It changes little with Room simulation off, and nothing with a custom room."
+msgstr "Wie weit entfernt die virtuellen Lautsprecher stehen. Größere Werte rücken den Klang weiter weg und machen ihn breiter; kleinere holen ihn näher. Der Nachhall wächst mit dem Abstand, die Echos leicht und ab der maximalen Raumgröße stärker, daher klingen größere Werte lauter. Ohne Raumsimulation ändert es wenig, mit einem eigenen Raum gar nichts."
 
 msgctxt "#39322"
 msgid "- Reverb amount"
