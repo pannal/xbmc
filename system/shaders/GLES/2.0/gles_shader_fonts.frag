@@ -22,7 +22,12 @@
 
 precision mediump float;
 uniform sampler2D m_samp0;
-varying vec4 m_cord0;
+// Preserve enough UV precision to sample individual GUI glyphs in large 4K atlases.
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+varying highp vec4 m_cord0;
+#else
+varying mediump vec4 m_cord0;
+#endif
 varying lowp vec4 m_colour;
 uniform float m_sdrPeak;
 
