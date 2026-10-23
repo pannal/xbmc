@@ -1059,6 +1059,41 @@
           <constraints><minimum>0</minimum><step>0.1</step><maximum>10</maximum></constraints>
           <control type="slider" format="number"><formatlabel>69365</formatlabel></control>
         </setting>
+        <setting id="subtitles.bitmapzoom" type="integer" label="69212" help="69213">
+          <level>1</level>
+          <default>100</default>
+          <constraints>
+            <minimum>10</minimum>
+            <step>5</step>
+            <maximum>200</maximum>
+          </constraints>
+          <control type="slider" format="integer">
+            <formatlabel>14047</formatlabel>
+          </control>
+        </setting>
+        <setting id="subtitles.bitmapsdrbrightness" type="integer" label="69337" help="69338">
+          <requirement>has_glesv2</requirement>
+          <level>1</level>
+          <default>100</default>
+          <constraints><minimum>0</minimum><step>5</step><maximum>200</maximum></constraints>
+          <control type="slider" format="percentage" />
+        </setting>
+        <setting id="subtitles.bitmapsdrpeak" type="integer" label="69341" help="69342">
+          <requirement>has_glesv2</requirement>
+          <level>1</level>
+          <default>100</default>
+          <constraints><minimum>0</minimum><step>5</step><maximum>100</maximum></constraints>
+          <control type="slider" format="percentage" />
+        </setting>
+        <setting id="subtitles.bitmapsdrsaturation" type="integer" label="69339" help="69340">
+          <requirement>has_glesv2</requirement>
+          <level>1</level>
+          <default>100</default>
+          <constraints><minimum>0</minimum><step>5</step><maximum>200</maximum></constraints>
+          <control type="slider" format="percentage" />
+        </setting>
+      </group>
+      <group id="6" label="69384">
         <setting id="subtitles.detectactivearea" type="boolean" label="69335" help="69336">
           <requirement>HAVE_AMCODEC</requirement>
           <level>2</level>
@@ -1117,39 +1152,6 @@
           <level>3</level>
           <default>true</default>
           <control type="toggle" />
-        </setting>
-        <setting id="subtitles.bitmapzoom" type="integer" label="69212" help="69213">
-          <level>1</level>
-          <default>100</default>
-          <constraints>
-            <minimum>10</minimum>
-            <step>5</step>
-            <maximum>200</maximum>
-          </constraints>
-          <control type="slider" format="integer">
-            <formatlabel>14047</formatlabel>
-          </control>
-        </setting>
-        <setting id="subtitles.bitmapsdrbrightness" type="integer" label="69337" help="69338">
-          <requirement>has_glesv2</requirement>
-          <level>1</level>
-          <default>100</default>
-          <constraints><minimum>0</minimum><step>5</step><maximum>200</maximum></constraints>
-          <control type="slider" format="percentage" />
-        </setting>
-        <setting id="subtitles.bitmapsdrpeak" type="integer" label="69341" help="69342">
-          <requirement>has_glesv2</requirement>
-          <level>1</level>
-          <default>100</default>
-          <constraints><minimum>0</minimum><step>5</step><maximum>100</maximum></constraints>
-          <control type="slider" format="percentage" />
-        </setting>
-        <setting id="subtitles.bitmapsdrsaturation" type="integer" label="69339" help="69340">
-          <requirement>has_glesv2</requirement>
-          <level>1</level>
-          <default>100</default>
-          <constraints><minimum>0</minimum><step>5</step><maximum>200</maximum></constraints>
-          <control type="slider" format="percentage" />
         </setting>
       </group>
       <group id="4" label="39187">

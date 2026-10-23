@@ -28143,3 +28143,9 @@ msgstr ""
 msgctxt "#69383"
 msgid "Shared by subtitle black-border detection, native Dolby Vision L5 detection and explicit detector API jobs. Maximum time in seconds for each requested scan position, including seeking, reads, decoding and all retries. Admission and deliberate pre-position cache waiting are excluded. A timeout abandons the whole scan without caching partial results; automatic detection stays stopped for this playback. Default: 5 seconds; range: 1–60. Blocking storage, network backends or decoder calls may return after the deadline; detection then stops without visiting further positions. Opening and initial stream probing are separate and are not bounded by this per-position limit. Changes apply to new playback or API requests."
 msgstr ""
+
+#. Subtitle settings group for black-border detection and shared active-picture controls
+#: system/settings/settings.xml
+msgctxt "#69384"
+msgid "Active picture and subtitle positioning"
+msgstr ""

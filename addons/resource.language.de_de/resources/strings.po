@@ -20820,3 +20820,9 @@ msgstr "Zeit für Rahmenerkennung pro Position"
 msgctxt "#69383"
 msgid "Shared by subtitle black-border detection, native Dolby Vision L5 detection and explicit detector API jobs. Maximum time in seconds for each requested scan position, including seeking, reads, decoding and all retries. Admission and deliberate pre-position cache waiting are excluded. A timeout abandons the whole scan without caching partial results; automatic detection stays stopped for this playback. Default: 5 seconds; range: 1–60. Blocking storage, network backends or decoder calls may return after the deadline; detection then stops without visiting further positions. Opening and initial stream probing are separate and are not bounded by this per-position limit. Changes apply to new playback or API requests."
 msgstr "Gemeinsam für Untertitel-Rahmenerkennung, native Dolby-Vision-L5-Erkennung und explizite API-Aufträge. Maximale Zeit in Sekunden pro angeforderter Prüfposition, einschließlich Suche, Lesen, Dekodieren und aller Wiederholungen. Zulassung und bewusstes Warten auf den Wiedergabepuffer vor der Position zählen nicht mit. Bei Zeitüberschreitung wird die gesamte Prüfung ohne Speichern unvollständiger Ergebnisse beendet; die automatische Erkennung bleibt für diese Wiedergabe gestoppt. Standard: 5 Sekunden; Bereich: 1–60. Blockierende Speicher-, Netzwerk- oder Dekodieraufrufe können erst nach Ablauf zurückkehren; anschließend endet die Erkennung ohne weitere Positionen. Öffnen und anfängliche Streamanalyse sind separat und werden durch diese Grenze nicht beschränkt. Änderungen gelten für neue Wiedergaben oder API-Aufträge."
+
+#. Subtitle settings group for black-border detection and shared active-picture controls
+#: system/settings/settings.xml
+msgctxt "#69384"
+msgid "Active picture and subtitle positioning"
+msgstr "Aktiver Bildbereich und Untertitelpositionierung"
