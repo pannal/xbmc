@@ -87,6 +87,12 @@ public:
   bool BeginMenuOverlayRender() override;
   void EndMenuOverlayRender() override;
 
+  // Shared context for <gui><asynctextureupload>: the large texture loader
+  // uploads on its own thread instead of the render thread.
+  bool BindTextureUploadContext() override;
+  bool UnbindTextureUploadContext() override;
+  bool HasContext() override;
+
   EGLDisplay GetEGLDisplay() const;
   EGLSurface GetEGLSurface() const;
   EGLContext GetEGLContext() const;

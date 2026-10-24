@@ -167,6 +167,27 @@ bool CWinSystemAmlogicGLESContext::IsPrimaryContextCurrent() const
          eglGetCurrentSurface(EGL_DRAW) == m_pGLContext.GetEGLSurface();
 }
 
+// The EGL context lives from InitWindowSystem to DestroyWindowSystem; a display
+// mode change replaces only the surface, so textures uploaded through the shared
+// context stay valid in the primary one. Without an upload context the texture
+// is uploaded by the render thread on first use, as before.
+bool CWinSystemAmlogicGLESContext::BindTextureUploadContext()
+{
+  if (!m_pGLContext.HasTextureUploadContext())
+    return false;
+  return m_pGLContext.BindTextureUploadContext();
+}
+
+bool CWinSystemAmlogicGLESContext::UnbindTextureUploadContext()
+{
+  return m_pGLContext.UnbindTextureUploadContext();
+}
+
+bool CWinSystemAmlogicGLESContext::HasContext()
+{
+  return m_pGLContext.HasContext();
+}
+
 void CWinSystemAmlogicGLESContext::ReleaseCompositeResources()
 {
   GuiABFinish("release_composite");

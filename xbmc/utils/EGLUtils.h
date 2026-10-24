@@ -234,9 +234,11 @@ public:
   bool BindTextureUploadContext();
   bool UnbindTextureUploadContext();
   bool HasContext();
+  bool HasTextureUploadContext() const;
 
 private:
   void SurfaceAttrib();
+  bool CreateTextureUploadSurface();
 
   EGLenum m_platform{EGL_NONE};
   bool m_platformSupported{false};
@@ -246,6 +248,8 @@ private:
   EGLContext m_eglContext{EGL_NO_CONTEXT};
   EGLConfig m_eglConfig{}, m_eglHDRConfig{};
   EGLContext m_eglUploadContext{EGL_NO_CONTEXT};
+  // EGL_NO_SURFACE when the upload context is bound surfaceless
+  EGLSurface m_eglUploadSurface{EGL_NO_SURFACE};
   mutable CCriticalSection m_textureUploadLock;
 
   PFNEGLSETDAMAGEREGIONKHRPROC m_eglSetDamageRegionKHR{nullptr};

@@ -456,6 +456,12 @@ bool CEGLContextUtils::CreateContext(CEGLAttributesVec contextAttribs)
 
   if (m_eglUploadContext == EGL_NO_CONTEXT)
     CLog::Log(LOGWARNING, "Failed to create EGL upload context");
+  else if (!CreateTextureUploadSurface())
+  {
+    // an upload context that can never be bound is no upload context
+    eglDestroyContext(m_eglDisplay, m_eglUploadContext);
+    m_eglUploadContext = EGL_NO_CONTEXT;
+  }
 
   m_bufferAgeSupport = CEGLUtils::HasExtension(m_eglDisplay, "EGL_EXT_buffer_age");
 
@@ -586,6 +592,9 @@ void CEGLContextUtils::Destroy()
 
 void CEGLContextUtils::DestroyContext()
 {
+  // waits for an upload in progress on a loader thread
+  std::unique_lock<CCriticalSection> lock(m_textureUploadLock);
+
   if (m_eglContext != EGL_NO_CONTEXT)
   {
     eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -598,6 +607,39 @@ void CEGLContextUtils::DestroyContext()
     eglDestroyContext(m_eglDisplay, m_eglUploadContext);
     m_eglUploadContext = EGL_NO_CONTEXT;
   }
+
+  if (m_eglUploadSurface != EGL_NO_SURFACE)
+  {
+    eglDestroySurface(m_eglDisplay, m_eglUploadSurface);
+    m_eglUploadSurface = EGL_NO_SURFACE;
+  }
+}
+
+// The upload context is made current on a loader thread, which has no window
+// surface: bound surfaceless where the driver allows it, on a 1x1 pbuffer
+// otherwise.
+bool CEGLContextUtils::CreateTextureUploadSurface()
+{
+  if (CEGLUtils::HasExtension(m_eglDisplay, "EGL_KHR_surfaceless_context"))
+  {
+    CLog::Log(LOGINFO, "EGL texture upload context bound surfaceless");
+    return true;
+  }
+
+  CEGLAttributesVec attribs;
+  attribs.Add({{EGL_WIDTH, 1}, {EGL_HEIGHT, 1}});
+  m_eglUploadSurface = eglCreatePbufferSurface(m_eglDisplay, m_eglConfig, attribs.Get());
+  if (m_eglUploadSurface == EGL_NO_SURFACE)
+  {
+    CLog::Log(LOGWARNING,
+              "No surface for the EGL upload context (no EGL_KHR_surfaceless_context, pbuffer "
+              "EGL error {:#x})",
+              eglGetError());
+    return false;
+  }
+
+  CLog::Log(LOGINFO, "EGL texture upload context bound to a 1x1 pbuffer");
+  return true;
 }
 
 void CEGLContextUtils::DestroySurface()
@@ -646,15 +688,17 @@ bool CEGLContextUtils::TrySwapBuffers(SwapDiagnostics* diagnostics)
 
 bool CEGLContextUtils::BindTextureUploadContext()
 {
+  // checked under the lock: DestroyContext may have run meanwhile
+  m_textureUploadLock.lock();
+
   if (m_eglDisplay == EGL_NO_DISPLAY || m_eglUploadContext == EGL_NO_CONTEXT)
   {
+    m_textureUploadLock.unlock();
     CLog::LogF(LOGERROR, "No texture upload context found.");
     return false;
   }
 
-  m_textureUploadLock.lock();
-
-  if (!eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, m_eglUploadContext))
+  if (!eglMakeCurrent(m_eglDisplay, m_eglUploadSurface, m_eglUploadSurface, m_eglUploadContext))
   {
     m_textureUploadLock.unlock();
     CLog::LogF(LOGERROR, "Couldn't bind texture upload context.");
@@ -688,6 +732,12 @@ bool CEGLContextUtils::UnbindTextureUploadContext()
 bool CEGLContextUtils::HasContext()
 {
   return eglGetCurrentContext() != EGL_NO_CONTEXT;
+}
+
+bool CEGLContextUtils::HasTextureUploadContext() const
+{
+  std::unique_lock<CCriticalSection> lock(m_textureUploadLock);
+  return m_eglDisplay != EGL_NO_DISPLAY && m_eglUploadContext != EGL_NO_CONTEXT;
 }
 
 void CEGLContextUtils::SetDamagedRegions(const CDirtyRegionList& dirtyRegions)
