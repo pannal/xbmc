@@ -142,8 +142,11 @@ void registration_cases(){
   dispatch(manager,2);assert(policy[0].calls==2 && policy[1].calls==2);
 }
 enum TV_PRESET{TV_PRESET_MANUAL,TV_PRESET_AUTO,TV_PRESET_LG,TV_PRESET_SONY,TV_PRESET_SAMSUNG,TV_PRESET_PANASONIC,TV_PRESET_PHILIPS,TV_PRESET_TCL};
-enum DV_TYPE{DV_TYPE_DISPLAY_LED,DV_TYPE_PLAYER_LED_LLDV,DV_TYPE_PLAYER_LED_HDR2,DV_TYPE_VS10_ONLY};
+enum DV_TYPE{DV_TYPE_DISPLAY_LED,DV_TYPE_PLAYER_LED_LLDV,DV_TYPE_PLAYER_LED_HDR,DV_TYPE_VS10_ONLY,DV_TYPE_PLAYER_LED_HDR2};
 enum DV_MODE{DV_MODE_OFF,DV_MODE_ON_DEMAND};
+constexpr int DOLBY_VISION_OUTPUT_MODE_IPT=0,DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL=1;
+// Backend detection is a dependency; this fixture exercises settings retirement.
+bool aml_dv_new_backend_available(){return true;}
 constexpr int LOGINFO=1, LOGERROR=2;
 struct CLog{template<class...T>static void Log(T&&...){}};
 struct AMLDVCapability {std::string edid_pnpid="test";};
@@ -174,9 +177,14 @@ struct CSettings {
 } settingsInstance;
 CSettings* settings(){return &settingsInstance;}
 struct DOVIStreamMetadata{int source_max_pq=333;};
+// Successful DPMS release is a dependency; test-dpms-shutdown.sh covers failure
+// and state ordering with the actual sysfs adapter.
+struct CApplicationPowerHandling{bool ResetDPMS(){return true;}};
+struct Components{template<class T>std::shared_ptr<T> GetComponent(){static auto p=std::make_shared<T>();return p;}};
 struct CServiceBroker {
   static inline bool alive=true;
   static CServiceBroker& GetDataCacheCore(){assert(alive);static CServiceBroker cache;return cache;}
+  static Components& GetAppComponents(){static Components components;return components;}
   DOVIStreamMetadata GetVideoDoViStreamMetadata(){return {};}
 };
 std::function<void(int,int,int)> payloadHook;
@@ -200,6 +208,8 @@ struct CWinSystemAmlogicGLESContext {
   bool m_shutdownRequested=false;
   CAMLDisplayLifecycle m_displayLifecycle;
   std::unique_ptr<CAMLDisplayLifecycle::Mutation> m_shutdownAdmission;
+  void GuiABFinish(const char*){}
+  void SetNativeGuiWait(bool){}
   bool RetireNativeTransactions(){return dv->Retire();}
   bool PrepareForShutdown();
 };

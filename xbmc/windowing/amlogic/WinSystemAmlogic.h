@@ -75,6 +75,7 @@ protected:
                           RESOLUTION_INFO& res, CAMLSession::DisplayRequest display);
   bool InitWindowSystem(CAMLSession::DisplayRequest display);
   bool RetireNativeTransactions();
+  virtual bool CanSleepDisplay() const { return !m_delayDispReset; }
 
 private:
   std::unique_ptr<CDolbyVisionAML> m_dolbyVisionAML;

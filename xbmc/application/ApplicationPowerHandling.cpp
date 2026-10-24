@@ -48,7 +48,7 @@ void CApplicationPowerHandling::ResetScreenSaver()
 
   // screen saver timer is reset only if we're not already in screensaver or
   // DPMS mode
-  if ((!m_screensaverActive && m_iScreenSaveLock == 0) && !m_dpmsIsActive)
+  if ((!m_screensaverActive && m_iScreenSaveLock == 0) && !IsDPMSActive())
     ResetScreenSaverTimer();
 }
 
@@ -80,69 +80,162 @@ void CApplicationPowerHandling::StopScreenSaverTimer()
 
 bool CApplicationPowerHandling::ToggleDPMS(bool manual)
 {
-  auto winSystem = CServiceBroker::GetWinSystem();
-  if (!winSystem)
+  auto* window = CServiceBroker::GetWinSystem();
+  const auto dpms = window ? window->GetDPMSManager() : nullptr;
+  if (!dpms || !dpms->IsSupported())
     return false;
-
-  std::shared_ptr<CDPMSSupport> dpms = winSystem->GetDPMSManager();
-  if (!dpms)
-    return false;
-
-  if (manual || (m_dpmsIsManual == manual))
+  if (manual)
   {
-    if (m_dpmsIsActive)
-    {
-      m_dpmsIsActive = false;
-      m_dpmsIsManual = false;
-      SetRenderGUI(true);
-      CheckOSScreenSaverInhibitionSetting();
-      CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::GUI, "OnDPMSDeactivated");
-      return dpms->DisablePowerSaving();
-    }
-    else
-    {
-      if (dpms->EnablePowerSaving(dpms->GetSupportedModes()[0]))
-      {
-        m_dpmsIsActive = true;
-        m_dpmsIsManual = manual;
-        SetRenderGUI(false);
-        CheckOSScreenSaverInhibitionSetting();
-        CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::GUI, "OnDPMSActivated");
-        return true;
-      }
-    }
+    m_dpmsControl.ToggleManual();
+    return true;
   }
-  return false;
+  return m_dpmsControl.Sleep();
+}
+
+bool CApplicationPowerHandling::WakeDPMS()
+{
+  // Player callbacks also run on gapless track changes. Only wake backends
+  // whose power saving would interrupt playback's audio output.
+  auto* window = CServiceBroker::GetWinSystem();
+  const auto dpms = window ? window->GetDPMSManager() : nullptr;
+  return dpms && dpms->PowerSavingInterruptsAudio() && m_dpmsControl.Wake();
+}
+
+void CApplicationPowerHandling::ProcessDPMS()
+{
+  const auto request = m_dpmsControl.Begin();
+  if (!request)
+    return;
+  auto* window = CServiceBroker::GetWinSystem();
+  const auto dpms = window ? window->GetDPMSManager() : nullptr;
+  if (!dpms || !dpms->IsSupported())
+  {
+    m_dpmsControl.Complete(*request, false);
+    return;
+  }
+  // Playback can change after the idle check queued/deferred this request.
+  // Recheck before touching hardware; explicit manual sleep retains its policy.
+  if (request->active && !request->explicitRequest && dpms->PowerSavingInterruptsAudio() &&
+      PlaybackPreventsDPMS())
+  {
+    m_dpmsControl.Complete(*request, false);
+    return;
+  }
+  if (request->active && !dpms->CanEnablePowerSaving())
+  {
+    m_dpmsControl.Defer(*request);
+    return;
+  }
+  const auto before = m_dpmsControl.GetState();
+  const bool success = before.active == request->active ||
+      (request->active ? dpms->EnablePowerSaving(dpms->GetSupportedModes().front())
+                       : dpms->DisablePowerSaving());
+  m_dpmsControl.Complete(*request, success);
+  if (!success)
+  {
+    CLog::Log(LOGERROR, "DPMS: failed to {} display power saving", request->active ? "enable" : "disable");
+    // Entry failure must not be retried every idle check. Wake failure retains
+    // committed sleep and consumes navigation until a later request succeeds.
+    if (!request->active)
+      return;
+    ResetScreenSaverTimer();
+    return;
+  }
+  if (!request->active)
+    ResetScreenSaverTimer();
+  if (before.active == request->active)
+    return;
+  SetRenderGUI(!request->active);
+  CheckOSScreenSaverInhibitionSetting();
+  CServiceBroker::GetAnnouncementManager()->Announce(
+      ANNOUNCEMENT::GUI, request->active ? "OnDPMSActivated" : "OnDPMSDeactivated");
+  if (!request->active)
+  {
+    // Rendering must run before delayed OnResetDisplay/HDR work can finish.
+    dpms->OnPowerSavingDisabled();
+    const bool powerOff = request->powerOff;
+    if (!request->explicitRequest && (!m_screensaverActive || WakeUpScreenSaver(powerOff)))
+      AnnounceScreenSaverDeactivated(powerOff);
+  }
+  else if (!request->explicitRequest)
+    WakeUpScreenSaver();
+}
+
+bool CApplicationPowerHandling::ResetDPMS()
+{
+  // Persistent backends need synchronous lifecycle release even when no
+  // further FrameMove will run. Other backends retain their suspend policy.
+  auto* window = CServiceBroker::GetWinSystem();
+  const auto dpms = window ? window->GetDPMSManager() : nullptr;
+  if (!dpms || !dpms->HasPersistentPowerSaving())
+    return true;
+  return ReleaseDPMS(dpms);
+}
+
+void CApplicationPowerHandling::ReleaseAutomaticDPMS()
+{
+  auto* window = CServiceBroker::GetWinSystem();
+  const auto dpms = window ? window->GetDPMSManager() : nullptr;
+  if (!dpms || dpms->HasPersistentPowerSaving())
+    return;
+  const auto before = m_dpmsControl.GetState();
+  if (before.active && !before.manual)
+  {
+    // Without a visual screensaver, the combined wake below has no work left.
+    // Preserve the successful automatic wake notification for listeners.
+    if (ReleaseDPMS(dpms) && !m_screensaverActive)
+      AnnounceScreenSaverDeactivated(false);
+  }
+  else
+    m_dpmsControl.ClearRequests();
+}
+
+bool CApplicationPowerHandling::ReleaseDPMS(const std::shared_ptr<CDPMSSupport>& dpms)
+{
+  m_dpmsControl.ClearRequests();
+  const auto before = m_dpmsControl.GetState();
+  const bool success = dpms->DisablePowerSaving();
+  m_dpmsControl.Complete({{false, false}, 0}, success);
+  if (!success)
+  {
+    CLog::Log(LOGERROR, "DPMS: failed to clear display power saving during cleanup");
+    return false;
+  }
+  SetRenderGUI(true);
+  ResetScreenSaverTimer();
+  CheckOSScreenSaverInhibitionSetting();
+  if (before.active)
+    CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::GUI, "OnDPMSDeactivated");
+  dpms->OnPowerSavingDisabled();
+  return true;
 }
 
 bool CApplicationPowerHandling::WakeUpScreenSaverAndDPMS(bool bPowerOffKeyPressed /* = false */)
 {
   bool result = false;
 
-  // First reset DPMS, if active
-  if (m_dpmsIsActive)
+  if (IsDPMSActive() || m_dpmsControl.HasRequests())
   {
-    if (m_dpmsIsManual)
+    if (m_dpmsControl.GetState().manual)
       return false;
-    //! @todo if screensaver lock is specified but screensaver is not active
-    //! (DPMS came first), activate screensaver now.
-    ToggleDPMS(false);
-    ResetScreenSaverTimer();
-    result = !m_screensaverActive || WakeUpScreenSaver(bPowerOffKeyPressed);
+    if (m_dpmsControl.Wake(bPowerOffKeyPressed))
+      return true; // Consume navigation until the backend has committed wake.
   }
-  else if (m_screensaverActive)
+  if (m_screensaverActive)
     result = WakeUpScreenSaver(bPowerOffKeyPressed);
 
   if (result)
-  {
-    // allow listeners to ignore the deactivation if it precedes a powerdown/suspend etc
-    CVariant data(CVariant::VariantTypeObject);
-    data["shuttingdown"] = bPowerOffKeyPressed;
-    CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::GUI,
-                                                       "OnScreensaverDeactivated", data);
-  }
-
+    AnnounceScreenSaverDeactivated(bPowerOffKeyPressed);
   return result;
+}
+
+void CApplicationPowerHandling::AnnounceScreenSaverDeactivated(bool powerOff)
+{
+  // Preserve each user's CEC wake/source policy, including power-key suppression.
+  CVariant data(CVariant::VariantTypeObject);
+  data["shuttingdown"] = powerOff;
+  CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::GUI,
+                                                   "OnScreensaverDeactivated", data);
 }
 
 bool CApplicationPowerHandling::WakeUpScreenSaver(bool bPowerOffKeyPressed /* = false */)
@@ -231,7 +324,7 @@ void CApplicationPowerHandling::CheckOSScreenSaverInhibitionSetting()
   // Kodi screen saver overrides OS one: always inhibit OS screen saver then
   // except when DPMS is active (inhibiting the screen saver then might also
   // disable DPMS again)
-  if (!m_dpmsIsActive &&
+  if (!IsDPMSActive() &&
       !CServiceBroker::GetSettingsComponent()
            ->GetSettings()
            ->GetString(CSettings::SETTING_SCREENSAVER_MODE)
@@ -250,10 +343,29 @@ void CApplicationPowerHandling::CheckOSScreenSaverInhibitionSetting()
   }
 }
 
+bool CApplicationPowerHandling::PlaybackPreventsDPMS() const
+{
+  const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+  if (!appPlayer)
+    return false;
+  // Ownership spans stream discovery and EOF notification/close. IsPlaying()
+  // can already be false while the next item is still waiting to be selected.
+  // A pending replacement also needs protection after the old player retires.
+  // Playback already present at screensaver activation remains protected when
+  // it advances into video. Keep the idle-started Python video-screensaver
+  // exception; this cannot distinguish unrelated background playback started
+  // later through a path that leaves that screensaver active.
+  // Paused playback retains its existing sleep policy.
+  return appPlayer->HasPendingOpen() ||
+         (appPlayer->HasPlayer() && !appPlayer->IsPaused() &&
+          (!IsPythonScreenSaverActive() || m_screensaverStartedWithPlayback ||
+           !appPlayer->IsPlayingVideo()));
+}
+
 void CApplicationPowerHandling::CheckScreenSaverAndDPMS()
 {
   bool maybeScreensaver = true;
-  if (m_dpmsIsActive)
+  if (IsDPMSActive())
     maybeScreensaver = false;
   else if (m_screensaverActive)
     maybeScreensaver = false;
@@ -270,7 +382,7 @@ void CApplicationPowerHandling::CheckScreenSaverAndDPMS()
   std::shared_ptr<CDPMSSupport> dpms = winSystem->GetDPMSManager();
 
   bool maybeDPMS = true;
-  if (m_dpmsIsActive)
+  if (IsDPMSActive())
     maybeDPMS = false;
   else if (!dpms || !dpms->IsSupported())
     maybeDPMS = false;
@@ -305,6 +417,12 @@ void CApplicationPowerHandling::CheckScreenSaverAndDPMS()
   {
     haveIdleActivity = true;
   }
+
+  // PHY sleep also stops HDMI audio. Stream discovery and playlist retirement
+  // must not admit sleep, even when visual screensavers are allowed. This
+  // independently protects normal video if it became known after the idle check.
+  if (dpms && dpms->PowerSavingInterruptsAudio() && PlaybackPreventsDPMS())
+    maybeDPMS = false;
 
   // Handle OS screen saver state
   if (haveIdleActivity && CServiceBroker::GetWinSystem()->GetOSScreenSaver())
@@ -361,7 +479,6 @@ void CApplicationPowerHandling::CheckScreenSaverAndDPMS()
                                  60)
   {
     ToggleDPMS(false);
-    WakeUpScreenSaver();
   }
   else if (maybeScreensaver &&
            elapsed > CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
@@ -381,6 +498,8 @@ void CApplicationPowerHandling::ActivateScreenSaver(bool forceType /*= false */)
   const auto& components = CServiceBroker::GetAppComponents();
   const auto appPlayer = components.GetComponent<CApplicationPlayer>();
 
+  m_screensaverStartedWithPlayback =
+      appPlayer && (appPlayer->HasPlayer() || appPlayer->HasPendingOpen());
   m_screensaverActive = true;
   CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::GUI, "OnScreensaverActivated");
 

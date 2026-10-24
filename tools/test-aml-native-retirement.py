@@ -29,6 +29,15 @@ PREFIX = r'''
 using namespace std::chrono_literals;
 struct CLog { template<class... T> static void Log(T...){} };
 constexpr int LOGERROR=1;
+// DPMS release has its own production-method tests in test-dpms.sh. Keep this
+// fixture focused on native admission and retirement after successful release.
+struct CApplicationPowerHandling {bool ResetDPMS(){return true;}};
+struct AppComponents {
+  template<class T> std::shared_ptr<T> GetComponent(){return std::make_shared<T>();}
+};
+struct CServiceBroker {
+  static AppComponents& GetAppComponents(){static AppComponents value;return value;}
+};
 struct CVariant {};
 namespace ANNOUNCEMENT { enum AnnouncementFlag {System,Player,Other}; }
 using namespace ANNOUNCEMENT;
@@ -107,6 +116,9 @@ struct CWinSystemAmlogicGLESContext:CWinSystemAmlogic,CRenderSystemGLES {
   void DisengageMenuComposite(){effects.push_back("menu-disengage");}
   void ApplyPendingKernelSwitch(){effects.push_back("shutdown-switch");}
   void CancelGuiComposite(){effects.push_back("composite-cancel");}
+  // Diagnostic/liveness hooks do not acquire native admission.
+  void GuiABFinish(const char*){}
+  void SetNativeGuiWait(bool){}
   bool InitWindowSystem();bool PrepareForShutdown();bool DestroyWindowSystem();
   bool DestroyWindow();bool DestroyRenderSystem();
 };

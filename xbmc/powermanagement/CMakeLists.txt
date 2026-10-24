@@ -2,7 +2,8 @@ set(SOURCES DPMSSupport.cpp
             IPowerSyscall.cpp
             PowerManager.cpp)
 
-set(HEADERS DPMSSupport.h
+set(HEADERS DPMSControl.h
+            DPMSSupport.h
             IPowerSyscall.h
             PowerManager.h
             PowerTypes.h)

@@ -51,6 +51,14 @@ public:
   // is currently in a power-saving mode, to avoid visual artifacts.
   virtual bool DisablePowerSaving() = 0;
 
+  // A display reset may need more rendered frames before automatic entry.
+  virtual bool CanEnablePowerSaving() const { return true; }
+  virtual bool PowerSavingInterruptsAudio() const { return false; }
+  // Called after the application commits wake and restarts rendering.
+  virtual void OnPowerSavingDisabled() {}
+  // Backends with persistent hardware state reconcile it at startup/resume.
+  virtual bool HasPersistentPowerSaving() const { return false; }
+
 protected:
   std::vector<PowerSavingMode> m_supportedModes;
 };

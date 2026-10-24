@@ -184,6 +184,7 @@ void CPowerManager::ProcessEvents()
 
 void CPowerManager::OnSleep()
 {
+  CServiceBroker::GetAppComponents().GetComponent<CApplicationPowerHandling>()->ResetDPMS();
   CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::System, "OnSleep");
 
   CGUIDialogBusyNoCancel* dialog =
@@ -208,6 +209,7 @@ void CPowerManager::OnSleep()
 
 void CPowerManager::OnWake()
 {
+  CServiceBroker::GetAppComponents().GetComponent<CApplicationPowerHandling>()->ResetDPMS();
   CLog::Log(LOGINFO, "{}: Running resume jobs", __FUNCTION__);
 
   CServiceBroker::GetNetwork().WaitForNet();

@@ -41,7 +41,19 @@ struct WindowManager {
   }
 };
 struct GUI {WindowManager wm;WindowManager& GetWindowManager(){return wm;}};
+// ResetDPMS success is a dependency stand-in here. Persistent failure and
+// committed display state are covered by test-dpms-shutdown.sh.
+constexpr int LOGERROR=1;
+struct CLog {template<class... T> static void Log(T&&...) {}};
+struct CApplicationPowerHandling {bool ResetDPMS(){return true;}};
+// Explicit detector jobs are a recording dependency, not real worker I/O.
+static bool detectorReady=true;
+bool aml_detector_retire_jobs(){return detectorReady;}
+struct PowerComponents {
+  template<class T> std::shared_ptr<T> GetComponent(){return std::make_shared<T>();}
+};
 struct CWinSystemAmlogicGLESContext {
+  void GuiABFinish(const char*) {}
   bool m_shutdownRequested=false,nativeGuiWait=true;
   void SetNativeGuiWait(bool enabled){assert(!enabled);nativeGuiWait=enabled;}
   int retireCalls=0;
@@ -50,11 +62,12 @@ struct CWinSystemAmlogicGLESContext {
   bool RetireNativeTransactions(){++retireCalls;return true;}
   bool PrepareForShutdown();
 };
-@PREPARE@
 struct CServiceBroker {
   static inline CWinSystemAmlogicGLESContext* window=nullptr;
   static auto* GetWinSystem(){return window;}
+  static PowerComponents& GetAppComponents(){static PowerComponents value;return value;}
 };
+@PREPARE@
 struct CAMLVideoBufferPool {
   static inline int returns=0;
   static void ProcessReturns(){++returns;}
@@ -129,6 +142,11 @@ int main(int argc,char** argv) {
   if(scenario==4)app.cleanupResult=false;
   if(scenario==5) {app.gui=true;app.initialize=true;}
   if(scenario==6)app.create=false;
+  if(scenario==8) {
+    window=std::make_unique<CWinSystemAmlogicGLESContext>();
+    CServiceBroker::window=window.get();
+    detectorReady=false;
+  }
   KODI::TIME::onSleep=[&]{
     ++sleeps; assert(sleeps<=101); // fixture bound; production has no timeout completion
     assert(!app.m_frameMoveGuard.held && app.teardowns==0 && app.cleanups==0);
@@ -136,6 +154,11 @@ int main(int argc,char** argv) {
 #ifdef HAS_LIBAMCODEC
     assert(CAMLVideoBufferPool::returns==sleeps);
 #endif
+    if(scenario==8) {
+      assert(app.m_pendingStop==EXITCODE_QUIT);
+      assert(window && !window->m_shutdownRequested && window->retireCalls==0);
+      if(sleeps==3)detectorReady=true;
+    }
     if(scenario==2) {
       assert(receipt->status==CRenderLifecycle::Status::COMPLETED);
       assert(!app.app.m_nextItem.pItem && app.app.m_shutdown);
@@ -155,7 +178,7 @@ int main(int argc,char** argv) {
   else {
     assert(app.teardowns==1 && !app.m_frameMoveGuard.held);
     assert(app.cleanups==(scenario==3?0:1));
-    assert(sleeps==((scenario==1 || scenario==2)?100:0));
+    assert(sleeps==((scenario==1 || scenario==2)?100:scenario==8?3:0));
     if(window)assert(*window->m_shutdownAdmission && !window->nativeGuiWait);
     if(scenario==2) {
       assert(destroyed==1 && stopReply->signaled);
@@ -214,7 +237,7 @@ def main():
                 else:
                     assert result.returncode == 0, result.stdout + result.stderr
                     print(result.stdout.strip())
-        compile_run(source, range(8))
+        compile_run(source, range(9))
         compile_run(source, [0, 2], aml=False)
         if options.negative_controls:
             mutations = [
@@ -225,6 +248,8 @@ def main():
                 ('false terminal acknowledgment', 'GUI_MSG_PLAYBACK_ENDED, GUI_MSG_PLAYBACK_STOPPED, 0', 'GUI_MSG_PLAYBACK_STARTED, 0', 2),
                 ('omit stop retry unlatch', '    m_pendingStop.reset();\n  }\n  return Cleanup();', '  }\n  return Cleanup();', 1),
                 ('skip Initialize-failure cleanup', '    if (!g_application.StopBeforeRun(renderGUI))\n      CMessagePrinter::DisplayError("ERROR: Failed to clean up application startup");', '', 2),
+                ('skip detector retirement gate', 'if (!aml_detector_retire_jobs())', 'if (false)', 8),
+                ('lose detector exit intent', 'if (!aml_detector_retire_jobs())\n  {\n    m_pendingStop = exitCode;', 'if (!aml_detector_retire_jobs())\n  {', 8),
             ]
             for label, old, new, scenario in mutations:
                 assert source.count(old)==1, label
