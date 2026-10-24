@@ -36,6 +36,9 @@ CImageLoader::~CImageLoader() = default;
 
 bool CImageLoader::DoWork()
 {
+  if (ShouldCancel(0, 0))
+    return false;
+
   bool needsChecking = false;
   std::string loadPath;
 
@@ -64,6 +67,9 @@ bool CImageLoader::DoWork()
 
     if (m_texture)
     {
+      if (ShouldCancel(0, 0))
+        return false;
+
       if (needsChecking)
         CServiceBroker::GetTextureCache()->BackgroundCacheImage(texturePath);
 
@@ -84,6 +90,9 @@ bool CImageLoader::DoWork()
   CServiceBroker::GetTextureCache()->CacheImage(texturePath, &m_texture);
 
   if (!m_texture)
+    return false;
+
+  if (ShouldCancel(0, 0))
     return false;
 
   if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAsyncTextureUpload)

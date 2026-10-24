@@ -39,7 +39,13 @@ PrepareForShutdown closes upload admission before display retirement and waits
 for the active lease. Normal application Stop rejects new jobs and drains all
 job workers/completion callbacks before GUI/window-system deletion. Per-image
 cancellation removes publication but lets an active upload finish and release
-its context. The upload mutex alone does not own the window-system object or
+its context. Image jobs check cancellation before decoding and after decoding,
+before starting GPU upload. A job already cancelled at those checkpoints skips
+that work. Cancellation after the check, while waiting for the upload lease or
+inside the driver, can still finish an upload that will not be published.
+Prefetched images can also be uploaded before they are ever drawn; moving their
+work to a worker does not by itself reduce the amount of GPU work.
+The upload mutex alone does not own the window-system object or
 track texture generations. Arbitrary full-context recreation with surviving
 image jobs/textures is unsupported; draining only the current upload is
 insufficient. Failed window-system initialization before GUI creation has no
@@ -54,6 +60,12 @@ publication and callback-lock destruction, with destructive controls. The real
 CGLTexture destructor and whole application job-drain orchestration are not
 executed by this harness. TSan startup can fail on this host; that is reported
 as unavailable for that attempt, separately from a completed clean run.
+
+`tools/test-image-loader-cancellation.py --sanitize` exercises the actual image
+loader and job-manager cancellation methods with threaded decode barriers and
+recording texture/cache fixtures. It covers both loading paths, cancelled
+requests and replacement-job isolation. It does not establish how many uploads
+in a device capture were cancelled, or measure a pacing improvement.
 
 Host tests and compiler acceptance do not establish Mali context sharing,
 physical pixels, smoothness or safe deferred driver deletion. Before considering
