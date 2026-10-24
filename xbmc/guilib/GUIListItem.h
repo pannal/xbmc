@@ -130,6 +130,8 @@ public:
   void SetFocusedLayout(std::unique_ptr<CGUIListItemLayout> layout);
   CGUIListItemLayout *GetFocusedLayout();
 
+  bool HasLayouts() const { return m_layout || m_focusedLayout; }
+
   void FreeIcons();
   void FreeMemory(bool immediately = false);
   void SetInvalid();
