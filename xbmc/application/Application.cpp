@@ -1883,7 +1883,6 @@ void CApplication::LockFrameMoveGuard()
 {
   ++m_WaitingExternalCalls;
   m_frameMoveGuard.lock();
-  ++m_ProcessedExternalCalls;
   CServiceBroker::GetWinSystem()->GetGfxContext().lock();
 };
 
@@ -1936,26 +1935,17 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
       appPlayer->GetSeekHandler().FrameMove();
     }
 
-    // Open the door for external calls e.g python exactly here.
-    // Window size can be between 2 and 10ms and depends on number of continuous requests
+    // Open the door for external calls e.g. Python exactly here.
     if (m_WaitingExternalCalls)
     {
-      const unsigned int processedExternalCalls = m_ProcessedExternalCalls;
       CSingleExit ex(CServiceBroker::GetWinSystem()->GetGfxContext());
       m_frameMoveGuard.unlock();
 
-      // Calculate a window size between 2 and 10ms, 4 continuous requests let the window grow by 1ms
-      // When not playing video we allow it to increase to 80ms
-      unsigned int max_sleep = 10;
-      if (!appPlayer->IsPlayingVideo() || appPlayer->IsPausedPlayback())
-        max_sleep = 80;
-      unsigned int sleepTime = std::max(static_cast<unsigned int>(2), std::min(processedExternalCalls >> 2, max_sleep));
-      KODI::TIME::Sleep(std::chrono::milliseconds(sleepTime));
+      // Let callers run without growing the sleep past a GUI frame budget as
+      // request history accumulates. Relocking still waits for an active call.
+      KODI::TIME::Sleep(2ms);
       m_frameMoveGuard.lock();
-      m_ProcessedExternalDecay = 5;
     }
-    if (m_ProcessedExternalDecay && --m_ProcessedExternalDecay == 0)
-      m_ProcessedExternalCalls = 0;
   }
 
   if (processGUI && renderGUI)
