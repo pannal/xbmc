@@ -422,7 +422,7 @@ void CGUIFontTTF::DrawTextInternal(CGraphicContext& context,
           ? m_dynamicCache.Lookup(context, dynamicPos, colors, text, alignment, maxPixelWidth,
                                   scrolling, std::chrono::steady_clock::now(), dirtyCache)
           : unusedVertexBuffer;
-  std::shared_ptr<std::vector<SVertex>> tempVertices = std::make_shared<std::vector<SVertex>>();
+  std::shared_ptr<std::vector<SVertex>> tempVertices;
   std::shared_ptr<std::vector<SVertex>>& vertices =
       hardwareClipping ? tempVertices
                        : static_cast<std::shared_ptr<std::vector<SVertex>>&>(m_staticCache.Lookup(
@@ -443,6 +443,8 @@ void CGUIFontTTF::DrawTextInternal(CGraphicContext& context,
 
   if (dirtyCache)
   {
+    tempVertices = std::make_shared<std::vector<SVertex>>();
+
     // Try to validate any conflicting alignments
     //! @todo: This validate is the last resort and can result in a bad rendered text
     //! because the alignment it is used also by caller components for other operations

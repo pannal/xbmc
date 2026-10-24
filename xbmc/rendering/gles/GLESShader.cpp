@@ -97,8 +97,10 @@ bool CGLESShader::OnEnabled()
 
   const GLfloat *projMatrix = glMatrixProject.Get();
   const GLfloat *modelMatrix = glMatrixModview.Get();
-  glUniformMatrix4fv(m_hProj,  1, GL_FALSE, projMatrix);
-  glUniformMatrix4fv(m_hModel, 1, GL_FALSE, modelMatrix);
+  if (m_hProj >= 0)
+    glUniformMatrix4fv(m_hProj, 1, GL_FALSE, projMatrix);
+  if (m_hModel >= 0)
+    glUniformMatrix4fv(m_hModel, 1, GL_FALSE, modelMatrix);
 
   const TransformMatrix &guiMatrix = CServiceBroker::GetWinSystem()->GetGfxContext().GetGUIMatrix();
   CRect viewPort; // absolute positions of corners
@@ -178,24 +180,35 @@ bool CGLESShader::OnEnabled()
     m_clipYOffset = m_clipYOffset * yMult + (viewPort.y2 + viewPort.y1) / 2;
   }
 
-  glUniform1f(m_hBrightness, 0.0f);
-  glUniform1f(m_hContrast, 1.0f);
+  // Linked variants omit unused uniforms. Avoid their driver calls while
+  // retaining every active reset when a cached program is enabled again.
+  if (m_hBrightness >= 0)
+    glUniform1f(m_hBrightness, 0.0f);
+  if (m_hContrast >= 0)
+    glUniform1f(m_hContrast, 1.0f);
 
   // Default to straight-alpha math for all consumers; the one site that draws
   // premultiplied-alpha textures (COverlayTextureGLES) overrides this to 1.0
   // before drawing so the limited-range conversion offset scales by alpha.
-  glUniform1f(m_hPma, 0.0f);
+  if (m_hPma >= 0)
+    glUniform1f(m_hPma, 0.0f);
   // Ordinary GUI/menu consumers share this program with SDR bitmap subtitles.
   // Every bind starts neutral, including when a cached shader variant returns.
-  glUniform1f(m_hSdrBrightness, 1.0f);
-  glUniform1f(m_hSdrSaturation, 1.0f);
-  glUniform1f(m_hSubtitlePeak, 1.0f);
-  glUniform1f(m_hGuiTuning, 1.0f);
-  glUniform1f(m_hGuiPeak, m_guiColour.first);
-  glUniform1f(m_hGuiSaturation, m_guiColour.second);
+  if (m_hSdrBrightness >= 0)
+    glUniform1f(m_hSdrBrightness, 1.0f);
+  if (m_hSdrSaturation >= 0)
+    glUniform1f(m_hSdrSaturation, 1.0f);
+  if (m_hSubtitlePeak >= 0)
+    glUniform1f(m_hSubtitlePeak, 1.0f);
+  if (m_hGuiTuning >= 0)
+    glUniform1f(m_hGuiTuning, 1.0f);
+  if (m_hGuiPeak >= 0)
+    glUniform1f(m_hGuiPeak, m_guiColour.first);
+  if (m_hGuiSaturation >= 0)
+    glUniform1f(m_hGuiSaturation, m_guiColour.second);
 
-  const float sdrPeak = CServiceBroker::GetWinSystem()->GetGuiSdrPeakLuminance();
-  glUniform1f(m_sdrPeak, sdrPeak);
+  if (m_sdrPeak >= 0)
+    glUniform1f(m_sdrPeak, CServiceBroker::GetWinSystem()->GetGuiSdrPeakLuminance());
 
   return true;
 }
