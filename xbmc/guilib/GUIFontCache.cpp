@@ -7,6 +7,7 @@
  */
 
 #include "GUIFontTTF.h"
+#include "utils/GUIFrameTiming.h"
 #include "windowing/GraphicContext.h"
 
 #include <stdint.h>
@@ -157,6 +158,7 @@ Value& CGUIFontCacheImpl<Position, Value>::Lookup(const CGraphicContext& context
                                                   std::chrono::steady_clock::time_point now,
                                                   bool& dirtyCache)
 {
+  GUI_FRAME_TIMING::Count(GUI_FRAME_TIMING::Counter::FontLookup);
   const CGUIFontCacheKey<Position> key(pos, const_cast<std::vector<UTILS::COLOR::Color>&>(colors),
                                        const_cast<vecText&>(text), alignment, maxPixelWidth,
                                        scrolling, context.GetGUIMatrix(), context.GetGUIScaleX(),
@@ -166,6 +168,7 @@ Value& CGUIFontCacheImpl<Position, Value>::Lookup(const CGraphicContext& context
   if (i == m_list.hashMap.end())
   {
     // Cache miss
+    GUI_FRAME_TIMING::Count(GUI_FRAME_TIMING::Counter::FontMiss);
     dirtyCache = true;
     std::unique_ptr<CGUIFontCacheEntry<Position, Value>> entry;
 
@@ -192,6 +195,7 @@ Value& CGUIFontCacheImpl<Position, Value>::Lookup(const CGraphicContext& context
   else
   {
     // Cache hit
+    GUI_FRAME_TIMING::Count(GUI_FRAME_TIMING::Counter::FontHit);
     // Update the translation arguments so that they hold the offset to apply
     // to the cached values (but only in the dynamic case)
     pos.UpdateWithOffsets(i->second->m_key.m_pos, scrolling);

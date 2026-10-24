@@ -7,6 +7,7 @@
  */
 
 #include "Application.h"
+#include "utils/GUIFrameTiming.h"
 #include "utils/DetectorAdmission.h"
 #if defined(HAS_LIBAMCODEC)
 #include "utils/ActiveAreaDetector.h"
@@ -2036,6 +2037,7 @@ void CApplication::ResetCurrentItem()
 int CApplication::Run()
 {
   CLog::Log(LOGINFO, "Running the application...");
+  GUI_FRAME_TIMING::Session guiFrameTiming;
 
   std::chrono::time_point<std::chrono::steady_clock> lastFrameTime;
   std::chrono::milliseconds frameTime;
@@ -2052,14 +2054,19 @@ int CApplication::Run()
   // Run the app
   while (!m_bStop)
   {
+    GUI_FRAME_TIMING::Frame guiFrame;
     // Animate and render a frame
 
     lastFrameTime = std::chrono::steady_clock::now();
-    Process();
+    {
+      GUI_FRAME_TIMING::Scope timing(GUI_FRAME_TIMING::Region::Process);
+      Process();
+    }
 
     bool renderGUI = GetComponent<CApplicationPowerHandling>()->GetRenderGUI();
     if (!m_bStop)
     {
+      GUI_FRAME_TIMING::Scope timing(GUI_FRAME_TIMING::Region::FrameMove);
       FrameMove(true, renderGUI);
     }
 
@@ -2069,7 +2076,10 @@ int CApplication::Run()
     bool idleVideoPresentation = false;
     if (renderGUI && !m_bStop)
     {
-      Render();
+      {
+        GUI_FRAME_TIMING::Scope timing(GUI_FRAME_TIMING::Region::Render);
+        Render();
+      }
       idleVideoPresentation =
           m_lastRenderAttempt.status == RenderAttemptStatus::COMMANDS_COMPLETED &&
           !m_lastRenderAttempt.guiRendered &&

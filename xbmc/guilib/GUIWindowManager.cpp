@@ -45,6 +45,7 @@
 #include "settings/windows/GUIWindowSettingsScreenCalibration.h"
 #include "threads/SingleLock.h"
 #include "utils/AMLUtils.h"
+#include "utils/GUIFrameTiming.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/Variant.h"
@@ -1229,6 +1230,7 @@ bool RenderOrderSortFunction(const std::shared_ptr<CGUIWindow>& first,
 
 void CGUIWindowManager::Process(unsigned int currentTime)
 {
+  GUI_FRAME_TIMING::Scope timing(GUI_FRAME_TIMING::Region::WindowProcess);
   assert(CServiceBroker::GetAppMessenger()->IsProcessThread());
   std::unique_lock<CCriticalSection> lock(CServiceBroker::GetWinSystem()->GetGfxContext());
 
@@ -1252,16 +1254,19 @@ void CGUIWindowManager::Process(unsigned int currentTime)
   }
 
   // assign depth values to all active controls
-  if (pWindow)
-    pWindow->AssignDepth();
-
-  auto activeDialogs = m_activeDialogs;
-  stable_sort(activeDialogs.begin(), activeDialogs.end(), RenderOrderSortFunction);
-
-  for (const auto& window : activeDialogs)
   {
-    if (window->IsDialogRunning())
-      window->AssignDepth();
+    GUI_FRAME_TIMING::Scope depthTiming(GUI_FRAME_TIMING::Region::AssignDepth);
+    if (pWindow)
+      pWindow->AssignDepth();
+
+    auto activeDialogs = m_activeDialogs;
+    stable_sort(activeDialogs.begin(), activeDialogs.end(), RenderOrderSortFunction);
+
+    for (const auto& window : activeDialogs)
+    {
+      if (window->IsDialogRunning())
+        window->AssignDepth();
+    }
   }
 
   for (auto& itr : m_dirtyregions)
@@ -1271,6 +1276,7 @@ void CGUIWindowManager::Process(unsigned int currentTime)
 
 void CGUIWindowManager::PublishRenderBounds()
 {
+  GUI_FRAME_TIMING::Scope timing(GUI_FRAME_TIMING::Region::PublishBounds);
   if (!CServiceBroker::IsAddonInterfaceUp())
     return;
   // Native tree traversal stays on the GUI thread. Addon readers receive a
@@ -1311,6 +1317,7 @@ void CGUIWindowManager::MarkDirty(const CRect& rect)
 
 void CGUIWindowManager::RenderPass() const
 {
+  GUI_FRAME_TIMING::Scope timing(GUI_FRAME_TIMING::Region::RenderPass);
   if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiFrontToBackRendering)
     RenderPassDual();
   else

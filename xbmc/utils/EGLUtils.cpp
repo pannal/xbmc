@@ -15,6 +15,7 @@
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/Geometry.h"
+#include "utils/GUIFrameTiming.h"
 
 #include <map>
 
@@ -627,7 +628,11 @@ bool CEGLContextUtils::TrySwapBuffers(SwapDiagnostics* diagnostics)
   if (m_eglDisplay == EGL_NO_DISPLAY || m_eglSurface == EGL_NO_SURFACE)
     return false;
 
-  const bool success = eglSwapBuffers(m_eglDisplay, m_eglSurface) == EGL_TRUE;
+  bool success;
+  {
+    GUI_FRAME_TIMING::Scope timing(GUI_FRAME_TIMING::Region::EGLSwap);
+    success = eglSwapBuffers(m_eglDisplay, m_eglSurface) == EGL_TRUE;
+  }
   if (diagnostics)
   {
     diagnostics->attempted = true;
