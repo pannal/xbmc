@@ -77,7 +77,8 @@ void CGUIListGroup::Process(unsigned int currentTime, CDirtyRegionList &dirtyreg
   }
 
   CServiceBroker::GetWinSystem()->GetGfxContext().RestoreOrigin();
-  CGUIControl::Process(currentTime, dirtyregions);
+  // The accumulated child bounds replace the base control's projected bounds.
+  m_hasProcessed = true;
   m_renderRegion = rect;
   m_item = NULL;
 }

@@ -99,7 +99,9 @@ void CGUIControlGroup::Process(unsigned int currentTime, CDirtyRegionList &dirty
   }
 
   CServiceBroker::GetWinSystem()->GetGfxContext().RestoreOrigin();
-  CGUIControl::Process(currentTime, dirtyregions);
+  // Child bounds are already in screen coordinates. The base projection would
+  // be overwritten below; retain its processing marker without projecting.
+  m_hasProcessed = true;
   m_renderRegion = rect;
 }
 
