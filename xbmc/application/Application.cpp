@@ -1939,6 +1939,7 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
     // Window size can be between 2 and 10ms and depends on number of continuous requests
     if (m_WaitingExternalCalls)
     {
+      const unsigned int processedExternalCalls = m_ProcessedExternalCalls;
       CSingleExit ex(CServiceBroker::GetWinSystem()->GetGfxContext());
       m_frameMoveGuard.unlock();
 
@@ -1947,7 +1948,7 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
       unsigned int max_sleep = 10;
       if (!appPlayer->IsPlayingVideo() || appPlayer->IsPausedPlayback())
         max_sleep = 80;
-      unsigned int sleepTime = std::max(static_cast<unsigned int>(2), std::min(m_ProcessedExternalCalls >> 2, max_sleep));
+      unsigned int sleepTime = std::max(static_cast<unsigned int>(2), std::min(processedExternalCalls >> 2, max_sleep));
       KODI::TIME::Sleep(std::chrono::milliseconds(sleepTime));
       m_frameMoveGuard.lock();
       m_ProcessedExternalDecay = 5;
