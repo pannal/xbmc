@@ -17,6 +17,7 @@ destructive source mutations must be rejected. Host fixtures only: no Mali
 driver, GPU or CE device behaviour is verified here.
 """
 import argparse
+import importlib.util
 from pathlib import Path
 import re
 import subprocess
@@ -624,7 +625,45 @@ def main():
     header = current[EGL_HEADER]
     assert 'bool HasTextureUploadContext() const;' in header, 'header lacks HasTextureUploadContext'
     assert 'EGLSurface m_eglUploadSurface{EGL_NO_SURFACE};' in header, 'header lacks the upload surface'
-    fixed_cpp = sources(*(current[path] for path in files), baseline=False)
+    source_builder = sources
+    mutations = dict(MUTATIONS)
+    hardened = 'm_textureUploadClosing' in header
+    if hardened:
+        # Keep the original six cases, but use the extended recording fixture
+        # needed by the additional production fields/helpers and failure paths.
+        module_spec = importlib.util.spec_from_file_location(
+            'hardening', Path(__file__).with_name('test-aml-texture-upload-hardening.py'))
+        hardening = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(hardening)
+        publication = (args.root / hardening.PUBLICATION).read_text()
+
+        def source_builder(egl, header, aml, texture, baseline=False):
+            assert not baseline
+            return hardening.build_source(dict(zip(files, [egl, header, aml, texture])) |
+                                          {hardening.PUBLICATION: publication})
+
+        mutations['destroy-without-lock'] = (EGL_SOURCE,
+            r'(void CEGLContextUtils::DestroyContext\(\)\s*\{[\s\S]*?)\s*std::unique_lock<CCriticalSection> lock\(m_textureUploadLock\);',
+            r'\1')
+        mutations['bind-without-surface'] = (EGL_SOURCE,
+            r'eglMakeCurrent\(m_eglDisplay,\s*m_eglUploadSurface,\s*m_eglUploadSurface,\s*m_eglUploadContext\)',
+            'eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, m_eglUploadContext)')
+        # Removing the outer AML precheck has become safe: the hardened EGL
+        # method independently rejects unavailable contexts. Check that benign
+        # control, then remove the underlying admission gate as the destructive
+        # unavailable-context control instead of pretending redundancy is vital.
+        ungated = dict(current)
+        path, pattern, replacement = mutations.pop('ungated-aml-bind')
+        ungated[path], count = re.subn(pattern, replacement, ungated[path])
+        assert count == 1
+        benign = run_case(args.output, 'redundant-aml-precheck',
+                          source_builder(*(ungated[p] for p in files), baseline=False))
+        assert benign.returncode == 0, (benign.stdout, benign.stderr)
+        print('Benign control: inner EGL admission safely replaces the outer AML precheck', flush=True)
+        mutations['unavailable-bind-admission'] = (EGL_SOURCE,
+            r'  if \(m_textureUploadClosing.load\(std::memory_order_acquire\) \|\|\s*m_textureUploadDisabled \|\| m_textureUploadPoisoned \|\|\s*m_eglDisplay == EGL_NO_DISPLAY \|\| m_eglUploadContext == EGL_NO_CONTEXT\)\s*return false;',
+            '')
+    fixed_cpp = source_builder(*(current[path] for path in files), baseline=False)
     fixed = run_case(args.output, 'fixed', fixed_cpp)
     assert fixed.returncode == 0, (fixed.stdout, fixed.stderr)
     print('Fixed PASS: ' + fixed.stdout.strip(), flush=True)
@@ -633,16 +672,16 @@ def main():
         assert tsan.returncode == 0 and 'ThreadSanitizer' not in tsan.stderr, tsan.stderr
         print('Fixed PASS under ThreadSanitizer', flush=True)
 
-    for name, (path, pattern, replacement) in MUTATIONS.items():
+    for name, (path, pattern, replacement) in mutations.items():
         mutated = dict(current)
         mutated[path], count = re.subn(pattern, replacement, current[path])
-        assert count == 1, 'mutation did not apply: ' + name
+        assert count == (2 if hardened and name == 'bind-without-surface' else 1), 'mutation did not apply: ' + name
         bad = run_case(args.output, 'negative-' + name,
-                       sources(*(mutated[p] for p in files), baseline=False))
+                       source_builder(*(mutated[p] for p in files), baseline=False))
         assert bad.returncode != 0, 'destructive mutation survived: ' + name
         print('Rejected mutation: ' + name, flush=True)
     print('AML texture upload context: PASS; baseline fails, fixed passes, %d mutations '
-          'rejected; host fixtures, not Mali/GPU/device verification' % len(MUTATIONS))
+          'rejected; host fixtures, not Mali/GPU/device verification' % len(mutations))
 
 
 if __name__ == '__main__':

@@ -12,6 +12,7 @@
 #include "threads/CriticalSection.h"
 
 #include <array>
+#include <atomic>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -235,10 +236,12 @@ public:
   bool UnbindTextureUploadContext();
   bool HasContext();
   bool HasTextureUploadContext() const;
+  void CloseTextureUploadContext();
 
 private:
   void SurfaceAttrib();
   bool CreateTextureUploadSurface();
+  bool CreateTextureUploadPbuffer();
 
   EGLenum m_platform{EGL_NONE};
   bool m_platformSupported{false};
@@ -251,6 +254,10 @@ private:
   // EGL_NO_SURFACE when the upload context is bound surfaceless
   EGLSurface m_eglUploadSurface{EGL_NO_SURFACE};
   mutable CCriticalSection m_textureUploadLock;
+  bool m_textureUploadDisabled{false};
+  bool m_textureUploadPoisoned{false};
+  std::atomic<bool> m_textureUploadClosing{false};
+  inline static thread_local CEGLContextUtils* m_currentUploadContext{nullptr};
 
   PFNEGLSETDAMAGEREGIONKHRPROC m_eglSetDamageRegionKHR{nullptr};
   bool m_partialUpdateSupport{false};

@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <cstring>
 #include <exception>
+#include <stdexcept>
 #include <utility>
 
 /************************************************************************/
@@ -270,18 +271,50 @@ bool CTexture::LoadIImage(IImage* pImage,
 
 void CTexture::LoadToGPUAsync()
 {
+  // Stop drains image jobs before unregistering/deleting the window system.
+  // Keep the matching bind and release on the same object and worker thread.
+  auto* window = CServiceBroker::GetWinSystem();
+  if (!window)
+    return;
   // Already in main context?
-  if (CServiceBroker::GetWinSystem()->HasContext())
+  if (window->HasContext())
     return;
 
-  if (!CServiceBroker::GetWinSystem()->BindTextureUploadContext())
+  if (!window->BindTextureUploadContext())
     return;
+
+  struct UploadContextGuard
+  {
+    CWinSystemBase* window;
+    bool bound{true};
+    ~UploadContextGuard() noexcept
+    {
+      if (bound)
+      {
+        try
+        {
+          window->UnbindTextureUploadContext();
+        }
+        catch (...)
+        {
+          // Preserve the upload/sync exception. EGL release retires its lease
+          // before reporting errors, including any throwing log allocation.
+        }
+      }
+    }
+    bool Release()
+    {
+      bound = false;
+      return window->UnbindTextureUploadContext();
+    }
+  } guard{window};
 
   LoadToGPU();
 
   SyncGPU();
 
-  CServiceBroker::GetWinSystem()->UnbindTextureUploadContext();
+  if (!guard.Release())
+    throw std::runtime_error("Texture upload context could not be released");
 }
 
 bool CTexture::LoadFromMemory(unsigned int width,

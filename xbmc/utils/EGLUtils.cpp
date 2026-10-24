@@ -409,6 +409,7 @@ EGLint CEGLContextUtils::GetConfigAttrib(EGLint attribute) const
 
 bool CEGLContextUtils::CreateContext(CEGLAttributesVec contextAttribs)
 {
+  std::unique_lock<CCriticalSection> uploadLock(m_textureUploadLock);
   if (m_eglContext != EGL_NO_CONTEXT)
   {
     throw std::logic_error("Do not call CreateContext when context has already been created");
@@ -451,8 +452,11 @@ bool CEGLContextUtils::CreateContext(CEGLAttributesVec contextAttribs)
     return false;
   }
 
-  m_eglUploadContext =
-      eglCreateContext(m_eglDisplay, m_eglConfig, m_eglContext, contextAttribs.Get());
+  m_textureUploadDisabled = m_textureUploadPoisoned;
+  m_textureUploadClosing.store(false, std::memory_order_release);
+  if (!m_textureUploadDisabled)
+    m_eglUploadContext =
+        eglCreateContext(m_eglDisplay, m_eglConfig, m_eglContext, contextAttribs.Get());
 
   if (m_eglUploadContext == EGL_NO_CONTEXT)
     CLog::Log(LOGWARNING, "Failed to create EGL upload context");
@@ -592,8 +596,10 @@ void CEGLContextUtils::Destroy()
 
 void CEGLContextUtils::DestroyContext()
 {
+  m_textureUploadClosing.store(true, std::memory_order_release);
   // waits for an upload in progress on a loader thread
   std::unique_lock<CCriticalSection> lock(m_textureUploadLock);
+  m_textureUploadDisabled = true;
 
   if (m_eglContext != EGL_NO_CONTEXT)
   {
@@ -622,9 +628,20 @@ bool CEGLContextUtils::CreateTextureUploadSurface()
 {
   if (CEGLUtils::HasExtension(m_eglDisplay, "EGL_KHR_surfaceless_context"))
   {
-    CLog::Log(LOGINFO, "EGL texture upload context bound surfaceless");
     return true;
   }
+
+  return CreateTextureUploadPbuffer();
+}
+
+bool CEGLContextUtils::CreateTextureUploadPbuffer()
+{
+  // Keep the primary window's config selection unchanged. WINDOW_BIT alone
+  // does not promise that this same config can create an upload pbuffer.
+  EGLint surfaceTypes{0};
+  if (eglGetConfigAttrib(m_eglDisplay, m_eglConfig, EGL_SURFACE_TYPE, &surfaceTypes) != EGL_TRUE ||
+      !(surfaceTypes & EGL_PBUFFER_BIT))
+    return false;
 
   CEGLAttributesVec attribs;
   attribs.Add({{EGL_WIDTH, 1}, {EGL_HEIGHT, 1}});
@@ -638,7 +655,6 @@ bool CEGLContextUtils::CreateTextureUploadSurface()
     return false;
   }
 
-  CLog::Log(LOGINFO, "EGL texture upload context bound to a 1x1 pbuffer");
   return true;
 }
 
@@ -688,45 +704,62 @@ bool CEGLContextUtils::TrySwapBuffers(SwapDiagnostics* diagnostics)
 
 bool CEGLContextUtils::BindTextureUploadContext()
 {
-  // checked under the lock: DestroyContext may have run meanwhile
-  m_textureUploadLock.lock();
+  // Do not acquire a second lease on a context already held by this thread.
+  if (m_currentUploadContext)
+    return false;
+  std::unique_lock<CCriticalSection> lock(m_textureUploadLock);
 
-  if (m_eglDisplay == EGL_NO_DISPLAY || m_eglUploadContext == EGL_NO_CONTEXT)
+  if (m_textureUploadClosing.load(std::memory_order_acquire) ||
+      m_textureUploadDisabled || m_textureUploadPoisoned ||
+      m_eglDisplay == EGL_NO_DISPLAY || m_eglUploadContext == EGL_NO_CONTEXT)
+    return false;
+
+  bool bound = eglMakeCurrent(m_eglDisplay, m_eglUploadSurface, m_eglUploadSurface,
+                              m_eglUploadContext) == EGL_TRUE;
+  // Extension advertisement is not proof of bindability. Try a compatible
+  // pbuffer once before retiring an unusable upload path for this generation.
+  if (!bound && m_eglUploadSurface == EGL_NO_SURFACE && CreateTextureUploadPbuffer())
+    bound = eglMakeCurrent(m_eglDisplay, m_eglUploadSurface, m_eglUploadSurface,
+                           m_eglUploadContext) == EGL_TRUE;
+  if (!bound)
   {
-    m_textureUploadLock.unlock();
-    CLog::LogF(LOGERROR, "No texture upload context found.");
+    m_textureUploadDisabled = true;
+    CLog::LogF(LOGWARNING, "Disabling unavailable texture upload context; using render-thread uploads");
     return false;
   }
 
-  if (!eglMakeCurrent(m_eglDisplay, m_eglUploadSurface, m_eglUploadSurface, m_eglUploadContext))
-  {
-    m_textureUploadLock.unlock();
-    CLog::LogF(LOGERROR, "Couldn't bind texture upload context.");
-    return false;
-  }
-
+  m_currentUploadContext = this;
+  lock.release(); // Retained by this exact thread until UnbindTextureUploadContext.
   return true;
 }
 
 bool CEGLContextUtils::UnbindTextureUploadContext()
 {
-  if (m_eglDisplay == EGL_NO_DISPLAY || m_eglUploadContext == EGL_NO_CONTEXT)
-  {
-    CLog::LogF(LOGERROR, "No texture upload context found.");
-    m_textureUploadLock.unlock();
+  if (m_currentUploadContext != this)
     return false;
+
+  bool released = eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                                 EGL_NO_CONTEXT) == EGL_TRUE;
+  const bool releaseFailed = !released;
+  if (!released)
+  {
+    m_textureUploadDisabled = true;
+    released = eglReleaseThread() == EGL_TRUE;
+    // A failed eglReleaseThread leaves current bindings unknown. Never offer
+    // this upload path again, even after recreation on this window-system
+    // object. EGL teardown may defer its resources until the owner releases
+    // them; it must not be described as successful cross-thread unbinding.
+    m_textureUploadPoisoned = !released;
   }
 
-  if (!eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT))
-  {
-    CLog::LogF(LOGERROR, "Couldn't release texture upload context");
-    m_textureUploadLock.unlock();
-    return false;
-  }
-
+  m_currentUploadContext = nullptr;
   m_textureUploadLock.unlock();
-
-  return true;
+  // Even logging allocation failures must not strand the lease or its mutex.
+  if (releaseFailed)
+    CLog::LogF(LOGWARNING,
+              "Texture upload context release failed; upload path disabled (thread released: {})",
+              released);
+  return released;
 }
 
 bool CEGLContextUtils::HasContext()
@@ -737,7 +770,18 @@ bool CEGLContextUtils::HasContext()
 bool CEGLContextUtils::HasTextureUploadContext() const
 {
   std::unique_lock<CCriticalSection> lock(m_textureUploadLock);
-  return m_eglDisplay != EGL_NO_DISPLAY && m_eglUploadContext != EGL_NO_CONTEXT;
+  return !m_textureUploadClosing.load(std::memory_order_acquire) &&
+         !m_textureUploadDisabled && !m_textureUploadPoisoned &&
+         m_eglDisplay != EGL_NO_DISPLAY && m_eglUploadContext != EGL_NO_CONTEXT;
+}
+
+void CEGLContextUtils::CloseTextureUploadContext()
+{
+  m_textureUploadClosing.store(true, std::memory_order_release);
+  // Wait only for the current lease, then reject queued and late binders.
+  // The application's job drain still owns worker/callback/object lifetime.
+  std::unique_lock<CCriticalSection> lock(m_textureUploadLock);
+  m_textureUploadDisabled = true;
 }
 
 void CEGLContextUtils::SetDamagedRegions(const CDirtyRegionList& dirtyRegions)

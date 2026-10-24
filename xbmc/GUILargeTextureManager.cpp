@@ -274,8 +274,11 @@ void CGUILargeTextureManager::OnJobComplete(unsigned int jobID, bool success, CJ
     { // found our job
       CImageLoader *loader = static_cast<CImageLoader*>(job);
       CLargeTexture *image = it->second;
-      image->SetTexture(std::move(loader->m_texture));
-      loader->m_texture = NULL; // we want to keep the texture, and jobs are auto-deleted.
+      if (success)
+        image->SetTexture(std::move(loader->m_texture));
+      // Failed jobs retain their texture until job deletion outside this lock.
+      // Its GL deletion queue takes the graphics lock; rendering takes that
+      // lock before m_listSection. Successful moves already empty the loader.
 
       // Move from queued to allocated - update both containers and lookup maps
       const std::string& path = image->GetPath();

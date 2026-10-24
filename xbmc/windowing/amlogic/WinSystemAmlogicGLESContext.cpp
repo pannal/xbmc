@@ -268,6 +268,7 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 
 bool CWinSystemAmlogicGLESContext::PrepareForShutdown()
 {
+  m_pGLContext.CloseTextureUploadContext();
   GuiABFinish("shutdown");
   m_shutdownRequested = true;
   SetNativeGuiWait(false);
