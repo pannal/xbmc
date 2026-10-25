@@ -13,6 +13,8 @@
 #include "guilib/guiinfo/GUIInfoLabel.h"
 #include "threads/SystemClock.h"
 
+#include <optional>
+
 class CGUIListItem;
 class CFileItem;
 class CLabelInfo;
@@ -59,6 +61,8 @@ protected:
   float m_height{0};
   bool m_focused{false};
   bool m_invalidated{true};
+  // Clones apply selection to their own controls before caching it.
+  std::optional<bool> m_lastSelected;
 
   INFO::InfoPtr m_condition;
   KODI::GUILIB::GUIINFO::CGUIInfoBool m_isPlaying;

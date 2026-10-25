@@ -64,6 +64,7 @@ void CGUIListItemLayout::Process(CGUIListItem *item, int parentID, unsigned int 
 {
   if (m_invalidated)
   { // need to update our item
+    m_lastSelected.reset();
     m_invalidated = false;
     // could use a dynamic cast here if RTTI was enabled.  As it's not,
     // let's use a static cast with a virtual base function
@@ -79,6 +80,7 @@ void CGUIListItemLayout::Process(CGUIListItem *item, int parentID, unsigned int 
   }
   else if (m_infoUpdateTimeout.IsTimePast())
   {
+    m_lastSelected.reset();
     m_isPlaying.Update(INFO::DEFAULT_CONTEXT, item);
     m_group.UpdateInfo(item);
 
@@ -86,7 +88,15 @@ void CGUIListItemLayout::Process(CGUIListItem *item, int parentID, unsigned int 
   }
 
   // update visibility, and render
-  m_group.SetState(item->IsSelected() || m_isPlaying, m_focused);
+  // Only this layout propagates selection to its owned control tree.
+  const bool selected = item->IsSelected() || m_isPlaying;
+  if (!m_lastSelected || *m_lastSelected != selected)
+  {
+    // A partial traversal must not leave an old value marked as applied.
+    m_lastSelected.reset();
+    m_group.SetState(selected, m_focused);
+    m_lastSelected = selected;
+  }
   m_group.UpdateVisibility(item);
   m_group.DoProcess(currentTime, dirtyregions);
 }
@@ -172,6 +182,7 @@ void CGUIListItemLayout::LoadControl(TiXmlElement *child, CGUIControlGroup *grou
 
 void CGUIListItemLayout::LoadLayout(TiXmlElement *layout, int context, bool focused, float maxWidth, float maxHeight)
 {
+  m_lastSelected.reset();
   m_focused = focused;
   layout->QueryFloatAttribute("width", &m_width);
   layout->QueryFloatAttribute("height", &m_height);
@@ -206,6 +217,7 @@ void CGUIListItemLayout::LoadLayout(TiXmlElement *layout, int context, bool focu
 //#ifdef GUILIB_PYTHON_COMPATIBILITY
 void CGUIListItemLayout::CreateListControlLayouts(float width, float height, bool focused, const CLabelInfo &labelInfo, const CLabelInfo &labelInfo2, const CTextureInfo &texture, const CTextureInfo &textureFocus, float texHeight, float iconWidth, float iconHeight, const std::string &nofocusCondition, const std::string &focusCondition)
 {
+  m_lastSelected.reset();
   m_width = width;
   m_height = height;
   m_focused = focused;
@@ -234,6 +246,7 @@ void CGUIListItemLayout::CreateListControlLayouts(float width, float height, boo
 
 void CGUIListItemLayout::FreeResources(bool immediately)
 {
+  m_lastSelected.reset();
   m_group.FreeResources(immediately);
 }
 
