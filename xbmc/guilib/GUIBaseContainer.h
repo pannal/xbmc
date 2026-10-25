@@ -165,8 +165,13 @@ protected:
   virtual void ScrollToOffset(int offset);
   void SetContainerMoving(int direction);
   void UpdateScrollOffset(unsigned int currentTime);
+  // The first item to process and draw, its position and the position the
+  // items end at; false for a nonpositive item size
+  bool GetDrawRange(int& firstItem, float& firstPos, float& endPos) const;
 
   CScroller m_scroller;
+  // Whether the scroller was running at the end of the previous Process()
+  bool m_wasScrolling{false};
 
   std::unique_ptr<IListProvider> m_listProvider;
 
