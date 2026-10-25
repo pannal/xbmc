@@ -21,7 +21,10 @@ items at rest must equal the historical items. A wrap list keeps all of a list
 its kept range covers. A zero duration keeps its existing first frame, and a
 request after a stop between frames still defers. The historical rule, run on
 the same base code, must build while moving, and destructive mutations of the
-production code must be rejected. Host fixtures only: no Kodi rendering, skin,
+production code must be rejected. Actual gesture-pan handling is also exercised
+with in-range drags that preserve an offscreen selection, including smaller and
+larger focused layouts. Offset validation and GUI infrastructure are stubbed.
+Host fixtures only: no Kodi rendering, skin,
 GPU or device timing is executed.
 """
 import argparse
@@ -72,6 +75,9 @@ def parts(base, wrap, scroller):
                  function(base, 'int CGUIBaseContainer::ScrollCorrectionRange('),
                  function(base, 'int CGUIBaseContainer::CorrectOffset('),
                  function(base, 'void CGUIBaseContainer::FreeMemory('), update,
+                 'EVENT_RESULT CGUIBaseContainer::Pan(const PanEvent& event) { if (false) {}\n' +
+                 function(base, 'else if (event.m_id == ACTION_GESTURE_PAN)') +
+                 '\nreturn EVENT_RESULT_UNHANDLED; }',
                  function(wrap, 'bool CGUIWrappingListContainer::GetOffsetRange('),
                  function(wrap, 'int CGUIWrappingListContainer::CorrectOffset(')]
     return gap.group(1), methods, offsets, container
@@ -126,6 +132,10 @@ static unsigned g_now = 1000;
 static int g_freed = 0;
 
 enum ORIENTATION { HORIZONTAL = 0, VERTICAL };
+enum EVENT_RESULT { EVENT_RESULT_UNHANDLED, EVENT_RESULT_HANDLED };
+enum { ACTION_GESTURE_PAN };
+struct PanEvent { int m_id=ACTION_GESTURE_PAN;float m_offsetX=0,m_offsetY=0; };
+namespace MathUtils { static int round_int(double value) { return static_cast<int>(std::round(value)); } }
 struct CPoint
 {
   float x = 0, y = 0;
@@ -203,10 +213,16 @@ public:
   virtual int CorrectOffset(int offset, int cursor) const;
   void FreeMemory(int keepStart, int keepEnd);
   void ProductionUpdateScrollOffset(unsigned int currentTime);
+  EVENT_RESULT Pan(const PanEvent& event);
 
   // fakes of the members those use
   void UpdateScrollOffset(unsigned int currentTime)
   {
+    // Observation at the clock-update boundary: a removed size guard must
+    // fail semantically before undefined index arithmetic can obscure it.
+    const bool validSize = m_layout && m_layout->Size(m_orientation) > 0;
+    Check(validSize, "zero-size Process leaves scroll clock alone");
+    if (!validSize) std::exit(1);
     updated = true;
     ProductionUpdateScrollOffset(currentTime);
   }
@@ -250,6 +266,7 @@ public:
   bool m_bInvalidated = false, m_bHasFocus = true, m_wasReset = false;
   bool m_waitForScrollEnd = false, m_gestureActive = false;
   unsigned int m_lastRenderTime = 0;
+  float m_lastScrollValue=0;
   std::vector<std::shared_ptr<CGUIListItem>> m_items;
   bool m_wasScrolling{false};
   CStopWatch m_lastScrollStartTimer, m_scrollTimer;
@@ -606,6 +623,39 @@ int main(int argc, char** argv)
     Check(!second.scrolling && second.after == 11 * kItem, "zero duration completes on next frame");
   }
 
+  // Execute the actual gesture-pan branch. Its base SetCursor preserves the
+  // absolute selected item, so dragging can leave a negative relative cursor.
+  // Test both a focus before the range and one still inside the preload.
+  for (ORIENTATION axis : {HORIZONTAL, VERTICAL})
+    for (int preload : {0,1,2,3,4})
+      for (int rows : {4,10})
+        for (float focusedSize : {50.0f,100.0f,200.0f})
+        {
+          CGUIBaseContainer c;
+          c.m_orientation=axis;c.m_width=c.m_height=500;
+          c.m_template.width=c.m_template.height=100;
+          c.m_focusedTemplate.width=c.m_focusedTemplate.height=focusedSize;
+          c.m_itemsPerPage=4;c.m_cacheItems=preload;
+          c.m_offset=100;c.m_cursor=3;c.m_gestureActive=true;
+          c.m_scroller.SetValue(10000);
+          PanEvent event;event.m_offsetX=event.m_offsetY=-rows*100.0f;
+          Check(c.Pan(event)==EVENT_RESULT_HANDLED,"actual pan branch handles drag");
+          Check(c.GetOffset()==100+rows && c.GetCursor()==3-rows,
+                "actual pan preserves absolute selection with negative relative cursor");
+          std::vector<CGUIBaseContainer::RENDERITEM> drawn;c.BuildRenderItems(drawn);
+          Check(!drawn.empty(),"drag draws items");
+          for (const auto& item : drawn)
+          {
+            const float position=axis==HORIZONTAL?item.posX:item.posY;
+            // Closed-form coordinates, independent of the production range walk.
+            const float expected=item.item->id*100.0f-c.m_scroller.GetValue()+
+                (item.item->id>103 ? focusedSize-100.0f : 0.0f);
+            Check(position==expected,"drag counts focused size exactly once");
+          }
+          CDirtyRegionList dirty;c.Process(1000,dirty);
+          Check(c.processed==ExpectedItems(c),"drag Process matches independent item oracle");
+        }
+
   // an invalid item size is rejected before Process's division
   {
     CGUIBaseContainer c;
@@ -648,6 +698,11 @@ def run(exe, *args):
 
 # name: (function the mutation is confined to, pattern, replacement, required failure)
 MUTATIONS = {
+    'omit-offscreen-focus-size': (RANGE, r'if \(GetOffset\(\) \+ GetCursor\(\) < firstItem\)',
+                                 'if (false)', 'drag counts focused size exactly once'),
+    'double-count-preloaded-focus': (RANGE, r'GetOffset\(\) \+ GetCursor\(\) < firstItem',
+                                    'GetOffset() + GetCursor() < static_cast<int>(std::floor(value / size))',
+                                    'drag counts focused size exactly once'),
     'value-only-items': (RANGE, r'const float target = GetOffset\(\) \* size;', 'const float target = value;',
                          'nothing built while moving'),
     'preload-ignored': (RANGE, r'const int cache = GetCacheCount\(\) / 2;', 'const int cache = 0;',
@@ -664,8 +719,8 @@ MUTATIONS = {
                        'const int margin = m_scroller.IsScrolling() ? 1000 : 0;', 'bounded number of layouts'),
     'wrap-overlap': (PROCESS, r'if \(keepLast - keepFirst <= \(int\)m_items\.size\(\)\)', 'if (true)',
                      'short wrap list keeps its layouts'),
-    # without the guard the item index overflows: the sanitizer is the witness
-    'zero-size-guard': (PROCESS, r'if \(!\(size > 0\)\)\s*return;', '(void)0;', 'runtime error:'),
+    # Detect the removed guard at the clock-update boundary, before undefined arithmetic.
+    'zero-size-guard': (PROCESS, r'if \(!\(size > 0\)\)\s*return;', '(void)0;', 'zero-size Process leaves scroll clock alone'),
     'zero-duration-delay': (PROCESS, r' && m_scroller\.GetDuration\(\) > 1', '',
                             'zero duration anchors in request frame'),
     'stale-stopped-state': (SCROLL, r'if \(!m_scroller\.IsScrolling\(\)\)\s*m_wasScrolling = false;', '(void)0;',
@@ -707,7 +762,7 @@ def main():
         bad = run(build(args.output, 'mutant-' + name, mutated, wrap, scroller))
         sanitized = any(x in bad.stderr for x in ('AddressSanitizer', 'runtime error:'))
         assert (bad.returncode == 1 and witness in bad.stderr and
-                (witness == 'runtime error:' or not sanitized)), (
+                not sanitized), (
                     'destructive mutation survived or failed for another reason: ' + name, bad.returncode,
                     bad.stderr[:2000])
         print('Rejected mutation: ' + name, flush=True)

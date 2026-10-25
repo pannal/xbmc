@@ -278,6 +278,7 @@ template<class C>std::vector<Visit> ListVisits(const C& c)
  const float across=o==VERTICAL?origin.x:origin.y;
  int current=static_cast<int>(std::floor(std::min(value,target)/size))-cache;
  float pos=o==VERTICAL?origin.y:origin.x;pos+=current*size-value;
+ if(focus<current)pos+=c.m_focusedLayout->Size(o)-size;
  float end=o==VERTICAL?c.m_posY+c.m_height:c.m_posX+c.m_width;end+=std::max(value,target)-value+cache*size;
  const int count=static_cast<int>(c.m_items.size());std::optional<Visit> focused;
  for(;pos<end;++current)
@@ -296,8 +297,10 @@ template<class C>std::vector<Visit> ListVisits(const C& c)
 template<class B,class C>void Compare(B& baseline,C& current,const State& s);
 template<class B,class C>void CompareList(B& baseline,C& current,const State& s)
 {
- // At rest the draw is the historical one.
- if(current.m_layout&&s.direction==0&&s.scroll==current.GetOffset()*current.m_layout->Size(current.m_orientation))
+ // Ordinary rest states preserve the historical draw. Negative gesture cursors
+ // use the independent once-only focused-size oracle: the historical preload
+ // walk itself could count that extra size twice when it encountered the focus.
+ if(s.cursor>=0&&current.m_layout&&s.direction==0&&s.scroll==current.GetOffset()*current.m_layout->Size(current.m_orientation))
   Compare(baseline,current,s);
  ++cases;
  const auto expected=ListVisits(current);
@@ -375,6 +378,24 @@ static void Matrix()
   else {s.count=3;old::Observed<old::CGUIWrappingListContainer> b;now::Observed<now::CGUIWrappingListContainer> c;
    Configure(b,s);Configure(c,s);CompareList(b,c,s);}
  }
+}
+static void NegativeGestureCursors()
+{
+ for(int orientation=0;orientation<2;++orientation)
+ for(int cache:{0,1,2,3,4,9})
+ for(int cursor:{-1,-7})
+ for(bool smaller:{false,true})
+ {
+  focusedTemplate.width=smaller?7.5f:16.75f;
+  focusedTemplate.height=smaller?6.25f:13.25f;
+  State s;s.orientation=orientation;s.offset=10;s.cursor=cursor;s.count=60;s.cache=cache;
+  s.scroll=10*normalTemplate.Size(static_cast<ORIENTATION>(orientation));
+  old::Observed<old::CGUIBaseContainer> b;now::Observed<now::CGUIBaseContainer> c;
+  Configure(b,s);Configure(c,s);CompareList(b,c,s);
+  old::Observed<old::CGUIWrappingListContainer> wb;now::Observed<now::CGUIWrappingListContainer> wc;
+  Configure(wb,s);Configure(wc,s);CompareList(wb,wc,s);
+ }
+ focusedTemplate.width=16.75f;focusedTemplate.height=13.25f;
 }
 static void EdgesAndFreshness()
 {
@@ -471,7 +492,7 @@ static void OwnershipAndWork()
 }
 int main()
 {
- try{Matrix();EdgesAndFreshness();OwnershipAndWork();
+ try{Matrix();NegativeGestureCursors();EdgesAndFreshness();OwnershipAndWork();
   std::cout<<"PASS "<<cases<<" scenarios "<<checks<<" checks\n";return 0;}
  catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<"\n";return 1;}
 }
@@ -513,6 +534,9 @@ def variant(src, current):
 def mutations(current):
     """Mutate extracted candidate methods only; require explicit semantic failure."""
     changes = {
+        'omit-offscreen-focus-size': ('if (GetOffset() + GetCursor() < firstItem)', 'if (false)'),
+        'double-count-preloaded-focus': ('GetOffset() + GetCursor() < firstItem',
+                                        'GetOffset() + GetCursor() < static_cast<int>(std::floor(value / size))'),
         'panel-physical-focus': ('GetOffset() * m_itemsPerRow + GetCursor()', 'GetOffset() + GetCursor()'),
         'unfocus-selection': ('focusedLayout && focusedLayout->IsAnimating(ANIM_TYPE_UNFOCUS)', 'false'),
         'inactive-layout-depth': ('GetRenderLayout(renderItem.item.get(), renderItem.focused)',

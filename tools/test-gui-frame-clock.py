@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """Host regression for the GUI frame time that animations read.
 
-Compiles the production CTimeUtils::UpdateFrameTime and GetFrameTime from
-xbmc/utils/TimeUtils.cpp against a fake uptime clock and refresh rate, and
-drives them with swap return times like those of an AM6B+ at 60 Hz, where a
-displayed frame is shown one refresh after the previous one. Every presented
-frame must advance the frame time by one refresh (16 or 17 ms at 60 Hz), also
-in the frames after a click from idle, whose swaps return unevenly (capture:
-24, 7.2, 9.5 ms, ...), and with a display slightly slower than reported. A
-missed refresh advances two refreshes; 50 Hz stays exact; idle follows the
-clock; a loop not paced by the display stays bounded; the time never goes
-backwards, also across the uptime wrap. The historical integer, rounded-up
-frame step must show the 0 and 32 ms steps, and destructive mutations must be
-rejected. Host fixtures only: no Kodi main loop, display or device timing.
+Compiles production CTimeUtils::UpdateFrameTime and GetFrameTime against a
+synthetic uptime clock and refresh rate. Inputs include steady and slower
+updates, jittered return intervals, idle/start transitions and clock changes.
+The fixture checks the proposed refresh-counting model, elapsed speed and
+bounded phase error; it does not establish which frames physically appeared.
+Captured AM6B+ return intervals supply some startup inputs, without proving
+that each return corresponds to one scanout refresh. The historical integer
+clock must reproduce uneven steps, and destructive variants must fail their
+specific semantic assertions. Host fixtures only: no Kodi main loop, GPU,
+physical scanout or device timing is executed.
 """
 import argparse
 from pathlib import Path
+import hashlib
+import json
+import os
 import re
 import subprocess
 
@@ -79,7 +80,7 @@ static void Check(bool value, const std::string& message)
   }
 }
 
-// One main-loop iteration ending at the current clock.
+// One synthetic update ending at the current clock; flip is an input assumption.
 static unsigned int Frame(bool flip)
 {
   const unsigned int before = CTimeUtils::GetFrameTime();
@@ -105,7 +106,7 @@ static bool OneRefresh(unsigned int step, double period)
   return step >= std::floor(period) && step <= std::ceil(period);
 }
 
-// Steady display-paced frames: swaps return just after each refresh, with jitter.
+// Synthetic display-paced model: update timestamps have bounded return jitter.
 static std::vector<unsigned int> Steady(int frames, double realPeriod, double jitter = 0.3)
 {
   std::vector<unsigned int> steps;
@@ -167,8 +168,8 @@ int main(int argc, char** argv)
           "59.94 Hz frame advances " + std::to_string(step) + " ms");
   Check(std::abs(Lead()) <= 3, "59.94 Hz frame time follows the clock (" + std::to_string(Lead()) + ")");
 
-  // after a click from idle the swaps return unevenly; the frames still show one
-  // refresh apart (swap return intervals from an AM6B+ capture)
+  // Captured startup return intervals, evaluated under the proposed one-refresh
+  // model after idle. This is not a measurement of physical scanout.
   const std::vector<std::vector<double>> starts = {
       {25.0, 24.0, 7.2, 9.5, 15.6, 16.7, 16.7, 16.7, 16.7},
       {35.1, 22.5, 7.6, 9.1, 15.7, 16.6, 16.7, 16.7, 16.7},
@@ -203,9 +204,8 @@ int main(int argc, char** argv)
   Steady(60, p60);
   Check(std::abs(Lead()) <= 2, "frame time follows the clock after a stall (" + std::to_string(Lead()) + ")");
 
-  // frames slower than the display (a heavy view or a window opening) are shown
-  // for one or two refreshes each: they advance one or two refreshes, keep the
-  // animation speed and never jump further
+  // Synthetic slower updates: the refresh-counting model should advance one or
+  // two refreshes, preserve elapsed speed and avoid large corrective jumps.
   {
     struct Slow
     {
@@ -241,6 +241,33 @@ int main(int argc, char** argv)
       Check(speed > 0.97 && speed < 1.03,
             std::string("frames ") + s.name + " apart keep the speed (" + std::to_string(speed) + ")");
     }
+  }
+
+  // These slower/jittered inputs exposed 83-100 ms corrective jumps before
+  // fractional intervals were carried. Bound both individual steps and phase,
+  // rather than accepting a good average speed over occasional large jumps.
+  for (bool jittered : {false, true})
+  {
+    const std::string name = jittered ? "jittered 28/38.666667 ms" : "steady 40 ms";
+    Reset(55000.3, 60);
+    Steady(30, p60);
+    const unsigned int start = CTimeUtils::GetFrameTime();
+    const double began = g_clock;
+    for (int i = 0; i < 240; ++i)
+    {
+      g_clock += jittered ? (i % 2 == 0 ? 28.0 : 4 * p60 - 28.0) : 40.0;
+      const unsigned int step = Frame(true);
+      // Three periods are exactly 50 ms; feedback and fractional truncation
+      // can place their integer step one millisecond on either side.
+      Check(OneRefresh(step, p60) || OneRefresh(step, 2 * p60) ||
+                std::abs(static_cast<double>(step) - 3 * p60) <= 1,
+            name + " update has no large corrective jump (" + std::to_string(step) + " ms)");
+      Check(std::abs(Lead()) <= std::ceil(p60) + 1,
+            name + " phase stays within one refresh (" + std::to_string(Lead()) + " ms)");
+    }
+    const double speed = (CTimeUtils::GetFrameTime() - start) / (g_clock - began);
+    Check(speed > 0.97 && speed < 1.03,
+          name + " preserves elapsed speed (" + std::to_string(speed) + ")");
   }
 
   // a missed refresh while running advances two refreshes
@@ -298,8 +325,8 @@ int main(int argc, char** argv)
 
   if (failures)
     return 1;
-  std::printf("PASS: one refresh per presented frame at 60, 59.94 and 50 Hz and after clicks from "
-              "idle, two after a miss, idle on the clock, unpaced bounded, monotonic across wrap and "
+  std::printf("PASS: synthetic clock updates at 60, 59.94 and 50 Hz and after transitions from "
+              "idle, slower and jittered updates bounded, idle on the clock, unpaced bounded, monotonic across wrap and "
               "clock steps\n");
   return 0;
 }
@@ -314,14 +341,50 @@ def build(out, name, update):
     exe = out / name
     compiled = subprocess.run(['g++', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror',
                                '-Wno-unused-parameter', '-fsanitize=address,undefined', '-fno-sanitize-recover=undefined',
-                               str(path), '-o', str(exe)], capture_output=True, text=True, timeout=120)
+                               '-fno-pie', '-no-pie', str(path), '-o', str(exe)], capture_output=True, text=True, timeout=120)
+    (out / (name + '.compile.stdout')).write_text(compiled.stdout)
+    (out / (name + '.compile.stderr')).write_text(compiled.stderr)
     if compiled.returncode:
         raise RuntimeError(name + ' did not compile:\n' + compiled.stderr)
     return exe
 
 
 def run(exe, *args):
-    return subprocess.run([str(exe), *args], capture_output=True, text=True, timeout=120)
+    result = subprocess.run([str(exe), *args], capture_output=True, text=True, timeout=60,
+                            env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0',
+                                 'UBSAN_OPTIONS': 'halt_on_error=1:print_stacktrace=1'})
+    suffix = '-' + '-'.join(args) if args else ''
+    exe.with_name(exe.name + suffix + '.stdout').write_text(result.stdout)
+    exe.with_name(exe.name + suffix + '.stderr').write_text(result.stderr)
+    return result
+
+
+def semantic_failure(result, witness):
+    diagnostics = result.stdout + result.stderr
+    return (result.returncode == 1
+            and any(line.startswith('FAIL: ') and witness in line
+                    for line in result.stderr.splitlines())
+            and not any(marker in diagnostics for marker in (
+                'AddressSanitizer', 'UndefinedBehaviorSanitizer', 'LeakSanitizer',
+                'runtime error:', 'Sanitizer CHECK failed', 'DEADLYSIGNAL')))
+
+
+def check_semantic_classifier():
+    witness = 'designated witness'
+    good = 'FAIL: designated witness\n'
+    def result(status=1, stdout='', stderr=good):
+        return subprocess.CompletedProcess([], status, stdout, stderr)
+    assert semantic_failure(result(), witness)
+    for status in (0, 2, -6, -11, 139):
+        assert not semantic_failure(result(status), witness)
+    for stderr in ('', 'FAIL: another assertion\n',
+                   'FAIL: another assertion\ndesignated witness\n'):
+        assert not semantic_failure(result(stderr=stderr), witness)
+    for marker in ('AddressSanitizer', 'UndefinedBehaviorSanitizer', 'LeakSanitizer',
+                   'runtime error:', 'Sanitizer CHECK failed', 'DEADLYSIGNAL'):
+        assert not semantic_failure(result(stderr=good + marker), witness)
+        assert not semantic_failure(result(stdout=marker), witness)
+
 
 
 MUTATIONS = {
@@ -352,6 +415,20 @@ MUTATIONS = {
     'no-fraction': (r'frameFraction = step - whole;', 'frameFraction = 0;'),
 }
 
+MUTATION_WITNESSES = {
+    'integer-period': '60 Hz frame advances',
+    'no-settle': 'start 0 frame 1 advances',
+    'round-intervals': 'start 3 frame 2 advances',
+    'no-carry': 'steady 40 ms update has no large corrective jump',
+    'carry-without-leak': '59.94 Hz frame advances',
+    'no-catch-up': 'frame time follows the clock after a stall',
+    'no-clock-pull': '59.94 Hz frame advances',
+    'no-hold': 'unpaced frames stay near the clock',
+    'backwards': 'frame time went backwards',
+    'idle-as-frames': 'idle frame time is the clock',
+    'no-fraction': '60 Hz frame time stays on the clock',
+}
+
 ROOT_SOURCE = ''
 
 
@@ -362,6 +439,8 @@ def main():
     parser.add_argument('--output', type=Path, default=Path('/tmp/gui-frame-clock'))
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
+    check_semantic_classifier()
+    assert set(MUTATION_WITNESSES) == set(MUTATIONS)
     ROOT_SOURCE = (args.root / TIME_UTILS).read_text()
     update = function(ROOT_SOURCE, 'void CTimeUtils::UpdateFrameTime(bool flip)')
 
@@ -372,12 +451,22 @@ def main():
     assert fixed.returncode == 0, (fixed.stdout, fixed.stderr)
     print(fixed.stdout.strip(), flush=True)
 
+    controls = []
     for name, (pattern, replacement) in MUTATIONS.items():
         mutated, count = re.subn(pattern, replacement, update)
         assert count == 1, 'mutation did not apply: ' + name
         bad = run(build(args.output, 'mutant-' + name, mutated))
-        assert bad.returncode != 0, 'destructive mutation survived: ' + name
+        assert semantic_failure(bad, MUTATION_WITNESSES[name]), (
+            'Missing semantic witness: ' + name, bad.returncode, bad.stdout, bad.stderr)
+        controls.append(dict(name=name, status=bad.returncode, witness=MUTATION_WITNESSES[name]))
         print('Rejected mutation: ' + name, flush=True)
+    (args.output / 'provenance.json').write_text(json.dumps({
+        'source_sha256': hashlib.sha256(ROOT_SOURCE.encode()).hexdigest(),
+        'tool_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'historical': historical.stdout.strip(), 'current': fixed.stdout.strip(),
+        'semantic_controls': controls,
+        'sanitizers': 'ASan/UBSan, LSan disabled, nonPIE',
+        'limits': __doc__}, indent=2) + '\n')
     print('GUI frame clock: PASS; historical steps reproduced, %d mutations rejected; '
           'host fixtures, not main-loop/display/device verification' % len(MUTATIONS))
 

@@ -1322,10 +1322,11 @@ bool CGUIBaseContainer::GetDrawRange(int& firstItem, float& firstPos, float& end
   firstPos = (m_orientation == VERTICAL) ? origin.y : origin.x;
   endPos = (m_orientation == VERTICAL) ? m_posY + m_height : m_posX + m_width;
 
-  // we offset our draw position to take into account scrolling. The focused item
-  // is on the target page, never before the first drawn item, so the walk from
-  // there accounts for its size.
+  // A pan can leave the selected item before the range. Account for its extra
+  // size here only when the item walk will not encounter it.
   firstPos += firstItem * size - value;
+  if (GetOffset() + GetCursor() < firstItem)
+    firstPos += m_focusedLayout->Size(m_orientation) - size;
   endPos += std::max(value, target) - value + cache * size;
   return true;
 }
