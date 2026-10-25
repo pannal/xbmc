@@ -11,6 +11,7 @@
 #include "GLContext.h"
 #include "threads/CriticalSection.h"
 
+#include <atomic>
 #include <cstdint>
 
 #include "system_egl.h"
@@ -39,7 +40,7 @@ public:
   int GetBufferAge() override;
   uint64_t GetVblankTiming(uint64_t &msc, uint64_t &interval) override;
 
-  bool BindTextureUploadContext();
+  bool BindTextureUploadContext(const std::atomic_bool* cancelled = nullptr);
   bool UnbindTextureUploadContext();
   bool HasContext();
 

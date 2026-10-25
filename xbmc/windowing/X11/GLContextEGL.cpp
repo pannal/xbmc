@@ -554,7 +554,7 @@ uint64_t CGLContextEGL::GetVblankTiming(uint64_t &msc, uint64_t &interval)
   return ret;
 }
 
-bool CGLContextEGL::BindTextureUploadContext()
+bool CGLContextEGL::BindTextureUploadContext(const std::atomic_bool* cancelled)
 {
   if (m_eglDisplay == EGL_NO_DISPLAY || m_eglUploadContext == EGL_NO_CONTEXT)
   {
@@ -563,6 +563,13 @@ bool CGLContextEGL::BindTextureUploadContext()
   }
 
   m_textureUploadLock.lock();
+
+  // A request may become obsolete while waiting for the upload lease.
+  if (cancelled && cancelled->load(std::memory_order_acquire))
+  {
+    m_textureUploadLock.unlock();
+    return false;
+  }
 
   if (!eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, m_eglUploadContext))
   {

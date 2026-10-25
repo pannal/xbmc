@@ -353,7 +353,7 @@ std::thread::id releaseThread;''')
     prelude=replace(prelude,'using CCriticalSection = std::recursive_mutex;',MUTEX)
     prelude=replace(prelude,'  static void LogF(int level, const char*, Args&&...)\n  {',
         '  static void LogF(int level, const char*, Args&&...)\n  {\n    if (level==LOGWARNING && fixture::throwWarning) throw std::bad_alloc();')
-    classes=donor.CLASSES
+    classes=donor.upload_classes(files[donor.EGL_SOURCE])
     if 'void CTexture::LoadToGPUAsync(const std::atomic_bool*' in files[donor.TEXTURE_SOURCE]:
         classes=replace(classes,'  void LoadToGPUAsync();',
                         '  void LoadToGPUAsync(const std::atomic_bool* cancelled=nullptr);')

@@ -196,7 +196,9 @@ def generate(files, overrides=None):
     pre = pre.replace('struct FakeWindow {FakeGraphics gfx;FakeGraphics& GetGfxContext(){return gfx;}};', '''struct FakeWindow {
  FakeGraphics gfx;std::mutex lease;
  FakeGraphics& GetGfxContext(){return gfx;} bool HasContext(){return false;}
- bool BindTextureUploadContext(){auto& s=*currentState;++s.binds;s.bindEntered=true;if(s.bindFails)return false;lease.lock();leaseHeld=true;return true;}
+ // Deliberately admit a lease to isolate CTexture's post-bind cancellation and
+ // release paths. The real locked admission gate has its own threaded tests.
+ bool BindTextureUploadContext(const std::atomic_bool* =nullptr){auto& s=*currentState;++s.binds;s.bindEntered=true;if(s.bindFails)return false;lease.lock();leaseHeld=true;return true;}
  bool UnbindTextureUploadContext(){auto& s=*currentState;++s.releases;leaseHeld=false;lease.unlock();if(s.throwRelease)throw std::runtime_error("fixture release throw");return !s.failRelease;}
 };using CWinSystemBase=FakeWindow;''')
     pre = pre.replace(' static FakeGUI* GetGUI()', ' static CJobManager* GetJobManager(){return activeJobs;}\n static FakeGUI* GetGUI()')

@@ -48,7 +48,7 @@ public:
   }
   int GetBufferAge() override { return m_eglContext.GetBufferAge(); }
 
-  bool BindTextureUploadContext() override;
+  bool BindTextureUploadContext(const std::atomic_bool* cancelled = nullptr) override;
   bool UnbindTextureUploadContext() override;
   bool HasContext() override;
 

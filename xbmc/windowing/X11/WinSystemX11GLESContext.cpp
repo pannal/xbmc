@@ -92,10 +92,10 @@ EGLConfig CWinSystemX11GLESContext::GetEGLConfig() const
   return m_pGLContext->m_eglConfig;
 }
 
-bool CWinSystemX11GLESContext::BindTextureUploadContext()
+bool CWinSystemX11GLESContext::BindTextureUploadContext(const std::atomic_bool* cancelled)
 {
   if (m_pGLContext)
-    return static_cast<CGLContextEGL*>(m_pGLContext)->BindTextureUploadContext();
+    return static_cast<CGLContextEGL*>(m_pGLContext)->BindTextureUploadContext(cancelled);
   else
     return false;
 }

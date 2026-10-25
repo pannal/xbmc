@@ -140,9 +140,9 @@ void CWinSystemGbmEGLContext::delete_CVaapiProxy::operator()(CVaapiProxy *p) con
   VaapiProxyDelete(p);
 }
 
-bool CWinSystemGbmEGLContext::BindTextureUploadContext()
+bool CWinSystemGbmEGLContext::BindTextureUploadContext(const std::atomic_bool* cancelled)
 {
-  return m_eglContext.BindTextureUploadContext();
+  return m_eglContext.BindTextureUploadContext(cancelled);
 }
 
 bool CWinSystemGbmEGLContext::UnbindTextureUploadContext()

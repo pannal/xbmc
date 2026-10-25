@@ -102,9 +102,9 @@ bool CWinSystemWaylandEGLContext::DestroyWindowSystem()
   return CWinSystemWaylandImpl::DestroyWindowSystem();
 }
 
-bool CWinSystemWaylandEGLContext::BindTextureUploadContext()
+bool CWinSystemWaylandEGLContext::BindTextureUploadContext(const std::atomic_bool* cancelled)
 {
-  return m_eglContext.BindTextureUploadContext();
+  return m_eglContext.BindTextureUploadContext(cancelled);
 }
 
 bool CWinSystemWaylandEGLContext::UnbindTextureUploadContext()

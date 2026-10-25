@@ -283,7 +283,7 @@ void CTexture::LoadToGPUAsync(const std::atomic_bool* cancelled)
   if (window->HasContext())
     return;
 
-  if (!window->BindTextureUploadContext())
+  if (!window->BindTextureUploadContext(cancelled))
     return;
 
   struct UploadContextGuard

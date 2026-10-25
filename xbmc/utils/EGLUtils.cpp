@@ -716,12 +716,16 @@ bool CEGLContextUtils::TrySwapBuffers(SwapDiagnostics* diagnostics)
   return success;
 }
 
-bool CEGLContextUtils::BindTextureUploadContext()
+bool CEGLContextUtils::BindTextureUploadContext(const std::atomic_bool* cancelled)
 {
   // Do not acquire a second lease on a context already held by this thread.
   if (m_currentUploadContext)
     return false;
   std::unique_lock<CCriticalSection> lock(m_textureUploadLock);
+
+  // A request may become obsolete while waiting for the upload lease.
+  if (cancelled && cancelled->load(std::memory_order_acquire))
+    return false;
 
   if (m_textureUploadClosing.load(std::memory_order_acquire) ||
       m_textureUploadDisabled || m_textureUploadPoisoned ||

@@ -89,7 +89,7 @@ public:
 
   // Shared context for <gui><asynctextureupload>: the large texture loader
   // uploads on its own thread instead of the render thread.
-  bool BindTextureUploadContext() override;
+  bool BindTextureUploadContext(const std::atomic_bool* cancelled = nullptr) override;
   bool UnbindTextureUploadContext() override;
   bool HasContext() override;
 

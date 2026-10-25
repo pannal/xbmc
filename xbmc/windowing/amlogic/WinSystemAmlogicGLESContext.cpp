@@ -171,11 +171,9 @@ bool CWinSystemAmlogicGLESContext::IsPrimaryContextCurrent() const
 // mode change replaces only the surface, so textures uploaded through the shared
 // context stay valid in the primary one. Without an upload context the texture
 // is uploaded by the render thread on first use, as before.
-bool CWinSystemAmlogicGLESContext::BindTextureUploadContext()
+bool CWinSystemAmlogicGLESContext::BindTextureUploadContext(const std::atomic_bool* cancelled)
 {
-  if (!m_pGLContext.HasTextureUploadContext())
-    return false;
-  return m_pGLContext.BindTextureUploadContext();
+  return m_pGLContext.BindTextureUploadContext(cancelled);
 }
 
 bool CWinSystemAmlogicGLESContext::UnbindTextureUploadContext()

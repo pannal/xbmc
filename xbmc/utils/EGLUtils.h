@@ -232,7 +232,7 @@ public:
     return m_eglConfig;
   }
 
-  bool BindTextureUploadContext();
+  bool BindTextureUploadContext(const std::atomic_bool* cancelled = nullptr);
   bool UnbindTextureUploadContext();
   bool HasContext();
   bool HasTextureUploadContext() const;

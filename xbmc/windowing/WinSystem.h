@@ -18,6 +18,7 @@
 #include "guilib/DispResource.h"
 #include "utils/HDRCapabilities.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <utility>
@@ -302,9 +303,11 @@ public:
 
   /*!
    * \brief Binds a shared context to the current thread, in order to upload textures asynchronously.
+   * \param cancelled Optional cancellation token, used only during this call. Check after waiting
+   * for the upload lock, before binding. Callers must still handle cancellation after binding.
    * \return Return true if a texture upload context exists and the binding succeeds.
    */
-  virtual bool BindTextureUploadContext() { return false; }
+  virtual bool BindTextureUploadContext(const std::atomic_bool* = nullptr) { return false; }
 
   /*!
    * \brief Unbinds the shared context.

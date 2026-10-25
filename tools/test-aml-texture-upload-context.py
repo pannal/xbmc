@@ -46,12 +46,12 @@ def block(source, signature):
 
 
 EGL_METHODS = ['bool CEGLContextUtils::CreateContext(', 'void CEGLContextUtils::DestroyContext()',
-               'bool CEGLContextUtils::BindTextureUploadContext()',
+               'bool CEGLContextUtils::BindTextureUploadContext(',
                'bool CEGLContextUtils::UnbindTextureUploadContext()',
                'bool CEGLContextUtils::HasContext()']
 FIXED_EGL_METHODS = ['bool CEGLContextUtils::CreateTextureUploadSurface()',
                      'bool CEGLContextUtils::HasTextureUploadContext() const']
-AML_METHODS = ['bool CWinSystemAmlogicGLESContext::BindTextureUploadContext()',
+AML_METHODS = ['bool CWinSystemAmlogicGLESContext::BindTextureUploadContext(',
                'bool CWinSystemAmlogicGLESContext::UnbindTextureUploadContext()',
                'bool CWinSystemAmlogicGLESContext::HasContext()']
 
@@ -545,9 +545,17 @@ int main()
 '''
 
 
+def upload_classes(egl):
+    classes = CLASSES
+    if 'const std::atomic_bool* cancelled' in function(egl, 'bool CEGLContextUtils::BindTextureUploadContext('):
+        classes = classes.replace('BindTextureUploadContext()',
+                                  'BindTextureUploadContext(const std::atomic_bool* cancelled = nullptr)')
+    return classes
+
+
 def sources(egl, header, aml, texture, baseline):
     attributes = re.search(r'class CEGLAttributesVec\n\{[\s\S]*?\n\};\n', header).group()
-    parts = [PRELUDE, attributes, CLASSES]
+    parts = [PRELUDE, attributes, upload_classes(egl)]
     methods = EGL_METHODS + ([] if baseline else FIXED_EGL_METHODS)
     parts += [function(egl, signature) for signature in methods]
     if baseline:
@@ -595,7 +603,7 @@ MUTATIONS = {
         r'  if \(!m_pGLContext\.HasTextureUploadContext\(\)\)\n    return false;\n', ''),
     # the AML hook is not wired to the upload context
     'unwired-aml-bind': (AML_SOURCE,
-        r'return m_pGLContext\.BindTextureUploadContext\(\);', 'return false;'),
+        r'return m_pGLContext\.BindTextureUploadContext\((?:cancelled)?\);', 'return false;'),
 }
 
 
@@ -655,7 +663,15 @@ def main():
         ungated = dict(current)
         path, pattern, replacement = mutations.pop('ungated-aml-bind')
         ungated[path], count = re.subn(pattern, replacement, ungated[path])
-        assert count == 1
+        if count == 0:
+            # Current AML delegates directly to the locked helper. Reinsert
+            # the redundant advisory check as the benign comparison instead.
+            body = function(current[path], 'bool CWinSystemAmlogicGLESContext::BindTextureUploadContext(')
+            assert body.endswith('{\n  return m_pGLContext.BindTextureUploadContext(cancelled);\n}')
+            advisory = body.replace('{\n', '{\n  if (!m_pGLContext.HasTextureUploadContext())\n    return false;\n', 1)
+            ungated[path] = ungated[path].replace(body, advisory, 1)
+        else:
+            assert count == 1
         benign = run_case(args.output, 'redundant-aml-precheck',
                           source_builder(*(ungated[p] for p in files), baseline=False))
         assert benign.returncode == 0, (benign.stdout, benign.stderr)

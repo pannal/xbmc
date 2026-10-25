@@ -61,7 +61,7 @@ public:
   EGLContext GetEGLContext() const;
   EGLConfig GetEGLConfig() const;
 
-  bool BindTextureUploadContext() override;
+  bool BindTextureUploadContext(const std::atomic_bool* cancelled = nullptr) override;
   bool UnbindTextureUploadContext() override;
   bool HasContext() override;
 
