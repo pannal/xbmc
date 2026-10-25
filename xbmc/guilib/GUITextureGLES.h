@@ -52,7 +52,9 @@ protected:
 
 private:
   CGUITextureGLES(const CGUITextureGLES& texture) = default;
+  void BeginDraw(UTILS::COLOR::Color color);
 
+  UTILS::COLOR::Color m_pendingColor{0};
   std::array<GLubyte, 4> m_col;
 
   PackedVertices m_packedVertices;

@@ -49,6 +49,15 @@ void CGUITextureGLES::Begin(UTILS::COLOR::Color color)
   if (m_diffuse.size())
     m_diffuse.m_textures[0]->LoadToGPU();
 
+  // Preserve upload timing for prefetched textures, but defer draw setup until
+  // segment clipping has produced a nonempty batch.
+  m_pendingColor = color;
+  m_packedVertices.clear();
+}
+
+void CGUITextureGLES::BeginDraw(UTILS::COLOR::Color color)
+{
+  CTexture* texture = m_texture.m_textures[m_currentFrame].get();
   texture->BindToUnit(0);
 
   // Setup Colors
@@ -103,11 +112,14 @@ void CGUITextureGLES::Begin(UTILS::COLOR::Color color)
   {
     glDisable(GL_BLEND);
   }
-  m_packedVertices.clear();
 }
 
 void CGUITextureGLES::End()
 {
+  if (m_packedVertices.empty())
+    return;
+
+  BeginDraw(m_pendingColor);
   if (m_packedVertices.size())
   {
     GLint posLoc  = m_renderSystem->GUIShaderGetPos();
