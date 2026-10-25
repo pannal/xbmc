@@ -269,8 +269,6 @@ void CGUIFontTTFGLES::LastEnd()
 
         glDrawElements(GL_TRIANGLES, 6 * count, GL_UNSIGNED_SHORT, 0);
       }
-
-      glMatrixModview.Pop();
     }
     // Restore the original scissor rectangle
     if (m_scissorClip)
