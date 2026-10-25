@@ -24,6 +24,12 @@ An unsuccessful path is disabled for the context generation, avoiding an error
 for every subsequent image. Surface replacement keeps the context/share group;
 full context destruction requires the application retirement contract below.
 
+The renderer's automatic HIGH context-priority hint is not added to the upload
+context. The upload context retains the caller's original attributes, including
+any explicit priority; otherwise EGL defaults to MEDIUM. The assigned upload
+priority is queried and logged at debug level. Priority is a driver hint, so
+different requests do not guarantee different scheduling or better pacing.
+
 The worker owns one mutex/TLS lease from successful bind through upload,
 completion and release. Scope cleanup releases the same object on the same
 thread if upload or synchronization throws. Failed unbind attempts same-thread
@@ -40,9 +46,20 @@ for the active lease. Normal application Stop rejects new jobs and drains all
 job workers/completion callbacks before GUI/window-system deletion. Per-image
 cancellation removes publication but lets an active upload finish and release
 its context. Image jobs check cancellation before decoding and after decoding,
-before starting GPU upload. A job already cancelled at those checkpoints skips
-that work. Cancellation after the check, while waiting for the upload lease or
-inside the driver, can still finish an upload that will not be published.
+including failed direct decoding before trying the cache fallback. A job already
+cancelled at those checkpoints skips subsequent work.
+
+Each queued image request and its loader share an atomic cancellation token.
+Releasing the last consumer destroys that request and marks its token; other
+consumers of the same request keep it live. The loader retains the token while
+it runs. Worker upload checks the token before binding and again after acquiring
+the lease, without taking a job-manager lock under the EGL lease. A cancelled
+waiter skips upload and synchronization but still explicitly releases the lease
+and reports release failure. A replacement request for the same path has a new
+token. Generic job-manager cancellation alone does not mark this request token;
+it retains the loader checkpoints and publication suppression. These checks do
+not interrupt decoding or cache waits, or GL work admitted by the final token
+check. An admitted upload can therefore still finish without being published.
 Prefetched images can also be uploaded before they are ever drawn; moving their
 work to a worker does not by itself reduce the amount of GPU work.
 The upload mutex alone does not own the window-system object or
@@ -66,6 +83,17 @@ loader and job-manager cancellation methods with threaded decode barriers and
 recording texture/cache fixtures. It covers both loading paths, cancelled
 requests and replacement-job isolation. It does not establish how many uploads
 in a device capture were cancelled, or measure a pacing improvement.
+
+`tools/test-image-upload-request-cancellation.py --sanitize` adds actual request
+creation, reference release and token ownership methods to threaded lease-wait
+tests. It covers shared consumers, replacement requests, copied callbacks,
+failed decoding, active-upload cancellation and release errors. Recording
+fixtures reject manager locking under the lease. Historical request methods and
+semantic mutations must fail their specific assertions. Binding, decode and GL
+remain fixtures. `tools/test-aml-texture-upload-priority.py --sanitize` records
+the actual context-creation attributes and advisory priority query, including
+driver-forced priorities, failed queries and unavailable upload contexts. It
+does not exercise real driver scheduling.
 
 Host tests and compiler acceptance do not establish Mali context sharing,
 physical pixels, smoothness or safe deferred driver deletion. Before considering

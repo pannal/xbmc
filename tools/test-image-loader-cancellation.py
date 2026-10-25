@@ -66,7 +66,7 @@ struct CTexture {
  State* state;
  explicit CTexture(State* s):state(s){}
  ~CTexture(){++state->destroyed;if(heldLocks)++state->destroyedWithLock;}
- void LoadToGPUAsync(){++state->uploads;}
+ void LoadToGPUAsync(const std::atomic_bool* =nullptr){++state->uploads;}
  static std::unique_ptr<CTexture> LoadFromFile(const std::string&,int,int){
   auto& s=*currentState;const int n=++s.decodes;s.DecodeBarrier(n);
   return s.directFails?nullptr:std::make_unique<CTexture>(&s);
@@ -112,6 +112,7 @@ public:
 struct CImageLoader : CJob {
  std::string m_path;bool m_use_cache;
  std::unique_ptr<CTexture> m_texture;
+ std::shared_ptr<std::atomic_bool> m_cancelled;
  CImageLoader(std::string path,bool useCache):m_path(std::move(path)),m_use_cache(useCache){}
  bool DoWork()override;
 };
@@ -300,7 +301,11 @@ def main():
         # Move the direct-branch guard behind its actual GPU call: a cancelled
         # loader may return false, yet has already incurred the unwanted upload.
         m=checkpoints[1];guard=m.group();mutated=work[:m.start()]+work[m.end():]
-        at=mutated.index('m_texture->LoadToGPUAsync();')+len('m_texture->LoadToGPUAsync();')
+        assert 'ShouldCancel(0, 0)' in guard
+        guard = '      if (ShouldCancel(0, 0))\n      {\n        return false;\n      }'
+        call = re.search(r'm_texture->LoadToGPUAsync\([^;]*\);', mutated)
+        assert call, 'actual GPU call missing from direct branch'
+        at = call.end()
         mutated=mutated[:at]+'\n'+guard+mutated[at:]
         binary=build('late-after-gpu',make_source(files,mutated));run(binary,'witness-direct',False)
     finally:

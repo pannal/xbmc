@@ -11,6 +11,7 @@
 #include "guilib/TextureBase.h"
 #include "guilib/TextureFormats.h"
 
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -91,7 +92,7 @@ public:
   /*! 
    * \brief Uploads the texture to the GPU. 
    */
-  void LoadToGPUAsync();
+  void LoadToGPUAsync(const std::atomic_bool* cancelled = nullptr);
 
   virtual void CreateTextureObject() = 0;
   virtual void DestroyTextureObject() = 0;

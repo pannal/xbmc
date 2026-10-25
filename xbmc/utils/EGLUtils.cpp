@@ -420,9 +420,6 @@ bool CEGLContextUtils::CreateContext(CEGLAttributesVec contextAttribs)
   if (CEGLUtils::HasExtension(m_eglDisplay, "EGL_KHR_no_config_context"))
     eglConfig = EGL_NO_CONFIG_KHR;
 
-  if (CEGLUtils::HasExtension(m_eglDisplay, "EGL_IMG_context_priority"))
-    contextAttribs.Add({{EGL_CONTEXT_PRIORITY_LEVEL_IMG, EGL_CONTEXT_PRIORITY_HIGH_IMG}});
-
 #if !defined(HAS_LIBAMCODEC)
   if (CEGLUtils::HasExtension(m_eglDisplay, "EGL_KHR_create_context") &&
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_openGlDebugging)
@@ -430,6 +427,12 @@ bool CEGLContextUtils::CreateContext(CEGLAttributesVec contextAttribs)
     contextAttribs.Add({{EGL_CONTEXT_FLAGS_KHR, EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR}});
   }
 #endif
+
+  // Background uploads retain the caller's attributes instead of inheriting
+  // the automatic priority boost reserved for rendering.
+  const CEGLAttributesVec uploadContextAttribs{contextAttribs};
+  if (CEGLUtils::HasExtension(m_eglDisplay, "EGL_IMG_context_priority"))
+    contextAttribs.Add({{EGL_CONTEXT_PRIORITY_LEVEL_IMG, EGL_CONTEXT_PRIORITY_HIGH_IMG}});
 
   m_eglContext = eglCreateContext(m_eglDisplay, eglConfig,
                                   EGL_NO_CONTEXT, contextAttribs.Get());
@@ -456,7 +459,7 @@ bool CEGLContextUtils::CreateContext(CEGLAttributesVec contextAttribs)
   m_textureUploadClosing.store(false, std::memory_order_release);
   if (!m_textureUploadDisabled)
     m_eglUploadContext =
-        eglCreateContext(m_eglDisplay, m_eglConfig, m_eglContext, contextAttribs.Get());
+        eglCreateContext(m_eglDisplay, m_eglConfig, m_eglContext, uploadContextAttribs.Get());
 
   if (m_eglUploadContext == EGL_NO_CONTEXT)
     CLog::Log(LOGWARNING, "Failed to create EGL upload context");
@@ -465,6 +468,17 @@ bool CEGLContextUtils::CreateContext(CEGLAttributesVec contextAttribs)
     // an upload context that can never be bound is no upload context
     eglDestroyContext(m_eglDisplay, m_eglUploadContext);
     m_eglUploadContext = EGL_NO_CONTEXT;
+  }
+
+  if (m_eglUploadContext != EGL_NO_CONTEXT &&
+      CEGLUtils::HasExtension(m_eglDisplay, "EGL_IMG_context_priority"))
+  {
+    EGLint priority{EGL_CONTEXT_PRIORITY_MEDIUM_IMG};
+    if (eglQueryContext(m_eglDisplay, m_eglUploadContext, EGL_CONTEXT_PRIORITY_LEVEL_IMG,
+                        &priority) == EGL_TRUE)
+      CLog::Log(LOGDEBUG, "EGL texture upload context priority: {:#x}", priority);
+    else
+      CEGLUtils::Log(LOGWARNING, "Failed to query EGL texture upload context priority");
   }
 
   m_bufferAgeSupport = CEGLUtils::HasExtension(m_eglDisplay, "EGL_EXT_buffer_age");

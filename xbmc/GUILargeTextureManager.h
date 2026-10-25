@@ -12,6 +12,7 @@
 #include "threads/CriticalSection.h"
 #include "utils/Job.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -31,7 +32,9 @@ class CTexture;
 class CImageLoader : public CJob
 {
 public:
-  CImageLoader(const std::string &path, const bool useCache);
+  CImageLoader(const std::string& path,
+               bool useCache,
+               std::shared_ptr<std::atomic_bool> cancelled = {});
   ~CImageLoader() override;
 
   /*!
@@ -42,6 +45,9 @@ public:
   bool          m_use_cache; ///< Whether or not to use any caching with this image
   std::string    m_path; ///< path of image to load
   std::unique_ptr<CTexture> m_texture; ///< Texture object to load the image into \sa CTexture.
+
+private:
+  std::shared_ptr<std::atomic_bool> m_cancelled;
 };
 
 /*!
@@ -122,6 +128,7 @@ private:
 
     const std::string& GetPath() const { return m_path; }
     const CTextureArray& GetTexture() const { return m_texture; }
+    const std::shared_ptr<std::atomic_bool>& GetCancellationToken() const { return m_cancelled; }
 
   private:
     static const unsigned int TIME_TO_DELETE = 2000;
@@ -130,6 +137,7 @@ private:
     std::string m_path;
     CTextureArray m_texture;
     unsigned int m_timeToDelete;
+    std::shared_ptr<std::atomic_bool> m_cancelled{std::make_shared<std::atomic_bool>(false)};
   };
 
   void QueueImage(const std::string &path, bool useCache = true);

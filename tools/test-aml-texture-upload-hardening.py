@@ -354,6 +354,9 @@ std::thread::id releaseThread;''')
     prelude=replace(prelude,'  static void LogF(int level, const char*, Args&&...)\n  {',
         '  static void LogF(int level, const char*, Args&&...)\n  {\n    if (level==LOGWARNING && fixture::throwWarning) throw std::bad_alloc();')
     classes=donor.CLASSES
+    if 'void CTexture::LoadToGPUAsync(const std::atomic_bool*' in files[donor.TEXTURE_SOURCE]:
+        classes=replace(classes,'  void LoadToGPUAsync();',
+                        '  void LoadToGPUAsync(const std::atomic_bool* cancelled=nullptr);')
     classes=replace(classes,'  bool HasTextureUploadContext() const;',r'''  bool HasTextureUploadContext() const;
   void CloseTextureUploadContext();
   bool CreateTextureUploadPbuffer();''')
@@ -390,7 +393,7 @@ std::thread::id releaseThread;''')
     parts=[prelude,EXTRA_EGL,attributes,classes,PUBLICATION_CLASSES]
     parts += [donor.function(files[donor.EGL_SOURCE],signature) for signature in signatures]
     parts += [donor.function(files[donor.AML_SOURCE],signature) for signature in donor.AML_METHODS]
-    parts += [donor.function(files[donor.TEXTURE_SOURCE],'void CTexture::LoadToGPUAsync()'),
+    parts += [donor.function(files[donor.TEXTURE_SOURCE],'void CTexture::LoadToGPUAsync('),
               donor.function(files[PUBLICATION],'void CGUILargeTextureManager::OnJobComplete('),main,TESTS]
     parts += [r'''int main(){try {
       Surfaceless();PbufferFallback();NoSurface();ConcurrentLoaders();DestroyDuringUpload();PrimaryThread();

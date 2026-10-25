@@ -26,8 +26,10 @@
 #include <exception>
 #include <mutex>
 
-CImageLoader::CImageLoader(const std::string& path, const bool useCache)
-  : m_path(path), m_texture(nullptr)
+CImageLoader::CImageLoader(const std::string& path,
+                         bool useCache,
+                         std::shared_ptr<std::atomic_bool> cancelled)
+  : m_path(path), m_texture(nullptr), m_cancelled(std::move(cancelled))
 {
   m_use_cache = useCache;
 }
@@ -65,16 +67,16 @@ bool CImageLoader::DoWork()
     if (duration.count() > 100)
       CLog::Log(LOGDEBUG, "{} - took {} ms to load {}", __FUNCTION__, duration.count(), loadPath);
 
+    if (ShouldCancel(0, 0))
+      return false;
+
     if (m_texture)
     {
-      if (ShouldCancel(0, 0))
-        return false;
-
       if (needsChecking)
         CServiceBroker::GetTextureCache()->BackgroundCacheImage(texturePath);
 
       if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAsyncTextureUpload)
-        m_texture->LoadToGPUAsync();
+        m_texture->LoadToGPUAsync(m_cancelled.get());
 
       return true;
     }
@@ -96,7 +98,7 @@ bool CImageLoader::DoWork()
     return false;
 
   if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAsyncTextureUpload)
-    m_texture->LoadToGPUAsync();
+    m_texture->LoadToGPUAsync(m_cancelled.get());
 
   return true;
 }
@@ -111,6 +113,8 @@ CGUILargeTextureManager::CLargeTexture::CLargeTexture(const std::string &path):
 CGUILargeTextureManager::CLargeTexture::~CLargeTexture()
 {
   assert(m_refCount == 0);
+  // The job retains this token if it is still waiting for the upload context.
+  m_cancelled->store(true, std::memory_order_release);
   m_texture.Free();
 }
 
@@ -267,8 +271,8 @@ void CGUILargeTextureManager::QueueImage(const std::string &path, bool useCache)
 
   // queue the item
   CLargeTexture *image = new CLargeTexture(path);
-  unsigned int jobID = CServiceBroker::GetJobManager()->AddJob(new CImageLoader(path, useCache),
-                                                               this, CJob::PRIORITY_NORMAL);
+  unsigned int jobID = CServiceBroker::GetJobManager()->AddJob(
+      new CImageLoader(path, useCache, image->GetCancellationToken()), this, CJob::PRIORITY_NORMAL);
   m_queued.emplace_back(jobID, image);
   m_queuedLookup[path] = image;
 }

@@ -269,8 +269,11 @@ bool CTexture::LoadIImage(IImage* pImage,
   return true;
 }
 
-void CTexture::LoadToGPUAsync()
+void CTexture::LoadToGPUAsync(const std::atomic_bool* cancelled)
 {
+  if (cancelled && cancelled->load(std::memory_order_acquire))
+    return;
+
   // Stop drains image jobs before unregistering/deleting the window system.
   // Keep the matching bind and release on the same object and worker thread.
   auto* window = CServiceBroker::GetWinSystem();
@@ -309,9 +312,13 @@ void CTexture::LoadToGPUAsync()
     }
   } guard{window};
 
-  LoadToGPU();
-
-  SyncGPU();
+  // Request cancellation is atomic: do not take the job-manager lock while
+  // holding the EGL upload lease. A cancelled waiter must still release it.
+  if (!cancelled || !cancelled->load(std::memory_order_acquire))
+  {
+    LoadToGPU();
+    SyncGPU();
+  }
 
   if (!guard.Release())
     throw std::runtime_error("Texture upload context could not be released");

@@ -556,7 +556,7 @@ def sources(egl, header, aml, texture, baseline):
         parts.append('bool CEGLContextUtils::HasTextureUploadContext() const { return false; }')
     else:
         parts += [function(aml, signature) for signature in AML_METHODS]
-    parts.append(function(texture, 'void CTexture::LoadToGPUAsync()'))
+    parts.append(function(texture, 'void CTexture::LoadToGPUAsync('))
     parts.append(MAIN)
     return '\n'.join(parts)
 
