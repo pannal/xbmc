@@ -1,11 +1,12 @@
 # Amlogic asynchronous GUI texture upload
 
-The existing advanced setting remains **off by default**:
+Asynchronous GUI texture upload is **on by default** for the p3i development
+build trial. To disable it, add this override and restart Kodi:
 
 ```xml
 <advancedsettings>
   <gui>
-    <asynctextureupload>true</asynctextureupload>
+    <asynctextureupload>false</asynctextureupload>
   </gui>
 </advancedsettings>
 ```
@@ -13,8 +14,8 @@ The existing advanced setting remains **off by default**:
 When enabled, the large-image loader uploads through a shared EGL context on
 its worker thread and finishes GPU work before returning the image for
 publication. This can move newly encountered poster/fanart uploads out of the
-render loop. It does not remove bandwidth, GPU or driver contention, and cannot
-explain warm scrolling intervals containing no uploads. Ordinary first-use
+render loop. It does not remove bandwidth, GPU or driver contention. Upload-free
+warm intervals do not establish an upload-offloading benefit. Ordinary first-use
 render-thread upload remains the fallback when the worker cannot bind.
 
 The upload context uses surfaceless binding when supported, with a compatible
@@ -96,9 +97,10 @@ driver-forced priorities, failed queries and unavailable upload contexts. It
 does not exercise real driver scheduling.
 
 Host tests and compiler acceptance do not establish Mali context sharing,
-physical pixels, smoothness or safe deferred driver deletion. Before considering
-an enabled default, validate a normally rebuilt artifact with matched async
-off/on/off cold-artwork and warm comparisons, actual worker-thread uploads,
+physical pixels, smoothness or safe deferred driver deletion. Positive user
+reports support this development trial; physical acceptance remains unfinished.
+Continue validating normally rebuilt artifacts with matched async off/on/off
+cold-artwork and warm comparisons, actual worker-thread uploads,
 shared-texture visibility/completion, cancellation, skin/display transitions
 and agreed orderly shutdown. Retain the original fade durations and separate
 loop timing, swap cadence and physical presentation.
