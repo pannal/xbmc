@@ -19,7 +19,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <tuple>
 
 namespace
 {
@@ -45,11 +44,12 @@ void GetPanelRows(float value,
   const float low = std::min(value, target);
   const float high = std::max(value, target);
   firstRow = static_cast<int>(std::floor(low / rowSize)) - cache;
-  // rows that start before the far edge of the viewport
-  lastRow = static_cast<int>(std::floor(high / rowSize));
-  while ((lastRow + 1) * rowSize - high + renderOffset < length)
+  // Include only rows starting before the far edge, even when a positive
+  // render offset moves the entire viewport before the first candidate row.
+  lastRow = firstRow - 1;
+  const float end = length + cache * rowSize;
+  while ((lastRow + 1) * rowSize - high + renderOffset < end)
     ++lastRow;
-  lastRow += cache;
 }
 
 // Rows whose layouts are kept. At rest the drawn rows; while scrolling one more
@@ -84,17 +84,23 @@ void CGUIPanelContainer::Process(unsigned int currentTime, CDirtyRegionList &dir
   if (!m_layout || !m_focusedLayout)
     return;
 
+  const float rowSize = m_layout->Size(m_orientation);
+  if (!(rowSize > 0))
+    return;
+
   // A scroll requested from rest starts its clock on the next frame: this frame
   // builds the rows it reveals, so their build time is not shown as a jump in
-  // its first step. A scroll retargeted while running continues without pause.
-  const bool startNextFrame = m_scroller.IsScrolling() && !m_wasScrolling;
+  // its first step. Retargets keep the existing scroller update policy.
+  // A configured zero duration is represented by one millisecond. Keep its
+  // existing clock update rather than adding an otherwise visible frame delay.
+  const bool startNextFrame =
+      m_scroller.IsScrolling() && !m_wasScrolling && m_scroller.GetDuration() > 1;
   if (startNextFrame)
     MarkDirtyRegion();
   else
     UpdateScrollOffset(currentTime);
   m_wasScrolling = m_scroller.IsScrolling();
 
-  const float rowSize = m_layout->Size(m_orientation);
   const int offset = static_cast<int>(m_scroller.GetValue() / rowSize);
   const int cache = GetCacheCount() / 2;
   int firstRow, lastRow;
@@ -102,8 +108,6 @@ void CGUIPanelContainer::Process(unsigned int currentTime, CDirtyRegionList &dir
                (m_orientation == VERTICAL) ? m_height : m_width,
                (m_orientation == VERTICAL) ? m_renderOffset.y : m_renderOffset.x, cache, firstRow,
                lastRow);
-  // Cache the rows for reuse in Render()
-  m_cachedRows = std::make_pair(firstRow, lastRow);
 
   // Free memory not used on screen
   if ((int)m_items.size() > m_itemsPerPage + 2 * cache)
@@ -153,16 +157,14 @@ void CGUIPanelContainer::BuildRenderItems(std::vector<RENDERITEM>& renderItems) 
   if (!m_layout || !m_focusedLayout)
     return;
 
-  // Use the rows from Process(), fall back to calculating them if not yet cached
+  // Re-evaluate current geometry for both depth assignment and rendering. A
+  // jump, provider replacement or layout change can precede the next Process().
   const float rowSize = m_layout->Size(m_orientation);
   int firstRow, lastRow;
-  if (m_cachedRows)
-    std::tie(firstRow, lastRow) = *m_cachedRows;
-  else
-    GetPanelRows(m_scroller.GetValue(), GetOffset() * rowSize, rowSize,
-                 (m_orientation == VERTICAL) ? m_height : m_width,
-                 (m_orientation == VERTICAL) ? m_renderOffset.y : m_renderOffset.x,
-                 GetCacheCount() / 2, firstRow, lastRow);
+  GetPanelRows(m_scroller.GetValue(), GetOffset() * rowSize, rowSize,
+               (m_orientation == VERTICAL) ? m_height : m_width,
+               (m_orientation == VERTICAL) ? m_renderOffset.y : m_renderOffset.x,
+               GetCacheCount() / 2, firstRow, lastRow);
 
   CPoint origin = CPoint(m_posX, m_posY) + m_renderOffset;
   float pos = (m_orientation == VERTICAL) ? origin.y : origin.x;
@@ -660,6 +662,10 @@ bool CGUIPanelContainer::HasNextPage() const
 
 void CGUIPanelContainer::ScrollToOffset(int offset)
 {
+  // Stop() can run between Process() calls (for example in FreeResources()).
+  // A subsequent request from rest still needs its row-building frame.
+  if (!m_scroller.IsScrolling())
+    m_wasScrolling = false;
   CGUIBaseContainer::ScrollToOffset(offset);
   SetCursor(GetCursor());
 }

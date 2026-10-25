@@ -15,9 +15,6 @@
 
 #include "GUIBaseContainer.h"
 
-#include <optional>
-#include <utility>
-
 /*!
  \ingroup controls
  \brief
@@ -64,8 +61,6 @@ protected:
 
   int m_itemsPerRow;
 
-  // Rows calculated in Process() and reused in Render()
-  std::optional<std::pair<int, int>> m_cachedRows;
   // Whether the scroller was running at the end of the previous Process()
   bool m_wasScrolling{false};
 };
