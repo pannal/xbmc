@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Replay complete container draw/depth methods against owned layout fixtures.
 
-Pinned pre-change source supplies the draw compatibility baseline. Current depth must visit exactly
-the layouts selected by that draw enumeration, in back-to-front order. Graphics,
+Pinned pre-change source supplies the draw compatibility baseline for base and wrapping
+containers. Panels select their rows by the current scroll value and the scroll target with a
+direction-independent preload since the panel row change, so their draws are checked against an
+independent enumeration of those rows (row-major, focused item last, production position
+arithmetic) instead of the historical draw. Current depth must visit exactly the layouts selected
+by the draw enumeration, in back-to-front order. Graphics,
 layout children/text fades, scrolling state and provider replacement are fixtures;
 this is not full Kodi integration, GL execution or device performance evidence.
 The historical full-list/both-layout depth behavior is a counterexample, not the
@@ -47,6 +51,7 @@ COMMON = r'''
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 static unsigned long checks=0, cases=0;
 static void Check(bool condition,const char* message)
@@ -143,6 +148,7 @@ struct CGUIBaseContainer:CGUIControl
  mutable std::vector<RENDERITEM> m_renderItems;
  std::vector<RENDERITEM> m_depthItems;
  int GetOffset()const{return m_offset;}int GetCursor()const{return m_cursor;}
+ int GetCacheCount()const{return m_cacheItems;}
  virtual int CorrectOffset(int,int)const;
  void GetCacheOffsets(int&,int&)const;
  void Render()override;
@@ -152,7 +158,7 @@ struct CGUIBaseContainer:CGUIControl
 };
 struct CGUIPanelContainer:CGUIBaseContainer
 {
- int m_itemsPerRow=3;std::optional<int> m_cachedScrollOffset;
+ int m_itemsPerRow=3;std::optional<int> m_cachedScrollOffset;std::optional<std::pair<int,int>> m_cachedRows;
  int CorrectOffset(int,int)const override;
  void Render()override;
  @PANEL_DECL@
@@ -194,7 +200,67 @@ template<class C>void Configure(C& c,const State& s)
  c.m_bHasFocus=s.focus;c.m_items=Items(s.count,s.missing);
 }
 template<class C>void PanelConfigure(C& c,const State& s)
-{Configure(c,s);c.m_itemsPerRow=s.rows;if(s.cached)c.m_cachedScrollOffset=s.offset;}
+{
+ Configure(c,s);c.m_itemsPerRow=s.rows;
+ if(s.cached)
+ {
+  c.m_cachedScrollOffset=s.offset;
+  // rows at rest at the target, unlike the rows of the fixture's scroll value
+  const ORIENTATION o=c.m_orientation;const float size=c.m_layout->Size(o);int first,last;
+  now::GetPanelRows(s.offset*size,s.offset*size,size,o==VERTICAL?c.m_height:c.m_width,
+                    o==VERTICAL?c.m_renderOffset.y:c.m_renderOffset.x,s.cache/2,first,last);
+  c.m_cachedRows=std::make_pair(first,last);
+ }
+}
+static std::vector<int> ExpectedDepths(const std::vector<Draw>& draws);
+// Independent panel enumeration: rows from the cached or the production row helper, items
+// row-major, the physically focused item last, positions with the production arithmetic.
+template<class C>std::vector<Visit> PanelVisits(const C& c)
+{
+ std::vector<Visit> visits;
+ if(!c.m_layout||!c.m_focusedLayout)return visits;
+ const ORIENTATION o=c.m_orientation;const float size=c.m_layout->Size(o);int first,last;
+ if(c.m_cachedRows)std::tie(first,last)=*c.m_cachedRows;
+ else now::GetPanelRows(c.m_scroller.GetValue(),c.GetOffset()*size,size,o==VERTICAL?c.m_height:c.m_width,
+                        o==VERTICAL?c.m_renderOffset.y:c.m_renderOffset.x,c.m_cacheItems/2,first,last);
+ const CPoint origin=CPoint(c.m_posX,c.m_posY)+c.m_renderOffset;
+ float pos=o==VERTICAL?origin.y:origin.x;pos+=first*size-c.m_scroller.GetValue();
+ const int count=static_cast<int>(c.m_items.size());std::optional<Visit> focused;
+ for(int row=first;row<=last&&row*c.m_itemsPerRow<count;++row,pos+=size)
+  for(int col=0;col<c.m_itemsPerRow;++col)
+  {
+   const int current=row*c.m_itemsPerRow+col;if(current<0)continue;if(current>=count)break;
+   const bool focus=current==c.GetOffset()*c.m_itemsPerRow+c.GetCursor()&&c.m_bHasFocus;
+   const float across=(o==VERTICAL?origin.x:origin.y)+col*c.m_layout->Size(o==VERTICAL?HORIZONTAL:VERTICAL);
+   const Visit visit=o==VERTICAL?Visit{current+1,focus,across,pos}:Visit{current+1,focus,pos,across};
+   if(focus)focused=visit;else visits.push_back(visit);
+  }
+ if(focused)visits.push_back(*focused);
+ return visits;
+}
+template<class B,class C>void ComparePanel(B& baseline,C& current,const State& s)
+{
+ ++cases;
+ const auto expected=PanelVisits(current);
+ for(int pass:{RENDER_ORDER_BACK_TO_FRONT,RENDER_ORDER_FRONT_TO_BACK})
+ {
+  gfx.admit=s.clip;gfx.pass=pass;gfx.Clear();baseline.Render();
+  const auto clips=gfx.clips;const int pushed=gfx.clipPush,popped=gfx.clipPop;
+  gfx.Clear();current.Render();
+  auto visits=expected;if(pass==RENDER_ORDER_FRONT_TO_BACK)std::reverse(visits.begin(),visits.end());
+  if(!s.clip)visits.clear();
+  Check(gfx.visits==visits,"panel item/focus/order/coordinates match the row enumeration");
+  Check(gfx.clips==clips&&gfx.clipPush==pushed&&gfx.clipPop==popped,"dirty clip behavior unchanged");
+  Check(gfx.origins.empty(),"current origins balanced");
+ }
+ gfx.admit=true;gfx.pass=RENDER_ORDER_BACK_TO_FRONT;gfx.Clear();current.Render();
+ const auto canonicalDraws=gfx.draws;
+ gfx.Clear();gfx.admit=s.clip;current.AssignDepth();
+ Check(gfx.depths==ExpectedDepths(canonicalDraws),"fresh depth is exactly selected drawn layouts, in physical focus-last order");
+ Check(gfx.clips.empty(),"depth enumeration is independent of dirty clip admission");
+ Check(current.m_depthItems.empty(),"depth capacity cache retains no owners");
+ gfx.admit=true;
+}
 static std::vector<int> ExpectedDepths(const std::vector<Draw>& draws)
 {
  std::vector<int> expected;
@@ -245,7 +311,7 @@ static void Matrix()
   if(kind==0){old::Observed<old::CGUIBaseContainer> b;now::Observed<now::CGUIBaseContainer> c;
    Configure(b,s);Configure(c,s);Compare(b,c,s);}
   else if(kind==1){old::Observed<old::CGUIPanelContainer> b;now::Observed<now::CGUIPanelContainer> c;
-   PanelConfigure(b,s);PanelConfigure(c,s);Compare(b,c,s);}
+   PanelConfigure(b,s);PanelConfigure(c,s);ComparePanel(b,c,s);}
   else {s.count=3;old::Observed<old::CGUIWrappingListContainer> b;now::Observed<now::CGUIWrappingListContainer> c;
    Configure(b,s);Configure(c,s);Compare(b,c,s);}
  }
@@ -263,23 +329,24 @@ static void EdgesAndFreshness()
  Check(gfx.depths!=intended,"historical both-layout/all-item depth counterexample reproduced");
  Check(gfx.depths.back()/100==4&&intended.back()/100==8,
        "historical panel depth defers logical item4 instead of physical focused item8");
- Compare(b,c,s);
+ ComparePanel(b,c,s);
  // First-frame depth, then stale Render list, scroll, provider replacement/reload.
  for(int frame=0;frame<5;++frame)
  {
   s.scroll=frame==0?0.0f:frame*11.75f;s.offset=frame;s.cursor=frame%3;
   s.count=frame==3?0:23-frame;s.missing=frame%2;s.clip=frame%2==0;
   PanelConfigure(b,s);PanelConfigure(c,s);
-  gfx.Clear();gfx.admit=true;gfx.pass=RENDER_ORDER_BACK_TO_FRONT;b.Render();const auto expected=ExpectedDepths(gfx.draws);
-  gfx.Clear();c.AssignDepth();Check(gfx.depths==expected,"depth is fresh without first Render or after reload/list replace");
-  Compare(b,c,s);
+  gfx.Clear();gfx.admit=true;c.AssignDepth();const auto depths=gfx.depths;
+  gfx.Clear();gfx.pass=RENDER_ORDER_BACK_TO_FRONT;c.Render();
+  Check(depths==ExpectedDepths(gfx.draws),"depth is fresh without first Render or after reload/list replace");
+  ComparePanel(b,c,s);
  }
  // Missing container layouts must not resurrect previous render-list entries.
  for(int missing=0;missing<2;++missing)
  {
   b.m_layout=c.m_layout=missing?&normalTemplate:nullptr;
   b.m_focusedLayout=c.m_focusedLayout=missing?nullptr:&focusedTemplate;
-  Compare(b,c,s);Check(c.m_depthItems.empty(),"missing templates clear depth owners");
+  ComparePanel(b,c,s);Check(c.m_depthItems.empty(),"missing templates clear depth owners");
  }
  // Multiple instances, fractional origins and wrap duplicate visits are independent.
  now::Observed<now::CGUIWrappingListContainer> a,d;
@@ -361,6 +428,8 @@ def variant(src, current):
         'void CGUIBaseContainer::Render()', 'void CGUIBaseContainer::RenderItem(',
         'void CGUIBaseContainer::AssignDepth()', 'int CGUIBaseContainer::CorrectOffset(',
         'void CGUIBaseContainer::GetCacheOffsets(']]
+    if current:
+        extracted.append(method(panel, 'void GetPanelRows('))
     extracted += [method(panel, 'void CGUIPanelContainer::Render()'),
                   method(panel, 'int CGUIPanelContainer::CorrectOffset('),
                   method(wrap, 'int CGUIWrappingListContainer::CorrectOffset(')]
@@ -388,7 +457,8 @@ def mutations(current):
         'reverse-depth-order': ('for (const auto& renderItem : renderItems)',
                                 'std::reverse(renderItems.begin(), renderItems.end());\n  for (const auto& renderItem : renderItems)'),
         'drop-focused-item': ('if (focusedItem)', 'if (false && focusedItem)'),
-        'ignore-panel-cached-offset': ('m_cachedScrollOffset.value_or(', 'std::optional<int>{}.value_or('),
+        'ignore-panel-cached-rows': ('if (m_cachedRows)', 'if (false && m_cachedRows)'),
+        'panel-preload-ignored': ('GetCacheCount() / 2, firstRow, lastRow);', '0, firstRow, lastRow);'),
         'omit-preload-tail': ('end += cacheAfter * m_layout->Size(m_orientation);', 'end += 0 * cacheAfter * m_layout->Size(m_orientation);'),
         'reallocate-depth-cache': ('renderItems.swap(m_depthItems);', 'renderItems.reserve(m_depthItems.capacity());'),
     }

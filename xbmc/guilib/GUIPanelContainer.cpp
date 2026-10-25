@@ -16,7 +16,53 @@
 #include "input/actions/ActionIDs.h"
 #include "utils/StringUtils.h"
 
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <tuple>
+
+namespace
+{
+// Rows processed and drawn: the viewport at the current scroll value and at the
+// scroll target, plus the same preload on both sides. A step's new row enters
+// in the frame it is requested, before its scroll starts, whatever the
+// direction; during the scroll rows only leave.
+void GetPanelRows(float value,
+                  float target,
+                  float rowSize,
+                  float length,
+                  float renderOffset,
+                  int cache,
+                  int& firstRow,
+                  int& lastRow)
+{
+  if (!(rowSize > 0))
+  { // no rows to lay out
+    firstRow = 0;
+    lastRow = -1;
+    return;
+  }
+  const float low = std::min(value, target);
+  const float high = std::max(value, target);
+  firstRow = static_cast<int>(std::floor(low / rowSize)) - cache;
+  // rows that start before the far edge of the viewport
+  lastRow = static_cast<int>(std::floor(high / rowSize));
+  while ((lastRow + 1) * rowSize - high + renderOffset < length)
+    ++lastRow;
+  lastRow += cache;
+}
+
+// Rows whose layouts are kept. At rest the drawn rows; while scrolling one more
+// page each side, so a step frees nothing mid-scroll and a held scroll stays
+// bounded.
+void GetPanelKeptRows(
+    int firstRow, int lastRow, bool scrolling, int rowsPerPage, int& keepFirst, int& keepLast)
+{
+  const int margin = scrolling ? rowsPerPage : 0;
+  keepFirst = firstRow - margin;
+  keepLast = lastRow + margin;
+}
+} // namespace
 
 CGUIPanelContainer::CGUIPanelContainer(int parentID, int controlID, float posX, float posY, float width, float height, ORIENTATION orientation, const CScroller& scroller, int preloadItems)
     : CGUIBaseContainer(parentID, controlID, posX, posY, width, height, orientation, scroller, preloadItems)
@@ -38,33 +84,50 @@ void CGUIPanelContainer::Process(unsigned int currentTime, CDirtyRegionList &dir
   if (!m_layout || !m_focusedLayout)
     return;
 
-  UpdateScrollOffset(currentTime);
+  // A scroll requested from rest starts its clock on the next frame: this frame
+  // builds the rows it reveals, so their build time is not shown as a jump in
+  // its first step. A scroll retargeted while running continues without pause.
+  const bool startNextFrame = m_scroller.IsScrolling() && !m_wasScrolling;
+  if (startNextFrame)
+    MarkDirtyRegion();
+  else
+    UpdateScrollOffset(currentTime);
+  m_wasScrolling = m_scroller.IsScrolling();
 
-  // Calculate and cache offset for reuse in Render()
-  m_cachedScrollOffset = static_cast<int>(m_scroller.GetValue() / m_layout->Size(m_orientation));
-  const int offset = *m_cachedScrollOffset;
-
-  int cacheBefore, cacheAfter;
-  GetCacheOffsets(cacheBefore, cacheAfter);
+  const float rowSize = m_layout->Size(m_orientation);
+  const int offset = static_cast<int>(m_scroller.GetValue() / rowSize);
+  const int cache = GetCacheCount() / 2;
+  int firstRow, lastRow;
+  GetPanelRows(m_scroller.GetValue(), GetOffset() * rowSize, rowSize,
+               (m_orientation == VERTICAL) ? m_height : m_width,
+               (m_orientation == VERTICAL) ? m_renderOffset.y : m_renderOffset.x, cache, firstRow,
+               lastRow);
+  // Cache the rows for reuse in Render()
+  m_cachedRows = std::make_pair(firstRow, lastRow);
 
   // Free memory not used on screen
-  if ((int)m_items.size() > m_itemsPerPage + cacheBefore + cacheAfter)
-    FreeMemory(CorrectOffset(offset - cacheBefore, 0), CorrectOffset(offset + m_itemsPerPage + 1 + cacheAfter, 0));
+  if ((int)m_items.size() > m_itemsPerPage + 2 * cache)
+  {
+    int keepFirst, keepLast;
+    GetPanelKeptRows(firstRow, lastRow, m_scroller.IsScrolling(), m_itemsPerPage, keepFirst,
+                     keepLast);
+    FreeMemory(CorrectOffset(keepFirst, 0), CorrectOffset(keepLast + 1, 0));
+  }
 
   CPoint origin = CPoint(m_posX, m_posY) + m_renderOffset;
   float pos = (m_orientation == VERTICAL) ? origin.y : origin.x;
-  float end = (m_orientation == VERTICAL) ? m_posY + m_height : m_posX + m_width;
-  pos += (offset - cacheBefore) * m_layout->Size(m_orientation) - m_scroller.GetValue();
-  end += cacheAfter * m_layout->Size(m_orientation);
+  pos += firstRow * rowSize - m_scroller.GetValue();
 
-  int current = (offset - cacheBefore) * m_itemsPerRow;
-  int col = 0;
-  while (pos < end && m_items.size())
+  const int itemCount = static_cast<int>(m_items.size());
+  for (int row = firstRow; row <= lastRow && row * m_itemsPerRow < itemCount; ++row, pos += rowSize)
   {
-    if (current >= (int)m_items.size())
-      break;
-    if (current >= 0)
+    for (int col = 0; col < m_itemsPerRow; ++col)
     {
+      const int current = row * m_itemsPerRow + col;
+      if (current < 0)
+        continue;
+      if (current >= itemCount)
+        break;
       std::shared_ptr<CGUIListItem> item = m_items[current];
       item->SetCurrentItem(current + 1);
       bool focused = (current == GetOffset() * m_itemsPerRow + GetCursor()) && m_bHasFocus;
@@ -74,15 +137,6 @@ void CGUIPanelContainer::Process(unsigned int currentTime, CDirtyRegionList &dir
       else
         ProcessItem(pos, origin.y + col * m_layout->Size(VERTICAL), item, focused, currentTime, dirtyregions);
     }
-    // increment our position
-    if (col < m_itemsPerRow - 1)
-      col++;
-    else
-    {
-      pos += m_layout->Size(m_orientation);
-      col = 0;
-    }
-    current++;
   }
 
   // when we are scrolling up, offset will become lower (integer division, see offset calc)
@@ -99,30 +153,34 @@ void CGUIPanelContainer::BuildRenderItems(std::vector<RENDERITEM>& renderItems) 
   if (!m_layout || !m_focusedLayout)
     return;
 
-  // Use cached offset from Process(), fall back to calculating if not yet cached
-  const int offset = m_cachedScrollOffset.value_or(
-      static_cast<int>(m_scroller.GetValue() / m_layout->Size(m_orientation)));
-
-  int cacheBefore, cacheAfter;
-  GetCacheOffsets(cacheBefore, cacheAfter);
+  // Use the rows from Process(), fall back to calculating them if not yet cached
+  const float rowSize = m_layout->Size(m_orientation);
+  int firstRow, lastRow;
+  if (m_cachedRows)
+    std::tie(firstRow, lastRow) = *m_cachedRows;
+  else
+    GetPanelRows(m_scroller.GetValue(), GetOffset() * rowSize, rowSize,
+                 (m_orientation == VERTICAL) ? m_height : m_width,
+                 (m_orientation == VERTICAL) ? m_renderOffset.y : m_renderOffset.x,
+                 GetCacheCount() / 2, firstRow, lastRow);
 
   CPoint origin = CPoint(m_posX, m_posY) + m_renderOffset;
   float pos = (m_orientation == VERTICAL) ? origin.y : origin.x;
-  float end = (m_orientation == VERTICAL) ? m_posY + m_height : m_posX + m_width;
-  pos += (offset - cacheBefore) * m_layout->Size(m_orientation) - m_scroller.GetValue();
-  end += cacheAfter * m_layout->Size(m_orientation);
+  pos += firstRow * rowSize - m_scroller.GetValue();
 
   float focusedPos = 0;
   int focusedCol = 0;
   std::shared_ptr<CGUIListItem> focusedItem;
-  int current = (offset - cacheBefore) * m_itemsPerRow;
-  int col = 0;
-  while (pos < end && m_items.size())
+  const int itemCount = static_cast<int>(m_items.size());
+  for (int row = firstRow; row <= lastRow && row * m_itemsPerRow < itemCount; ++row, pos += rowSize)
   {
-    if (current >= (int)m_items.size())
-      break;
-    if (current >= 0)
+    for (int col = 0; col < m_itemsPerRow; ++col)
     {
+      const int current = row * m_itemsPerRow + col;
+      if (current < 0)
+        continue;
+      if (current >= itemCount)
+        break;
       std::shared_ptr<CGUIListItem> item = m_items[current];
       bool focused = (current == GetOffset() * m_itemsPerRow + GetCursor()) && m_bHasFocus;
       // render our item
@@ -142,15 +200,6 @@ void CGUIPanelContainer::BuildRenderItems(std::vector<RENDERITEM>& renderItems) 
               RENDERITEM{pos, origin.y + col * m_layout->Size(VERTICAL), item, false});
       }
     }
-    // increment our position
-    if (col < m_itemsPerRow - 1)
-      col++;
-    else
-    {
-      pos += m_layout->Size(m_orientation);
-      col = 0;
-    }
-    current++;
   }
   // and render the focused item last (for overlapping purposes)
   if (focusedItem)
