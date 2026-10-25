@@ -4,6 +4,9 @@
 No native GUI, framebuffer, playback or HDMI verification. Requires g++ and fmt
 headers; set FMT_INCLUDE to a directory containing fmt/ when needed.
 """
+import argparse
+from contextlib import nullcontext
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,8 +23,9 @@ def read(path):
     return (ROOT / 'xbmc' / path).read_text()
 
 
-def harness():
-    control = read('guilib/GUIControl.cpp')
+def harness(control=None):
+    if control is None:
+        control = read('guilib/GUIControl.cpp')
     gfx = read('windowing/GraphicContext.cpp')
     cache = read('cores/DataCacheCore.cpp')
     info = read('guilib/guiinfo/GUIControlsGUIInfo.cpp')
@@ -100,6 +104,7 @@ struct CGraphicContext {
  TransformMatrix transform, reference; float sx=1,sy=1;
  CRect clip{-10000,-10000,10000,10000},scissors{0,0,3840,2160};
  std::vector<TransformMatrix> stack; int stereo=0,screenWidth=3840,screenHeight=2160;
+ unsigned scissorReads=0;
  void BeginControlBounds(CRect* b) {m_controlBounds=b;} void EndControlBounds(){m_controlBounds=nullptr;}
  void CaptureControlQuad(const float*,const float*,const float*);
  void CaptureControlRect(const CRect&); void CaptureControlText(const CRect&,float,float,float,float);
@@ -108,7 +113,7 @@ struct CGraphicContext {
  float ScaleFinalXCoord(float x,float y) const {return transform.TransformXCoord(x,y,0);}
  float ScaleFinalYCoord(float x,float y) const {return transform.TransformYCoord(x,y,0);}
  float GetGUIScaleX(){return sx;} float GetGUIScaleY(){return sy;}
- CRect GetClipRegion(){return clip;} CRect GetScissors(){return scissors;}
+ CRect GetClipRegion(){return clip;} CRect GetScissors(){++scissorReads;return scissors;}
  int GetWidth(){return screenWidth;} int GetHeight(){return screenHeight;} int GetStereoMode(){return stereo;}
  void GetGUIScaling(const RESOLUTION_INFO&,float& x,float& y,TransformMatrix* m){*m=reference;x=reference.m[0][0];y=reference.m[1][1];}
  uint64_t GetControlBoundsFrame(){return m_controlBoundsFrame;}
@@ -136,13 +141,13 @@ struct CGUIControl {
  TransformMatrix m_cachedTransform,m_transform; CPoint m_camera;
  CGUIControl* m_parentControl=nullptr;
  CRect m_renderRegion{0,0,3840,2160},m_hitRect;
- bool visible=true,m_isCulled=false,m_hasProcessed=true,m_hasCamera=false;
+ bool visible=true,m_isCulled=false,m_hasProcessed=true,m_hasCamera=false,renderable=true;
  bool m_bAllocated=false,m_bInvalidated=false;
  int ControlType=GUICONTROL_BUTTON,m_controlDirtyState=0; float m_stereo=0;
  unsigned int m_hitColor=0xffffffff;
  std::vector<CAnimation> m_animations; std::function<void()> draw=[]{};
  CGUIControl()=default; CGUIControl(const CGUIControl&)=default; ~CGUIControl();
- bool IsControlRenderable(){return true;} bool IsVisible() const{return visible;}
+ bool IsControlRenderable(){return renderable;} bool IsVisible() const{return visible;}
  bool Animate(unsigned int){return false;} void MarkDirtyRegion(){m_controlDirtyState|=1;}
  void UpdateControlStats(){} CRect CalcRenderRegion(){return m_renderRegion;}
  void Render(){draw();} void DoRender(); void DoProcess(unsigned int,CDirtyRegionList&);
@@ -170,6 +175,22 @@ void eq(float a,float b){assert(std::abs(a-b)<0.001f);}
 void rect(const CRect& a,float l,float t,float r,float b){eq(a.x1,l);eq(a.y1,t);eq(a.x2,r);eq(a.y2,b);}
 int main(){
  auto& g=win.gfx; CRect out;
+ // Hidden and alpha-culled controls reject before geometry/context queries.
+ // Visible leaf clipping stays active; groups must still traverse outside bounds.
+ for(bool visible:{false,true})for(bool culled:{false,true})
+ for(bool renderable:{false,true})for(bool outside:{false,true}){
+   CGUIControl probe;probe.visible=visible;probe.m_isCulled=culled;probe.renderable=renderable;
+   if(outside)probe.m_renderRegion=CRect(4000,4000,4100,4100);
+   int draws=0;probe.draw=[&]{++draws;};g.scissorReads=0;
+   probe.DoRender();
+   const bool eligible=visible&&!culled;
+   if(g.scissorReads!=static_cast<unsigned>(eligible&&renderable)){
+     std::cerr<<"FAIL hidden/cull scissor query\n";return 1;
+   }
+   if(draws!=static_cast<int>(eligible&&(!renderable||!outside))||!g.stack.empty()){
+     std::cerr<<"FAIL visibility/clipping render or transform preservation\n";return 1;
+   }
+ }
  // Final projected texture vertices, including camera/projection offset.
  renderer.projectX=7;renderer.projectY=11;g.BeginControlBounds(&out);
  float x[4]{10,110,110,10},y[4]{20,20,60,60},z[4]{};
@@ -260,25 +281,53 @@ int main(){
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix='control-bounds-test-') as tmp:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--baseline', default='d49327ba12d6b654951d4f4d9fc0a003865affd6')
+    args = parser.parse_args()
+    if args.output:
+        args.output.mkdir(parents=True, exist_ok=True)
+    context = nullcontext(str(args.output)) if args.output else tempfile.TemporaryDirectory(prefix='control-bounds-test-')
+    with context as tmp:
         out = Path(tmp)
         fmt = Path(os.environ.get('FMT_INCLUDE', '/usr/include')) / 'fmt'
-        shutil.copytree(fmt, out / 'fmt')
+        shutil.copytree(fmt, out / 'fmt', dirs_exist_ok=True)
         (out / 'PlatformDefs.h').write_text('#pragma once\n#define PIXEL_ASHIFT 24\n')
-        (out / 'test.cpp').write_text(harness())
-        subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++17', '-DFMT_HEADER_ONLY',
-                        '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
-                        '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-pthread',
-                        '-I', str(out), '-I', str(ROOT / 'xbmc'), str(out / 'test.cpp'),
-                        '-o', str(out / 'test')], check=True)
-        result = subprocess.run([str(out / 'test')], check=True, capture_output=True, text=True,
-                                env=dict(os.environ, ASAN_OPTIONS='detect_leaks=0'))
-        valid, invalid = map(json.loads, result.stdout.splitlines())
-        assert valid['valid'] and valid['coordinate_system'] == 'gui-1080'
-        assert [valid[k] for k in ('left','top','right','bottom')] == [1500,900,1850,980]
-        assert not invalid['valid'] and not invalid['visible'] and invalid['instance'] == 0
-        assert all(invalid[k] is None for k in ('left','top','right','bottom'))
-    print('Control render bounds: PASS (production extracts; ASan/UBSan; GUI/GPU/services substituted)')
+        baseline = subprocess.check_output(
+            ['git', 'show', args.baseline + ':xbmc/guilib/GUIControl.cpp'], cwd=ROOT, text=True)
+        receipts = []
+        for name, source, expected in [('current', harness(), 0), ('baseline-eager-scissor', harness(baseline), 1)]:
+            cpp, exe = out / (name + '.cpp'), out / name
+            cpp.write_text(source)
+            command = [os.environ.get('CXX', 'g++'), '-std=c++17', '-DFMT_HEADER_ONLY',
+                       '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
+                       '-fsanitize=address,undefined', '-fno-sanitize-recover=undefined',
+                       '-fno-omit-frame-pointer', '-fno-pie', '-no-pie', '-pthread',
+                       '-I', str(out), '-I', str(ROOT / 'xbmc'), str(cpp), '-o', str(exe)]
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            result = subprocess.run([str(exe)], capture_output=True, text=True,
+                                    env=dict(os.environ, ASAN_OPTIONS='detect_leaks=0',
+                                             UBSAN_OPTIONS='halt_on_error=1:print_stacktrace=1'))
+            (out / (name + '-stdout.txt')).write_text(result.stdout)
+            (out / (name + '-stderr.txt')).write_text(result.stderr)
+            assert result.returncode == expected, (name, result.returncode, result.stderr)
+            if expected:
+                assert result.stderr == 'FAIL hidden/cull scissor query\n' and not result.stdout, result.stderr
+            else:
+                assert not result.stderr, result.stderr
+                valid, invalid = map(json.loads, result.stdout.splitlines())
+                assert valid['valid'] and valid['coordinate_system'] == 'gui-1080'
+                assert [valid[k] for k in ('left','top','right','bottom')] == [1500,900,1850,980]
+                assert not invalid['valid'] and not invalid['visible'] and invalid['instance'] == 0
+                assert all(invalid[k] is None for k in ('left','top','right','bottom'))
+            receipts.append({'name': name, 'compile_command': command, 'exit': result.returncode,
+                             'harness_sha256': hashlib.sha256(source.encode()).hexdigest()})
+        (out / 'results.json').write_text(json.dumps(
+            {'baseline': args.baseline, 'source_sha256': hashlib.sha256(
+                (ROOT / 'xbmc/guilib/GUIControl.cpp').read_bytes()).hexdigest(),
+             'results': receipts, 'limits': __doc__}, indent=2) + '\n')
+    print('Control render bounds/visibility: PASS (production extracts; ASan/UBSan; '
+          '16 visibility/clipping cases; eager-scissor baseline rejected; GUI/GPU/services substituted)')
 
 
 if __name__ == '__main__':

@@ -232,12 +232,12 @@ void CGUIControl::Process(unsigned int currentTime, CDirtyRegionList &dirtyregio
 // 3. reset the animation transform
 void CGUIControl::DoRender()
 {
-  if (IsControlRenderable() &&
-      !m_renderRegion.Intersects(CServiceBroker::GetWinSystem()->GetGfxContext().GetScissors()))
-    return;
-
   if (IsVisible() && !m_isCulled)
   {
+    if (IsControlRenderable() &&
+        !m_renderRegion.Intersects(CServiceBroker::GetWinSystem()->GetGfxContext().GetScissors()))
+      return;
+
     bool hasStereo =
         m_stereo != 0.0f &&
         CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() !=
