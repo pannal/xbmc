@@ -9,6 +9,7 @@
 #include "PeripheralCecAdapter.h"
 
 #include "ServiceBroker.h"
+#include "application/ApplicationActionListeners.h"
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationEnums.h"
 #include "application/ApplicationPlayer.h"
@@ -28,8 +29,8 @@
 #include "utils/log.h"
 #include "xbmc/interfaces/AnnouncementManager.h"
 #include "xbmc/interfaces/legacy/configini.h"
-#include "application/ApplicationActionListeners.h"
 
+#include <algorithm>
 #include <mutex>
 
 #include <libcec/cec.h>
@@ -161,15 +162,10 @@ void CPeripheralCecAdapter::ResetMembers(void)
   m_bStarted = false;
   m_bHasButton = false;
   m_bIsReady = false;
-  m_bHasConnectedAudioSystem = false;
+  ResetVolumeControl();
+  m_buttonQueue.clear();
   m_strMenuLanguage = "???";
-  m_lastKeypress = {};
-  m_lastChange = VOLUME_CHANGE_NONE;
   m_iExitCode = EXITCODE_QUIT;
-
-  //! @todo fetch the correct initial value when system audiostatus is
-  //! implemented in libCEC
-  m_bIsMuted = false;
 
   m_bGoingToStandby = false;
   m_bBypassWakeCooldown = false;
@@ -369,6 +365,18 @@ bool CPeripheralCecAdapter::InitialiseFeature(const PeripheralFeature feature)
     }
     if (m_retired.load(std::memory_order_acquire))
       return false;
+    {
+      std::unique_lock<CCriticalSection> lock(m_critSection);
+      m_buttonQueue.clear();
+      m_currentButton = {};
+      m_bHasButton = false;
+    }
+    ResetVolumeControl();
+    {
+      std::unique_lock<CCriticalSection> volumeLock(m_volumeSection);
+      m_volumeEnabled = true;
+      m_tvVolumeControl = GetSettingBool("volume_control_tv");
+    }
     m_cecAdapter = CECInitialise(&m_configuration);
 
     if (!m_cecAdapter || m_configuration.serverVersion < CEC_LIB_SUPPORTED_VERSION)
@@ -517,6 +525,7 @@ void CPeripheralCecAdapter::Process(void)
   }
 
   m_queryThread->StopThread(true);
+  ProcessVolumeChange(true);
 
   RetireCecCallbacks();
   UnregisterDevice();
@@ -534,119 +543,284 @@ void CPeripheralCecAdapter::Process(void)
 
 bool CPeripheralCecAdapter::HasAudioControl(void)
 {
-  std::unique_lock<CCriticalSection> lock(m_critSection);
-  return m_bHasConnectedAudioSystem;
+  std::unique_lock<CCriticalSection> lock(m_volumeSection);
+  return HasAudioControlLocked();
 }
 
-void CPeripheralCecAdapter::SetAudioSystemConnected(bool bSetTo)
+bool CPeripheralCecAdapter::HasAudioControlLocked(void) const
 {
-  std::unique_lock<CCriticalSection> lock(m_critSection);
-  m_bHasConnectedAudioSystem = bSetTo;
+  return m_volumeEnabled && !m_volumeConnectionLost && !m_bStop &&
+         !m_retired.load(std::memory_order_acquire) && m_volumeTarget != CECDEVICE_UNKNOWN &&
+         m_volumeReleaseFailures < 3;
 }
 
-void CPeripheralCecAdapter::ProcessVolumeChange(void)
+void CPeripheralCecAdapter::InvalidateVolumeControl(void)
 {
-  bool bSendRelease(false);
-  CecVolumeChange pendingVolumeChange = VOLUME_CHANGE_NONE;
+  // Caller holds m_volumeSection. Keep the pressed recipient until the worker
+  // releases it; clearing the route must never redirect that release.
+  ++m_volumeGeneration;
+  m_volumeTarget = CECDEVICE_UNKNOWN;
+  m_volumeChangeQueue = {};
+  m_bIsMuted = false;
+  m_audioNormalizationPending = false;
+}
+
+void CPeripheralCecAdapter::ResetVolumeControl(void)
+{
+  // Called only after the old worker has joined and its native session retired.
+  std::unique_lock<CCriticalSection> lock(m_volumeSection);
+  if (m_pressedVolumeTarget != CECDEVICE_UNKNOWN)
+    CLog::Log(LOGWARNING, "CEC volume: retiring session with unreleased target {}",
+              static_cast<int>(m_pressedVolumeTarget));
+  InvalidateVolumeControl();
+  m_volumeEnabled = false;
+  m_volumeConnectionLost = false;
+  m_pressedVolumeTarget = CECDEVICE_UNKNOWN;
+  m_volumeReleaseFailures = 0;
+  m_lastChange = VOLUME_CHANGE_NONE;
+  m_lastKeypress = {};
+  m_lastVolumeInput = {};
+}
+
+void CPeripheralCecAdapter::SetTvVolumeControl(bool enabled)
+{
   {
+    std::unique_lock<CCriticalSection> lock(m_volumeSection);
+    m_tvVolumeControl = enabled;
+    InvalidateVolumeControl();
+  }
+  {
+    // Remove received keys mapped before the policy change as well.
     std::unique_lock<CCriticalSection> lock(m_critSection);
-    auto now = std::chrono::steady_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastKeypress);
-    if (!m_volumeChangeQueue.empty())
+    const auto isVolume = [](const CecButtonPress& key)
     {
-      /* get the first change from the queue */
-      pendingVolumeChange = m_volumeChangeQueue.front();
-      m_volumeChangeQueue.pop();
-
-      /* remove all dupe entries */
-      while (!m_volumeChangeQueue.empty() && m_volumeChangeQueue.front() == pendingVolumeChange)
-        m_volumeChangeQueue.pop();
-
-      /* send another keypress after VOLUME_REFRESH_TIMEOUT ms */
-
-      bool bRefresh(duration.count() > VOLUME_REFRESH_TIMEOUT);
-
-      /* only send the keypress when it hasn't been sent yet */
-      if (pendingVolumeChange != m_lastChange)
-      {
-        m_lastKeypress = std::chrono::steady_clock::now();
-        m_lastChange = pendingVolumeChange;
-      }
-      else if (bRefresh)
-      {
-        m_lastKeypress = std::chrono::steady_clock::now();
-        pendingVolumeChange = m_lastChange;
-      }
-      else
-        pendingVolumeChange = VOLUME_CHANGE_NONE;
+      return key.iButton == XINPUT_IR_REMOTE_VOLUME_PLUS ||
+             key.iButton == XINPUT_IR_REMOTE_VOLUME_MINUS || key.iButton == XINPUT_IR_REMOTE_MUTE;
+    };
+    m_buttonQueue.erase(std::remove_if(m_buttonQueue.begin(), m_buttonQueue.end(), isVolume),
+                        m_buttonQueue.end());
+    if (isVolume(m_currentButton))
+    {
+      m_bHasButton = false;
+      m_currentButton = {};
     }
-    else if (m_lastKeypress.time_since_epoch().count() > 0 &&
-             duration.count() > VOLUME_CHANGE_TIMEOUT)
+  }
+  // This option is Kodi routing policy, not a libCEC configuration field.
+  if (IsRunning() && m_queryThread)
+    m_queryThread->RefreshAudioControl();
+}
+
+bool CPeripheralCecAdapter::ReleaseVolumeKey(std::unique_lock<CCriticalSection>& lock)
+{
+  if (m_pressedVolumeTarget == CECDEVICE_UNKNOWN)
+    return true;
+  if (m_volumeConnectionLost)
+    return false;
+
+  const auto target = m_pressedVolumeTarget;
+  lock.unlock();
+  const bool released = m_cecAdapter->SendKeyRelease(target, false);
+  lock.lock();
+  CLog::Log(released ? LOGDEBUG : LOGERROR, "CEC volume: release target {} {}",
+            static_cast<int>(target), released ? "accepted by libCEC" : "failed");
+  if (released)
+  {
+    m_pressedVolumeTarget = CECDEVICE_UNKNOWN;
+    m_lastChange = VOLUME_CHANGE_NONE;
+    m_lastKeypress = {};
+    m_volumeReleaseFailures = 0;
+  }
+  else
+  {
+    // Preserve the recipient for a later release attempt, but admit no new keys.
+    InvalidateVolumeControl();
+    ++m_volumeReleaseFailures;
+    m_lastKeypress = std::chrono::steady_clock::now();
+  }
+  return released;
+}
+
+void CPeripheralCecAdapter::OnVolumeControlConnected(cec_logical_address target,
+                                                     uint64_t volumeGeneration,
+                                                     uint64_t sourceGeneration)
+{
+  std::unique_lock<CCriticalSection> lifecycleLock(m_lifecycleSection);
+  const auto current = [this, target, volumeGeneration, sourceGeneration]
+  {
+    return !m_retired.load(std::memory_order_acquire) && !m_bStop && m_volumeEnabled &&
+           !m_volumeConnectionLost && m_audioNormalizationPending &&
+           target == (m_tvVolumeControl ? CECDEVICE_TV : CECDEVICE_AUDIOSYSTEM) &&
+           m_volumeGeneration == volumeGeneration &&
+           m_sourceEventGeneration.load(std::memory_order_relaxed) == sourceGeneration;
+  };
+  {
+    std::unique_lock<CCriticalSection> lock(m_volumeSection);
+    if (!current())
+      return;
+  }
+  // Run on main, without the volume lock and without reentering peripherals.
+  // A query worker must never wait for GUI/application effects during teardown.
+  auto& components = CServiceBroker::GetAppComponents();
+  const auto appVolume = components.GetComponent<CApplicationVolumeHandling>();
+  appVolume->SetLocalMute(false);
+  appVolume->SetVolume(CApplicationVolumeHandling::VOLUME_MAXIMUM, false);
+  {
+    std::unique_lock<CCriticalSection> lock(m_volumeSection);
+    if (current())
     {
-      /* send a key release */
-      m_lastKeypress = {};
-      bSendRelease = true;
+      m_volumeTarget = target;
+      m_audioNormalizationPending = false;
+      CLog::Log(LOGDEBUG, "CEC volume: target {} routing enabled after local normalization",
+                static_cast<int>(target));
+    }
+  }
+}
+
+void CPeripheralCecAdapter::ProcessVolumeChange(bool stopping)
+{
+  std::unique_lock<CCriticalSection> lock(m_volumeSection);
+  if (stopping)
+  {
+    m_volumeEnabled = false;
+    InvalidateVolumeControl();
+  }
+
+  if (m_volumeConnectionLost)
+  {
+    InvalidateVolumeControl();
+    if (m_pressedVolumeTarget != CECDEVICE_UNKNOWN)
+    {
+      CLog::Log(LOGWARNING, "CEC volume: connection lost; unable to release target {}",
+                static_cast<int>(m_pressedVolumeTarget));
+      m_pressedVolumeTarget = CECDEVICE_UNKNOWN;
       m_lastChange = VOLUME_CHANGE_NONE;
     }
+    return;
   }
 
-  switch (pendingVolumeChange)
+  const auto now = std::chrono::steady_clock::now();
+  const auto sincePress =
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastKeypress);
+  const auto sinceInput =
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastVolumeInput);
+  const bool ready = HasAudioControlLocked();
+  if (!ready)
+    m_volumeChangeQueue = {};
+
+  if (m_pressedVolumeTarget != CECDEVICE_UNKNOWN &&
+      (stopping || m_pressedVolumeTarget != m_volumeTarget ||
+       m_pressedVolumeGeneration != m_volumeGeneration || !ready ||
+       sinceInput.count() > VOLUME_CHANGE_TIMEOUT))
   {
-    case VOLUME_CHANGE_UP:
-      m_cecAdapter->SendKeypress(CECDEVICE_AUDIOSYSTEM, CEC_USER_CONTROL_CODE_VOLUME_UP, false);
-      break;
-    case VOLUME_CHANGE_DOWN:
-      m_cecAdapter->SendKeypress(CECDEVICE_AUDIOSYSTEM, CEC_USER_CONTROL_CODE_VOLUME_DOWN, false);
-      break;
-    case VOLUME_CHANGE_MUTE:
-      m_cecAdapter->SendKeypress(CECDEVICE_AUDIOSYSTEM, CEC_USER_CONTROL_CODE_MUTE, false);
-      {
-        std::unique_lock<CCriticalSection> lock(m_critSection);
-        m_bIsMuted = !m_bIsMuted;
-      }
-      break;
-    case VOLUME_CHANGE_NONE:
-      if (bSendRelease)
-        m_cecAdapter->SendKeyRelease(CECDEVICE_AUDIOSYSTEM, false);
-      break;
+    // Bound failed releases to three attempts at the refresh interval. Shutdown
+    // makes one final attempt; a failed bus cannot guarantee a physical key-up.
+    if (!stopping && m_volumeReleaseFailures >= 3)
+      return;
+    if (!stopping && sincePress.count() < VOLUME_REFRESH_TIMEOUT && !ready)
+      return;
+    if (!ReleaseVolumeKey(lock))
+      return;
   }
+
+  if (!HasAudioControlLocked() || m_volumeChangeQueue.empty())
+    return;
+
+  const auto change = m_volumeChangeQueue.front();
+  const auto generation = m_volumeGeneration;
+  m_volumeChangeQueue.pop();
+  while (!m_volumeChangeQueue.empty() && m_volumeChangeQueue.front() == change)
+    m_volumeChangeQueue.pop();
+
+  if (m_pressedVolumeTarget != CECDEVICE_UNKNOWN)
+  {
+    if (change == m_lastChange)
+    {
+      // Mute is a toggle; a held key must not repeatedly toggle it.
+      if (change == VOLUME_CHANGE_MUTE || sincePress.count() < VOLUME_REFRESH_TIMEOUT)
+        return;
+    }
+    else if (!ReleaseVolumeKey(lock))
+      return;
+  }
+
+  const auto key = change == VOLUME_CHANGE_UP     ? CEC_USER_CONTROL_CODE_VOLUME_UP
+                   : change == VOLUME_CHANGE_DOWN ? CEC_USER_CONTROL_CODE_VOLUME_DOWN
+                                                  : CEC_USER_CONTROL_CODE_MUTE;
+  // Record the recipient even on failure: a failed native write does not prove
+  // that no part of a press reached the bus. Always attempt its matching release.
+  if (!HasAudioControlLocked() || generation != m_volumeGeneration)
+    return;
+  m_pressedVolumeTarget = m_volumeTarget;
+  m_pressedVolumeGeneration = m_volumeGeneration;
+  m_lastChange = change;
+  m_lastKeypress = now;
+  const auto target = m_pressedVolumeTarget;
+  // This is the admission point. An already admitted native call cannot be
+  // cancelled; settings/loss fence subsequent work, and the worker releases this
+  // saved recipient before any new-generation press. Never stall GUI producers
+  // on libCEC's synchronous transport.
+  lock.unlock();
+  const bool sent = m_cecAdapter->SendKeypress(target, key, false);
+  lock.lock();
+  CLog::Log(sent ? LOGDEBUG : LOGERROR, "CEC volume: key {:02x} target {} {}",
+            static_cast<int>(key), static_cast<int>(m_pressedVolumeTarget),
+            sent ? "accepted by libCEC" : "failed; reverting to local volume");
+  if (!sent)
+  {
+    InvalidateVolumeControl();
+    if (!m_volumeConnectionLost)
+      ReleaseVolumeKey(lock);
+  }
+  else if (change == VOLUME_CHANGE_MUTE && !m_tvVolumeControl && generation == m_volumeGeneration)
+    m_bIsMuted = !m_bIsMuted; // Legacy AVR estimate; never presented as TV status.
 }
 
-void CPeripheralCecAdapter::VolumeUp(void)
+bool CPeripheralCecAdapter::QueueVolumeChange(CecVolumeChange change)
 {
-  if (HasAudioControl())
+  std::unique_lock<CCriticalSection> lock(m_volumeSection);
+  if (!HasAudioControlLocked())
+    return false;
+  m_lastVolumeInput = std::chrono::steady_clock::now();
+  // Bound producer work; held repeats only need the most recent identical entry.
+  if (m_volumeChangeQueue.empty() || m_volumeChangeQueue.back() != change)
   {
-    std::unique_lock<CCriticalSection> lock(m_critSection);
-    m_volumeChangeQueue.push(VOLUME_CHANGE_UP);
+    if (m_volumeChangeQueue.size() >= 32)
+      return true;
+    m_volumeChangeQueue.push(change);
   }
+  return true;
 }
 
-void CPeripheralCecAdapter::VolumeDown(void)
+bool CPeripheralCecAdapter::VolumeUp(void)
 {
-  if (HasAudioControl())
-  {
-    std::unique_lock<CCriticalSection> lock(m_critSection);
-    m_volumeChangeQueue.push(VOLUME_CHANGE_DOWN);
-  }
+  return QueueVolumeChange(VOLUME_CHANGE_UP);
 }
 
-void CPeripheralCecAdapter::ToggleMute(void)
+bool CPeripheralCecAdapter::VolumeDown(void)
 {
-  if (HasAudioControl())
-  {
-    std::unique_lock<CCriticalSection> lock(m_critSection);
-    m_volumeChangeQueue.push(VOLUME_CHANGE_MUTE);
-  }
+  return QueueVolumeChange(VOLUME_CHANGE_DOWN);
+}
+
+bool CPeripheralCecAdapter::ToggleMute(void)
+{
+  return QueueVolumeChange(VOLUME_CHANGE_MUTE);
 }
 
 bool CPeripheralCecAdapter::IsMuted(void)
 {
-  if (HasAudioControl())
-  {
-    std::unique_lock<CCriticalSection> lock(m_critSection);
-    return m_bIsMuted;
-  }
-  return false;
+  std::unique_lock<CCriticalSection> lock(m_volumeSection);
+  // CEC key submission is not an audio-status report from the TV.
+  return !m_tvVolumeControl && HasAudioControlLocked() && m_bIsMuted;
+}
+
+bool CPeripheralCecAdapter::SuppressCecVolumeKey(cec_user_control_code key) const
+{
+  // libCEC's key callback has no initiator. In TV-speaker mode, do not echo
+  // incoming CEC volume keys back to the TV, including timed repeats/releases.
+  return m_tvVolumeControl &&
+         (key == CEC_USER_CONTROL_CODE_VOLUME_UP || key == CEC_USER_CONTROL_CODE_VOLUME_DOWN ||
+          key == CEC_USER_CONTROL_CODE_MUTE || key == CEC_USER_CONTROL_CODE_MUTE_FUNCTION ||
+          key == CEC_USER_CONTROL_CODE_RESTORE_VOLUME_FUNCTION);
 }
 
 void CPeripheralCecAdapter::SetMenuLanguage(const char* strLanguage)
@@ -888,6 +1062,9 @@ void CPeripheralCecAdapter::CecAlert(void* cbParam,
 
   if (bReopenConnection)
   {
+    // Callback-safe admission fence. A callback never waits for native work or
+    // lifecycle ownership; a native transmit may itself cause this alert.
+    adapter->m_volumeConnectionLost = true;
     // Reopen the connection asynchronously. Otherwise a deadlock may occur.
     // Reconnect means destruction and recreation of our libcec instance, but libcec
     // calls this callback function synchronously and must not be destroyed meanwhile.
@@ -924,6 +1101,12 @@ void CPeripheralCecAdapter::PushCecKeypress(const CecButtonPress& key)
             key.iDuration);
 
   std::unique_lock<CCriticalSection> lock(m_critSection);
+  // Recheck after mapping under the same lock used to clear received keys on a
+  // policy change. A callback may have passed the raw-key guard before opt-in.
+  if (m_tvVolumeControl &&
+      (key.iButton == XINPUT_IR_REMOTE_VOLUME_PLUS ||
+       key.iButton == XINPUT_IR_REMOTE_VOLUME_MINUS || key.iButton == XINPUT_IR_REMOTE_MUTE))
+    return;
   // avoid the queue getting too long
   if (m_configuration.iButtonRepeatRateMs && m_buttonQueue.size() > 5)
     return;
@@ -962,6 +1145,9 @@ void CPeripheralCecAdapter::PushCecKeypress(const CecButtonPress& key)
 
 void CPeripheralCecAdapter::PushCecKeypress(const cec_keypress& key)
 {
+  if (SuppressCecVolumeKey(key.keycode))
+    return;
+
   CecButtonPress xbmcKey;
   xbmcKey.iDuration = key.duration;
 
@@ -1278,6 +1464,12 @@ void CPeripheralCecAdapter::OnSettingChanged(const std::string& strChangedSettin
   if (StringUtils::EqualsNoCase(strChangedSetting, "enabled"))
   {
     bool bEnabled(GetSettingBool("enabled"));
+    if (!bEnabled)
+    {
+      std::unique_lock<CCriticalSection> lock(m_volumeSection);
+      m_volumeEnabled = false;
+      InvalidateVolumeControl();
+    }
     if (!bEnabled && IsRunning())
     {
       CLog::Log(LOGDEBUG, "{} - closing the CEC connection", __FUNCTION__);
@@ -1299,6 +1491,10 @@ void CPeripheralCecAdapter::OnSettingChanged(const std::string& strChangedSettin
       SetConfigurationFromSettings();
       InitialiseFeature(FEATURE_CEC);
     }
+  }
+  else if (StringUtils::EqualsNoCase(strChangedSetting, "volume_control_tv"))
+  {
+    SetTvVolumeControl(GetSettingBool("volume_control_tv"));
   }
   else if (StringUtils::StartsWithNoCase(strChangedSetting, "wakeup_"))
   {
@@ -1777,9 +1973,9 @@ CPeripheralCecAdapterUpdateThread::~CPeripheralCecAdapterUpdateThread(void)
   StopThread(true);
 }
 
-void CPeripheralCecAdapterUpdateThread::Signal(void)
+void CPeripheralCecAdapterUpdateThread::RefreshAudioControl(void)
 {
-  m_event.Set();
+  m_audioControlRefreshPending = true;
 }
 
 bool CPeripheralCecAdapterUpdateThread::UpdateConfiguration(libcec_configuration* configuration)
@@ -1843,34 +2039,56 @@ void CPeripheralCecAdapterUpdateThread::UpdateMenuLanguage(void)
 
 std::string CPeripheralCecAdapterUpdateThread::UpdateAudioSystemStatus(void)
 {
-  std::string strAmpName;
-
-  /* disable the mute setting when an amp is found, because the amp handles the mute setting and
-       set PCM output to 100% */
-  if (m_adapter->m_cecAdapter->IsActiveDeviceType(CEC_DEVICE_TYPE_AUDIO_SYSTEM))
+  bool tv;
+  uint64_t generation;
   {
-    // request the OSD name of the amp
-    std::string ampName(m_adapter->m_cecAdapter->GetDeviceOSDName(CECDEVICE_AUDIOSYSTEM));
-    CLog::Log(LOGDEBUG,
-              "{} - CEC capable amplifier found ({}). volume will be controlled on the amp",
-              __FUNCTION__, ampName);
-    strAmpName += ampName;
-
-    // set amp present
-    m_adapter->SetAudioSystemConnected(true);
-    auto& components = CServiceBroker::GetAppComponents();
-    const auto appVolume = components.GetComponent<CApplicationVolumeHandling>();
-    appVolume->SetMute(false);
-    appVolume->SetVolume(CApplicationVolumeHandling::VOLUME_MAXIMUM, false);
+    std::unique_lock<CCriticalSection> lock(m_adapter->m_volumeSection);
+    tv = m_adapter->m_tvVolumeControl;
+    generation = m_adapter->m_volumeGeneration;
   }
-  else
+  // Native queries run without Kodi locks needed by callbacks. TV mode does not
+  // require or probe an audio system. Presence is not proof of volume support.
+  const auto target = tv ? CECDEVICE_TV : CECDEVICE_AUDIOSYSTEM;
+  const bool present = m_adapter->m_cecAdapter->IsActiveDeviceType(
+      tv ? CEC_DEVICE_TYPE_TV : CEC_DEVICE_TYPE_AUDIO_SYSTEM);
+  const std::string name = present ? m_adapter->m_cecAdapter->GetDeviceOSDName(target) : "";
+
+  std::unique_lock<CCriticalSection> lock(m_adapter->m_volumeSection);
+  if (generation != m_adapter->m_volumeGeneration || !m_adapter->m_volumeEnabled ||
+      m_adapter->m_volumeConnectionLost || m_adapter->m_bStop ||
+      m_adapter->m_retired.load(std::memory_order_acquire))
+    return {};
+
+  const auto selectedTarget = present ? target : CECDEVICE_UNKNOWN;
+  if (m_adapter->m_volumeTarget != selectedTarget || m_adapter->m_audioNormalizationPending)
+    m_adapter->InvalidateVolumeControl();
+
+  if (present)
   {
-    // set amp present
-    CLog::Log(LOGDEBUG, "{} - no CEC capable amplifier found", __FUNCTION__);
-    m_adapter->SetAudioSystemConnected(false);
+    // Normalize Kodi's local output for both TV and AVR CEC control on main.
+    // Weak ownership and both generations reject retired sessions/settings.
+    m_adapter->m_volumeTarget = CECDEVICE_UNKNOWN;
+    m_adapter->m_audioNormalizationPending = true;
+    auto weak = m_adapter->weak_from_this();
+    const auto volumeGeneration = m_adapter->m_volumeGeneration;
+    const auto sourceGeneration =
+        m_adapter->m_sourceEventGeneration.load(std::memory_order_relaxed);
+    lock.unlock();
+    CServiceBroker::GetAppMessenger()->PostCallback(
+        [weak, target, volumeGeneration, sourceGeneration]
+        {
+          if (auto owner = weak.lock())
+            owner->OnVolumeControlConnected(target, volumeGeneration, sourceGeneration);
+        });
+    CLog::Log(LOGDEBUG, "CEC volume: {} target {} ({}); local normalization pending",
+              tv ? "TV speakers" : "audio system", static_cast<int>(target), name);
+    return tv ? "" : name;
   }
-
-  return strAmpName;
+  m_adapter->m_volumeTarget = selectedTarget;
+  CLog::Log(LOGDEBUG, "CEC volume: {} target {} ({}); {}", tv ? "TV speakers" : "audio system",
+            static_cast<int>(target), name,
+            present ? "external control available" : "unavailable; using local volume");
+  return present && !tv ? name : "";
 }
 
 bool CPeripheralCecAdapterUpdateThread::SetInitialConfiguration(void)
@@ -1950,6 +2168,9 @@ void CPeripheralCecAdapterUpdateThread::Process(void)
   bool bUpdate(false);
   while (!m_bStop)
   {
+    if (m_audioControlRefreshPending.exchange(false))
+      UpdateAudioSystemStatus();
+
     // update received
     if (bUpdate || m_event.Wait(500ms))
     {

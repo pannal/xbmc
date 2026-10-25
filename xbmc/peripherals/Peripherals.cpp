@@ -645,6 +645,9 @@ void CPeripherals::GetSettingsFromMappingsFile(
     if (setting)
     {
       //! @todo add more types if needed
+      int help = -1;
+      if (currentNode->QueryIntAttribute("help", &help) == tinyxml2::XML_SUCCESS)
+        setting->SetHelp(help);
 
       /* set the visibility */
       setting->SetVisible(bConfigurable);
@@ -731,14 +734,8 @@ bool CPeripherals::OnAction(const CAction& action)
       {
         std::shared_ptr<CPeripheralCecAdapter> cecDevice =
             std::static_pointer_cast<CPeripheralCecAdapter>(peripheral);
-        if (cecDevice->HasAudioControl())
-        {
-          if (action.GetID() == ACTION_VOLUME_UP)
-            cecDevice->VolumeUp();
-          else
-            cecDevice->VolumeDown();
+        if (action.GetID() == ACTION_VOLUME_UP ? cecDevice->VolumeUp() : cecDevice->VolumeDown())
           return true;
-        }
       }
     }
   }
@@ -798,11 +795,8 @@ bool CPeripherals::ToggleMute()
     {
       std::shared_ptr<CPeripheralCecAdapter> cecDevice =
           std::static_pointer_cast<CPeripheralCecAdapter>(peripheral);
-      if (cecDevice->HasAudioControl())
-      {
-        cecDevice->ToggleMute();
+      if (cecDevice->ToggleMute())
         return true;
-      }
     }
   }
 

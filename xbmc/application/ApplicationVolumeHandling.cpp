@@ -106,11 +106,7 @@ void CApplicationVolumeHandling::Mute()
   if (CServiceBroker::GetPeripherals().Mute())
     return;
 
-  IAE* ae = CServiceBroker::GetActiveAE();
-  if (ae)
-    ae->SetMute(true);
-  m_muted = true;
-  VolumeChanged();
+  SetLocalMute(true);
 }
 
 void CApplicationVolumeHandling::UnMute()
@@ -118,10 +114,15 @@ void CApplicationVolumeHandling::UnMute()
   if (CServiceBroker::GetPeripherals().UnMute())
     return;
 
+  SetLocalMute(false);
+}
+
+void CApplicationVolumeHandling::SetLocalMute(bool mute)
+{
   IAE* ae = CServiceBroker::GetActiveAE();
   if (ae)
-    ae->SetMute(false);
-  m_muted = false;
+    ae->SetMute(mute);
+  m_muted = mute;
   VolumeChanged();
 }
 

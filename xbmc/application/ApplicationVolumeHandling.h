@@ -40,6 +40,8 @@ public:
 
   void SetVolume(float iValue, bool isPercentage = true);
   void SetMute(bool mute);
+  // Set Kodi's output mute directly, without sending a peripheral mute command.
+  void SetLocalMute(bool mute);
   void ToggleMute(void);
 
   const ReplayGainSettings& GetReplayGainSettings() const { return m_replayGainSettings; }

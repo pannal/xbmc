@@ -23,10 +23,10 @@ class CPeripheralCecAdapter : public CPeripheral
 {
 public:
   bool HasAudioControl(void) { return false; }
-  void VolumeUp(void) {}
-  void VolumeDown(void) {}
+  bool VolumeUp(void) { return false; }
+  bool VolumeDown(void) { return false; }
   bool IsMuted(void) { return false; }
-  void ToggleMute(void) {}
+  bool ToggleMute(void) { return false; }
   bool ToggleDeviceState(CecStateChange mode = STATE_SWITCH_TOGGLE, bool forceType = false)
   {
     return false;
@@ -42,13 +42,15 @@ public:
 
 #include "PeripheralHID.h"
 #include "XBDateTime.h"
+#include "input/actions/interfaces/IActionListener.h"
 #include "interfaces/AnnouncementManager.h"
 #include "threads/CriticalSection.h"
 #include "threads/Thread.h"
-#include "input/actions/interfaces/IActionListener.h"
 
+#include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <queue>
 #include <vector>
 
@@ -121,9 +123,9 @@ public:
   // audio control
   bool HasAudioControl(void);
   CDateTime m_ScreensaverStandbySent;
-  void VolumeUp(void);
-  void VolumeDown(void);
-  void ToggleMute(void);
+  bool VolumeUp(void);
+  bool VolumeDown(void);
+  bool ToggleMute(void);
   bool IsMuted(void);
 
   // CPeripheral callbacks
@@ -171,14 +173,23 @@ private:
 
   void ProcessActivateSource(void);
   void ProcessStandbyDevices(void);
-  void ProcessVolumeChange(void);
+  void ProcessVolumeChange(bool stopping = false);
+  bool QueueVolumeChange(CecVolumeChange change);
+  bool HasAudioControlLocked(void) const;
+  void SetTvVolumeControl(bool enabled);
+  void OnVolumeControlConnected(CEC::cec_logical_address target,
+                                uint64_t volumeGeneration,
+                                uint64_t sourceGeneration);
+  void InvalidateVolumeControl(void);
+  void ResetVolumeControl(void);
+  bool ReleaseVolumeKey(std::unique_lock<CCriticalSection>& lock);
+  bool SuppressCecVolumeKey(CEC::cec_user_control_code key) const;
 
   void PushCecKeypress(const CEC::cec_keypress& key);
   void PushCecKeypress(const CecButtonPress& key);
   void GetNextKey(void);
   void ProcessInactiveView(void);
 
-  void SetAudioSystemConnected(bool bSetTo);
   void SetMenuLanguage(const char* strLanguage);
   void OnTvStandby(void);
 
@@ -198,13 +209,25 @@ private:
   bool m_bStarted;
   bool m_bHasButton;
   bool m_bIsReady;
-  bool m_bHasConnectedAudioSystem;
   std::string m_strMenuLanguage;
   CDateTime m_standbySent;
   std::vector<CecButtonPress> m_buttonQueue;
   CecButtonPress m_currentButton;
   std::queue<CecVolumeChange> m_volumeChangeQueue;
+  // Only the adapter worker sends keys. This lock protects brief admission/state
+  // updates and is always released across native sends; callbacks never take it.
+  mutable CCriticalSection m_volumeSection;
+  std::atomic<bool> m_volumeEnabled{false};
+  std::atomic<bool> m_tvVolumeControl{false};
+  std::atomic<bool> m_volumeConnectionLost{false};
+  CEC::cec_logical_address m_volumeTarget{CEC::CECDEVICE_UNKNOWN};
+  CEC::cec_logical_address m_pressedVolumeTarget{CEC::CECDEVICE_UNKNOWN};
+  uint64_t m_volumeGeneration{0};
+  uint64_t m_pressedVolumeGeneration{0};
+  unsigned int m_volumeReleaseFailures{0};
+  bool m_audioNormalizationPending{false};
   std::chrono::time_point<std::chrono::steady_clock> m_lastKeypress;
+  std::chrono::time_point<std::chrono::steady_clock> m_lastVolumeInput;
   CecVolumeChange m_lastChange;
   int m_iExitCode;
   bool m_bIsMuted;
@@ -252,7 +275,7 @@ public:
                                     CEC::libcec_configuration* configuration);
   ~CPeripheralCecAdapterUpdateThread(void) override;
 
-  void Signal(void);
+  void RefreshAudioControl(void);
   bool UpdateConfiguration(CEC::libcec_configuration* configuration);
 
 protected:
@@ -269,6 +292,7 @@ protected:
   CEC::libcec_configuration m_nextConfiguration;
   bool m_bNextConfigurationScheduled = false;
   bool m_bIsUpdating = true;
+  std::atomic<bool> m_audioControlRefreshPending{false};
 };
 } // namespace PERIPHERALS
 

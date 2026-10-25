@@ -19408,7 +19408,7 @@ msgctxt "#36059"
 msgid "Wake-Up by active route"
 msgstr ""
 
-#empty strings from id 36060 to 36095
+#empty strings from id 36064 to 36095
 
 #. Label of setting "System / Display / Use system HDR/SDR brightness balance"
 #: system/settings/settings.xml
@@ -27694,6 +27694,16 @@ msgstr ""
 
 msgctxt "#36061"
 msgid "When CEC standby is triggered from Kodi"
+msgstr ""
+
+#: system/peripherals.xml
+msgctxt "#36062"
+msgid "Control TV speaker volume over CEC"
+msgstr ""
+
+#: system/peripherals.xml
+msgctxt "#36063"
+msgid "For a direct TV connection without an AVR or soundbar. Off by default: control a detected audio system, otherwise Kodi volume. On: send volume and mute keys to the TV. When the CEC target becomes available, Kodi's local volume is set to maximum and unmuted. If the target is unavailable or sending fails, subsequent keys control Kodi volume at its current level. Incoming CEC volume keys are ignored to prevent feedback. TV mute status is not reported."
 msgstr ""
 
 msgctxt "#69240"

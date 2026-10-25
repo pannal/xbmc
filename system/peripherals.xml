@@ -41,6 +41,7 @@
     <setting key="action_on_explicit_standby" type="enum" value="36028" label="36061" order="21" lvalues="36028|13005|13011|13010|13009|36044|36045" />
 
     <!-- Miscellaneous -->
+    <setting key="volume_control_tv" type="bool" value="0" label="36062" help="36063" order="26" />
     <setting key="pause_or_stop_playback_on_deactivate" type="enum" value="231" label="36033" order="22" lvalues="231|36044|36045" />
     <setting key="double_tap_timeout_ms" type="int" min="50" max="1000" step="50" value="300" label="36047" order="23" />
     <setting key="button_repeat_rate_ms" type="int" min="0" max="250" step="10" value="0" label="36048" order="24" />
