@@ -38,6 +38,35 @@ enum class Counter : uint32_t
   FontLookup,
   FontHit,
   FontMiss,
+  MessageNavStarted,
+  MessageNavCompleted,
+  MessageNavHandled,
+  MessageNavCandidateChanged,
+  MessageNavTargetChanged,
+  MessageNavUnknownSelection,
+  MessageNavLastAction,
+  MessageNavRequestedWindow,
+  MessageNavBeforeWindow,
+  MessageNavBeforeControl,
+  MessageNavBeforeSelection,
+  MessageNavAfterWindow,
+  MessageNavAfterControl,
+  MessageNavAfterSelection,
+  WindowProcessCalls,
+  DirtyEmitted,
+  RenderCalls,
+  EffectiveBufferAge,
+  DirtyAlgorithm,
+  MarkedBeforeAge,
+  MarkedAfterAge,
+  SolvedRegions,
+  RenderForced,
+  RenderDirty,
+  RenderClean,
+  Idle40ms,
+  RenderAttempt,
+  PresentResult,
+  GuiRendered,
   Count
 };
 constexpr uint32_t REGION_COUNT = static_cast<uint32_t>(Region::Count);
@@ -70,7 +99,7 @@ struct Record
   Duration regions[REGION_COUNT];
   uint64_t counters[COUNTER_COUNT];
 };
-static_assert(sizeof(Header) == 64 && sizeof(Duration) == 24 && sizeof(Record) == 264);
+static_assert(sizeof(Header) == 64 && sizeof(Duration) == 24 && sizeof(Record) == 496);
 enum class InitResult
 {
   Disabled,
@@ -149,8 +178,8 @@ inline InitResult Initialize()
   std::memset(mapping, 0, FILE_BYTES);
   header = static_cast<Header*>(mapping);
   records = reinterpret_cast<Record*>(header + 1);
-  std::memcpy(header->magic, "P3IGUI1", 8);
-  header->version = 1;
+  std::memcpy(header->magic, "P3IGUI2", 8);
+  header->version = 2;
   header->headerBytes = sizeof(Header);
   header->recordBytes = sizeof(Record);
   header->capacity = CAPACITY;
@@ -332,13 +361,41 @@ private:
 #endif
 };
 
-inline void Count(Counter counter)
+// Numeric observation only; no clocks, allocation, tree traversal or locks here.
+// A nonzero frame token gates the optional, more expensive input snapshots.
+inline uint64_t ActiveFrame()
+{
+#ifdef HAS_LIBAMCODEC
+  if (detail::Active() && detail::current)
+    return detail::current->frame;
+#endif
+  return 0;
+}
+
+inline void Add(Counter counter, uint64_t value)
 {
 #ifdef HAS_LIBAMCODEC
   if (detail::Active() && detail::current && static_cast<uint32_t>(counter) < COUNTER_COUNT)
-    ++detail::current->counters[static_cast<uint32_t>(counter)];
+    detail::current->counters[static_cast<uint32_t>(counter)] += value;
 #else
   (void)counter;
+  (void)value;
 #endif
+}
+
+inline void Set(Counter counter, uint64_t value)
+{
+#ifdef HAS_LIBAMCODEC
+  if (detail::Active() && detail::current && static_cast<uint32_t>(counter) < COUNTER_COUNT)
+    detail::current->counters[static_cast<uint32_t>(counter)] = value;
+#else
+  (void)counter;
+  (void)value;
+#endif
+}
+
+inline void Count(Counter counter)
+{
+  Add(counter, 1);
 }
 } // namespace GUI_FRAME_TIMING

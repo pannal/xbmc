@@ -6,7 +6,7 @@ path. `CApplication::Run` initializes it once on the application thread. It
 cannot be enabled later in the process. Other builds compile no-op hooks.
 
 Creation uses `O_EXCL`, rejects existing files and symlinks, and sets mode 0600.
-The filesystem must support reserving the complete 8,650,816-byte file with
+The filesystem must support reserving the complete 16,252,992-byte file with
 `posix_fallocate`. Initialization failure disables capture; it may leave a newly
 created partial file, which must not be interpreted as a valid capture. Existing
 files are never replaced or removed. Choose another new path for another run.
@@ -49,7 +49,7 @@ not text-draw counts: misses perform a further lookup when storing the result,
 and bounds capture performs another lookup. Do not infer eligible cached draws
 or allocations from these totals or from GL buffer uploads.
 
-## Binary format, version 1
+## Binary format, version 2
 
 The target and supported host tests write little-endian fixed-width integers,
 with the sizes below checked at compile time. All times are integer nanoseconds.
@@ -59,14 +59,14 @@ The 64-byte header is `8s, 10*u32, 2*u64`:
 
 | Offset | Field |
 | --- | --- |
-| 0 | Eight bytes `P3IGUI1\0` |
-| 8, 12, 16, 20 | Version=1, header bytes=64, record bytes=264, capacity=32768 |
-| 24, 28 | Region count=8, counter count=3 |
+| 0 | Eight bytes `P3IGUI2\0` |
+| 8, 12, 16, 20 | Version=2, header bytes=64, record bytes=496, capacity=32768 |
+| 24, 28 | Region count=8, counter count=32 |
 | 32, 36 | Initializing process ID and thread ID |
 | 40, 44 | Completed-record count and header flags |
 | 48, 56 | Reserved, zero |
 
-Each 264-byte record is `5*u64, 2*u32, 27*u64`:
+Each 496-byte record is `5*u64, 2*u32, 56*u64`:
 
 | Offset | Field |
 | --- | --- |
@@ -74,7 +74,7 @@ Each 264-byte record is `5*u64, 2*u32, 27*u64`:
 | 8, 16, 24, 32 | Begin wall, begin CPU, end wall, end CPU |
 | 40, 44 | Record flags and nested-frame count |
 | 48 | Eight region triples: calls, total inclusive wall ns, total inclusive CPU ns |
-| 240 | Three counter totals |
+| 240 | 32 numeric counters/scalars |
 
 Flags are `1=full`, `2=clock failure`, `4=unbalanced scopes`, `8=nested Frame`,
 `16=recursive region`. The last two are record annotations; the first three are
@@ -83,8 +83,8 @@ record unpublished. Reaching capacity publishes exactly 32768 records, marks
 the header full, and stops observations. It never wraps or overwrites records.
 
 The completed prefix is immutable and its length is published by an aligned
-32-bit release store. Unfinished records and the zero-filled remainder are not
-data. Prefer reading the file after capture has stopped; a copied live header is
+32-bit release store. Only the header's completed prefix is data. A sequential live copy can contain
+several newer records in its unpublished tail; never decode that tail. Prefer reading the file after capture has stopped; a copied live header is
 not a transactional snapshot of its flags. Validate magic, version, format sizes/counts,
 file length, count, conditions and record IDs before analysis. Header clock or
 scope failures require reporting the incomplete capture. Full is an expected
@@ -97,3 +97,36 @@ exclusive creation, worker rejection, inclusive/nested accounting, capacity,
 `errno` and injected failures. Negative controls remove ownership, inclusive
 accumulation and exclusive creation. Host clocks are deterministic stubs; these
 tests do not establish target performance, scheduling fairness or GUI smoothness.
+
+
+Version 2 adds numeric input-delivery and redraw observations. The ordered
+counter names are defined by `GUI_FRAME_TIMING::Counter` and mirrored by
+`tools/gui_frame_timing.py`. Navigation counts cover only directional
+`TMSG_GUI_ACTION` delivery while a recorded iteration is active, not all physical
+inputs. Before/after window, focused-control and container-selection snapshots
+are routing candidates; global handlers or modal fallthrough can consume the
+action elsewhere. Unknown selection is signed -1. Selection changes count every
+completed message, including multiple messages in one iteration; scalar fields
+retain the last completed message. Completion requires the same active frame.
+Opt-in snapshots use the existing synchronized GUI lookups. No pointers survive
+the handler, which retains its original single call and ownership behavior.
+
+Redraw counters report emitted dirty rectangles, effective buffer age, dirty
+algorithm, marked/solved counts, forced/dirty/clean branch visits, the existing
+40 ms idle branch, and application render/present outcomes. They do not change
+invalidation, scissors, redraw or sleep policy. Numeric Add/Set operations add no
+clock samples or heap allocations. These observations do not prove a missing
+redraw or physical frame delivery.
+
+The reader supports both ABI1 (264-byte records, three counters, 8,650,816-byte
+file) and ABI2. It checks the published prefix, exposes known failure/annotation
+flags and nonzero unpublished tails, decodes signed scalar fields, and excludes
+scalar state from summed counter totals. Main-thread identity requires PID=TID.
+Use `python3 tools/gui_frame_timing.py CAPTURE --records` to include frames.
+Old ABI1-only analysis scripts cannot read ABI2 captures.
+
+`tools/test-gui-frame-reader.py` checks both reader formats and malformed-prefix
+rejection. `tools/test-gui-redraw-decisions.py` extracts actual dispatch/render/
+idle code against owned fixtures, compares original behavior with the depth-fix
+baseline, and rejects semantic mutations. These host fixtures do not establish
+real GUI routing, target timing, display output or GPU correctness.

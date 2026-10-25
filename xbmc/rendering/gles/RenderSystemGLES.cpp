@@ -15,6 +15,7 @@
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/GLUtils.h"
+#include "utils/GUIFrameTiming.h"
 #include "utils/MathUtils.h"
 #include "utils/SystemInfo.h"
 #include "utils/TimeUtils.h"
@@ -359,7 +360,10 @@ void CRenderSystemGLES::PresentRender(bool rendered, bool videoLayer)
 
   // if video is rendered to a separate layer, we should not block this thread
   if (!rendered && !videoLayer)
+  {
+    GUI_FRAME_TIMING::Count(GUI_FRAME_TIMING::Counter::Idle40ms);
     KODI::TIME::Sleep(40ms);
+  }
 }
 
 void CRenderSystemGLES::SetVSync(bool enable)

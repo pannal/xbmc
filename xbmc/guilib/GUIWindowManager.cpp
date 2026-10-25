@@ -9,6 +9,7 @@
 #include "GUIWindowManager.h"
 
 #include "GUIAudioManager.h"
+#include "GUIBaseContainer.h"
 #include "GUIDialog.h"
 #include "GUIInfoManager.h"
 #include "GUIPassword.h"
@@ -70,6 +71,7 @@
 #include "windows/GUIWindowSystemInfo.h"
 
 #include <algorithm>
+#include <array>
 #include <mutex>
 
 // Dialog includes
@@ -1074,16 +1076,69 @@ void CGUIWindowManager::OnApplicationMessage(ThreadMessage* pMsg)
     if (pMsg->lpVoid)
     {
       CAction *action = static_cast<CAction *>(pMsg->lpVoid);
+      using GUI_FRAME_TIMING::Counter;
+      const uint64_t frame = GUI_FRAME_TIMING::ActiveFrame();
+      const bool observe = frame != 0 &&
+                           (action->GetID() == ACTION_MOVE_UP ||
+                            action->GetID() == ACTION_MOVE_DOWN ||
+                            action->GetID() == ACTION_MOVE_LEFT ||
+                            action->GetID() == ACTION_MOVE_RIGHT);
+      // This is a routing candidate, not proof of the actual GUI recipient:
+      // global handlers and closing/fall-through dialogs may consume the action.
+      // Lookups retain their existing synchronization, only under active capture.
+      auto snapshot = [this, pMsg]() {
+        const int candidate = pMsg->param1 == WINDOW_INVALID ? GetActiveWindowOrDialog()
+                                                            : pMsg->param1;
+        const auto* window = GetWindow(candidate);
+        const auto* control = window ? window->GetFocusedControl() : nullptr;
+        const auto* container = dynamic_cast<const CGUIBaseContainer*>(control);
+        const int selected = container && container->GetListItem(0)
+                                 ? container->GetSelectedItem()
+                                 : -1;
+        return std::array<int, 3>{window ? window->GetID() : candidate,
+                                 control ? control->GetID() : -1, selected};
+      };
+      std::array<int, 3> before{};
+      if (observe)
+      {
+        before = snapshot();
+        GUI_FRAME_TIMING::Count(Counter::MessageNavStarted);
+      }
+      bool handled = false;
       if (pMsg->param1 == WINDOW_INVALID)
-        g_application.OnAction(*action);
+        handled = g_application.OnAction(*action);
       else
       {
         CGUIWindow *pWindow = GetWindow(pMsg->param1);
         if (pWindow)
-          pWindow->OnAction(*action);
+          handled = pWindow->OnAction(*action);
         else
           CLog::Log(LOGWARNING, "Failed to get window with ID {} to send an action to",
                     pMsg->param1);
+      }
+      // Re-resolve every pointer after dispatch; it can replace windows/controls.
+      // Never publish a completion into another frame after a reentrant handler.
+      if (observe && GUI_FRAME_TIMING::ActiveFrame() == frame)
+      {
+        const auto after = snapshot();
+        GUI_FRAME_TIMING::Count(Counter::MessageNavCompleted);
+        GUI_FRAME_TIMING::Add(Counter::MessageNavHandled, handled ? 1 : 0);
+        const bool sameTarget = before[0] == after[0] && before[1] == after[1];
+        GUI_FRAME_TIMING::Add(Counter::MessageNavTargetChanged, sameTarget ? 0 : 1);
+        if (before[2] < 0 || after[2] < 0)
+          GUI_FRAME_TIMING::Count(Counter::MessageNavUnknownSelection);
+        else if (sameTarget && before[2] != after[2])
+          GUI_FRAME_TIMING::Count(Counter::MessageNavCandidateChanged);
+        // Counts include every message. Scalar fields describe the last completed
+        // navigation message, with -1 encoded as a signed 64-bit unknown value.
+        GUI_FRAME_TIMING::Set(Counter::MessageNavLastAction, action->GetID());
+        GUI_FRAME_TIMING::Set(Counter::MessageNavRequestedWindow, static_cast<int64_t>(pMsg->param1));
+        GUI_FRAME_TIMING::Set(Counter::MessageNavBeforeWindow, static_cast<int64_t>(before[0]));
+        GUI_FRAME_TIMING::Set(Counter::MessageNavBeforeControl, static_cast<int64_t>(before[1]));
+        GUI_FRAME_TIMING::Set(Counter::MessageNavBeforeSelection, static_cast<int64_t>(before[2]));
+        GUI_FRAME_TIMING::Set(Counter::MessageNavAfterWindow, static_cast<int64_t>(after[0]));
+        GUI_FRAME_TIMING::Set(Counter::MessageNavAfterControl, static_cast<int64_t>(after[1]));
+        GUI_FRAME_TIMING::Set(Counter::MessageNavAfterSelection, static_cast<int64_t>(after[2]));
       }
       delete action;
     }
@@ -1269,8 +1324,14 @@ void CGUIWindowManager::Process(unsigned int currentTime)
     }
   }
 
+  const bool observeDirty = GUI_FRAME_TIMING::ActiveFrame() != 0;
+  GUI_FRAME_TIMING::Count(GUI_FRAME_TIMING::Counter::WindowProcessCalls);
   for (auto& itr : m_dirtyregions)
+  {
+    if (observeDirty && !itr.IsEmpty())
+      GUI_FRAME_TIMING::Count(GUI_FRAME_TIMING::Counter::DirtyEmitted);
     m_tracker.MarkDirtyRegion(itr);
+  }
   PublishRenderBounds();
 }
 
@@ -1406,12 +1467,25 @@ bool CGUIWindowManager::Render()
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiVisualizeDirtyRegions;
   if (visualizeDirtyRegions)
     bufferAge = 20;
+  GUI_FRAME_TIMING::Count(GUI_FRAME_TIMING::Counter::RenderCalls);
+  GUI_FRAME_TIMING::Set(GUI_FRAME_TIMING::Counter::EffectiveBufferAge,
+                        static_cast<int64_t>(bufferAge));
+  GUI_FRAME_TIMING::Add(GUI_FRAME_TIMING::Counter::MarkedBeforeAge,
+                        m_tracker.GetMarkedRegions().size());
+  if (GUI_FRAME_TIMING::ActiveFrame())
+    GUI_FRAME_TIMING::Set(GUI_FRAME_TIMING::Counter::DirtyAlgorithm,
+                          static_cast<int64_t>(CServiceBroker::GetSettingsComponent()
+                                                   ->GetAdvancedSettings()
+                                                   ->m_guiAlgorithmDirtyRegions));
   if (bufferAge)
     m_tracker.CleanMarkedRegions(bufferAge + 1);
   else
     m_tracker.CleanMarkedRegions(10);
 
+  GUI_FRAME_TIMING::Add(GUI_FRAME_TIMING::Counter::MarkedAfterAge,
+                        m_tracker.GetMarkedRegions().size());
   CDirtyRegionList dirtyRegions = m_tracker.GetDirtyRegions();
+  GUI_FRAME_TIMING::Add(GUI_FRAME_TIMING::Counter::SolvedRegions, dirtyRegions.size());
   CServiceBroker::GetWinSystem()->SetDirtyRegions(dirtyRegions);
 
   bool hasRendered = false;
@@ -1422,6 +1496,7 @@ bool CGUIWindowManager::Render()
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAlgorithmDirtyRegions ==
           DIRTYREGION_SOLVER_FILL_VIEWPORT_ALWAYS)
   {
+    GUI_FRAME_TIMING::Count(GUI_FRAME_TIMING::Counter::RenderForced);
     RenderPass();
     hasRendered = true;
   }
@@ -1429,6 +1504,7 @@ bool CGUIWindowManager::Render()
   {
     if (!dirtyRegions.empty())
     {
+      GUI_FRAME_TIMING::Count(GUI_FRAME_TIMING::Counter::RenderDirty);
       RenderPass();
       hasRendered = true;
     }
@@ -1441,6 +1517,7 @@ bool CGUIWindowManager::Render()
         continue;
 
       CServiceBroker::GetWinSystem()->GetGfxContext().SetScissors(i);
+      GUI_FRAME_TIMING::Count(GUI_FRAME_TIMING::Counter::RenderDirty);
       RenderPass();
       hasRendered = true;
     }
@@ -1457,6 +1534,8 @@ bool CGUIWindowManager::Render()
       CGUITexture::DrawQuad(i, 0x4c00ff00);
   }
 
+  if (!hasRendered)
+    GUI_FRAME_TIMING::Count(GUI_FRAME_TIMING::Counter::RenderClean);
   PublishRenderBounds();
   return hasRendered;
 }

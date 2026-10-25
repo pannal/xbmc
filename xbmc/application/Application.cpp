@@ -2070,6 +2070,12 @@ int CApplication::Run()
         GUI_FRAME_TIMING::Scope timing(GUI_FRAME_TIMING::Region::Render);
         Render();
       }
+      GUI_FRAME_TIMING::Set(GUI_FRAME_TIMING::Counter::RenderAttempt,
+                            static_cast<uint64_t>(m_lastRenderAttempt.status));
+      GUI_FRAME_TIMING::Set(GUI_FRAME_TIMING::Counter::PresentResult,
+                            static_cast<uint64_t>(m_lastRenderAttempt.present));
+      GUI_FRAME_TIMING::Set(GUI_FRAME_TIMING::Counter::GuiRendered,
+                            m_lastRenderAttempt.guiRendered ? 1 : 0);
       idleVideoPresentation =
           m_lastRenderAttempt.status == RenderAttemptStatus::COMMANDS_COMPLETED &&
           !m_lastRenderAttempt.guiRendered &&
