@@ -728,7 +728,8 @@ MUTATIONS = {
                                'GetPanelRows(m_scroller.GetValue(), m_scroller.GetValue(),'),
     'process-zero-size-guard': (PROCESS, r'if \(!\(rowSize > 0\)\)\s*return;', '(void)0;'),
     'zero-duration-delay': (PROCESS, r' && m_scroller.GetDuration\(\) > 1', ''),
-    'stale-stopped-state': ('void CGUIPanelContainer::ScrollToOffset(',
+    # the reset lives in the shared container ScrollToOffset that the panel calls
+    'stale-stopped-state': ('void CGUIBaseContainer::ScrollToOffset(',
                             r'if \(!m_scroller.IsScrolling\(\)\)\s*m_wasScrolling = false;', '(void)0;'),
     'empty-edge-row': (None, r'lastRow = firstRow - 1;',
                        'lastRow = static_cast<int>(std::floor(high / rowSize)) + cache;'),
@@ -763,9 +764,11 @@ def main():
     print(fixed.stdout.strip(), flush=True)
 
     for name, (scope, pattern, replacement) in MUTATIONS.items():
-        mutated, count = mutate(panel, scope, pattern, replacement)
+        inBase = bool(scope) and scope.startswith('void CGUIBaseContainer::')
+        mutated, count = mutate(base if inBase else panel, scope, pattern, replacement)
         assert count == 1, 'mutation did not apply: ' + name
-        bad = run(build(args.output, 'mutant-' + name, mutated, base, scroller))
+        bad = run(build(args.output, 'mutant-' + name, panel if inBase else mutated,
+                        mutated if inBase else base, scroller))
         witnesses = {
             'value-only-rows':'nothing built while moving', 'free-while-scrolling':'nothing freed while moving',
             'immediate-start':'no frame jumps further than one undelayed first frame',

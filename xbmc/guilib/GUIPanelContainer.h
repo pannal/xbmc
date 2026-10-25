@@ -60,8 +60,5 @@ protected:
   int GetCurrentColumn() const;
 
   int m_itemsPerRow;
-
-  // Whether the scroller was running at the end of the previous Process()
-  bool m_wasScrolling{false};
 };
 

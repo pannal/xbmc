@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Replay complete container draw/depth methods against owned layout fixtures.
 
-Pinned pre-change source supplies the draw compatibility baseline for base and wrapping
-containers. Panels select their rows by the current scroll value and the scroll target with a
-direction-independent preload since the panel row change, so their draws are checked against an
-independent enumeration of those rows (row-major, focused item last, production position
-arithmetic) instead of the historical draw. Current depth must visit exactly the layouts selected
+Pinned pre-change source supplies the draw compatibility baseline at rest. Panels, and since
+the list item change base and wrapping containers, select their rows or items by the current
+scroll value and the scroll target with a direction-independent preload, so their draws are
+checked against an independent enumeration of those rows or items (row-major or index order,
+focused item last, production position arithmetic) instead of the historical draw, and equal
+the historical draw at rest. Current depth must visit exactly the layouts selected
 by the draw enumeration, in back-to-front order. Graphics,
 layout children/text fades, scrolling state and provider replacement are fixtures;
 this is not full Kodi integration, GL execution or device performance evidence.
@@ -261,6 +262,64 @@ template<class B,class C>void ComparePanel(B& baseline,C& current,const State& s
  Check(current.m_depthItems.empty(),"depth capacity cache retains no owners");
  gfx.admit=true;
 }
+// Independent list enumeration: items from the viewport at the lower of the scroll value and
+// target to the viewport at the higher, with half the preload on each side; an item after the
+// focused one moves by the focused layout's extra size, the focused item last, positions with
+// the production arithmetic.
+template<class C>std::vector<Visit> ListVisits(const C& c)
+{
+ std::vector<Visit> visits;
+ if(!c.m_layout||!c.m_focusedLayout||c.m_items.empty())return visits;
+ const ORIENTATION o=c.m_orientation;const float size=c.m_layout->Size(o);
+ if(!(size>0))return visits;
+ const float value=c.m_scroller.GetValue(),target=c.GetOffset()*size;
+ const int cache=c.m_cacheItems/2,focus=c.GetOffset()+c.GetCursor();
+ const CPoint origin=CPoint(c.m_posX,c.m_posY)+c.m_renderOffset;
+ const float across=o==VERTICAL?origin.x:origin.y;
+ int current=static_cast<int>(std::floor(std::min(value,target)/size))-cache;
+ float pos=o==VERTICAL?origin.y:origin.x;pos+=current*size-value;
+ float end=o==VERTICAL?c.m_posY+c.m_height:c.m_posX+c.m_width;end+=std::max(value,target)-value+cache*size;
+ const int count=static_cast<int>(c.m_items.size());std::optional<Visit> focused;
+ for(;pos<end;++current)
+ {
+  const int itemNo=c.CorrectOffset(current,0);if(itemNo>=count)break;
+  if(itemNo>=0)
+  {
+   const Visit visit=o==VERTICAL?Visit{itemNo+1,current==focus,across,pos}:Visit{itemNo+1,current==focus,pos,across};
+   if(current==focus)focused=visit;else visits.push_back(visit);
+  }
+  pos+=current==focus?c.m_focusedLayout->Size(o):size;
+ }
+ if(focused)visits.push_back(*focused);
+ return visits;
+}
+template<class B,class C>void Compare(B& baseline,C& current,const State& s);
+template<class B,class C>void CompareList(B& baseline,C& current,const State& s)
+{
+ // At rest the draw is the historical one.
+ if(current.m_layout&&s.direction==0&&s.scroll==current.GetOffset()*current.m_layout->Size(current.m_orientation))
+  Compare(baseline,current,s);
+ ++cases;
+ const auto expected=ListVisits(current);
+ for(int pass:{RENDER_ORDER_BACK_TO_FRONT,RENDER_ORDER_FRONT_TO_BACK})
+ {
+  gfx.admit=s.clip;gfx.pass=pass;gfx.Clear();baseline.Render();
+  const auto clips=gfx.clips;const int pushed=gfx.clipPush,popped=gfx.clipPop;
+  gfx.Clear();current.Render();
+  auto visits=expected;if(pass==RENDER_ORDER_FRONT_TO_BACK)std::reverse(visits.begin(),visits.end());
+  if(!s.clip)visits.clear();
+  Check(gfx.visits==visits,"list item/focus/order/coordinates match the item enumeration");
+  Check(gfx.clips==clips&&gfx.clipPush==pushed&&gfx.clipPop==popped,"dirty clip behavior unchanged");
+  Check(gfx.origins.empty(),"current origins balanced");
+ }
+ gfx.admit=true;gfx.pass=RENDER_ORDER_BACK_TO_FRONT;gfx.Clear();current.Render();
+ const auto canonicalDraws=gfx.draws;
+ gfx.Clear();gfx.admit=s.clip;current.AssignDepth();
+ Check(gfx.depths==ExpectedDepths(canonicalDraws),"fresh depth is exactly selected drawn layouts, in physical focus-last order");
+ Check(gfx.clips.empty(),"depth enumeration is independent of dirty clip admission");
+ Check(current.m_depthItems.empty(),"depth capacity cache retains no owners");
+ gfx.admit=true;
+}
 static std::vector<int> ExpectedDepths(const std::vector<Draw>& draws)
 {
  std::vector<int> expected;
@@ -300,20 +359,21 @@ static void Matrix()
  focusedTemplate.width=16.75f;focusedTemplate.height=13.25f;
  for(int kind=0;kind<3;++kind)
  for(int orientation=0;orientation<2;++orientation)
- for(float scroll:{-20.25f,-.5f,0.0f,7.125f,29.75f,80.25f})
+ for(float scroll:{-20.25f,-.5f,0.0f,7.125f,29.75f,80.25f,1e9f}) // 1e9: at rest on the offset
  for(int cache:{0,1,4,9})
  for(int direction:{-1,0,1})
  for(bool focus:{false,true})
  for(int missing:{0,1})
  {
   State s;s.orientation=orientation;s.scroll=scroll;s.cache=cache;s.direction=direction;
+  if(scroll==1e9f)s.scroll=2*normalTemplate.Size(static_cast<ORIENTATION>(orientation));
   s.focus=focus;s.missing=missing;s.offset=2;s.cursor=1;s.cached=(cache%2==1);
   if(kind==0){old::Observed<old::CGUIBaseContainer> b;now::Observed<now::CGUIBaseContainer> c;
-   Configure(b,s);Configure(c,s);Compare(b,c,s);}
+   Configure(b,s);Configure(c,s);CompareList(b,c,s);}
   else if(kind==1){old::Observed<old::CGUIPanelContainer> b;now::Observed<now::CGUIPanelContainer> c;
    PanelConfigure(b,s);PanelConfigure(c,s);ComparePanel(b,c,s);}
   else {s.count=3;old::Observed<old::CGUIWrappingListContainer> b;now::Observed<now::CGUIWrappingListContainer> c;
-   Configure(b,s);Configure(c,s);Compare(b,c,s);}
+   Configure(b,s);Configure(c,s);CompareList(b,c,s);}
  }
 }
 static void EdgesAndFreshness()
@@ -429,7 +489,8 @@ def variant(src, current):
     declarations = DECLARATIONS.replace('@RENDERITEM@', renderitem)
     declarations = declarations.replace('@NEW_DECL@',
         'virtual void BuildRenderItems(std::vector<RENDERITEM>&) const;\n'
-        'CGUIListItemLayout* GetRenderLayout(CGUIListItem*,bool) const;' if current else '')
+        'CGUIListItemLayout* GetRenderLayout(CGUIListItem*,bool) const;\n'
+        'bool GetDrawRange(int&,float&,float&) const;' if current else '')
     declarations = declarations.replace('@PANEL_DECL@',
         'void BuildRenderItems(std::vector<RENDERITEM>&) const override;' if current else '')
     extracted = [method(base, signature) for signature in [
@@ -442,7 +503,8 @@ def variant(src, current):
                   method(panel, 'int CGUIPanelContainer::CorrectOffset('),
                   method(wrap, 'int CGUIWrappingListContainer::CorrectOffset(')]
     if current:
-        extracted += [method(base, 'void CGUIBaseContainer::BuildRenderItems('),
+        extracted += [method(base, 'bool CGUIBaseContainer::GetDrawRange('),
+                      method(base, 'void CGUIBaseContainer::BuildRenderItems('),
                       method(base, 'CGUIListItemLayout* CGUIBaseContainer::GetRenderLayout('),
                       method(panel, 'void CGUIPanelContainer::BuildRenderItems(')]
     return declarations + '\n' + '\n\n'.join(extracted)
@@ -468,7 +530,10 @@ def mutations(current):
         'panel-target-ignored': ('const float high = std::max(value, target);', 'const float high = value;'),
         'panel-empty-edge': ('lastRow = firstRow - 1;', 'lastRow = static_cast<int>(std::floor(high / rowSize)) + cache;'),
         'panel-preload-ignored': ('GetCacheCount() / 2, firstRow, lastRow);', '0, firstRow, lastRow);'),
-        'omit-preload-tail': ('end += cacheAfter * m_layout->Size(m_orientation);', 'end += 0 * cacheAfter * m_layout->Size(m_orientation);'),
+        'omit-preload-tail': ('endPos += std::max(value, target) - value + cache * size;',
+                              'endPos += std::max(value, target) - value;'),
+        'list-target-ignored': ('const float target = GetOffset() * size;', 'const float target = value;'),
+        'list-preload-ignored': ('const int cache = GetCacheCount() / 2;\n  firstItem', 'const int cache = 0;\n  firstItem'),
         'reallocate-depth-cache': ('renderItems.swap(m_depthItems);', 'renderItems.reserve(m_depthItems.capacity());'),
     }
     for name, (old, new) in changes.items():
