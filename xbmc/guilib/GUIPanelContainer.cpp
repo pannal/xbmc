@@ -662,10 +662,6 @@ bool CGUIPanelContainer::HasNextPage() const
 
 void CGUIPanelContainer::ScrollToOffset(int offset)
 {
-  // Stop() can run between Process() calls (for example in FreeResources()).
-  // A subsequent request from rest still needs its row-building frame.
-  if (!m_scroller.IsScrolling())
-    m_wasScrolling = false;
   CGUIBaseContainer::ScrollToOffset(offset);
   SetCursor(GetCursor());
 }

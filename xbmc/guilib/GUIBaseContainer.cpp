@@ -31,6 +31,7 @@
 #include "utils/log.h"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 
 using namespace KODI;
@@ -146,31 +147,42 @@ void CGUIBaseContainer::Process(unsigned int currentTime, CDirtyRegionList &dirt
 
   if (!m_layout || !m_focusedLayout) return;
 
-  // UpdateScrollOffset already marks dirty region when scroller is active
-  UpdateScrollOffset(currentTime);
+  const float size = m_layout->Size(m_orientation);
+  if (!(size > 0))
+    return;
 
-  int offset = (int)floorf(m_scroller.GetValue() / m_layout->Size(m_orientation));
+  // A scroll requested from rest starts its clock on the next frame: this frame
+  // builds the items it reveals, so their build time is not shown as a jump in
+  // its first step. Retargets keep the existing scroller update policy.
+  // A configured zero duration is represented by one millisecond. Keep its
+  // existing clock update rather than adding an otherwise visible frame delay.
+  const bool startNextFrame =
+      m_scroller.IsScrolling() && !m_wasScrolling && m_scroller.GetDuration() > 1;
+  if (startNextFrame)
+    MarkDirtyRegion();
+  else
+    UpdateScrollOffset(currentTime); // already marks dirty region when scroller is active
+  m_wasScrolling = m_scroller.IsScrolling();
 
-  int cacheBefore, cacheAfter;
-  GetCacheOffsets(cacheBefore, cacheAfter);
+  int offset = (int)floorf(m_scroller.GetValue() / size);
 
-  // Free memory not used on screen
-  if ((int)m_items.size() > m_itemsPerPage + cacheBefore + cacheAfter)
-    FreeMemory(CorrectOffset(offset - cacheBefore, 0), CorrectOffset(offset + m_itemsPerPage + 1 + cacheAfter, 0));
+  int current;
+  float pos, end;
+  GetDrawRange(current, pos, end);
+
+  // Free memory not used on screen. While scrolling keep a page more on each
+  // side, so a step frees nothing until it comes to rest and a held scroll stays
+  // bounded; keep everything when that covers the whole (wrapping) list.
+  const int cache = GetCacheCount() / 2;
+  const int margin = m_scroller.IsScrolling() ? m_itemsPerPage : 0;
+  const int keepFirst = current - margin;
+  const int keepLast =
+      static_cast<int>(std::floor(std::max(m_scroller.GetValue(), GetOffset() * size) / size)) +
+      m_itemsPerPage + 1 + cache + margin;
+  if (keepLast - keepFirst <= (int)m_items.size())
+    FreeMemory(CorrectOffset(keepFirst, 0), CorrectOffset(keepLast, 0));
 
   CPoint origin = CPoint(m_posX, m_posY) + m_renderOffset;
-  float pos = (m_orientation == VERTICAL) ? origin.y : origin.x;
-  float end = (m_orientation == VERTICAL) ? m_posY + m_height : m_posX + m_width;
-
-  // we offset our draw position to take into account scrolling and whether or not our focused
-  // item is offscreen "above" the list.
-  float drawOffset = (offset - cacheBefore) * m_layout->Size(m_orientation) - m_scroller.GetValue();
-  if (GetOffset() + GetCursor() < offset)
-    drawOffset += m_focusedLayout->Size(m_orientation) - m_layout->Size(m_orientation);
-  pos += drawOffset;
-  end += cacheAfter * m_layout->Size(m_orientation);
-
-  int current = offset - cacheBefore;
   while (pos < end && m_items.size())
   {
     int itemNo = CorrectOffset(current, 0);
@@ -264,26 +276,16 @@ void CGUIBaseContainer::BuildRenderItems(std::vector<RENDERITEM>& renderItems) c
   if (!m_layout || !m_focusedLayout)
     return;
 
-  int offset = (int)floorf(m_scroller.GetValue() / m_layout->Size(m_orientation));
-
-  int cacheBefore, cacheAfter;
-  GetCacheOffsets(cacheBefore, cacheAfter);
+  // Re-evaluate current geometry for both depth assignment and rendering. A
+  // jump, provider replacement or layout change can precede the next Process().
+  int current;
+  float pos, end;
+  if (!GetDrawRange(current, pos, end))
+    return;
 
   CPoint origin = CPoint(m_posX, m_posY) + m_renderOffset;
-  float pos = (m_orientation == VERTICAL) ? origin.y : origin.x;
-  float end = (m_orientation == VERTICAL) ? m_posY + m_height : m_posX + m_width;
-
-  // we offset our draw position to take into account scrolling and whether or not our focused
-  // item is offscreen "above" the list.
-  float drawOffset = (offset - cacheBefore) * m_layout->Size(m_orientation) - m_scroller.GetValue();
-  if (GetOffset() + GetCursor() < offset)
-    drawOffset += m_focusedLayout->Size(m_orientation) - m_layout->Size(m_orientation);
-  pos += drawOffset;
-  end += cacheAfter * m_layout->Size(m_orientation);
-
   float focusedPos = 0;
   std::shared_ptr<CGUIListItem> focusedItem;
-  int current = offset - cacheBefore;
 
   while (pos < end && m_items.size())
   {
@@ -1212,6 +1214,10 @@ int CGUIBaseContainer::ScrollCorrectionRange() const
 
 void CGUIBaseContainer::ScrollToOffset(int offset)
 {
+  // Stop() can run between Process() calls (for example in FreeResources()).
+  // A subsequent request from rest still needs its item-building frame.
+  if (!m_scroller.IsScrolling())
+    m_wasScrolling = false;
   int minOffset, maxOffset;
   if(GetOffsetRange(minOffset, maxOffset))
     offset = std::max(minOffset, std::min(offset, maxOffset));
@@ -1295,6 +1301,34 @@ void CGUIBaseContainer::UpdateScrollOffset(unsigned int currentTime)
     m_lastScrollStartTimer.Stop();
     SetCursor(GetCursor());
   }
+}
+
+bool CGUIBaseContainer::GetDrawRange(int& firstItem, float& firstPos, float& endPos) const
+{
+  const float size = m_layout->Size(m_orientation);
+  if (!(size > 0))
+    return false;
+
+  // Items processed and drawn: from the viewport at the lower of the current
+  // scroll value and the scroll target to the viewport at the higher, plus the
+  // same preload on both sides. A step's new item enters in the frame it is
+  // requested, before its scroll starts, whatever the direction.
+  const float value = m_scroller.GetValue();
+  const float target = GetOffset() * size;
+  const int cache = GetCacheCount() / 2;
+  firstItem = static_cast<int>(std::floor(std::min(value, target) / size)) - cache;
+
+  const CPoint origin = CPoint(m_posX, m_posY) + m_renderOffset;
+  firstPos = (m_orientation == VERTICAL) ? origin.y : origin.x;
+  endPos = (m_orientation == VERTICAL) ? m_posY + m_height : m_posX + m_width;
+
+  // A pan can leave the selected item before the range. Account for its extra
+  // size here only when the item walk will not encounter it.
+  firstPos += firstItem * size - value;
+  if (GetOffset() + GetCursor() < firstItem)
+    firstPos += m_focusedLayout->Size(m_orientation) - size;
+  endPos += std::max(value, target) - value + cache * size;
+  return true;
 }
 
 int CGUIBaseContainer::CorrectOffset(int offset, int cursor) const
