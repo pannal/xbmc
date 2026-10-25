@@ -225,10 +225,17 @@ protected:
     bool focused;
   };
 
+  // Both callers rebuild from current geometry; never reuse an earlier frame's list.
+  virtual void BuildRenderItems(std::vector<RENDERITEM>& renderItems) const;
+  CGUIListItemLayout* GetRenderLayout(CGUIListItem* item, bool focused) const;
+
   // Cached render items to avoid per-frame vector allocation
   mutable std::vector<RENDERITEM> m_renderItems;
 
 private:
+  // Capacity only; AssignDepth releases all item references before returning.
+  std::vector<RENDERITEM> m_depthItems;
+
   bool OnContextMenu();
 
   int m_cursor;

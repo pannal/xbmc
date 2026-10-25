@@ -2,7 +2,8 @@
 """Run complete production container/list-item FreeMemory methods with owned layouts.
 
 Compare resource release/order and retained layouts against the installed-source
-baseline. Layout groups own real unique_ptr payloads; graphics/backend resources,
+baseline, with current selection-cache invalidation checked on every release.
+Layout groups own real unique_ptr payloads; graphics/backend resources,
 rendering, concurrent writers and device performance are outside this fixture.
 """
 import argparse
@@ -42,6 +43,7 @@ FIXTURE = r'''
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -88,10 +90,10 @@ public:
 class CGUIListItemLayout
 {
 public:
- int id;Group m_group;
+ int id;Group m_group;std::optional<bool> m_lastSelected{true};
  explicit CGUIListItemLayout(int value):id(value),m_group(value){}
  ~CGUIListItemLayout()
- {Check(!m_group.resource,"FreeResources precedes layout destruction");events.emplace_back(3,id,false);}
+ {Check(!m_group.resource,"FreeResources precedes layout destruction");Check(!m_lastSelected,"selection cache cleared before layout destruction");events.emplace_back(3,id,false);}
  void FreeResources(bool immediately);
 };
 CGUIListItem::CGUIListItem(int value):id(value){}
@@ -228,7 +230,11 @@ def main():
     baseline_layout = method(old(LAYOUT), 'void CGUIListItemLayout::FreeResources(')
     predicate = method(read(HEADER), 'bool HasLayouts(')
     assert container.count('->HasLayouts()') == 3, 'three offscreen loops must use the predicate'
-    assert item == baseline_item and layout == baseline_layout, 'resource release methods must remain unchanged'
+    assert item == baseline_item, 'item resource release must remain unchanged'
+    # The selection-state cache was added after this resource-release baseline.
+    # Permit exactly its invalidation, retaining the original release body/order.
+    reset = '  m_lastSelected.reset();\n'
+    assert layout.count(reset) == 1 and layout.replace(reset, '', 1) == baseline_layout, 'layout resource release may only add selection invalidation'
     if args.out:
         args.out.mkdir(parents=True, exist_ok=False)
     context = contextlib.nullcontext(str(args.out)) if args.out else tempfile.TemporaryDirectory(prefix='gui-offscreen-memory-')
@@ -237,8 +243,8 @@ def main():
         receipts = {'baseline_ref': args.baseline_ref, 'sanitize': args.sanitize,
                     'source_sha256': {path: hashlib.sha256(read(path).encode()).hexdigest()
                                       for path in (CONTAINER, ITEM, HEADER, LAYOUT)}, 'runs': []}
-        def run(label, candidate_container, candidate_item, candidate_predicate, optimized):
-            source = FIXTURE.replace('@HAS_LAYOUTS@', candidate_predicate).replace('@ITEM_METHOD@', candidate_item.replace('CGUIListItem::FreeMemory(', 'CGUIListItem::FreeMemoryBody(', 1)).replace('@LAYOUT_METHOD@', layout).replace('@CONTAINER_METHOD@', candidate_container)
+        def run(label, candidate_container, candidate_item, candidate_predicate, optimized, candidate_layout=layout):
+            source = FIXTURE.replace('@HAS_LAYOUTS@', candidate_predicate).replace('@ITEM_METHOD@', candidate_item.replace('CGUIListItem::FreeMemory(', 'CGUIListItem::FreeMemoryBody(', 1)).replace('@LAYOUT_METHOD@', candidate_layout).replace('@CONTAINER_METHOD@', candidate_container)
             path = work / (label + '.cpp'); path.write_text(source);binary = path.with_suffix('')
             command = shlex.split(args.cxx) + ['-std=c++17', '-O1', '-g', '-Wall', '-Wextra', '-Werror', str(path), '-o', str(binary)]
             if args.sanitize: command += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-fno-pie', '-no-pie']
@@ -278,6 +284,10 @@ def main():
             digest_failure = result.returncode == 0 and 'digest=' in result.stdout and result.stdout.split('digest=')[1].strip() != expected
             assert semantic_failure or digest_failure, ('mutation survived or failed without a semantic witness', name, result.returncode, result.stdout, result.stderr)
             print('Rejected mutation:', name)
+        result = run('selection-invalidation-omitted', container, item, predicate, True,
+                     layout.replace(reset, '', 1))
+        assert result.returncode == 1 and result.stderr.startswith('FAIL selection cache cleared'), ('selection invalidation mutation survived', result.stdout, result.stderr)
+        print('Rejected mutation: selection-invalidation-omitted')
         receipts['pass'] = True
         (work / 'results.json').write_text(json.dumps(receipts, indent=2) + '\n')
     print('Limits: production FreeMemory/predicate bodies with owned layout/group payload fixtures; full scan retained. No actual graphics resources, concurrent writers, target runtime or measured frame-time gain.')

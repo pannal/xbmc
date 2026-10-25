@@ -39,6 +39,7 @@ public:
   bool GetCondition(int condition, int data) const override;
   std::string GetLabel(int info) const override;
 protected:
+  void BuildRenderItems(std::vector<RENDERITEM>& renderItems) const override;
   bool MoveUp(bool wrapAround) override;
   bool MoveDown(bool wrapAround) override;
   virtual bool MoveLeft(bool wrapAround);

@@ -93,8 +93,9 @@ void CGUIPanelContainer::Process(unsigned int currentTime, CDirtyRegionList &dir
 }
 
 
-void CGUIPanelContainer::Render()
+void CGUIPanelContainer::BuildRenderItems(std::vector<RENDERITEM>& renderItems) const
 {
+  renderItems.clear();
   if (!m_layout || !m_focusedLayout)
     return;
 
@@ -105,65 +106,73 @@ void CGUIPanelContainer::Render()
   int cacheBefore, cacheAfter;
   GetCacheOffsets(cacheBefore, cacheAfter);
 
+  CPoint origin = CPoint(m_posX, m_posY) + m_renderOffset;
+  float pos = (m_orientation == VERTICAL) ? origin.y : origin.x;
+  float end = (m_orientation == VERTICAL) ? m_posY + m_height : m_posX + m_width;
+  pos += (offset - cacheBefore) * m_layout->Size(m_orientation) - m_scroller.GetValue();
+  end += cacheAfter * m_layout->Size(m_orientation);
+
+  float focusedPos = 0;
+  int focusedCol = 0;
+  std::shared_ptr<CGUIListItem> focusedItem;
+  int current = (offset - cacheBefore) * m_itemsPerRow;
+  int col = 0;
+  while (pos < end && m_items.size())
+  {
+    if (current >= (int)m_items.size())
+      break;
+    if (current >= 0)
+    {
+      std::shared_ptr<CGUIListItem> item = m_items[current];
+      bool focused = (current == GetOffset() * m_itemsPerRow + GetCursor()) && m_bHasFocus;
+      // render our item
+      if (focused)
+      {
+        focusedPos = pos;
+        focusedCol = col;
+        focusedItem = item;
+      }
+      else
+      {
+        if (m_orientation == VERTICAL)
+          renderItems.emplace_back(
+              RENDERITEM{origin.x + col * m_layout->Size(HORIZONTAL), pos, item, false});
+        else
+          renderItems.emplace_back(
+              RENDERITEM{pos, origin.y + col * m_layout->Size(VERTICAL), item, false});
+      }
+    }
+    // increment our position
+    if (col < m_itemsPerRow - 1)
+      col++;
+    else
+    {
+      pos += m_layout->Size(m_orientation);
+      col = 0;
+    }
+    current++;
+  }
+  // and render the focused item last (for overlapping purposes)
+  if (focusedItem)
+  {
+    if (m_orientation == VERTICAL)
+      renderItems.emplace_back(RENDERITEM{origin.x + focusedCol * m_layout->Size(HORIZONTAL),
+                                          focusedPos, focusedItem, true});
+    else
+      renderItems.emplace_back(RENDERITEM{
+          focusedPos, origin.y + focusedCol * m_layout->Size(VERTICAL), focusedItem, true});
+  }
+}
+
+void CGUIPanelContainer::Render()
+{
+  if (!m_layout || !m_focusedLayout)
+    return;
+
   if (CServiceBroker::GetWinSystem()->GetGfxContext().SetClipRegion(m_posX, m_posY, m_width, m_height))
   {
-    CPoint origin = CPoint(m_posX, m_posY) + m_renderOffset;
-    float pos = (m_orientation == VERTICAL) ? origin.y : origin.x;
-    float end = (m_orientation == VERTICAL) ? m_posY + m_height : m_posX + m_width;
-    pos += (offset - cacheBefore) * m_layout->Size(m_orientation) - m_scroller.GetValue();
-    end += cacheAfter * m_layout->Size(m_orientation);
-
-    float focusedPos = 0;
-    int focusedCol = 0;
-    std::shared_ptr<CGUIListItem> focusedItem;
-    int current = (offset - cacheBefore) * m_itemsPerRow;
-    int col = 0;
     std::vector<RENDERITEM> renderitems;
-    while (pos < end && m_items.size())
-    {
-      if (current >= (int)m_items.size())
-        break;
-      if (current >= 0)
-      {
-        std::shared_ptr<CGUIListItem> item = m_items[current];
-        bool focused = (current == GetOffset() * m_itemsPerRow + GetCursor()) && m_bHasFocus;
-        // render our item
-        if (focused)
-        {
-          focusedPos = pos;
-          focusedCol = col;
-          focusedItem = item;
-        }
-        else
-        {
-          if (m_orientation == VERTICAL)
-            renderitems.emplace_back(
-                RENDERITEM{origin.x + col * m_layout->Size(HORIZONTAL), pos, item, false});
-          else
-            renderitems.emplace_back(
-                RENDERITEM{pos, origin.y + col * m_layout->Size(VERTICAL), item, false});
-        }
-      }
-      // increment our position
-      if (col < m_itemsPerRow - 1)
-        col++;
-      else
-      {
-        pos += m_layout->Size(m_orientation);
-        col = 0;
-      }
-      current++;
-    }
-    // and render the focused item last (for overlapping purposes)
-    if (focusedItem)
-    {
-      if (m_orientation == VERTICAL)
-        renderitems.emplace_back(RENDERITEM{origin.x + focusedCol * m_layout->Size(HORIZONTAL),
-                                            focusedPos, focusedItem, true});
-      else
-        renderitems.emplace_back(RENDERITEM{
-            focusedPos, origin.y + focusedCol * m_layout->Size(VERTICAL), focusedItem, true});
-    }
+    BuildRenderItems(renderitems);
 
     if (CServiceBroker::GetWinSystem()->GetGfxContext().GetRenderOrder() ==
         RENDER_ORDER_FRONT_TO_BACK)

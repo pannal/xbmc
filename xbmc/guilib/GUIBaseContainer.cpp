@@ -258,70 +258,77 @@ void CGUIBaseContainer::ProcessItem(float posX,
   CServiceBroker::GetWinSystem()->GetGfxContext().RestoreOrigin();
 }
 
-void CGUIBaseContainer::Render()
+void CGUIBaseContainer::BuildRenderItems(std::vector<RENDERITEM>& renderItems) const
 {
-  if (!m_layout || !m_focusedLayout) return;
+  renderItems.clear();
+  if (!m_layout || !m_focusedLayout)
+    return;
 
   int offset = (int)floorf(m_scroller.GetValue() / m_layout->Size(m_orientation));
 
   int cacheBefore, cacheAfter;
   GetCacheOffsets(cacheBefore, cacheAfter);
 
+  CPoint origin = CPoint(m_posX, m_posY) + m_renderOffset;
+  float pos = (m_orientation == VERTICAL) ? origin.y : origin.x;
+  float end = (m_orientation == VERTICAL) ? m_posY + m_height : m_posX + m_width;
+
+  // we offset our draw position to take into account scrolling and whether or not our focused
+  // item is offscreen "above" the list.
+  float drawOffset = (offset - cacheBefore) * m_layout->Size(m_orientation) - m_scroller.GetValue();
+  if (GetOffset() + GetCursor() < offset)
+    drawOffset += m_focusedLayout->Size(m_orientation) - m_layout->Size(m_orientation);
+  pos += drawOffset;
+  end += cacheAfter * m_layout->Size(m_orientation);
+
+  float focusedPos = 0;
+  std::shared_ptr<CGUIListItem> focusedItem;
+  int current = offset - cacheBefore;
+
+  while (pos < end && m_items.size())
+  {
+    int itemNo = CorrectOffset(current, 0);
+    if (itemNo >= (int)m_items.size())
+      break;
+    bool focused = (current == GetOffset() + GetCursor());
+    if (itemNo >= 0)
+    {
+      std::shared_ptr<CGUIListItem> item = m_items[itemNo];
+      // render our item
+      if (focused)
+      {
+        focusedPos = pos;
+        focusedItem = item;
+      }
+      else
+      {
+        if (m_orientation == VERTICAL)
+          renderItems.emplace_back(RENDERITEM{origin.x, pos, item, false});
+        else
+          renderItems.emplace_back(RENDERITEM{pos, origin.y, item, false});
+      }
+    }
+    // increment our position
+    pos += focused ? m_focusedLayout->Size(m_orientation) : m_layout->Size(m_orientation);
+    current++;
+  }
+  // render focused item last so it can overlap other items
+  if (focusedItem)
+  {
+    if (m_orientation == VERTICAL)
+      renderItems.emplace_back(RENDERITEM{origin.x, focusedPos, focusedItem, true});
+    else
+      renderItems.emplace_back(RENDERITEM{focusedPos, origin.y, focusedItem, true});
+  }
+}
+
+void CGUIBaseContainer::Render()
+{
+  if (!m_layout || !m_focusedLayout) return;
+
   if (CServiceBroker::GetWinSystem()->GetGfxContext().SetClipRegion(m_posX, m_posY, m_width, m_height))
   {
-    CPoint origin = CPoint(m_posX, m_posY) + m_renderOffset;
-    float pos = (m_orientation == VERTICAL) ? origin.y : origin.x;
-    float end = (m_orientation == VERTICAL) ? m_posY + m_height : m_posX + m_width;
-
-    // we offset our draw position to take into account scrolling and whether or not our focused
-    // item is offscreen "above" the list.
-    float drawOffset = (offset - cacheBefore) * m_layout->Size(m_orientation) - m_scroller.GetValue();
-    if (GetOffset() + GetCursor() < offset)
-      drawOffset += m_focusedLayout->Size(m_orientation) - m_layout->Size(m_orientation);
-    pos += drawOffset;
-    end += cacheAfter * m_layout->Size(m_orientation);
-
-    float focusedPos = 0;
-    std::shared_ptr<CGUIListItem> focusedItem;
-    int current = offset - cacheBefore;
-
-    // Reuse cached vector to avoid per-frame allocation
-    m_renderItems.clear();
-    while (pos < end && m_items.size())
-    {
-      int itemNo = CorrectOffset(current, 0);
-      if (itemNo >= (int)m_items.size())
-        break;
-      bool focused = (current == GetOffset() + GetCursor());
-      if (itemNo >= 0)
-      {
-        std::shared_ptr<CGUIListItem> item = m_items[itemNo];
-        // render our item
-        if (focused)
-        {
-          focusedPos = pos;
-          focusedItem = item;
-        }
-        else
-        {
-          if (m_orientation == VERTICAL)
-            m_renderItems.emplace_back(RENDERITEM{origin.x, pos, item, false});
-          else
-            m_renderItems.emplace_back(RENDERITEM{pos, origin.y, item, false});
-        }
-      }
-      // increment our position
-      pos += focused ? m_focusedLayout->Size(m_orientation) : m_layout->Size(m_orientation);
-      current++;
-    }
-    // render focused item last so it can overlap other items
-    if (focusedItem)
-    {
-      if (m_orientation == VERTICAL)
-        m_renderItems.emplace_back(RENDERITEM{origin.x, focusedPos, focusedItem, true});
-      else
-        m_renderItems.emplace_back(RENDERITEM{focusedPos, origin.y, focusedItem, true});
-    }
+    BuildRenderItems(m_renderItems);
 
     if (CServiceBroker::GetWinSystem()->GetGfxContext().GetRenderOrder() ==
         RENDER_ORDER_FRONT_TO_BACK)
@@ -346,6 +353,14 @@ void CGUIBaseContainer::Render()
 }
 
 
+CGUIListItemLayout* CGUIBaseContainer::GetRenderLayout(CGUIListItem* item, bool focused) const
+{
+  auto* focusedLayout = item->GetFocusedLayout();
+  if (focused || (focusedLayout && focusedLayout->IsAnimating(ANIM_TYPE_UNFOCUS)))
+    return focusedLayout;
+  return item->GetLayout();
+}
+
 void CGUIBaseContainer::RenderItem(float posX, float posY, CGUIListItem *item, bool focused)
 {
   if (!m_focusedLayout || !m_layout) return;
@@ -353,18 +368,8 @@ void CGUIBaseContainer::RenderItem(float posX, float posY, CGUIListItem *item, b
   // set the origin
   CServiceBroker::GetWinSystem()->GetGfxContext().SetOrigin(posX, posY);
 
-  if (focused)
-  {
-    if (item->GetFocusedLayout())
-      item->GetFocusedLayout()->Render(item, m_parentID);
-  }
-  else
-  {
-    if (item->GetFocusedLayout() && item->GetFocusedLayout()->IsAnimating(ANIM_TYPE_UNFOCUS))
-      item->GetFocusedLayout()->Render(item, m_parentID);
-    else if (item->GetLayout())
-      item->GetLayout()->Render(item, m_parentID);
-  }
+  if (auto* layout = GetRenderLayout(item, focused))
+    layout->Render(item, m_parentID);
   CServiceBroker::GetWinSystem()->GetGfxContext().RestoreOrigin();
 }
 
@@ -1065,33 +1070,20 @@ void CGUIBaseContainer::UpdateVisibility(const CGUIListItem *item)
 
 void CGUIBaseContainer::AssignDepth()
 {
-  std::shared_ptr<CGUIListItem> focusedItem = nullptr;
-  int32_t current = 0;
-
-  for (const auto& item : m_items)
+  // Use the current draw enumeration, including panel/wrapping focus mapping.
+  // The previous Render() list can be stale after scrolling or replacing items.
+  std::vector<RENDERITEM> renderItems;
+  renderItems.swap(m_depthItems);
+  BuildRenderItems(renderItems);
+  for (const auto& renderItem : renderItems)
   {
-    bool focused = (current == GetOffset() + GetCursor());
-    if (focused)
-    {
-      focusedItem = item;
-    }
-    else
-    {
-      if (item->GetFocusedLayout())
-        item->GetFocusedLayout()->AssignDepth();
-      if (item->GetLayout())
-        item->GetLayout()->AssignDepth();
-    }
-    current++;
+    if (auto* layout = GetRenderLayout(renderItem.item.get(), renderItem.focused))
+      layout->AssignDepth();
   }
-
-  if (focusedItem)
-  {
-    if (focusedItem->GetFocusedLayout())
-      focusedItem->GetFocusedLayout()->AssignDepth();
-    if (focusedItem->GetLayout())
-      focusedItem->GetLayout()->AssignDepth();
-  }
+  // Retain capacity without retaining item owners across processing stages.
+  // If depth assignment throws, the local vector still releases its owners.
+  renderItems.clear();
+  m_depthItems.swap(renderItems);
 }
 
 void CGUIBaseContainer::UpdateListProvider(bool forceRefresh /* = false */)
