@@ -11,6 +11,7 @@
 #include "DVDDemux.h"
 #include "DVDInputStreams/InputStreamMultiSource.h"
 
+#include <chrono>
 #include <map>
 #include <queue>
 #include <string>
@@ -56,9 +57,32 @@ protected:
 private:
   void Dispose();
   void SetMissingStreamDetails(const DemuxPtr& demuxer);
+  void ClearScheduling();
+  void LogRead(const DemuxPtr& demuxer, const DemuxPacket* packet, bool inputEof,
+               std::chrono::steady_clock::time_point started);
+
+  struct ReadProgress
+  {
+    uint64_t reads{0};
+    uint64_t untimed{0};
+    uint64_t nulls{0};
+    double dts{0};
+    double pts{0};
+    int stream{-1};
+    int bytes{0};
+    bool packet{false};
+    bool inputEof{false};
+  };
 
   std::shared_ptr<InputStreamMultiStreams> m_pInput = NULL;
   std::map<DemuxPtr, InputStreamPtr> m_DemuxerToInputStreamMap;
   DemuxQueue m_demuxerQueue;
+  // Retry sources rotate independently of media timestamps. Alternate the two
+  // queues so persistent empty packets cannot monopolize or lose all read slots.
+  std::queue<DemuxPtr> m_retryQueue;
+  bool m_retryTurn{false};
+  std::map<DemuxPtr, ReadProgress> m_readProgress;
+  std::chrono::steady_clock::time_point m_nextProgressLog{};
+  uint64_t m_scheduleGeneration{0};
   std::map<int64_t, DemuxPtr> m_demuxerMap;
 };

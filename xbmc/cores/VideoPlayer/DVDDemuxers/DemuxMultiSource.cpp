@@ -11,10 +11,20 @@
 #include "DVDDemuxUtils.h"
 #include "DVDFactoryDemuxer.h"
 #include "DVDInputStreams/DVDInputStream.h"
+#include "ServiceBroker.h"
 #include "Util.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "utils/log.h"
 
+#include <cmath>
+
+namespace
+{
+bool HasTimestamp(double time)
+{
+  return time != DVD_NOPTS_VALUE && std::isfinite(time);
+}
+} // namespace
 
 CDemuxMultiSource::CDemuxMultiSource() = default;
 
@@ -31,15 +41,22 @@ void CDemuxMultiSource::Abort()
 
 void CDemuxMultiSource::Dispose()
 {
-  while (!m_demuxerQueue.empty())
-  {
-    m_demuxerQueue.pop();
-  }
+  ClearScheduling();
 
   m_demuxerMap.clear();
   m_DemuxerToInputStreamMap.clear();
   m_pInput = NULL;
 
+}
+
+void CDemuxMultiSource::ClearScheduling()
+{
+  m_demuxerQueue = DemuxQueue{};
+  m_retryQueue = {};
+  m_retryTurn = false;
+  m_readProgress.clear();
+  m_nextProgressLog = {};
+  ++m_scheduleGeneration;
 }
 
 void CDemuxMultiSource::EnableStream(int64_t demuxerId, int id, bool enable)
@@ -119,6 +136,7 @@ bool CDemuxMultiSource::Open(const std::shared_ptr<CDVDInputStream>& pInput)
   if (!pInput)
     return false;
 
+  Dispose();
   m_pInput = std::dynamic_pointer_cast<InputStreamMultiStreams>(pInput);
 
   if (!m_pInput)
@@ -147,63 +165,154 @@ bool CDemuxMultiSource::Open(const std::shared_ptr<CDVDInputStream>& pInput)
 
 bool CDemuxMultiSource::Reset()
 {
+  ClearScheduling();
   bool ret = true;
   for (auto& iter : m_demuxerMap)
   {
     if (!iter.second->Reset())
       ret = false;
+    else
+      m_retryQueue.push(iter.second);
   }
   return ret;
 }
 
 DemuxPacket* CDemuxMultiSource::Read()
 {
-  if (m_demuxerQueue.empty())
+  if (m_demuxerQueue.empty() && m_retryQueue.empty())
     return NULL;
 
-  DemuxPtr currentDemuxer = m_demuxerQueue.top().second;
-  m_demuxerQueue.pop();
+  const bool retry = !m_retryQueue.empty() && (m_retryTurn || m_demuxerQueue.empty());
+  const double priority = retry ? DVD_NOPTS_VALUE : m_demuxerQueue.top().first;
+  DemuxPtr currentDemuxer;
+  if (retry)
+  {
+    currentDemuxer = m_retryQueue.front();
+    m_retryQueue.pop();
+  }
+  else
+  {
+    currentDemuxer = m_demuxerQueue.top().second;
+    m_demuxerQueue.pop();
+  }
+  m_retryTurn = !retry;
 
   if (!currentDemuxer)
     return NULL;
 
+  const bool log = CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG);
+  const auto started = log ? std::chrono::steady_clock::now()
+                           : std::chrono::steady_clock::time_point{};
+  if (log && started >= m_nextProgressLog)
+    CLog::Log(LOGDEBUG,
+              "DemuxMultiSource: read-enter generation={} source={} queue={} priority={}",
+              m_scheduleGeneration, currentDemuxer->GetDemuxerId(), retry ? "retry" : "timestamp",
+              priority);
+  bool inputEof = false;
   DemuxPacket* packet = currentDemuxer->Read();
   if (packet)
   {
-    double readTime = 0;
-    if (packet->dts != DVD_NOPTS_VALUE)
-      readTime = packet->dts;
+    if (HasTimestamp(packet->dts))
+      m_demuxerQueue.emplace(packet->dts, currentDemuxer);
+    else if (HasTimestamp(packet->pts))
+      m_demuxerQueue.emplace(packet->pts, currentDemuxer);
     else
-      readTime = packet->pts;
-    m_demuxerQueue.emplace(readTime, currentDemuxer);
+      m_retryQueue.push(currentDemuxer);
   }
   else
   {
     auto input = m_DemuxerToInputStreamMap.find(currentDemuxer);
     if (input != m_DemuxerToInputStreamMap.end())
     {
-      if (input->second->IsEOF())
+      inputEof = input->second->IsEOF();
+      if (inputEof)
       {
-        CLog::Log(LOGDEBUG, "{} - Demuxer for file {} is at eof, removed it from the queue",
-                  __FUNCTION__, CURL::GetRedacted(currentDemuxer->GetFileName()));
+        CLog::Log(LOGDEBUG, "DemuxMultiSource: source={} input EOF, removed from scheduling",
+                  currentDemuxer->GetDemuxerId());
       }
-      else    //maybe add an error counter?
-        m_demuxerQueue.emplace(-1.0, currentDemuxer);
+      else
+        m_retryQueue.push(currentDemuxer);
     }
   }
 
+  if (log)
+    LogRead(currentDemuxer, packet, inputEof, started);
   return packet;
+}
+
+void CDemuxMultiSource::LogRead(const DemuxPtr& demuxer, const DemuxPacket* packet, bool inputEof,
+                              std::chrono::steady_clock::time_point started)
+{
+  auto& progress = m_readProgress[demuxer];
+  ++progress.reads;
+  const bool untimed = packet && !HasTimestamp(packet->dts) && !HasTimestamp(packet->pts);
+  if (untimed)
+    ++progress.untimed;
+  if (!packet)
+    ++progress.nulls;
+  progress.dts = packet ? packet->dts : DVD_NOPTS_VALUE;
+  progress.pts = packet ? packet->pts : DVD_NOPTS_VALUE;
+  progress.stream = packet ? packet->iStreamId : -1;
+  progress.bytes = packet ? packet->iSize : 0;
+  progress.packet = packet != nullptr;
+  progress.inputEof = inputEof;
+
+  const auto now = std::chrono::steady_clock::now();
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - started).count();
+  const uint64_t anomalies = progress.untimed + progress.nulls;
+  // First eight anomalies, then powers of two; never log every retry forever.
+  if (((untimed || !packet) && (anomalies <= 8 || (anomalies & (anomalies - 1)) == 0)) ||
+      (elapsed >= 250 && now >= m_nextProgressLog))
+  {
+    CLog::Log(LOGDEBUG,
+              "DemuxMultiSource: generation={} source={} read={} packet={} stream={} bytes={} dts={} pts={} "
+              "dts_valid={} pts_valid={} next={} input_eof={} read_ms={}",
+              m_scheduleGeneration, demuxer->GetDemuxerId(), progress.reads, packet != nullptr,
+              packet ? packet->iStreamId : -1, packet ? packet->iSize : 0,
+              packet ? packet->dts : DVD_NOPTS_VALUE, packet ? packet->pts : DVD_NOPTS_VALUE,
+              packet && HasTimestamp(packet->dts), packet && HasTimestamp(packet->pts),
+              inputEof ? "removed" : (untimed || !packet ? "retry" : "timestamp"), inputEof,
+              elapsed);
+  }
+  if (now >= m_nextProgressLog)
+  {
+    m_nextProgressLog = now + std::chrono::seconds(5);
+    for (const auto& entry : m_demuxerMap)
+    {
+      bool video = false;
+      bool audio = false;
+      for (const auto* stream : entry.second->GetStreams())
+      {
+        video |= stream->type == STREAM_VIDEO;
+        audio |= stream->type == STREAM_AUDIO;
+      }
+      const auto& state = m_readProgress[entry.second];
+      CLog::Log(LOGDEBUG,
+                "DemuxMultiSource: progress generation={} source={} video={} audio={} reads={} untimed={} "
+                "nulls={} packet={} stream={} bytes={} dts={} pts={} input_eof={} "
+                "timed_queue={} retry_queue={}",
+                m_scheduleGeneration, entry.first, video, audio, state.reads, state.untimed, state.nulls,
+                state.packet, state.stream, state.bytes, state.dts, state.pts, state.inputEof,
+                m_demuxerQueue.size(), m_retryQueue.size());
+    }
+  }
 }
 
 bool CDemuxMultiSource::SeekTime(double time, bool backwards, double* startpts)
 {
-  DemuxQueue demuxerQueue = DemuxQueue();
+  ClearScheduling();
   bool ret = false;
   for (auto& iter : m_demuxerMap)
   {
-    if (iter.second->SeekTime(time, false, startpts))
+    double sourceStart = DVD_NOPTS_VALUE;
+    if (iter.second->SeekTime(time, false, &sourceStart))
     {
-      demuxerQueue.emplace(*startpts, iter.second);
+      if (HasTimestamp(sourceStart))
+        m_demuxerQueue.emplace(sourceStart, iter.second);
+      else
+        m_retryQueue.push(iter.second);
+      if (startpts)
+        *startpts = sourceStart;
       CLog::Log(LOGDEBUG, "{} - starting demuxer from: {:f}", __FUNCTION__, time);
       ret = true;
     }
@@ -212,7 +321,6 @@ bool CDemuxMultiSource::SeekTime(double time, bool backwards, double* startpts)
       CLog::Log(LOGDEBUG, "{} - failed to start demuxing from: {:f}", __FUNCTION__, time);
     }
   }
-  m_demuxerQueue = demuxerQueue;
   return ret;
 }
 
