@@ -10,9 +10,11 @@
 
 #include "FileItem.h"
 #include "GUIInfoManager.h"
+#include "GUILargeTextureManager.h"
 #include "GUIListItemLayout.h"
 #include "GUIMessage.h"
 #include "ServiceBroker.h"
+#include "guilib/GUIComponent.h"
 #include "guilib/GUIListItem.h"
 #include "guilib/guiinfo/GUIInfoLabels.h"
 #include "guilib/listproviders/IListProvider.h"
@@ -163,6 +165,8 @@ void CGUIBaseContainer::Process(unsigned int currentTime, CDirtyRegionList &dirt
   else
     UpdateScrollOffset(currentTime); // already marks dirty region when scroller is active
   m_wasScrolling = m_scroller.IsScrolling();
+  if (m_wasScrolling)
+    CServiceBroker::GetGUI()->GetLargeTextureManager().SetScrolling();
 
   int offset = (int)floorf(m_scroller.GetValue() / size);
 

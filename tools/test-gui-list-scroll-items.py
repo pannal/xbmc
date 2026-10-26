@@ -19,7 +19,9 @@ independent item enumeration in every frame, held scrolling must not gain an
 extra deferral at retargets and must keep a bounded number of layouts, and
 items at rest must equal the historical items. A wrap list keeps all of a list
 its kept range covers. A zero duration keeps its existing first frame, and a
-request after a stop between frames still defers. The historical rule, run on
+request after a stop between frames still defers; scrolling is reported to the
+background image loader in exactly the frames the scroller runs. The
+historical rule, run on
 the same base code, must build while moving, and destructive mutations of the
 production code must be rejected. Actual gesture-pan handling is also exercised
 with in-range drags that preserve an offscreen selection, including smaller and
@@ -178,6 +180,25 @@ struct CGUIControl
 {
   virtual ~CGUIControl() = default;
   virtual void Process(unsigned int, CDirtyRegionList&) {}
+};
+
+static int g_scrollReports = 0;
+struct CGUILargeTextureManager
+{
+  void SetScrolling() { ++g_scrollReports; }
+};
+struct CGUIComponent
+{
+  CGUILargeTextureManager images;
+  CGUILargeTextureManager& GetLargeTextureManager() { return images; }
+};
+struct CServiceBroker
+{
+  static CGUIComponent* GetGUI()
+  {
+    static CGUIComponent gui;
+    return &gui;
+  }
 };
 
 class CGUIBaseContainer : public CGUIControl
@@ -427,7 +448,10 @@ struct List
     else
     {
       CDirtyRegionList dirty;
+      g_scrollReports = 0;
       c.Process(now, dirty);
+      Check(g_scrollReports == (c.m_scroller.IsScrolling() ? 1 : 0),
+            "scrolling is reported in exactly the frames the scroller runs");
       Check(c.processed == ExpectedItems(c), "processed items match independent item oracle");
       Check(Drawn(c) == c.processed, "rendered items are the processed items");
     }
@@ -725,6 +749,9 @@ MUTATIONS = {
                             'zero duration anchors in request frame'),
     'stale-stopped-state': (SCROLL, r'if \(!m_scroller\.IsScrolling\(\)\)\s*m_wasScrolling = false;', '(void)0;',
                             'stopped scroller request defers'),
+    # background images are not told that the list scrolls
+    'unreported-scroll': (PROCESS, r'if \(m_wasScrolling\)\s*CServiceBroker::GetGUI\(\)->GetLargeTextureManager\(\)\.SetScrolling\(\);', '(void)0;',
+                          'scrolling is reported in exactly the frames the scroller runs'),
     'skip-first-item': (PROCESS, r'GetDrawRange\(current, pos, end\);', 'GetDrawRange(current, pos, end);\n  ++current;',
                         'independent item oracle'),
 }

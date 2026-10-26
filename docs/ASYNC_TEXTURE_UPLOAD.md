@@ -11,12 +11,36 @@ build trial. To disable it, add this override and restart Kodi:
 </advancedsettings>
 ```
 
-When enabled, the large-image loader uploads through a shared EGL context on
-its worker thread and finishes GPU work before returning the image for
-publication. This can move newly encountered poster/fanart uploads out of the
-render loop. It does not remove bandwidth, GPU or driver contention. Upload-free
-warm intervals do not establish an upload-offloading benefit. Ordinary first-use
-render-thread upload remains the fallback when the worker cannot bind.
+When enabled, large-image decoding and GPU upload run as separate jobs. Decoded
+images stay private until a clipped draw attempt requests their upload through
+the shared EGL context. One high-priority upload job serves all consumers of a
+request; publication follows GPU completion and context release. Transparent
+incoming fade targets also request upload. Auto-sized images conservatively
+request it during allocation because their unknown bounds can prevent drawing.
+This can move newly encountered poster/fanart uploads out of the render loop.
+It does not remove bandwidth, GPU or driver contention. Upload-free warm
+intervals do not establish an upload-offloading benefit. Ordinary first-use
+render-thread upload remains the fallback when the worker cannot bind or an
+upload job cannot be scheduled. Partially failed uploads are not published.
+
+Background-sized images, whose declared screen coverage is at least half the
+screen, also defer their initial decode job while a list or panel scrolls.
+Containers report scrolling each frame; after all windows and dialogs have been
+processed, deferred requests start on a quiet frame or after their own
+three-second timeout. Without scrolling they start at the end of their request
+frame. A new foreground consumer of the same path promotes the deferred decode
+immediately, preserving the shared request and its original cache policy.
+Polling or GPU draw demand alone does not override background deferral. Smaller
+images start decoding immediately. This scheduling applies with async uploads
+both enabled and disabled.
+
+The previous crossfade image stays until the new one is ready. Cache grace and
+fade durations are unchanged. These are conservative admission rules, not exact
+visibility or decoded-size tests: transformed/auto-sized images may bypass the
+background heuristic, and an admitted image may later be clipped or hidden.
+Deferral can increase first-image latency and retain decoded CPU staging longer.
+Timeout expiry can still start work while scrolling; no frame-timing improvement
+or total-memory reduction is established by the source tests.
 
 The upload context uses surfaceless binding when supported, with a compatible
 1x1 pbuffer fallback. The selected primary-window config is unchanged; pbuffer
@@ -50,19 +74,22 @@ its context. Image jobs check cancellation before decoding and after decoding,
 including failed direct decoding before trying the cache fallback. A job already
 cancelled at those checkpoints skips subsequent work.
 
-Each queued image request and its loader share an atomic cancellation token.
-Releasing the last consumer destroys that request and marks its token; other
-consumers of the same request keep it live. The loader retains the token while
-it runs. Worker upload checks the token before binding and again after acquiring
-the lease, without taking a job-manager lock under the EGL lease. A cancelled
-waiter skips upload and synchronization but still explicitly releases the lease
+Each image request, decoder and upload job share an atomic cancellation token.
+Releasing the last queued consumer destroys that request and marks its token;
+decoded entries retain the existing two-second cache grace unless released
+immediately. Other consumers keep the request live. Deferred decodes have no job
+to cancel; rejected decode admission becomes a load failure, not a pending job.
+Jobs retain the token while they run. Worker upload checks it before binding and
+again after acquiring the lease, without taking a job-manager lock under the EGL
+lease. A cancelled waiter skips upload and synchronization but still releases the lease
 and reports release failure. A replacement request for the same path has a new
 token. Generic job-manager cancellation alone does not mark this request token;
 it retains the loader checkpoints and publication suppression. These checks do
 not interrupt decoding or cache waits, or GL work admitted by the final token
 check. An admitted upload can therefore still finish without being published.
-Prefetched images can also be uploaded before they are ever drawn; moving their
-work to a worker does not by itself reduce the amount of GPU work.
+Known-size prefetched images normally wait for a draw request before GPU upload;
+auto-size and conservative draw-attempt admission can still upload images that
+never contribute pixels. Once admitted, work is not revoked on every frame.
 The upload mutex alone does not own the window-system object or
 track texture generations. Arbitrary full-context recreation with surviving
 image jobs/textures is unsupported; draining only the current upload is
@@ -95,6 +122,14 @@ remain fixtures. `tools/test-aml-texture-upload-priority.py --sanitize` records
 the actual context-creation attributes and advisory priority query, including
 driver-forced priorities, failed queries and unavailable upload contexts. It
 does not exercise real driver scheduling.
+
+`tools/test-image-upload-demand.py --sanitize` exercises the actual large-image
+manager and jobs, including private publication, shared consumers, cancellation,
+cache grace, stale callbacks and admission failures. `tools/test-gui-upload-demand.py`
+executes the frontend allocation, clipping, polling, idle redraw and fade paths.
+`tools/test-gui-background-defer.py` checks deferred decoding, foreground promotion,
+per-request expiry and composition with draw-demand uploads. The list and panel
+scroll tests verify that containers report their scroller's active frames.
 
 Host tests and compiler acceptance do not establish Mali context sharing,
 physical pixels, smoothness or safe deferred driver deletion. Positive user

@@ -177,6 +177,25 @@ struct CGUIControl
   virtual void Process(unsigned int, CDirtyRegionList&) {}
 };
 
+static int g_scrollReports = 0;
+struct CGUILargeTextureManager
+{
+  void SetScrolling() { ++g_scrollReports; }
+};
+struct CGUIComponent
+{
+  CGUILargeTextureManager images;
+  CGUILargeTextureManager& GetLargeTextureManager() { return images; }
+};
+struct CServiceBroker
+{
+  static CGUIComponent* GetGUI()
+  {
+    static CGUIComponent gui;
+    return &gui;
+  }
+};
+
 class CGUIPanelContainer : public CGUIControl
 {
 public:
@@ -398,7 +417,10 @@ struct Panel
     else
     {
       CDirtyRegionList dirty;
+      g_scrollReports = 0;
       c.Process(now, dirty);
+      Check(g_scrollReports == (c.m_scroller.IsScrolling() ? 1 : 0),
+            "scrolling is reported in exactly the frames the scroller runs");
       std::tie(f.first, f.last) = ExpectedBounds(c);
       Check(c.processed == ExpectedItems(c), "processed items match independent row oracle");
       Check(Drawn(c) == c.processed, "rendered items are the processed items");
@@ -726,6 +748,8 @@ MUTATIONS = {
     # Render's fallback asks for rows at the scroll value only
     'render-target-is-value': (RENDER, r'GetPanelRows\(m_scroller\.GetValue\(\), GetOffset\(\) \* rowSize,',
                                'GetPanelRows(m_scroller.GetValue(), m_scroller.GetValue(),'),
+    # background images are not told that the panel scrolls
+    'unreported-scroll': (PROCESS, r'if \(m_wasScrolling\)\s*CServiceBroker::GetGUI\(\)->GetLargeTextureManager\(\)\.SetScrolling\(\);', '(void)0;'),
     'process-zero-size-guard': (PROCESS, r'if \(!\(rowSize > 0\)\)\s*return;', '(void)0;'),
     'zero-duration-delay': (PROCESS, r' && m_scroller.GetDuration\(\) > 1', ''),
     # the reset lives in the shared container ScrollToOffset that the panel calls
@@ -780,6 +804,7 @@ def main():
             'process-zero-size-guard':'zero-size Process leaves scroll clock alone',
             'zero-duration-delay':'zero duration anchors in request frame',
             'stale-stopped-state':'stopped scroller request defers',
+            'unreported-scroll':'scrolling is reported in exactly the frames the scroller runs',
             'empty-edge-row':'fresh target before Process',
         }
         assert (bad.returncode == 1 and 'FAIL: ' in bad.stderr and witnesses[name] in bad.stderr

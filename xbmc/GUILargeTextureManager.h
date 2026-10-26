@@ -85,10 +85,20 @@ public:
    \param texture texture object to hold the resulting texture
    \param orientation orientation of resulting texture
    \param firstRequest true if this is the first time we are requesting this texture
+   \param deferWhileScrolling defer a new background-sized request until scrolling stops
    \return true if the image exists, else false.
    \sa CGUITextureArray and CGUITexture
    */
-  bool GetImage(const std::string &path, CTextureArray &texture, bool firstRequest, bool useCache = true);
+  bool GetImage(const std::string& path,
+                CTextureArray& texture,
+                bool firstRequest,
+                bool useCache = true,
+                bool deferWhileScrolling = false);
+
+  // Containers report each frame in which their scroller runs. ProcessDeferred
+  // is called once after all windows/dialogs have been processed for that frame.
+  void SetScrolling();
+  void ProcessDeferred();
 
   // Admit GPU work for an existing request. This does not acquire another reference.
   void RequestImageUpload(const std::string& path);
@@ -147,9 +157,11 @@ private:
     bool m_asyncUpload{false};
     bool m_gpuDemand{false};
     unsigned int m_uploadJobID{0};
+    bool m_useCache{true};
+    unsigned int m_deferredSince{0};
   };
 
-  void QueueImage(const std::string &path, bool useCache = true);
+  void QueueImage(const std::string& path, bool useCache = true, bool defer = false);
   void QueueUpload(CLargeTexture* image);
   void CancelUpload(unsigned int jobID);
 
@@ -157,6 +169,13 @@ private:
   std::vector<CLargeTexture *> m_allocated;
   typedef std::vector<CLargeTexture *>::iterator listIterator;
   typedef std::vector< std::pair<unsigned int, CLargeTexture *> >::iterator queueIterator;
+  queueIterator StartQueuedImage(queueIterator image);
+
+  static constexpr unsigned int MAX_DEFER_TIME = 3000;
+  // A zero queued job ID is a deferred decoder, never a rejected job. The hint
+  // may remain true after release/promotion until the next ProcessDeferred scan.
+  bool m_hasDeferred{false};
+  std::atomic_bool m_scrolling{false};
 
   // O(1) lookup maps for path-based searches
   std::unordered_map<std::string, CLargeTexture*> m_allocatedLookup;

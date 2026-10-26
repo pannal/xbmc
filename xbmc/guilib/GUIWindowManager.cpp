@@ -12,6 +12,7 @@
 #include "GUIBaseContainer.h"
 #include "GUIDialog.h"
 #include "GUIInfoManager.h"
+#include "GUILargeTextureManager.h"
 #include "GUIPassword.h"
 #include "GUITexture.h"
 #include "ServiceBroker.h"
@@ -1307,6 +1308,9 @@ void CGUIWindowManager::Process(unsigned int currentTime)
     if (window && window->IsDialog())
       window->DoProcess(currentTime, m_dirtyregions);
   }
+
+  // Containers in all windows/dialogs have now reported this frame's scrolling.
+  CServiceBroker::GetGUI()->GetLargeTextureManager().ProcessDeferred();
 
   // assign depth values to all active controls
   {

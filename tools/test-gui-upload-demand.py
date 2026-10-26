@@ -5,7 +5,7 @@ Compiles production texture allocation/process/render/geometry methods, image
 Process/Render/fade methods, control DoRender and real rectangle clip functions
 against owned manager/render boundaries. No manager/job/GPU implementation is
 substituted as evidence of backend correctness: those boundaries only script
-publication and record demand/draw calls. This proves frontend CPU behavior,
+publication and record demand/draw/defer-classification calls. This proves frontend CPU behavior,
 not pixels, upload-context correctness, runtime performance or device acceptance.
 """
 import argparse
@@ -64,8 +64,9 @@ struct CTextureArray {std::vector<std::shared_ptr<CTexture>>m_textures;std::vect
  void Reset(){m_textures.clear();m_delays.clear();}};
 static CTextureArray Published(bool alpha=false){CTextureArray a;auto t=std::make_shared<CTexture>();t->alpha=alpha;a.m_textures.push_back(t);a.m_delays.push_back(100);return a;}
 struct LargeManager {struct Entry{CTextureArray data;bool failed=false;unsigned refs=0;};std::map<std::string,Entry>entries;
+ struct Request{std::string path;bool first,defer;};std::vector<Request>requests;
  std::vector<std::string>demands;unsigned gets=0;
- bool GetImage(const std::string&p,CTextureArray&t,bool first,bool){++gets;auto&e=entries[p];if(first)++e.refs;t=e.data;return !e.failed;}
+ bool GetImage(const std::string&p,CTextureArray&t,bool first,bool,bool defer=false){requests.push_back({p,first,defer});++gets;auto&e=entries[p];if(first)++e.refs;t=e.data;return !e.failed;}
  void RequestImageUpload(const std::string&p){demands.push_back(p);}
  void ReleaseImage(const std::string&p,bool){auto&e=entries[p];if(e.refs)--e.refs;}
  void Publish(const std::string&p,bool alpha=false){entries[p].data=Published(alpha);}
@@ -78,15 +79,16 @@ struct TransformMatrix {void InverseTransformPosition(float&,float&)const{}};
 struct RESOLUTION_INFO {int iWidth=0,iHeight=0;};
 struct CGraphicContext {std::stack<CRect>m_clipRegions;std::stack<CPoint>m_origins;CRect scissors{0,0,100,100};
  RENDER_ORDER order=RENDER_ORDER_ALL_BACK_TO_FRONT;unsigned mergedAlpha=255;unsigned captured=0;
+ float scaleX=1,scaleY=1,offsetX=0,offsetY=0;int screenWidth=100,screenHeight=100;
  bool SetClipRegion(float,float,float,float);void RestoreClipRegion();void ClipRect(CRect&,CRect&,CRect*=nullptr);
  unsigned MergeColor(unsigned c){return (((mergedAlpha*(c>>24))/255)<<24)|(c&0xffffff);}
  unsigned MergeAlpha(unsigned c){return MergeColor(c);}float GetScalingPixelRatio(){return 1;}float GetFPS(){return 60;}
  float GetTransformDepth(int=0){return .5f;}float GetNormalizedDepth(int d){return d*.01f;}RENDER_ORDER GetRenderOrder(){return order;}
- float ScaleFinalXCoord(float x,float){return x;}float ScaleFinalYCoord(float,float y){return y;}float ScaleFinalZCoord(float,float){return .5f;}
+ float ScaleFinalXCoord(float x,float)const{return x*scaleX+offsetX;}float ScaleFinalYCoord(float,float y)const{return y*scaleY+offsetY;}float ScaleFinalZCoord(float,float)const{return .5f;}
  void CaptureControlQuad(float*,float*,float*){++captured;}const CRect&GetScissors(){return scissors;}
  int GetStereoMode(){return RENDER_STEREO_MODE_OFF;}void SetTransform(const TransformMatrix&){}void RemoveTransform(){}
  void SetCameraPosition(const CPoint&){}void RestoreCameraPosition(){}void SetStereoFactor(float){}void RestoreStereoFactor(){}
- CRect GenerateAABB(const CRect&r){return r;}int GetWidth(){return 100;}int GetHeight(){return 100;}
+ CRect GenerateAABB(const CRect&r){return r;}int GetWidth()const{return screenWidth;}int GetHeight()const{return screenHeight;}
  void BeginControlBounds(CRect*){}void EndControlBounds(){}unsigned GetControlBoundsFrame(){return 1;}
  void GetGUIScaling(const RESOLUTION_INFO&,float&x,float&y,TransformMatrix*){x=y=1;}};
 struct Window {CGraphicContext gfx;CGraphicContext&GetGfxContext(){return gfx;}};
@@ -192,14 +194,41 @@ static void Replacement(){
  image.m_texture->m_vertex=oldVertex;window.gfx.m_clipRegions.push(CRect(0,10,100,15));image.m_texture->Render();
  Check(gui.large.Demand("replacement")==2,"pending render uses declared bounds independently of stale fitted vertex");
 }
-int main(){try{Admission();OuterCullAndAutosize();PublicationAndFades();Copies();Replacement();std::printf("PASS %u frontend checks\n",checks);return 0;}catch(const std::exception&e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
+static void BackgroundClassification(){
+ Reset();Check(IsBackgroundSized(0,0,100,50),"half-screen boundary is background");
+ Check(!IsBackgroundSized(0,0,99.99f,50),"below half-screen remains foreground");Check(IsBackgroundSized(0,0,100.01f,50),"above half-screen is background");
+ window.gfx.scaleX=window.gfx.scaleY=2;window.gfx.screenWidth=window.gfx.screenHeight=200;window.gfx.offsetX=1000;window.gfx.offsetY=-500;
+ Check(IsBackgroundSized(20,30,100,50),"background classification uses final screen scaling");Check(!IsBackgroundSized(20,30,40,60),"scaled poster remains foreground");
+ Check(!IsBackgroundSized(0,0,0,200)&&!IsBackgroundSized(0,0,200,0),"unknown autosize is not a declared background");
+ Reset();CGUITexture background(0,0,100,50);Pending(background);
+ Check(gui.large.requests.size()==1&&gui.large.requests[0].first&&gui.large.requests[0].defer,"first large background requests scroll deferral");
+ background.Process(116);Check(gui.large.requests.size()==2&&!gui.large.requests[1].first,"background polling does not acquire another reference");
+ // Record classification at this boundary; manager tests own promotion policy.
+ Reset();CGUITexture poster(0,0,30,50);Pending(poster);Check(gui.large.requests.size()==1&&gui.large.requests[0].first&&!gui.large.requests[0].defer,"first poster remains foreground");
+ Reset();CGUITexture autosize(0,0,0,50);Pending(autosize);Check(!gui.large.requests[0].defer&&gui.large.Demand("large")==1,"unknown autosize keeps foreground fallback progress");
+}
+static void DeferredIncomingFade(){
+ Reset();CGUIImage image;image.m_texture=std::make_unique<CGUITexture>(0,0,100,100);image.x=image.y=0;image.w=image.h=100;image.m_lastRenderTime=100;
+ CGUITexture oldSource(0,0,100,100);oldSource.m_info.filename="old";gui.large.Publish("old");oldSource.AllocResources();
+ image.m_fadingTextures.push_back(new CGUIImage::CFadingTexture(&oldSource,100));oldSource.FreeResources();CDirtyRegionList dirty;
+ image.Process(116,dirty);image.DoRender();const auto incoming=std::find_if(gui.large.requests.begin(),gui.large.requests.end(),[](const LargeManager::Request&r){return r.path=="large"&&r.first;});Check(incoming!=gui.large.requests.end()&&incoming->defer,"incoming background uses deferred classification");
+ for(unsigned time=132;time<=2116;time+=16)image.Process(time,dirty);
+ Check(image.m_currentFadeTime==0&&image.m_texture->m_alpha==0,"long deferred decode preserves zero-alpha incoming fade");
+ Check(image.m_fadingTextures.size()==1&&image.m_fadingTextures[0]->m_fadeTime==100&&image.m_fadingTextures[0]->m_texture->ReadyToRender(),"long deferred decode retains ready outgoing image");
+ gui.large.Publish("large");const unsigned before=image.dirty;image.Process(2132,dirty);
+ Check(image.m_texture->ReadyToRender()&&image.dirty>before,"long deferred completion wakes idle fade");
+ Check(image.m_currentFadeTime>0&&image.m_currentFadeTime<image.m_crossFadeTime,"deferred fade resumes at ordinary frame step");
+ Check(image.m_fadingTextures[0]->m_fadeTime<100,"deferred old fade starts only after publication");
+}
+int main(){try{Admission();OuterCullAndAutosize();PublicationAndFades();Copies();Replacement();BackgroundClassification();DeferredIncomingFade();std::printf("PASS %u frontend checks\n",checks);return 0;}catch(const std::exception&e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
 '''
 
 
 def source_code(root, sources):
     texture, header, image, control, gfx = [sources[p] for p in FILES[:5]]
     aspect = header[header.index('#define ASPECT_ALIGN_CENTER'):header.index('class CTextureInfo')]
-    methods = [function(texture, sig) for sig in (
+    methods = [function(texture,'bool IsBackgroundSized(')]
+    methods += [function(texture, sig) for sig in (
         'CGUITexture::CGUITexture(const CGUITexture& right)', 'bool CGUITexture::AllocateOnDemand(',
         'bool CGUITexture::Process(', 'void CGUITexture::Render(int32_t', 'void CGUITexture::Render(float',
         'bool CGUITexture::AllocResources(', 'bool CGUITexture::CalculateSize(', 'void CGUITexture::FreeResources(',
@@ -256,6 +285,14 @@ def mutations(code):
            ('pending-render-stale-fit','CRect vertex(m_posX, m_posY, m_posX + m_width, m_posY + m_height);\n      CRect textureCoords','CRect vertex = m_vertex;\n      CRect textureCoords','pending render uses declared bounds independently of stale fitted vertex')]
     for name,old,new,witness in pairs:
         assert code.count(old)==1, name+' mutation anchor not unique'
+        yield name,code.replace(old,new,1),witness
+    changes=[('background-boundary-exclusive','return 2 * screenWidth * screenHeight >=','return 2 * screenWidth * screenHeight >','half-screen boundary is background'),
+             ('background-ignores-screen-scaling','gfx.ScaleFinalXCoord(posX + width, posY) - gfx.ScaleFinalXCoord(posX, posY)','width','background classification uses final screen scaling'),
+             ('background-callsite-disabled','IsBackgroundSized(m_posX, m_posY, m_width, m_height)','false','first large background requests scroll deferral'),
+             ('foreground-callsite-misclassified','IsBackgroundSized(m_posX, m_posY, m_width, m_height)','true','first poster remains foreground'),
+             ('deferred-fade-clock-stopped','m_lastRenderTime = currentTime;','if (m_texture->ReadyToRender()) m_lastRenderTime = currentTime;','deferred fade resumes at ordinary frame step')]
+    for name,old,new,witness in changes:
+        assert code.count(old)==1,name+' mutation anchor not unique'
         yield name,code.replace(old,new,1),witness
     old='m_lastReadyState = ready;\n      changed = true;'
     assert code.count(old)==1

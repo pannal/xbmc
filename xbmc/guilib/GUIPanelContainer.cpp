@@ -9,8 +9,11 @@
 #include "GUIPanelContainer.h"
 
 #include "FileItem.h"
+#include "GUILargeTextureManager.h"
 #include "GUIListItemLayout.h"
 #include "GUIMessage.h"
+#include "ServiceBroker.h"
+#include "guilib/GUIComponent.h"
 #include "guilib/guiinfo/GUIInfoLabels.h"
 #include "input/actions/Action.h"
 #include "input/actions/ActionIDs.h"
@@ -100,6 +103,8 @@ void CGUIPanelContainer::Process(unsigned int currentTime, CDirtyRegionList &dir
   else
     UpdateScrollOffset(currentTime);
   m_wasScrolling = m_scroller.IsScrolling();
+  if (m_wasScrolling)
+    CServiceBroker::GetGUI()->GetLargeTextureManager().SetScrolling();
 
   const int offset = static_cast<int>(m_scroller.GetValue() / rowSize);
   const int cache = GetCacheCount() / 2;

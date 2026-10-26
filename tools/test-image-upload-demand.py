@@ -136,6 +136,7 @@ struct Harness {
  State&s;CJobManager jobs;CGUILargeTextureManager images;
  explicit Harness(State&state):s(state){activeJobs=&jobs;currentState=&s;frameTime=0;}
  ~Harness(){
+  activeJobs=&jobs;currentState=&s;
   while(!images.m_queued.empty()){const auto path=images.m_queued.front().second->GetPath();images.ReleaseImage(path,true);}
   while(!images.m_allocated.empty()){
    auto*image=images.m_allocated.front();const auto path=image->GetPath();

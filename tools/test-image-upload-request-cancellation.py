@@ -172,7 +172,81 @@ int main(int argc,char** argv){try{
 '''
 
 
+
+def current_generate(files, overrides=None):
+    """Real current manager plus actual CTexture upload lease, with owned GL/window."""
+    overrides = overrides or {}
+    spec = importlib.util.spec_from_file_location('demand_request_fixture', ROOT/'tools/test-image-upload-demand.py')
+    demand = importlib.util.module_from_spec(spec);spec.loader.exec_module(demand)
+    selected = dict(files)
+    for signature, replacement in overrides.items():
+        path = 'xbmc/guilib/Texture.cpp' if signature.startswith('void CTexture::') else 'xbmc/GUILargeTextureManager.cpp'
+        original = method(selected[path], signature)
+        selected[path] = selected[path].replace(original, replacement, 1)
+    pre = demand.PRELUDE.replace('static unsigned checks=0,cases=0;', 'static unsigned checks=0;')
+    pre = pre.replace('static thread_local int heldLocks=0;', 'static thread_local int heldLocks=0; static thread_local bool leaseHeld=false; static std::atomic<int> forbiddenLocks{0};')
+    pre = pre.replace('void lock(){mutex.lock();++heldLocks;}', 'void lock(){if(leaseHeld){++forbiddenLocks;throw std::runtime_error("fixture lock under upload lease");}mutex.lock();++heldLocks;}')
+    pre = pre.replace(' bool uploadUnsupported=false,throwUpload=false;', ''' bool failRelease=false,throwRelease=false,bindFails=false;
+ std::atomic<bool>bindEntered{false};std::atomic<int>binds{0},syncs{0},errors{0},destroyedWithLock{0};
+ bool uploadUnsupported=false,throwUpload=false;''')
+    pre=pre.replace('~CTexture(){++state->destroyed;if(uploaded&&heldLocks)++state->gpuDestroyedWithLock;}',
+        '~CTexture(){++state->destroyed;if(heldLocks)++state->destroyedWithLock;if(uploaded&&heldLocks)++state->gpuDestroyedWithLock;}')
+    # The window deliberately grants the lease to isolate actual CTexture's
+    # post-bind cancellation. Native locked admission has a separate suite.
+    old = method(pre, ' void LoadToGPUAsync(')
+    pre = pre.replace(old, ''' void LoadToGPUAsync(const std::atomic_bool*cancelled=nullptr);
+ void LoadToGPU(){++state->uploads;uploaded=true;state->Decode(100);}
+ void SyncGPU(){++state->syncs;}''',1)
+    window = method(pre, 'struct FakeWindow')+';'
+    pre = pre.replace(window, '''struct FakeWindow {
+ FakeGraphics gfx;std::mutex lease;
+ FakeGraphics&GetGfxContext(){return gfx;}bool HasContext(){return false;}
+ bool BindTextureUploadContext(const std::atomic_bool* =nullptr){auto&s=*currentState;++s.binds;s.bindEntered=true;if(s.bindFails)return false;lease.lock();leaseHeld=true;++s.leases;return true;}
+ bool UnbindTextureUploadContext(){auto&s=*currentState;++s.releases;--s.leases;leaseHeld=false;lease.unlock();if(s.throwRelease)throw std::runtime_error("fixture release throw");return !s.failRelease;}
+};using CWinSystemBase=FakeWindow;''',1)
+    array_stub=method(pre,'struct CTextureArray')+';'
+    pre=pre.replace(array_stub,declaration(files['xbmc/guilib/TextureManager.h'],'class CTextureArray'),1)
+    pre=pre.replace(' unsigned GetHeight()const{', ' unsigned GetTextureWidth()const{return GetWidth();} unsigned GetTextureHeight()const{return GetHeight();} int GetOrientation()const{return 0;}\n unsigned GetHeight()const{',1)
+    pre=pre.replace('struct FakeGraphics {','struct FakeGraphics : CCriticalSection {',1)
+    arrays='\n'.join(method(files['xbmc/guilib/TextureManager.cpp'],signature) for signature in
+        ['CTextureArray::CTextureArray()', 'unsigned int CTextureArray::size() const',
+         'void CTextureArray::Reset()', 'void CTextureArray::Add(', 'void CTextureArray::Set(', 'void CTextureArray::Free()'])
+    arrays+='\nCTextureArray::~CTextureArray() = default;\n'
+    generated=demand.source(selected)
+    assert generated.startswith(demand.PRELUDE) and generated.endswith(demand.TESTS)
+    generated=pre+generated[len(demand.PRELUDE):-len(demand.TESTS)]
+    upload=method(selected['xbmc/guilib/Texture.cpp'],'void CTexture::LoadToGPUAsync(')
+    main=MAIN
+    main=main.replace('static int checks=0;', 'static int requestChecks=0;').replace('++checks;', '++requestChecks;').replace('mode.c_str(),checks)', 'mode.c_str(),requestChecks)')
+    main=main.replace('  images.QueueImage(path,state.useCache);', '  currentState=&state;images.QueueImage(path,state.useCache);')
+    main=main.replace(' void Execute(CJob* job,State& state){', ''' unsigned QueueUpload(State&state,const std::string&path="image-A"){
+  auto id=Queue(state,path);Execute(jobs.Start(id),state);currentState=&state;
+  images.RequestImageUpload(path);return images.m_allocatedLookup.at(path)->m_uploadJobID;
+ }
+ void Execute(CJob* job,State& state){''')
+    main=main.replace('while(!s.bindEntered)', 'while(!s.bindEntered)')
+    main=main.replace('s.AwaitDecode()', 's.decodeBarrier.Await()').replace('s.ReleaseDecode()', 's.decodeBarrier.Release()')
+    # Decode and upload now have distinct admission/publication phases.
+    for a,b in [('static void LeaseWaitCancellation(', 'static void FirstReleaseKeepsLiveWaiter()'),
+                ('static void FirstReleaseKeepsLiveWaiter()', 'static void BeforeBindAndDefault()'),
+                ('static void CancelActiveUpload()', 'static void FailedDirectDecode()')]:
+        start=main.index(a);end=main.index(b,start+len(a));part=main[start:end]
+        part=part.replace('r.Queue(s)', 'r.QueueUpload(s)').replace('r.images.m_queued[0].second->GetCancellationToken()', 'r.images.m_allocatedLookup.at("image-A")->GetCancellationToken()')
+        if 'FirstReleaseKeepsLiveWaiter' in a:
+            part=part.replace('r.images.QueueImage("image-A",true);', 'CTextureArray acquired;r.images.GetImage("image-A",acquired,true);')
+        main=main[:start]+part+main[end:]
+    main=main.replace('r.Execute(r.jobs.Start(newID),newState);', '''r.Execute(r.jobs.Start(newID),newState);currentState=&newState;r.images.RequestImageUpload("image-A");
+ r.Execute(r.jobs.Start(r.images.m_allocatedLookup.at("image-A")->m_uploadJobID),newState);''')
+    main=main.replace('r.Execute(r.jobs.Start(id),s);\n  Expect(s.uploads==int(async)', '''r.Execute(r.jobs.Start(id),s);
+  if(async){currentState=&s;r.images.RequestImageUpload("image-A");r.Execute(r.jobs.Start(r.images.m_allocatedLookup.at("image-A")->m_uploadJobID),s);}
+  Expect(s.uploads==int(async)''')
+    # Demand fixture owns queue cleanup; no duplicate FreeJob on teardown.
+    main=main.replace('  for(auto& queue:jobs.m_jobQueue)for(auto item:queue)item.FreeJob();\n  for(auto item:jobs.m_processing)item.FreeJob();\n', '')
+    return generated+arrays+upload+'\n'+main
+
 def generate(files, overrides=None):
+    if "class CTextureUploadJob" in files["xbmc/GUILargeTextureManager.cpp"]:
+        return current_generate(files, overrides)
     overrides = overrides or {}
     large = files['xbmc/GUILargeTextureManager.cpp']
     header = files['xbmc/GUILargeTextureManager.h']
@@ -183,7 +257,7 @@ def generate(files, overrides=None):
     pre = pre.replace(' int blockDecode=0;', ''' int blockDecode=0;
  bool failRelease=false,throwRelease=false,bindFails=false;
  std::atomic<bool> bindEntered{false};
- std::atomic<int> binds{0},releases{0},syncs{0},errors{0};''')
+ std::atomic<int> binds{0},releases{0},syncs{0},errors{0},leases{0};''')
     pre = pre.replace('static thread_local State* currentState=nullptr;',
                       'static thread_local State* currentState=nullptr;\nclass CJobManager; static CJobManager* activeJobs=nullptr;')
     pre = pre.replace(' void LoadToGPUAsync(const std::atomic_bool* =nullptr){++state->uploads;}', ''' void LoadToGPUAsync(const std::atomic_bool* cancelled=nullptr);
@@ -198,8 +272,8 @@ def generate(files, overrides=None):
  FakeGraphics& GetGfxContext(){return gfx;} bool HasContext(){return false;}
  // Deliberately admit a lease to isolate CTexture's post-bind cancellation and
  // release paths. The real locked admission gate has its own threaded tests.
- bool BindTextureUploadContext(const std::atomic_bool* =nullptr){auto& s=*currentState;++s.binds;s.bindEntered=true;if(s.bindFails)return false;lease.lock();leaseHeld=true;return true;}
- bool UnbindTextureUploadContext(){auto& s=*currentState;++s.releases;leaseHeld=false;lease.unlock();if(s.throwRelease)throw std::runtime_error("fixture release throw");return !s.failRelease;}
+ bool BindTextureUploadContext(const std::atomic_bool* =nullptr){auto& s=*currentState;++s.binds;s.bindEntered=true;if(s.bindFails)return false;lease.lock();leaseHeld=true;++s.leases;return true;}
+ bool UnbindTextureUploadContext(){auto& s=*currentState;++s.releases;--s.leases;leaseHeld=false;lease.unlock();if(s.throwRelease)throw std::runtime_error("fixture release throw");return !s.failRelease;}
 };using CWinSystemBase=FakeWindow;''')
     pre = pre.replace(' static FakeGUI* GetGUI()', ' static CJobManager* GetJobManager(){return activeJobs;}\n static FakeGUI* GetGUI()')
     a = pre.index('struct CImageLoader : CJob {')
@@ -253,8 +327,8 @@ def main():
     files = sources()
     records = []
 
-    def build(name, overrides=None):
-        source = generate(files, overrides)
+    def build(name, overrides=None, selected=None):
+        source = generate(files if selected is None else selected, overrides)
         cpp, binary = out / (name + '.cpp'), out / name
         cpp.write_text(source)
         command = ['g++', '-std=c++17', '-O1', '-g', '-pthread', '-Wall', '-Wextra', '-Werror',
@@ -270,10 +344,11 @@ def main():
         return binary
 
     def run(binary, case, witness=None):
-        r = subprocess.run([str(binary), case], capture_output=True, text=True, timeout=15)
+        r = subprocess.run([str(binary), case], capture_output=True, text=True, timeout=15,
+            env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0','UBSAN_OPTIONS':'halt_on_error=1:print_stacktrace=1'})
         text = r.stdout + r.stderr
         (out / (binary.name + '-' + case + '.log')).write_text(text)
-        accepted = r.returncode == 0 if witness is None else r.returncode == 1 and 'FAIL ' + witness in text
+        accepted = (r.returncode == 0 and not r.stderr) if witness is None else (r.returncode == 1 and r.stderr == 'FAIL ' + witness + '\n' and not any(t in text for t in ('AddressSanitizer','UndefinedBehaviorSanitizer','runtime error:','DEADLYSIGNAL')))
         records.append({'run': [str(binary), case], 'exit': r.returncode,
                         'expected_semantic_failure': witness, 'accepted': accepted, 'output': text})
         if not accepted:
@@ -287,7 +362,8 @@ def main():
                   'CGUILargeTextureManager::CLargeTexture::~CLargeTexture()', 'bool CImageLoader::DoWork()']}
         # Current declarations/constructor keep the old methods source-compatible;
         # the historical queue supplies no token and the destructor never marks it.
-        baseline = build('baseline-request-methods', legacy)
+        historical = {p: subprocess.check_output(['git','show','f5bb418483e6f20e84a7d18f1822c67e4ca321ba:'+p],cwd=ROOT,text=True) for p in FILES}
+        baseline = build('baseline-request-methods', legacy, historical)
         run(baseline, 'lease', 'cancelled lease waiter must not upload or sync')
         run(baseline, 'failed-decode', 'cancelled failed direct decode must not start fallback')
         upload = method(files['xbmc/guilib/Texture.cpp'], 'void CTexture::LoadToGPUAsync(')
@@ -295,17 +371,23 @@ def main():
         queue = method(large, 'void CGUILargeTextureManager::QueueImage(')
         destructor = method(large, 'CGUILargeTextureManager::CLargeTexture::~CLargeTexture()')
         work = method(large, 'bool CImageLoader::DoWork()')
-        calls = list(re.finditer(re.escape('LoadToGPUAsync(m_cancelled.get())'), work))
-        assert len(calls) == 2
-        cache_call = calls[1]
-        missing_cache = work[:cache_call.start()] + 'LoadToGPUAsync()' + work[cache_call.end():]
+        demand_aware = 'class CTextureUploadJob' in large
+        gpu_signature = '  bool DoWork() override' if demand_aware else 'bool CImageLoader::DoWork()'
+        gpu_work = method(large, gpu_signature)
+        calls = list(re.finditer(re.escape('LoadToGPUAsync(m_cancelled.get())'), gpu_work))
+        assert len(calls) == (1 if demand_aware else 2)
+        cache_call = calls[-1]
+        missing_cache = gpu_work[:cache_call.start()] + 'LoadToGPUAsync()' + gpu_work[cache_call.end():]
+        token_signature = ('CGUILargeTextureManager::queueIterator CGUILargeTextureManager::StartQueuedImage('
+                           if '::StartQueuedImage(' in large else 'void CGUILargeTextureManager::QueueImage(')
+        token_work = method(large, token_signature)
         decr = method(large, 'bool CGUILargeTextureManager::CLargeTexture::DecrRef(')
         cases = [
             ('job-lock-under-lease', {'void CTexture::LoadToGPUAsync(': upload.replace('} guard{window};', '} guard{window};\n  CServiceBroker::GetJobManager()->OnJobProgress(0, 0, nullptr);')}, 'lease', 'no manager lock may be acquired under upload lease'),
-            ('missing-loader-direct-token', {'bool CImageLoader::DoWork()': work.replace('LoadToGPUAsync(m_cancelled.get())', 'LoadToGPUAsync()', 1)}, 'lease', 'cancelled lease waiter must not upload or sync'),
-            ('missing-loader-cache-token', {'bool CImageLoader::DoWork()': missing_cache}, 'lease-cache', 'cancelled lease waiter must not upload or sync'),
+            ('missing-loader-direct-token', {gpu_signature: gpu_work.replace('LoadToGPUAsync(m_cancelled.get())', 'LoadToGPUAsync()', 1)}, 'lease', 'cancelled lease waiter must not upload or sync'),
+            ('missing-loader-cache-token', {gpu_signature: missing_cache}, 'lease-cache', 'cancelled lease waiter must not upload or sync'),
             ('premature-shared-cancel', {'bool CGUILargeTextureManager::CLargeTexture::DecrRef(': decr.replace('m_refCount--;', 'm_refCount--; m_cancelled->store(true);')}, 'refs', 'first consumer release must not cancel shared request'),
-            ('missing-token-transfer', {'void CGUILargeTextureManager::QueueImage(': queue.replace('image->GetCancellationToken()', '{}')}, 'refs', 'QueueImage passes the exact request token to its job'),
+            ('missing-token-transfer', {token_signature: token_work.replace('image->GetCancellationToken()', '{}')}, 'refs', 'QueueImage passes the exact request token to its job'),
             ('missing-token-store', {'CGUILargeTextureManager::CLargeTexture::~CLargeTexture()': re.sub(r'm_cancelled->store\([^;]+;', '', destructor)}, 'lease', 'cancelled lease waiter must not upload or sync'),
             ('missing-prebind-check', {'void CTexture::LoadToGPUAsync(': upload.replace('  if (cancelled && cancelled->load(std::memory_order_acquire))\n    return;\n', '')}, 'prebind', 'pre-cancelled request never attempts bind'),
             ('missing-postbind-check', {'void CTexture::LoadToGPUAsync(': upload.replace('if (!cancelled || !cancelled->load(std::memory_order_acquire))', 'if (true)')}, 'lease', 'cancelled lease waiter must not upload or sync'),

@@ -208,7 +208,11 @@ void CGUILargeTextureManager::CleanupUnusedImages(bool immediately)
 
 // if available, increment reference count, and return the image.
 // else, add to the queue list if appropriate.
-bool CGUILargeTextureManager::GetImage(const std::string &path, CTextureArray &texture, bool firstRequest, const bool useCache)
+bool CGUILargeTextureManager::GetImage(const std::string& path,
+                                      CTextureArray& texture,
+                                      bool firstRequest,
+                                      const bool useCache,
+                                      bool deferWhileScrolling)
 {
   std::unique_lock<CCriticalSection> lock(m_listSection);
 
@@ -224,7 +228,7 @@ bool CGUILargeTextureManager::GetImage(const std::string &path, CTextureArray &t
   }
 
   if (firstRequest)
-    QueueImage(path, useCache);
+    QueueImage(path, useCache, deferWhileScrolling);
 
   return true;
 }
@@ -309,7 +313,8 @@ void CGUILargeTextureManager::ReleaseImage(const std::string &path, bool immedia
       {
         if (it->second == image)
         {
-          CServiceBroker::GetJobManager()->CancelJob(it->first);
+          if (it->first != 0)
+            CServiceBroker::GetJobManager()->CancelJob(it->first);
           m_queued.erase(it);
           break;
         }
@@ -320,7 +325,7 @@ void CGUILargeTextureManager::ReleaseImage(const std::string &path, bool immedia
 }
 
 // queue the image, and start the background loader if necessary
-void CGUILargeTextureManager::QueueImage(const std::string &path, bool useCache)
+void CGUILargeTextureManager::QueueImage(const std::string& path, bool useCache, bool defer)
 {
   if (path.empty())
     return;
@@ -332,6 +337,20 @@ void CGUILargeTextureManager::QueueImage(const std::string &path, bool useCache)
   if (it != m_queuedLookup.end())
   {
     it->second->AddRef();
+    if (!defer)
+    {
+      // A foreground consumer must not inherit another consumer's background
+      // deferral. Preserve the original request's cache policy and token.
+      for (auto queued = m_queued.begin(); queued != m_queued.end(); ++queued)
+      {
+        if (queued->second == it->second)
+        {
+          if (queued->first == 0)
+            StartQueuedImage(queued);
+          break;
+        }
+      }
+    }
     return; // already queued
   }
 
@@ -339,18 +358,62 @@ void CGUILargeTextureManager::QueueImage(const std::string &path, bool useCache)
   CLargeTexture *image = new CLargeTexture(path);
   image->m_asyncUpload =
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAsyncTextureUpload;
-  unsigned int jobID = CServiceBroker::GetJobManager()->AddJob(
-      new CImageLoader(path, useCache, image->GetCancellationToken()), this, CJob::PRIORITY_NORMAL);
-  if (jobID == 0)
+  image->m_useCache = useCache;
+  image->m_deferredSince = CTimeUtils::GetFrameTime();
+  // Register before admission; a callback cannot enter until this lock releases.
+  m_queued.emplace_back(0, image);
+  m_queuedLookup[path] = image;
+  if (defer)
+    m_hasDeferred = true;
+  else
+    StartQueuedImage(m_queued.end() - 1);
+}
+
+CGUILargeTextureManager::queueIterator CGUILargeTextureManager::StartQueuedImage(queueIterator it)
+{
+  CLargeTexture* image = it->second;
+  it->first = CServiceBroker::GetJobManager()->AddJob(
+      new CImageLoader(image->GetPath(), image->m_useCache, image->GetCancellationToken()), this,
+      CJob::PRIORITY_NORMAL);
+  if (it->first == 0)
   {
     // A stopped job manager cannot complete this request. Expose a load failure
     // instead of leaving a permanently queued image.
     m_allocated.push_back(image);
-    m_allocatedLookup[path] = image;
-    return;
+    m_allocatedLookup[image->GetPath()] = image;
+    m_queuedLookup.erase(image->GetPath());
+    return m_queued.erase(it);
   }
-  m_queued.emplace_back(jobID, image);
-  m_queuedLookup[path] = image;
+  return ++it;
+}
+
+void CGUILargeTextureManager::SetScrolling()
+{
+  m_scrolling = true;
+}
+
+void CGUILargeTextureManager::ProcessDeferred()
+{
+  const bool scrolling = m_scrolling.exchange(false);
+  std::unique_lock<CCriticalSection> lock(m_listSection);
+  if (!m_hasDeferred)
+    return;
+
+  const unsigned int now = CTimeUtils::GetFrameTime();
+  bool deferred = false;
+  for (auto it = m_queued.begin(); it != m_queued.end();)
+  {
+    if (it->first != 0)
+      ++it;
+    else if (scrolling && now - it->second->m_deferredSince < MAX_DEFER_TIME)
+    {
+      deferred = true;
+      ++it;
+    }
+    else
+      it = StartQueuedImage(it);
+  }
+  m_hasDeferred = deferred;
 }
 
 void CGUILargeTextureManager::OnJobComplete(unsigned int jobID, bool success, CJob *job)

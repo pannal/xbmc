@@ -17,6 +17,22 @@
 
 #include <stdexcept>
 
+namespace
+{
+// Declared screen coverage is a conservative background heuristic, not a test
+// of decoded pixel size or actual visibility after clipping and transforms.
+bool IsBackgroundSized(float posX, float posY, float width, float height)
+{
+  const CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  const float screenWidth =
+      gfx.ScaleFinalXCoord(posX + width, posY) - gfx.ScaleFinalXCoord(posX, posY);
+  const float screenHeight =
+      gfx.ScaleFinalYCoord(posX, posY + height) - gfx.ScaleFinalYCoord(posX, posY);
+  return 2 * screenWidth * screenHeight >=
+         static_cast<float>(gfx.GetWidth()) * static_cast<float>(gfx.GetHeight());
+}
+} // namespace
+
 CreateGUITextureFunc CGUITexture::m_createGUITextureFunc;
 DrawQuadFunc CGUITexture::m_drawQuadFunc;
 
@@ -390,7 +406,9 @@ bool CGUITexture::AllocResources()
     if (m_isAllocated != NORMAL)
     { // use our large image background loader
       CTextureArray texture;
-      if (CServiceBroker::GetGUI()->GetLargeTextureManager().GetImage(m_info.filename, texture, !IsAllocated(), m_use_cache))
+      if (CServiceBroker::GetGUI()->GetLargeTextureManager().GetImage(
+              m_info.filename, texture, !IsAllocated(), m_use_cache,
+              !IsAllocated() && IsBackgroundSized(m_posX, m_posY, m_width, m_height)))
       {
         if (m_isAllocated != LARGE)
           m_invalid = true;
