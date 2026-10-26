@@ -232,6 +232,10 @@ void CGLTexture::LoadToGPU()
 void CGLTexture::SyncGPU()
 {
   glFinish();
+
+  // Async uploads reuse a shared context. Release its binding so it cannot keep
+  // the last texture alive after the GUI context deletes it.
+  glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void CGLTexture::BindToUnit(unsigned int unit)
