@@ -58,6 +58,9 @@ void CPackerMAT::Reset()
   m_lastOutputSamplesOffset = 0;
   m_lastOutputHadDiscontinuity = false;
   m_pendingDiscontinuity = false;
+  m_matFrames = 0;
+  m_lastOutputFrame = 0;
+  m_diagnosticUntilFrame = 0;
 }
 
 // On a high level, a MAT frame consists of a sequence of padded TrueHD frames
@@ -103,6 +106,9 @@ bool CPackerMAT::PackTrueHD(const uint8_t* data, int size)
   {
     if (m_lavStyleEnabled && m_state.outputTimingValid && (info.outputTiming != m_state.outputTiming))
     {
+      // Include eight subsequent flushes, plus any outputs already queued when
+      // this branch is detected, so multi-buffer carry remains observable.
+      m_diagnosticUntilFrame = m_matFrames + 8;
       CLog::Log(LOGDEBUG, "CPackerMAT::PackTrueHD: detected stream discontinuity "
                 "(seamless branch), expected outputTiming={}, actual={}",
                 m_state.outputTiming, info.outputTiming);
@@ -132,6 +138,12 @@ bool CPackerMAT::PackTrueHD(const uint8_t* data, int size)
 
       CLog::Log(LOGDEBUG, "CPackerMAT::PackTrueHD: carrying forward {} padding (offset {} - {})",
                 m_state.padding, m_state.nOutputTimeOffset, currentFrameOutputOffset);
+      CLog::Log(LOGDEBUG,
+                "CPackerMAT branch: next_mat={} queued={} ratebits={} frame_time={} "
+                "frame_bytes={} previous_occupied_bytes={} buffered_bytes={} samples={} sample_offset={}",
+                m_matFrames + 1, m_outputQueue.size(), m_state.ratebits, frameTime, size,
+                m_state.prevMatFramesize, GetCount(), m_state.samples,
+                m_state.numberOfSamplesOffset);
 
       // Mark discontinuity to propagate to output (LAV discontinuity flag)
       m_pendingDiscontinuity = true;
@@ -277,6 +289,7 @@ std::vector<uint8_t> CPackerMAT::GetOutputFrame()
 
   std::vector<uint8_t> buffer = std::move(m_outputQueue.front());
   m_outputQueue.pop_front();
+  m_lastOutputFrame = m_matFrames - m_outputQueue.size();
 
   // LAV: Store the samples offset and discontinuity flag for this frame
   // (caller can retrieve via GetSamplesOffset() and HadDiscontinuity())
@@ -310,6 +323,14 @@ std::vector<uint8_t> CPackerMAT::GetOutputFrame()
     m_lastOutputHadDiscontinuity = false;
     m_offsetQueue.clear();
     m_discontinuityQueue.clear();
+  }
+
+  if (HasOutputDiagnostics())
+  {
+    CLog::Log(LOGDEBUG,
+              "CPackerMAT dequeue: mat={} bytes={} queued={} sample_offset={} discontinuity={}",
+              m_lastOutputFrame, buffer.size(), m_outputQueue.size(), m_lastOutputSamplesOffset,
+              m_lastOutputHadDiscontinuity);
   }
 
   return buffer;
@@ -460,6 +481,16 @@ void CPackerMAT::FlushPacket()
   // normal number of samples per frame
   const uint16_t frameSamples = 40 << (m_state.ratebits & 7);
   const uint32_t MATSamples = (frameSamples * 24);
+
+  ++m_matFrames;
+  if (m_matFrames <= m_diagnosticUntilFrame)
+  {
+    CLog::Log(LOGDEBUG,
+              "CPackerMAT emit: mat={} bytes={} queued={} samples={} nominal_samples={} "
+              "sample_offset={} discontinuity={}",
+              m_matFrames, GetCount(), m_outputQueue.size() + 1, m_state.samples, MATSamples,
+              m_state.numberOfSamplesOffset, m_pendingDiscontinuity);
+  }
 
   // push MAT packet to output queue
   m_outputQueue.emplace_back(std::move(m_buffer));

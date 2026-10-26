@@ -627,6 +627,16 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
       frame.pts = DVD_NOPTS_VALUE;
     }
 
+    if (isTrueHD && m_packerMAT && m_packerMAT->HasOutputDiagnostics())
+    {
+      CLog::Log(LOGDEBUG,
+                "TrueHD MAT timing: mat={} bytes={} pts={:.6f}s duration={:.6f}s "
+                "reference_pts={:.6f}s sample_offset={} correction={:.6f}s",
+                m_packerMAT->GetOutputFrameNumber(), frame.nb_frames, frame.pts / DVD_TIME_BASE,
+                frame.duration / DVD_TIME_BASE, demuxerPts / DVD_TIME_BASE,
+                m_packerMAT->GetSamplesOffset(), frame.discontinuityCorrection / DVD_TIME_BASE);
+    }
+
     // Clear current PTS after use
     m_currentPts = LOCAL_NOPTS;
   }

@@ -42,6 +42,13 @@ public:
   //============================================================================
   int GetSamplesOffset() const { return m_lavStyleEnabled ? m_lastOutputSamplesOffset : 0; }
   bool HadDiscontinuity() const { return m_lavStyleEnabled ? m_lastOutputHadDiscontinuity : false; }
+  // Correlate generation, dequeue and codec timing after a branch. Frame numbers
+  // are local to this packer and restart on Reset(); no payload is logged.
+  uint64_t GetOutputFrameNumber() const { return m_lastOutputFrame; }
+  bool HasOutputDiagnostics() const
+  {
+    return m_lastOutputFrame != 0 && m_lastOutputFrame <= m_diagnosticUntilFrame;
+  }
   void Reset();
 
   // Toggle LAV seamless branching support
@@ -102,6 +109,9 @@ private:
   std::deque<int> m_offsetQueue; // samples offset for each queued MAT frame
   std::deque<bool> m_discontinuityQueue; // discontinuity flag for each queued MAT frame
   bool m_pendingDiscontinuity{false}; // set when discontinuity detected, cleared when MAT flushed
+  uint64_t m_matFrames{0};
+  uint64_t m_lastOutputFrame{0};
+  uint64_t m_diagnosticUntilFrame{0};
 };
 
 class CBitStream
