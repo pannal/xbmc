@@ -93,15 +93,22 @@ public:
                 CTextureArray& texture,
                 bool firstRequest,
                 bool useCache = true,
-                bool deferWhileScrolling = false);
+                bool background = false);
 
-  // Containers report each frame in which their scroller runs. ProcessDeferred
-  // is called once after all windows/dialogs have been processed for that frame.
+  // Containers and group lists report each frame in which their scroller runs,
+  // and controls each frame in which a non-repeating animation runs.
+  // ProcessDeferred is called once after all windows/dialogs have been processed
+  // for that frame.
   void SetScrolling();
   void ProcessDeferred();
 
+  // True if background images wait for motion and the GUI moved in this or the
+  // previous frame. Controls processed before the moving one see it a frame late.
+  bool IsBackgroundMotion() const;
+
   // Admit GPU work for an existing request. This does not acquire another reference.
-  void RequestImageUpload(const std::string& path);
+  // A background consumer's demand waits while the image is held.
+  void RequestImageUpload(const std::string& path, bool background = false);
 
   /*!
    \brief Request a texture to be unloaded.
@@ -159,8 +166,16 @@ private:
     unsigned int m_uploadJobID{0};
     bool m_useCache{true};
     unsigned int m_deferredSince{0};
+    // A background consumer asked for this image, whether or not a foreground one did.
+    bool m_background{false};
+    // Not handed to background consumers, nor uploaded unless a foreground
+    // consumer demands it, until motion stops or the request times out.
+    bool m_held{false};
+    // A foreground consumer requested its upload.
+    bool m_foregroundDemand{false};
   };
 
+  static bool DeferBackgrounds();
   void QueueImage(const std::string& path, bool useCache = true, bool defer = false);
   void QueueUpload(CLargeTexture* image);
   void CancelUpload(unsigned int jobID);
@@ -173,9 +188,11 @@ private:
 
   static constexpr unsigned int MAX_DEFER_TIME = 3000;
   // A zero queued job ID is a deferred decoder, never a rejected job. The hint
-  // may remain true after release/promotion until the next ProcessDeferred scan.
+  // also covers held images, and may remain true after release/promotion until
+  // the next ProcessDeferred scan.
   bool m_hasDeferred{false};
   std::atomic_bool m_scrolling{false};
+  std::atomic_bool m_moved{false}; // the previous frame reported motion
 
   // O(1) lookup maps for path-based searches
   std::unordered_map<std::string, CLargeTexture*> m_allocatedLookup;

@@ -27,16 +27,40 @@ intervals do not establish an upload-offloading benefit. Ordinary first-use
 render-thread upload remains the fallback when the worker cannot bind or an
 upload job cannot be scheduled. Partially failed uploads are not published.
 
-Background-sized images, whose declared screen coverage is at least half the
-screen, also defer their initial decode job while a list or panel scrolls.
-Containers report scrolling each frame; after all windows and dialogs have been
-processed, deferred requests start on a quiet frame or after their own
-three-second timeout. Without scrolling they start at the end of their request
+Interface > Skin > "Delay background images during motion"
+(`lookandfeel.delaybackgroundimages`) is off by default; background images are
+then neither deferred nor held.
+
+When it is on, background-sized images, whose declared screen coverage is at
+least half the screen, defer their initial decode job while the GUI moves.
+Containers and group lists report each frame in which their scroller runs, and
+controls each frame in which a non-repeating animation is in progress (a delay
+alone, looped and pulsed animations do not count). After all windows and dialogs
+have been processed, deferred requests start on a quiet frame or after their own
+three-second timeout. Without motion they start at the end of their request
 frame. A new foreground consumer of the same path promotes the deferred decode
 immediately, preserving the shared request and its original cache policy.
 Polling or GPU draw demand alone does not override background deferral. Smaller
 images start decoding immediately. This scheduling applies with async uploads
 both enabled and disabled.
+
+A background request for an image that is still loaded is held the same way:
+it is neither uploaded nor handed out until motion stops, so its crossfade does
+not start during that frame's motion. The image may be loaded because it was
+released within the two-second cache grace, or because another consumer keeps
+it: an image control in a hidden view keeps the texture it had when its group
+was hidden, such as the fanart of the item focused when the window opened. A
+decode that a background consumer requested, alone or together with a
+foreground one, is also held when it completes, until the end of its frame and
+within that consumer's timeout, because motion may have started again while it
+decoded. A hold only delays background consumers: foreground consumers of the
+same image are still served, and their upload demand proceeds. The copy a
+crossfade makes of its outgoing image is not a new request, and is neither
+deferred nor held. A crossfade draws the whole image twice, see-through, so a
+background image's crossfade does not run while the GUI moves in this or the
+previous frame: the incoming image is shown at once if it is ready; otherwise,
+also when there is no incoming image, the last outgoing image that shows
+anything is kept at full strength, and fades as usual once the GUI is still.
 
 The previous crossfade image stays until the new one is ready. Cache grace and
 fade durations are unchanged. These are conservative admission rules, not exact
@@ -130,10 +154,14 @@ does not exercise real driver scheduling.
 `tools/test-image-upload-demand.py --sanitize` exercises the actual large-image
 manager and jobs, including private publication, shared consumers, cancellation,
 cache grace, stale callbacks and admission failures. `tools/test-gui-upload-demand.py`
-executes the frontend allocation, clipping, polling, idle redraw and fade paths.
+executes the frontend allocation, clipping, polling, idle redraw and fade paths,
+including background fades ended or held by motion and empty incoming images.
 `tools/test-gui-background-defer.py` checks deferred decoding, foreground promotion,
-per-request expiry and composition with draw-demand uploads. The list and panel
-scroll tests verify that containers report their scroller's active frames.
+per-request expiry, held reuse and completion, the setting on and off, motion
+reports, composition
+with draw-demand uploads, the actual control and animation Animate methods'
+motion reports and the group list's report call. The list and panel scroll tests
+verify that containers report their scroller's active frames.
 
 Host tests and compiler acceptance do not establish Mali context sharing,
 physical pixels, smoothness or safe deferred driver deletion. Async remains

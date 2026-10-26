@@ -5746,6 +5746,11 @@
           </dependencies>
           <control type="spinner" format="string" />
         </setting>
+        <setting id="lookandfeel.delaybackgroundimages" type="boolean" label="69385" help="69386">
+          <level>1</level>
+          <default>false</default>
+          <control type="toggle" />
+        </setting>
         <setting id="lookandfeel.enablerssfeeds" type="boolean" label="13305" help="36111">
           <level>0</level>
           <default>false</default>

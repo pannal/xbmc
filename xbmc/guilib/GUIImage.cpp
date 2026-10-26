@@ -8,9 +8,13 @@
 
 #include "GUIImage.h"
 
+#include "GUIComponent.h"
+#include "GUILargeTextureManager.h"
 #include "GUIMessage.h"
+#include "ServiceBroker.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <cassert>
 
 using namespace KODI::GUILIB;
@@ -129,6 +133,44 @@ void CGUIImage::Process(unsigned int currentTime, CDirtyRegionList &dirtyregions
       frameTime = (unsigned int)(1000 / CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS());
     m_lastRenderTime = currentTime;
 
+    // A crossfade draws a background image twice, see-through. While the GUI
+    // moves and background images wait for motion, do not run it: show the
+    // incoming image once it is ready, else keep the last outgoing image that
+    // shows anything at full strength, also when there is no incoming image.
+    bool holdOutgoing = false;
+    if ((!m_fadingTextures.empty() || m_currentFadeTime != m_crossFadeTime) &&
+        m_texture->IsBackgroundRequest() &&
+        CServiceBroker::GetGUI()->GetLargeTextureManager().IsBackgroundMotion())
+    {
+      const bool ready = m_texture->ReadyToRender();
+      CFadingTexture* kept = nullptr;
+      if (!ready)
+      {
+        const auto visible = std::find_if(m_fadingTextures.rbegin(), m_fadingTextures.rend(),
+                                          [](const CFadingTexture* texture)
+                                          { return !texture->m_texture->GetFileName().empty(); });
+        if (visible != m_fadingTextures.rend())
+          kept = *visible;
+      }
+      for (CFadingTexture* texture : m_fadingTextures)
+      {
+        if (texture != kept)
+        {
+          delete texture;
+          changed = true;
+        }
+      }
+      m_fadingTextures.clear();
+      if (kept)
+      {
+        kept->m_fadeTime = m_crossFadeTime;
+        m_fadingTextures.push_back(kept);
+        holdOutgoing = true;
+      }
+      if (ready)
+        m_currentFadeTime = m_crossFadeTime;
+    }
+
     if (m_fadingTextures.size())  // have some fading images
     { // anything other than the last old texture needs to be faded out as per usual
       for (std::vector<CFadingTexture *>::iterator i = m_fadingTextures.begin(); i != m_fadingTextures.end() - 1;)
@@ -139,7 +181,7 @@ void CGUIImage::Process(unsigned int currentTime, CDirtyRegionList &dirtyregions
           ++i;
       }
 
-      if (m_texture->ReadyToRender() || m_texture->GetFileName().empty())
+      if (!holdOutgoing && (m_texture->ReadyToRender() || m_texture->GetFileName().empty()))
       { // fade out the last one as well
         if (!ProcessFading(m_fadingTextures[m_fadingTextures.size() - 1], frameTime, currentTime, changed))
           m_fadingTextures.erase(m_fadingTextures.end() - 1);

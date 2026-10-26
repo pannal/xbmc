@@ -177,6 +177,7 @@ public:
   inline ANIMATION_STATE GetState() const { return m_currentState; }
   inline ANIMATION_PROCESS GetProcess() const { return m_currentProcess; }
   inline ANIMATION_PROCESS GetQueuedProcess() const { return m_queuedProcess; }
+  inline bool IsRepeating() const { return m_repeatAnim != ANIM_REPEAT_NONE; }
 
   bool CheckCondition();
   void UpdateCondition(const CGUIListItem *item = NULL);
