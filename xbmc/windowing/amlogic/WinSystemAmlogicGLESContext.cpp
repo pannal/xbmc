@@ -608,19 +608,26 @@ void CWinSystemAmlogicGLESContext::SetVSyncImpl(bool enable)
     m_vsyncFailureReported = false;
 }
 
+std::string CWinSystemAmlogicGLESContext::GetDisplayDiagnosticState() const
+{
+  const auto deadline = std::chrono::duration_cast<std::chrono::microseconds>(
+      m_dispResetTimer.GetStartTime() + m_dispResetTimer.GetInitialTimeoutValue() -
+      PLAYBACK_DIAGNOSTICS::origin).count();
+  const auto target = CaptureRenderTarget();
+  return fmt::format(
+      "display={} target={} target_gen={} current_target_valid={} ready={} geometry={} "
+      "can_render={} pending={} delay={} deadline_us={} hdr={} cached_hdr={}",
+      m_displayLifecycle.Serial(), static_cast<const void*>(target.identity.get()), target.generation,
+      IsRenderTargetCurrent(target), m_displayLifecycle.Ready(), m_displayGeometryReady, CanRender(),
+      m_displayLifecycle.Pending(), m_delayDispReset, m_delayDispReset ? deadline : 0,
+      static_cast<int>(GetGfxContext().GetHDRType()), static_cast<int>(m_hdrType));
+}
+
 void CWinSystemAmlogicGLESContext::ObserveEndDisplay(const char* event, bool milestone)
 {
   PLAYBACK_DIAGNOSTICS::endDisplay.Generation(m_displayLifecycle.Serial());
   PLAYBACK_DIAGNOSTICS::endDisplay.Record(PLAYBACK_DIAGNOSTICS::NowUs(), event, [&] {
-    const auto deadline = std::chrono::duration_cast<std::chrono::microseconds>(
-        m_dispResetTimer.GetStartTime() + m_dispResetTimer.GetInitialTimeoutValue() -
-        PLAYBACK_DIAGNOSTICS::origin).count();
-    const auto target = CaptureRenderTarget();
-    return fmt::format("display={} target={} target_gen={} ready={} geometry={} can_render={} pending={} delay={} deadline_us={} hdr={} cached_hdr={}",
-        m_displayLifecycle.Serial(), static_cast<const void*>(target.identity.get()), target.generation, m_displayLifecycle.Ready(),
-        m_displayGeometryReady, CanRender(), m_displayLifecycle.Pending(), m_delayDispReset,
-        m_delayDispReset ? deadline : 0, static_cast<int>(GetGfxContext().GetHDRType()),
-        static_cast<int>(m_hdrType));
+    return GetDisplayDiagnosticState();
   }, milestone);
 }
 

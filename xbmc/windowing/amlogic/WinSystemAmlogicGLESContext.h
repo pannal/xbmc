@@ -52,6 +52,7 @@ public:
   bool ResetRenderSystem(int width, int height) override;
   bool IsDisplayChangePending() const override { return m_displayLifecycle.Pending(); }
   uint64_t GetDisplayGeneration() const override { return m_displayLifecycle.Serial(); }
+  std::string GetDisplayDiagnosticState() const override;
   bool IsDisplayReadyForVideo() const override
   {
     return m_displayLifecycle.Ready() && m_displayGeometryReady && !m_delayDispReset && CanRender();

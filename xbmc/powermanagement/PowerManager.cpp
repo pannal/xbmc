@@ -34,6 +34,10 @@
 #include "utils/log.h"
 #include "weather/WeatherManager.h"
 
+#ifdef HAS_LIBAMCODEC
+#include "utils/PlaybackEndDiagnostics.h"
+#endif
+
 #include <list>
 #include <memory>
 
@@ -239,6 +243,13 @@ void CPowerManager::OnWake()
   CServiceBroker::GetWeatherManager().Refresh();
   CServiceBroker::GetPVRManager().OnWake();
   RestorePlayerState();
+
+#ifdef HAS_LIBAMCODEC
+  // Network/audio/player restoration may take longer than the trace window.
+  // Arm on main only after that work, before asynchronous wake announcements.
+  if (PLAYBACK_DIAGNOSTICS::Enabled())
+    PLAYBACK_DIAGNOSTICS::endDisplay.Begin(PLAYBACK_DIAGNOSTICS::NowUs(), "wake");
+#endif
 
   CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::System, "OnWake");
 }

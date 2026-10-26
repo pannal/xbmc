@@ -74,6 +74,9 @@ public:
   virtual bool IsDisplayReadyForVideo() const { return true; }
   // Main-owned display transaction identity, including pending/failed changes.
   virtual uint64_t GetDisplayGeneration() const { return 0; }
+  // Main-owned, read-only diagnostic state. Callers bound and debug-gate it;
+  // this does not establish physical output or request display recovery.
+  virtual std::string GetDisplayDiagnosticState() const { return "unavailable"; }
   virtual bool SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays) = 0;
   virtual bool DisplayHardwareScalingEnabled() { return false; }
   virtual void UpdateDisplayHardwareScaling(const RESOLUTION_INFO& resInfo) { }

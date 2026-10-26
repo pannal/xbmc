@@ -14,6 +14,7 @@ def function(source, signature):
 
 HARNESS=r'''
 #include "utils/PlaybackEndDiagnostics.h"
+#include "utils/GUIFrameTiming.h"
 #include <cassert>
 #include <vector>
 #include <iostream>

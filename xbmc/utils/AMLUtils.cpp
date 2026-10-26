@@ -1536,29 +1536,38 @@ void aml_end_display_diagnostics_pump()
     return;
   }
   const auto now = PLAYBACK_DIAGNOSTICS::NowUs();
+  auto* window = CServiceBroker::GetWinSystem();
+  if (window)
+    trace.Generation(window->GetDisplayGeneration());
   // Called only by Run, outside Render/Flip, graphics/resource/DV locks. These
-  // small read-only values are sequential observations, not an atomic hardware
-  // snapshot and not proof of HDMI packets or visible scanout. No admission wait.
+  // audited values are sequential observations, not an atomic hardware snapshot
+  // or proof of receiver lock/pixels. attr can modify the default format cache;
+  // rxsense_state writes PHY registers. Neither belongs in an observer.
   if (const char* reason = trace.SnapshotReason(now))
   {
     auto read = [](const char* path) {
       auto value = CSysfsPath{path}.Get<std::string>();
-      std::string text = value ? value->substr(0, 80) : "unavailable";
+      std::string text = value && !value->empty() ? value->substr(0, 80) : "unavailable";
       for (auto& ch : text)
         if (ch == '\n' || ch == '\r')
           ch = ' ';
       return text;
     };
-    CLog::Log(LOGDEBUG, "p3i-end-display t_us={} trace={} display={} output={} "
-        "dv_mode=[{}] dv_enable=[{}] xosd=[{}] fb_blank=[{}] fb_scale=[{}] "
-        "video_disable=[{}] blackout=[{}] mode=[{}] attr=[{}] hpd=[{}]",
+    // Call directly, including at timeout: Record() rejects events once the
+    // deadline passes, but an absent-render/zero-swap snapshot still matters.
+    const std::string displayState = window ? window->GetDisplayDiagnosticState() : "unavailable";
+    CLog::Log(LOGDEBUG, "p3i-end-display t_us={} trace={} display={} output={} state=[{}] "
+        "dv_mode=[{}] dv_enable=[{}] xosd=[{}] fb_state=[{}] fb_scale=[{}] "
+        "video_disable=[{}] blackout=[{}] mode=[{}] tx_config=[{}] hpd=[{}] "
+        "fb_blank=unobserved attr=unobserved(lazy-getter)",
         now, trace.Id(), trace.Display(), reason,
+        displayState,
         read("/sys/module/amdolby_vision/parameters/dolby_vision_mode"),
         read("/sys/module/amdolby_vision/parameters/dolby_vision_enable"),
         read("/sys/module/amdolby_vision/parameters/dolby_vision_xbmc_osd"),
-        read("/sys/class/graphics/fb0/blank"), read("/sys/class/graphics/fb0/free_scale"),
+        read("/sys/class/graphics/fb0/state"), read("/sys/class/graphics/fb0/free_scale"),
         read("/sys/class/video/disable_video"), read("/sys/class/video/blackout_policy"),
-        read("/sys/class/display/mode"), read("/sys/class/amhdmitx/amhdmitx0/attr"),
+        read("/sys/class/display/mode"), read("/sys/class/amhdmitx/amhdmitx0/config"),
         read("/sys/class/amhdmitx/amhdmitx0/hpd_state"));
   }
   trace.Expire(now);
@@ -1618,14 +1627,13 @@ void aml_dv_dump_state(const char* tag)
     rd("/sys/module/amdolby_vision/parameters/dv_graphic_blend_test"),
     rd("/sys/module/amdolby_vision/parameters/dolby_vision_xbmc_osd"),
     rd("/sys/module/amdolby_vision/parameters/dolby_vision_subtitles"),
-    rd("/sys/class/amhdmitx/amhdmitx0/attr"),
+    "unobserved(lazy-getter)",
     rd("/sys/class/amhdmitx/amhdmitx0/config"),
-    // HDMI TX link-state — useful for diagnosing the "audio works, video frozen"
-    // class. hpd_state / rhpd_state flag sink disconnect; rxsense_state shows
-    // whether the sink's R-term is sensed back (link up); hdmi_used / disp_mode
-    // / sink_type catch cases where the kernel thinks HDMI isn't active anymore.
+    // Cached/qualified transmitter state, not receiver lock or picture proof.
+    // Even a suppressed LOGDEBUG call evaluates these arguments; never sample
+    // active receiver-sense or a lazy format-cache getter here.
     rd("/sys/class/amhdmitx/amhdmitx0/hpd_state"),
-    rd("/sys/class/amhdmitx/amhdmitx0/rxsense_state"),
+    "unobserved(active-getter)",
     rd("/sys/class/amhdmitx/amhdmitx0/rhpd_state"),
     rd("/sys/class/amhdmitx/amhdmitx0/hdmi_used"),
     rd("/sys/class/amhdmitx/amhdmitx0/disp_mode"),
@@ -1676,15 +1684,14 @@ AMLHDMILinkSample aml_hdmi_link_probe(const char* ctx)
   };
 
   const std::string hpd = rd("/sys/class/amhdmitx/amhdmitx0/hpd_state");
-  const std::string rxsense = rd("/sys/class/amhdmitx/amhdmitx0/rxsense_state");
   const std::string rhpd = rd("/sys/class/amhdmitx/amhdmitx0/rhpd_state");
   const std::string used = rd("/sys/class/amhdmitx/amhdmitx0/hdmi_used");
   const std::string disp_mode = rd("/sys/class/amhdmitx/amhdmitx0/disp_mode");
   const std::string sink_type = rd("/sys/class/amhdmitx/amhdmitx0/sink_type");
 
   std::string state = StringUtils::Format(
-    "hpd={} rxsense={} rhpd={} used={} disp_mode={} sink_type={}",
-    hpd, rxsense, rhpd, used, disp_mode, sink_type);
+    "hpd={} rxsense=unobserved(active-getter) rhpd={} used={} disp_mode={} sink_type={}",
+    hpd, rhpd, used, disp_mode, sink_type);
 
   // Only log when something actually changes — quiet on a stable link.
   static std::string s_lastState;
@@ -1692,10 +1699,10 @@ AMLHDMILinkSample aml_hdmi_link_probe(const char* ctx)
   if (s_haveBaseline && state == s_lastState)
     return AMLHDMILinkSample::UNCHANGED;
 
-  // "Degraded" = the sink stopped asserting hot-plug / R-term, or the kernel
-  // lost the active display mode: the signature of a blue/no-signal sink.
+  // These cached flags/mode can report loss, but cannot establish link health.
+  // Receiver-sense is deliberately not sampled: its G12B getter programs PHY.
   const bool degraded =
-      hpd == "0" || rhpd == "0" || rxsense == "0" ||
+      hpd == "0" || rhpd == "0" ||
       disp_mode.empty() || disp_mode == "null" || disp_mode == "-" || disp_mode == "?";
 
   CLog::Log(degraded ? LOGWARNING : LOGINFO,
