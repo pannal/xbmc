@@ -20,6 +20,10 @@
 #include "utils/StringUtils.h"
 #include "utils/Variant.h"
 
+#ifdef HAS_LIBAMCODEC
+#include "utils/PlaybackEndDiagnostics.h"
+#endif
+
 #include <cmath>
 #include <string.h>
 
@@ -107,6 +111,22 @@ JSONRPC_STATUS CApplicationOperations::Quit(const std::string &method, ITranspor
 {
   CServiceBroker::GetAppMessenger()->PostMsg(TMSG_QUIT);
   return ACK;
+}
+
+JSONRPC_STATUS CApplicationOperations::TraceDisplay(const std::string& method,
+                                                  ITransportLayer* transport,
+                                                  IClient* client,
+                                                  const CVariant& parameterObject,
+                                                  CVariant& result)
+{
+#ifdef HAS_LIBAMCODEC
+  // This is a coalesced request, not proof that the main loop has started it.
+  // Never touch the main-owned recorder or display from a JSON-RPC worker.
+  result = PLAYBACK_DIAGNOSTICS::RequestDisplayTrace() ? "requested" : "disabled";
+#else
+  result = "unsupported";
+#endif
+  return OK;
 }
 
 JSONRPC_STATUS CApplicationOperations::GetPropertyValue(const std::string &property, CVariant &result)

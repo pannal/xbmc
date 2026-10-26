@@ -34,6 +34,37 @@ and timeout without a GUI swap. The existing limits remain five seconds,
 loss accounting. Repeated states are suppressed. A zero-attempt timeout is
 useful evidence, not success.
 
+## Trace a later symptom
+
+When no signal is confirmed after the wake window has ended, request a new
+window through the existing JSON-RPC service, without an input action:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"Application.TraceDisplay"}
+```
+
+This method requires `ControlGUI` permission and a build containing the explicit
+trigger. It returns `requested`, `disabled` or `unsupported`. `requested` means
+one in-memory request was set or coalesced; it does not confirm that the main
+loop has started collection. Require a new `p3i-end-display ... event=begin manual`
+record from the same boot/process. That start receipt is drained before the next
+render; the first snapshot follows on the next pump. A stalled main loop may
+never produce the receipt, even if the RPC responds.
+
+Main finishes any expired trace before starting a fresh five-second window.
+Requests consumed while a trace is active are discarded without extending it or
+scheduling another window. If necessary, request again after that window ends;
+do not poll the method. The disabled main pump clears pending requests and does
+no diagnostic clock/native reads. Submission and debug toggling are separate
+atomic operations, so there is no durable request epoch across concurrent toggles;
+use the actual begin record rather than assuming delivery.
+
+Record request/response times and the reporter's receiver observation alongside
+the begin/summary. Capture a matched working window through the same mechanism.
+Do not restart, modeset, wake DPMS or force a redraw to obtain the trace. An idle
+GUI may naturally produce no swap attempts; that alone does not prove a fault.
+No playback, output change or recovery is performed by this request.
+
 ## Interpreting records
 
 `t_us`, display-reset deadlines and first-draw/swap timestamps use the process

@@ -6817,6 +6817,21 @@
     "params": [],
     "returns": "string"
   },
+  "Application.TraceDisplay": {
+    "type": "method",
+    "description": "Request a five-second Amlogic display trace when debug logging is enabled. Requests coalesce; requested does not confirm main-loop start. Active traces are not extended.",
+    "transport": "Response",
+    "permission": "ControlGUI",
+    "params": [],
+    "returns": {
+      "type": "string",
+      "enum": [
+        "requested",
+        "disabled",
+        "unsupported"
+      ]
+    }
+  },
   "XBMC.GetInfoLabels": {
     "type": "method",
     "description": "Retrieve info labels about Kodi and the system",

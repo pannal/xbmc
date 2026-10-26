@@ -1532,10 +1532,13 @@ void aml_end_display_diagnostics_pump()
   auto& trace = PLAYBACK_DIAGNOSTICS::endDisplay;
   if (!PLAYBACK_DIAGNOSTICS::Enabled())
   {
+    PLAYBACK_DIAGNOSTICS::ConsumeDisplayTraceRequest();
     trace.Cancel();
     return;
   }
+  const bool requested = PLAYBACK_DIAGNOSTICS::ConsumeDisplayTraceRequest();
   const auto now = PLAYBACK_DIAGNOSTICS::NowUs();
+  const bool wasActive = trace.Active(now);
   auto* window = CServiceBroker::GetWinSystem();
   if (window)
     trace.Generation(window->GetDisplayGeneration());
@@ -1571,12 +1574,23 @@ void aml_end_display_diagnostics_pump()
         read("/sys/class/amhdmitx/amhdmitx0/hpd_state"));
   }
   trace.Expire(now);
-  trace.Drain([](const PLAYBACK_DIAGNOSTICS::EndDisplayTrace::Entry& entry) {
+  const auto emit = [](const PLAYBACK_DIAGNOSTICS::EndDisplayTrace::Entry& entry) {
     CLog::Log(LOGDEBUG, "p3i-end-display t_us={} trace={} display={} event={} {}",
               entry.at, entry.trace, entry.display, entry.kind, entry.detail);
-  });
+  };
+  trace.Drain(emit);
   if (const auto lost = trace.TakeLost())
     CLog::Log(LOGDEBUG, "p3i-end-display queue_lost={}", lost);
+
+  // Preserve the old expiry snapshot/summary before arming. Requests consumed
+  // during an active window never extend it or schedule another window.
+  if (requested && !wasActive)
+  {
+    trace.Begin(PLAYBACK_DIAGNOSTICS::NowUs(), "manual");
+    // Emit the start receipt before the next Render could block. The first
+    // snapshot is taken by the next pump, with a fresh post-request budget.
+    trace.Drain(emit);
+  }
 }
 
 void aml_dv_dump_state(const char* tag)

@@ -4,6 +4,7 @@
 #include "utils/PlaybackDiagnostics.h"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <string>
@@ -13,6 +14,21 @@
 // application drains outside Render/Flip and still pumps when rendering is off.
 namespace PLAYBACK_DIAGNOSTICS
 {
+// Thread-safe request handoff only. The main pump owns the recorder and decides
+// whether to start; repeated requests carry no payload and occupy one bit.
+inline std::atomic_bool displayTraceRequested{false};
+inline bool RequestDisplayTrace()
+{
+  if (!Enabled())
+    return false;
+  displayTraceRequested.store(true, std::memory_order_relaxed);
+  return true;
+}
+inline bool ConsumeDisplayTraceRequest()
+{
+  return displayTraceRequested.exchange(false, std::memory_order_relaxed);
+}
+
 class EndDisplayTrace
 {
 public:
