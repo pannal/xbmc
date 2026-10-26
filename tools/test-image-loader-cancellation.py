@@ -3,7 +3,9 @@
 
 The decoder, broker, GL work and queue admission are fixtures. Full production
 DoWork, ShouldCancel, CancelJob, OnJobProgress, OnJobComplete (job and large
-texture manager) execute unchanged. No GPU, target lifetime or performance claim.
+texture manager) execute unchanged. Demand-aware sources use the complete current
+manager fixture and retain historical eager-upload witnesses separately.
+No GPU, target lifetime or performance claim.
 """
 import argparse
 import hashlib
@@ -241,13 +243,27 @@ int main(int argc,char** argv){
 
 
 def read_sources(ref=None):
-    names = ['xbmc/GUILargeTextureManager.cpp', 'xbmc/utils/JobManager.cpp']
+    names = ['xbmc/GUILargeTextureManager.cpp', 'xbmc/GUILargeTextureManager.h', 'xbmc/utils/JobManager.cpp']
     return {name: subprocess.check_output(['git', 'show', f'{ref}:{name}'], cwd=ROOT, text=True)
             if ref else (ROOT/name).read_text() for name in names}
 
 
 def make_source(files, work=None):
     large, jobs = files['xbmc/GUILargeTextureManager.cpp'], files['xbmc/utils/JobManager.cpp']
+    if 'class CTextureUploadJob' in large:
+        # Demand-aware uploads moved out of the decode job. Reuse the complete
+        # actual manager/job fixture rather than retaining a mirrored old state
+        # machine. Historical eager-upload witnesses below still use the old
+        # fixture unchanged. Cooperative decode cancellation must still return
+        # failure even when cancelling cannot save any further GPU work.
+        spec = importlib.util.spec_from_file_location('demand_fixture', ROOT / 'tools/test-image-upload-demand.py')
+        demand = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(demand)
+        current = dict(files)
+        if work is not None:
+            original = EXTRACT.function(large, 'bool CImageLoader::DoWork()')
+            current['xbmc/GUILargeTextureManager.cpp'] = large.replace(original, work, 1)
+        return demand.source(current)
     methods = [work or EXTRACT.function(large, 'bool CImageLoader::DoWork()')]
     methods.extend(EXTRACT.function(jobs, sig) for sig in [
         'bool CJob::ShouldCancel(', 'void CJobManager::CancelJob(',
@@ -280,34 +296,48 @@ def main():
         if result.returncode:raise AssertionError(f'{name} compile failed: {result.stderr}')
         return binary
 
-    def run(binary, scenario='all', success=True):
-        cmd=[str(binary),scenario];result=subprocess.run(cmd,text=True,capture_output=True,timeout=15)
+    def run(binary, scenario='all', success=True, witness=None):
+        cmd=[str(binary),scenario];result=subprocess.run(cmd,text=True,capture_output=True,timeout=15,
+            env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0','UBSAN_OPTIONS':'halt_on_error=1:print_stacktrace=1'})
         log=result.stdout+result.stderr;(args.out_dir/(binary.name+'-'+scenario+'.log')).write_text(log)
         records.append({'run':binary.name,'scenario':scenario,'returncode':result.returncode,'expected_success':success,'output':log})
         assert (result.returncode==0)==success,(binary.name,scenario,log)
-        if not success:assert result.returncode==1 and 'FAIL ' in log,(binary.name,scenario,log)
+        if not success:
+            assert result.returncode==1 and 'FAIL ' in log,(binary.name,scenario,log)
+            if witness is not None:
+                assert result.stderr == 'FAIL ' + witness + '\n', (binary.name, scenario, log)
+                assert not any(token in log for token in ('AddressSanitizer', 'UndefinedBehaviorSanitizer', 'runtime error:', 'DEADLYSIGNAL')), log
         print(binary.name,scenario,result.returncode,log.strip())
 
     try:
         baseline=build('baseline',make_source(read_sources(args.baseline_ref)))
-        run(baseline,'witness-direct',False);run(baseline,'witness-cache',False)
+        run(baseline,'witness-direct',False,'cancel-during-decode: obsolete job must not upload to GPU');run(baseline,'witness-cache',False,'cancel-during-decode: obsolete job must not upload to GPU')
         actual=build('actual',make_source(files),args.sanitize);run(actual)
         pattern=r'if\s*\(ShouldCancel\([^;{}]*?\)\)\s*(?:\{\s*)?return false;\s*(?:\})?'
         checkpoints=list(re.finditer(pattern,work))
         assert len(checkpoints)==3,f'Expected three cooperative checkpoints, got {len(checkpoints)}'
         for index,scenario in enumerate(['entry','witness-direct','witness-cache']):
             m=checkpoints[index];mutated=work[:m.start()]+work[m.end():]
-            binary=build('missing-'+scenario,make_source(files,mutated));run(binary,scenario,False)
-        # Move the direct-branch guard behind its actual GPU call: a cancelled
-        # loader may return false, yet has already incurred the unwanted upload.
+            binary=build('missing-'+scenario,make_source(files,mutated))
+            demand_aware = 'class CTextureUploadJob' in files['xbmc/GUILargeTextureManager.cpp']
+            witness = ('entry cancellation prevents decode and upload' if scenario == 'entry' else
+                       'cancelled decode returns failure at cooperative checkpoint') if demand_aware else None
+            run(binary,scenario,False,witness)
+        # Move the direct-branch guard behind its actual side effect. Historical
+        # loaders upload eagerly; demand-aware loaders still schedule validation
+        # refreshes. Returning false afterward cannot undo either operation.
         m=checkpoints[1];guard=m.group();mutated=work[:m.start()]+work[m.end():]
         assert 'ShouldCancel(0, 0)' in guard
         guard = '      if (ShouldCancel(0, 0))\n      {\n        return false;\n      }'
-        call = re.search(r'm_texture->LoadToGPUAsync\([^;]*\);', mutated)
-        assert call, 'actual GPU call missing from direct branch'
+        demand_aware = 'class CTextureUploadJob' in files['xbmc/GUILargeTextureManager.cpp']
+        call = re.search(r'BackgroundCacheImage\([^;]*\);' if demand_aware else
+                         r'm_texture->LoadToGPUAsync\([^;]*\);', mutated)
+        assert call, 'actual guarded side-effect call missing from direct branch'
         at = call.end()
         mutated=mutated[:at]+'\n'+guard+mutated[at:]
-        binary=build('late-after-gpu',make_source(files,mutated));run(binary,'witness-direct',False)
+        name = 'late-after-refresh' if demand_aware else 'late-after-gpu'
+        binary=build(name,make_source(files,mutated));run(binary,'witness-direct',False,
+            'cancelled decode avoids refresh and upload' if demand_aware else None)
     finally:
         print('Artifacts:', args.out_dir)
         (args.out_dir/'commands-results.json').write_text(json.dumps(records,indent=2)+'\n')

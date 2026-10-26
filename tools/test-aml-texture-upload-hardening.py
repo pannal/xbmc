@@ -96,8 +96,10 @@ struct CGUILargeTextureManager
  struct CLargeTexture
  {
   std::string path="art";
-  std::unique_ptr<CTexture> texture;
-  void SetTexture(std::unique_ptr<CTexture> value) { texture=std::move(value); }
+  std::shared_ptr<CTexture> texture,m_pendingTexture;
+  bool m_asyncUpload=false,m_gpuDemand=false;
+  unsigned m_uploadJobID=0;
+  void SetTexture(std::shared_ptr<CTexture> value) { texture=std::move(value); }
   const std::string& GetPath() const { return path; }
  };
  using queueIterator=std::vector<std::pair<unsigned,CLargeTexture*>>::iterator;
@@ -105,6 +107,9 @@ struct CGUILargeTextureManager
  std::vector<std::pair<unsigned,CLargeTexture*>> m_queued;
  std::vector<CLargeTexture*> m_allocated;
  std::unordered_map<std::string,CLargeTexture*> m_queuedLookup,m_allocatedLookup;
+ // This suite tests the synchronous-publication branch after actual context
+ // work. Demand-aware admission executes separately in test-image-upload-demand.
+ void QueueUpload(CLargeTexture*) {}
  void OnJobComplete(unsigned,bool,CJob*);
 };
 '''
@@ -453,7 +458,7 @@ def main():
         if not args.no_mutations:
             mutations={
                 'exception-cleanup':(donor.TEXTURE_SOURCE,'      if (bound)\n','      if (false && bound)\n'),
-                'failed-publication':(PUBLICATION,'if (success)\n        image->SetTexture','if (true)\n        image->SetTexture'),
+                'failed-publication':(PUBLICATION,'if (success)\n      {\n        if (image->m_asyncUpload)','if (true)\n      {\n        if (image->m_asyncUpload)'),
                 'destroy-under-callback-lock':(PUBLICATION,'// Failed jobs retain their texture until job deletion outside this lock.','loader->m_texture.reset();\n      // Failed jobs retain their texture until job deletion outside this lock.'),
                 'retry-per-texture':(donor.EGL_SOURCE,'    m_textureUploadDisabled = true;\n    CLog::LogF(LOGWARNING, "Disabling unavailable','    m_textureUploadDisabled = false;\n    CLog::LogF(LOGWARNING, "Disabling unavailable'),
                 'wrong-owner':(donor.EGL_SOURCE,'  if (m_currentUploadContext != this)\n    return false;','  if (false && m_currentUploadContext != this)\n    return false;'),

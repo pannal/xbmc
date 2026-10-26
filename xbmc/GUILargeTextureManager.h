@@ -90,6 +90,9 @@ public:
    */
   bool GetImage(const std::string &path, CTextureArray &texture, bool firstRequest, bool useCache = true);
 
+  // Admit GPU work for an existing request. This does not acquire another reference.
+  void RequestImageUpload(const std::string& path);
+
   /*!
    \brief Request a texture to be unloaded.
 
@@ -124,13 +127,14 @@ private:
     void AddRef();
     bool DecrRef(bool deleteImmediately);
     bool DeleteIfRequired(bool deleteImmediately = false);
-    void SetTexture(std::unique_ptr<CTexture> texture);
+    void SetTexture(std::shared_ptr<CTexture> texture);
 
     const std::string& GetPath() const { return m_path; }
     const CTextureArray& GetTexture() const { return m_texture; }
     const std::shared_ptr<std::atomic_bool>& GetCancellationToken() const { return m_cancelled; }
 
   private:
+    friend class CGUILargeTextureManager;
     static const unsigned int TIME_TO_DELETE = 2000;
 
     unsigned int m_refCount;
@@ -138,9 +142,16 @@ private:
     CTextureArray m_texture;
     unsigned int m_timeToDelete;
     std::shared_ptr<std::atomic_bool> m_cancelled{std::make_shared<std::atomic_bool>(false)};
+    // Keep decoded data private until the upload job has released its context.
+    std::shared_ptr<CTexture> m_pendingTexture;
+    bool m_asyncUpload{false};
+    bool m_gpuDemand{false};
+    unsigned int m_uploadJobID{0};
   };
 
   void QueueImage(const std::string &path, bool useCache = true);
+  void QueueUpload(CLargeTexture* image);
+  void CancelUpload(unsigned int jobID);
 
   std::vector< std::pair<unsigned int, CLargeTexture *> > m_queued;
   std::vector<CLargeTexture *> m_allocated;

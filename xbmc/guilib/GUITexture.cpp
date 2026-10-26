@@ -181,8 +181,24 @@ bool CGUITexture::Process(unsigned int currentTime)
 
 void CGUITexture::Render(int32_t depthOffset, int32_t overrideDepth)
 {
-  if (!m_visible || !m_texture.size())
+  if (!m_visible)
     return;
+
+  if (!m_texture.size())
+  {
+    if (m_isAllocated == LARGE)
+    {
+      // Process also visits prefetched controls. Admit GPU work only when a
+      // draw attempt reaches the clipped declared bounds. Do not require alpha:
+      // an incoming crossfade starts transparent until this texture is ready.
+      CRect vertex(m_posX, m_posY, m_posX + m_width, m_posY + m_height);
+      CRect textureCoords(0.0f, 0.0f, 1.0f, 1.0f);
+      CServiceBroker::GetWinSystem()->GetGfxContext().ClipRect(vertex, textureCoords);
+      if (!vertex.IsEmpty())
+        CServiceBroker::GetGUI()->GetLargeTextureManager().RequestImageUpload(m_info.filename);
+    }
+    return;
+  }
 
   // set our draw color
   #define MIX_ALPHA(a,c) (((a * (c >> 24)) / 255) << 24) | (c & 0x00ffffff)
@@ -376,10 +392,18 @@ bool CGUITexture::AllocResources()
       CTextureArray texture;
       if (CServiceBroker::GetGUI()->GetLargeTextureManager().GetImage(m_info.filename, texture, !IsAllocated(), m_use_cache))
       {
+        if (m_isAllocated != LARGE)
+          m_invalid = true;
         m_isAllocated = LARGE;
 
         if (!texture.size()) // not ready as yet
+        {
+          // Auto-sized controls may be culled before Render can request an
+          // upload. Unknown geometry must take the conservative fallback.
+          if (m_width == 0 || m_height == 0)
+            CServiceBroker::GetGUI()->GetLargeTextureManager().RequestImageUpload(m_info.filename);
           return false;
+        }
 
         m_texture = texture;
 
@@ -421,7 +445,19 @@ bool CGUITexture::AllocResources()
 bool CGUITexture::CalculateSize()
 {
   if (m_currentFrame >= m_texture.size())
+  {
+    if (m_isAllocated == LARGE)
+    {
+      // Pending images have no published texture metadata yet. Keep their
+      // declared bounds current so a moved control can reach Render admission.
+      const CRect vertex(m_posX, m_posY, m_posX + m_width, m_posY + m_height);
+      const bool changed = m_vertex != vertex;
+      m_vertex = vertex;
+      m_invalid = false;
+      return changed;
+    }
     return false;
+  }
 
   m_texCoordsScaleU = 1.0f / m_texture.m_texWidth;
   m_texCoordsScaleV = 1.0f / m_texture.m_texHeight;
