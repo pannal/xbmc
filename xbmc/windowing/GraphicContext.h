@@ -299,7 +299,7 @@ protected:
   std::stack<UITransform> m_transforms;
   RENDER_STEREO_VIEW m_stereoView = RENDER_STEREO_VIEW_OFF;
   RENDER_STEREO_MODE m_stereoMode = RENDER_STEREO_MODE_OFF;
-  StreamHdrType m_hdrType;
+  StreamHdrType m_hdrType = StreamHdrType::HDR_TYPE_NONE;
 
   bool m_isTransferPQ{false};
   RENDER_ORDER m_renderOrder{RENDER_ORDER_ALL_BACK_TO_FRONT};

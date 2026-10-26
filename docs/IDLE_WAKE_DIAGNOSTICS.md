@@ -95,10 +95,12 @@ the unchanged failure before any recovery. TV off/on and a Kodi restart are
 not substitutes for suspending the Ugoos.
 
 Preserve the installation, exact settings, cache, fades and persistent reboot
-tracing. First compare scaled 1080 GUI and native 2160 GUI at unchanged UHD60,
-async/DV/skin and startup state. Separately compare async OFF/ON with positive
-worker-activity evidence. Record all build/observer differences. A restart or
-modeset can affect several layers, so recovery alone does not identify a cause.
+tracing. If the failure already occurs with a 1080 GUI, keep that GUI size and
+compare actual HDMI 1080p60 versus 2160p60, with async/DV/skin and startup state
+unchanged. Compare scaled versus native GUI separately if that remains an open
+variable. Separately compare async OFF/ON with positive worker-activity evidence.
+Record all build/observer differences. A restart or modeset can affect several
+layers, so recovery alone does not identify a cause.
 
 The prepared external `collect-passive.py` remains a fixed-node collector with
 separately documented missing/empty/truncated and clock semantics. Its fake-root
