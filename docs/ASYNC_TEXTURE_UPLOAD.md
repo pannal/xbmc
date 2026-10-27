@@ -1,15 +1,19 @@
 # Amlogic asynchronous GUI texture upload
 
-Asynchronous GUI texture upload is **on by default** for the p3i development
-build trial. To disable it, add this override and restart Kodi:
+Asynchronous GUI texture upload is **off by default**. Matched device tests
+showed better frame pacing with it disabled. To opt in for further testing,
+add this override and restart Kodi:
 
 ```xml
 <advancedsettings>
   <gui>
-    <asynctextureupload>false</asynctextureupload>
+    <asynctextureupload>true</asynctextureupload>
   </gui>
 </advancedsettings>
 ```
+
+Existing explicit `true` overrides remain enabled. Remove the override or set
+it to `false` and restart Kodi to use synchronous uploads.
 
 When enabled, large-image decoding and GPU upload run as separate jobs. Decoded
 images stay private until a clipped draw attempt requests their upload through
@@ -132,8 +136,8 @@ per-request expiry and composition with draw-demand uploads. The list and panel
 scroll tests verify that containers report their scroller's active frames.
 
 Host tests and compiler acceptance do not establish Mali context sharing,
-physical pixels, smoothness or safe deferred driver deletion. Positive user
-reports support this development trial; physical acceptance remains unfinished.
+physical pixels, smoothness or safe deferred driver deletion. Async remains
+opt-in; broader physical acceptance is unfinished.
 Continue validating normally rebuilt artifacts with matched async off/on/off
 cold-artwork and warm comparisons, actual worker-thread uploads,
 shared-texture visibility/completion, cancellation, skin/display transitions
