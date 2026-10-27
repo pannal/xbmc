@@ -149,7 +149,6 @@ private:
   void RetireCecCallbacks(void);
   void OnCecSourceActivated(CEC::cec_logical_address address,
                             uint8_t activated,
-                            bool isActive,
                             uint64_t generation);
   void Process(void) override;
   bool IsRunning(void) const;

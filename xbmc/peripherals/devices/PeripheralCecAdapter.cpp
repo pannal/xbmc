@@ -1550,20 +1550,28 @@ void CPeripheralCecAdapter::CecSourceActivated(void* cbParam,
   // cannot wait for main while main is draining this callback during shutdown.
   const auto generation = adapter->m_sourceEventGeneration.load(std::memory_order_relaxed);
   const bool isActive = adapter->m_cecAdapter->IsLibCECActiveSource();
+  // Reconnection reads this state before queued GUI callbacks necessarily run.
+  // Persist it inside the native callback lifetime so retiring this generation
+  // cannot lose the last source observation. Callback draining precedes reopen.
+  FILE* fp = fopen("/run/kodi_cec_startup_done", "w");
+  if (fp)
+  {
+    fputs(isActive ? "1\n" : "0\n", fp);
+    fclose(fp);
+  }
   auto weak = adapter->weak_from_this();
-  CServiceBroker::GetAppMessenger()->PostCallback([weak, generation, address, activated, isActive] {
+  CServiceBroker::GetAppMessenger()->PostCallback([weak, generation, address, activated] {
     auto owner = weak.lock();
     if (!owner)
       return;
     if (owner->m_bStop || owner->m_sourceEventGeneration.load(std::memory_order_relaxed) != generation)
       return;
-    owner->OnCecSourceActivated(address, activated, isActive, generation);
+    owner->OnCecSourceActivated(address, activated, generation);
   });
 }
 
 void CPeripheralCecAdapter::OnCecSourceActivated(CEC::cec_logical_address address,
                                               uint8_t activated,
-                                              bool isActive,
                                               uint64_t generation)
 {
   std::unique_lock<CCriticalSection> lifecycleLock(m_lifecycleSection);
@@ -1576,12 +1584,6 @@ void CPeripheralCecAdapter::OnCecSourceActivated(CEC::cec_logical_address addres
     if (m_bStop || m_sourceEventGeneration.load(std::memory_order_relaxed) != generation)
       return;
     pausedByCec = m_bPlaybackPaused;
-  }
-  FILE* fp = fopen("/run/kodi_cec_startup_done", "w");
-  if (fp)
-  {
-    fputs(isActive ? "1\n" : "0\n", fp);
-    fclose(fp);
   }
   auto& appComponentsForScreenSaver = CServiceBroker::GetAppComponents();
   const auto appPowerForScreenSaver = appComponentsForScreenSaver.GetComponent<CApplicationPowerHandling>();
