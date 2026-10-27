@@ -309,7 +309,8 @@ int main(int argc, char** argv)
     Check(OneRefresh(step, p60), "frame across the uptime wrap advances " + std::to_string(step) + " ms");
   Check(std::abs(Lead()) <= 2, "frame time follows the clock across the wrap");
 
-  // the wall clock stepping back does not move the frame time back
+  // Defensive malformed-uptime input must not move frame time backwards.
+  // Wall-clock isolation of the real uptime source is in test-gui-uptime.py.
   Reset(90000, 60);
   Steady(60, p60);
   g_clock -= 5000;

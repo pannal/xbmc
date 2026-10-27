@@ -12,6 +12,7 @@
 #include "windowing/GraphicContext.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 
@@ -23,11 +24,6 @@
 #else
 #include <time.h>
 #endif
-
-namespace
-{
-auto startTime = std::chrono::steady_clock::now();
-}
 
 int64_t CurrentHostCounter(void)
 {
@@ -63,28 +59,13 @@ int64_t CurrentHostFrequency(void)
 
 unsigned int CTimeUtils::frameTime = 0;
 
-static inline uint64_t GetTimeInMs()
-{
-  timeval now_time;
-
-  ::gettimeofday(&now_time, nullptr);
-
-  return now_time.tv_sec * 1000ll + now_time.tv_usec / 1000ll;
-}
-
 static unsigned int GetUptimeInMs()
 {
-  static bool start_time_set = false;
-  static uint64_t start_time = 0;
-
-  uint64_t now_ms = GetTimeInMs();
-
-  if (!start_time_set) {
-    start_time = now_ms;
-    start_time_set = true;
-  }
-
-  return (unsigned int) (now_ms - start_time);
+  // Wall-clock corrections must not freeze animations or force them to catch up.
+  static const auto startTime = std::chrono::steady_clock::now();
+  const auto elapsed = std::chrono::steady_clock::now() - startTime;
+  return static_cast<unsigned int>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
 }
 
 void CTimeUtils::UpdateFrameTime(bool flip)
