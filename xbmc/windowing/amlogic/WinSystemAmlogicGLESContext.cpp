@@ -471,9 +471,9 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   if (!DestroyWindow())
     return false;
 
-  // check if a forced mode switch is required
-  if (((current_resolution.iWidth == res.iWidth && current_resolution.iHeight == res.iHeight &&
-        current_resolution.iScreenWidth == res.iScreenWidth && current_resolution.iScreenHeight == res.iScreenHeight &&
+  // A GUI-only resize does not switch HDMI modes. Preserve a required DV
+  // handshake even when the native GUI is resized for heavy video playback.
+  if (((current_resolution.iScreenWidth == res.iScreenWidth && current_resolution.iScreenHeight == res.iScreenHeight &&
         current_resolution.fRefreshRate == res.fRefreshRate) &&
        (force_mode_switch_by_dv ||
        (fractional_rate != cur_fractional_rate))) ||

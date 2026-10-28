@@ -7,7 +7,7 @@ request/retry methods and RenderManager::UpdateResolution/FrameMove. FrameMove
 queue, active-picture, GUI, capture and clock-sync callees are stubs; its readiness guard is real. Native mode/DV/EGL,
 GLES geometry implementation, services and callbacks are controlled stubs.
 Independent presentation is absent in this fixture; its stand-ins reject entry.
-Diagnostic formatting and native-wait/VSync backend effects are stand-ins.
+Diagnostic formatting, native GUI resizing and native-wait/VSync backend effects are stand-ins.
 Direct shutdown/InitWindowSystem are outside this fixture and remain a separate
 production dependency. No real display, driver, GL or worker readiness is claimed.
 """
@@ -81,6 +81,9 @@ def main():
     source = harness()
     if args.negative_controls:
         controls = [
+            ('GUI resize suppresses required HDMI handshake',
+             'if (((current_resolution.iScreenWidth == res.iScreenWidth',
+             'if (((current_resolution.iWidth == res.iWidth && current_resolution.iScreenWidth == res.iScreenWidth'),
             ('window omits native child',
              'CAMLNativeTransaction native(display.Request());\n  if (!native.TryBegin())\n    return false;',
              '/* no native child */'),
@@ -133,7 +136,7 @@ using namespace std::chrono_literals;
 using CCriticalSection=std::recursive_mutex;
 using RESOLUTION=int;
 constexpr int RES_WINDOW=0,RES_DESKTOP=1;
-constexpr int LOGDEBUG=0,LOGERROR=1,LOGINFO=2,DV_MODE_OFF=0;
+constexpr int LOGDEBUG=0,LOGERROR=1,LOGINFO=2,LOGWARNING=3,DV_MODE_OFF=0;
 constexpr unsigned D3DPRESENTFLAG_MODEMASK=255;
 constexpr int TMSG_SETVIDEORESOLUTION=1,GUI_MSG_NOTIFY_ALL=2,GUI_MSG_WINDOW_RESIZE=3;
 enum RENDER_STEREO_MODE{RENDER_STEREO_MODE_OFF,RENDER_STEREO_MODE_HARDWAREBASED,RENDER_STEREO_MODE_UNDEFINED};
@@ -153,6 +156,13 @@ void native(const std::string& name){if(nativeScopeCheck)nativeScopeCheck();if(p
 RESOLUTION_INFO currentNative;
 bool nativeRead=true,fracPolicy=false,restoreGui=false,currentBound=true;
 int fracValue=0,dvMode=1;
+bool nativeGuiResize=false,lastNativeForced=false;
+void aml_native_gui_prepare(RESOLUTION){}
+void aml_native_gui_commit(){}
+void aml_native_gui_prepare_failed(){}
+void aml_native_gui_osd_present(bool){}
+bool aml_native_gui_needs_update(RESOLUTION){return false;}
+bool aml_native_gui_size_changing(){return nativeGuiResize;}
 std::function<void(bool)> engageHook;
 bool aml_get_native_resolution(RESOLUTION_INFO* info){native("native-read");*info=currentNative;return nativeRead;}
 bool aml_has_frac_rate_policy(){return fracPolicy;}
@@ -160,10 +170,10 @@ int aml_dv_mode(){return dvMode;}
 void aml_dv_wait_for_pipeline(){native("dv-wait");}
 bool aml_dv_restore_gui_ipt(const char*){native("restore-ipt");return restoreGui;}
 void aml_dv_display_trigger(){native("dv-trigger");}
-bool aml_display_mode_changing(const RESOLUTION_INFO& info){return info.iWidth!=currentNative.iWidth||info.iHeight!=currentNative.iHeight||info.fRefreshRate!=currentNative.fRefreshRate;}
+bool aml_display_mode_changing(const RESOLUTION_INFO& info){return info.iScreenWidth!=currentNative.iScreenWidth||info.iScreenHeight!=currentNative.iScreenHeight||info.fRefreshRate!=currentNative.fRefreshRate;}
 void aml_dv_engage_stale_deferred_disc(){event("engage-stale");}
 void aml_dv_engage_deferred_disc(bool mode){event(mode?"engage-mode":"engage-no-mode");if(engageHook)engageHook(mode);}
-void aml_set_native_resolution(const RESOLUTION_INFO& info,const std::string&,RENDER_STEREO_MODE,bool){native("native-set:"+std::to_string(info.iWidth));currentNative=info;}
+void aml_set_native_resolution(const RESOLUTION_INFO& info,const std::string&,RENDER_STEREO_MODE,bool forced){lastNativeForced=forced;native("native-set:"+std::to_string(info.iWidth));currentNative=info;}
 void aml_hdr10plus_vsif_hold(bool hold){event(hold?"hdr-hold":"hdr-release");}
 enum class AMLHDMILinkSample {SKIPPED,UNCHANGED,CHANGED};
 AMLHDMILinkSample linkSample=AMLHDMILinkSample::SKIPPED;
@@ -208,6 +218,7 @@ public:
   StreamHdrType hdr{StreamHdrType::HDR_TYPE_NONE};RENDER_STEREO_MODE stereo{RENDER_STEREO_MODE_OFF};
   bool SetVideoResolution(RESOLUTION,bool,bool retryPending=true);bool SetVideoResolutionInternal(RESOLUTION,bool,bool retryPending=true);
   void ProcessPendingVideoResolution();
+  RESOLUTION GetVideoResolution(){return m_Resolution;}
   bool IsValidResolution(int res){return res>=0&&res<=3;}
   void UpdateInternalStateWithResolution(int res){m_Resolution=res;auto info=CDisplaySettings::GetInstance().GetResolutionInfo(res);m_iScreenWidth=info.iWidth;m_iScreenHeight=info.iHeight;m_fFPSOverride=info.fRefreshRate;event("provisional:"+std::to_string(res));}
   RENDER_STEREO_MODE GetStereoMode(){return stereo;}StreamHdrType GetHDRType(){return hdr;}
@@ -342,7 +353,7 @@ public:
 TESTS = r'''
 struct Fixture{
   CAMLSession session;CGraphicContext gfx;CWinSystemAmlogicGLESContext win;IDispResource resource;
-  Fixture(){auto open=session.Fence();assert(session.BeginMutation(open)&&session.Complete(open,true));probe=&session;window=&win;graphics=&gfx;settings=Settings{};messenger.main=true;currentNative=RESOLUTION_INFO{};currentBound=true;nativeRead=true;restoreGui=false;fracPolicy=false;fracValue=0;dvMode=1;engageHook={};events.clear();win.m_resources.push_back(&resource);}
+  Fixture(){auto open=session.Fence();assert(session.BeginMutation(open)&&session.Complete(open,true));probe=&session;window=&win;graphics=&gfx;settings=Settings{};messenger.main=true;currentNative=RESOLUTION_INFO{};currentBound=true;nativeRead=true;restoreGui=false;fracPolicy=false;fracValue=0;dvMode=1;nativeGuiResize=false;lastNativeForced=false;engageHook={};events.clear();win.m_resources.push_back(&resource);}
   ~Fixture(){probe=nullptr;engageHook={};assert(!session.DisplayBlocked());}
   void Repair(){win.m_pGLContext.bindOk=true;win.m_pGLContext.surfaceOk=true;win.geometryOk=true;win.m_delayDispReset=false;currentBound=true;assert(win.ResetRenderSystem(1920,1080));}
 };
@@ -476,6 +487,24 @@ void NoModeAndForcedFrac(){
   assert(at("engage-mode")<at("native-set:1920"));assert(!f.win.m_force_mode_switch);
   assert(!f.session.DisplayBlocked());
 }
+void GuiResizeKeepsRequiredHandshake(){
+  for(bool restoring:{false,true}) for(bool dvTransition:{false,true}) {
+    Fixture f;fracPolicy=true;nativeGuiResize=true;
+    currentNative.iScreenWidth=3840;currentNative.iScreenHeight=2160;
+    currentNative.iWidth=restoring?1920:3840;currentNative.iHeight=restoring?1080:2160;
+    f.win.m_nWidth=currentNative.iWidth;f.win.m_nHeight=currentNative.iHeight;
+    auto target=currentNative;target.iWidth=restoring?3840:1920;target.iHeight=restoring?2160:1080;
+    if(dvTransition) {
+      if(restoring) f.win.m_hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;
+      else f.gfx.hdr=StreamHdrType::HDR_TYPE_DOLBYVISION;
+    }
+    assert(f.win.SetFullScreen(true,target,false));
+    assert(lastNativeForced==dvTransition);
+    assert(has("engage-mode")==dvTransition&&has("dv-trigger")==dvTransition);
+    assert(has("surface-create")&&has("geometry")&&f.win.IsDisplayReadyForVideo());
+    assert(!f.session.DisplayBlocked());
+  }
+}
 void NoModeNeedsReadiness(){
   Fixture f;CRenderManager renderer;settings.adjust=0;
   {
@@ -506,7 +535,7 @@ void OffMainDispatch(){
   Fixture f;messenger.main=false;assert(!f.gfx.SetVideoResolution(2,false));
   assert(events==std::vector<std::string>{"send-resolution"});assert(!f.session.DisplayBlocked());
 }
-int main(){ExactNativeParents();PendingAndLatestPayload();OwnCaptureAndDirectWindow();FailedRebind();FailedGeometry();DelayedResetAndSwap();RenderIntentAndEngage();NoModeAndForcedFrac();NoModeNeedsReadiness();OffMainDispatch();}
+int main(){ExactNativeParents();PendingAndLatestPayload();OwnCaptureAndDirectWindow();FailedRebind();FailedGeometry();DelayedResetAndSwap();RenderIntentAndEngage();NoModeAndForcedFrac();GuiResizeKeepsRequiredHandshake();NoModeNeedsReadiness();OffMainDispatch();}
 '''
 
 if __name__ == '__main__':
