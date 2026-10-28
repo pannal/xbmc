@@ -7037,12 +7037,11 @@ void aml_native_gui_osd_present(bool swapped)
 
 void aml_native_gui_playback_stopped()
 {
-  // the decoder is closed by now; also covers a stop with the GUI shown
-  s_heavyVideo = false;
+  // Decoder open/close owns s_heavyVideo, including replacement playback.
+  // EOF cleanup can still change the output mode after this callback. Request
+  // a GUI sizing refresh without queuing the old playback resolution.
   if (s_nativeGuiSuspended)
-    CServiceBroker::GetAppMessenger()->PostMsg(
-        TMSG_SETVIDEORESOLUTION,
-        CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution(), 1);
+    CServiceBroker::GetWinSystem()->GetGfxContext().RequestVideoResolutionRefresh();
 }
 
 void aml_handle_display_stereo_mode(const int stereo_mode)

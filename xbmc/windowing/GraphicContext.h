@@ -85,6 +85,8 @@ public:
   bool IsValidResolution(RESOLUTION res);
   // Main-thread callers retaining their own request can disable the automatic pending retry.
   bool SetVideoResolution(RESOLUTION res, bool forceUpdate, bool retryPending = true);
+  // Main thread only: re-evaluate window sizing without retaining an old output mode.
+  void RequestVideoResolutionRefresh();
   void ProcessPendingVideoResolution();
   void ApplyModeChange(RESOLUTION res);
   void ApplyWindowResize(int newWidth, int newHeight);
@@ -252,6 +254,7 @@ protected:
     bool forceUpdate;
   };
   std::optional<ResolutionRequest> m_pendingVideoResolution; // main only; one latest request
+  bool m_videoResolutionRefreshPending{false}; // main only; coalesced refresh intent
   void ApplyVideoResolution(RESOLUTION res);
   void UpdateInternalStateWithResolution(RESOLUTION res);
 

@@ -419,11 +419,19 @@ bool CGraphicContext::SetVideoResolution(RESOLUTION res, bool forceUpdate, bool 
   }
 }
 
+void CGraphicContext::RequestVideoResolutionRefresh()
+{
+  m_videoResolutionRefreshPending = true;
+}
+
 void CGraphicContext::ProcessPendingVideoResolution()
 {
-  if (!m_pendingVideoResolution)
+  if (!m_pendingVideoResolution && !m_videoResolutionRefreshPending)
     return;
-  const auto request = *m_pendingVideoResolution;
+  // Cleanup or a replacement player may have selected a new output since the
+  // refresh was requested. Preserve that mode, including a pending transition.
+  const auto request = m_pendingVideoResolution.value_or(ResolutionRequest{m_Resolution, false});
+  m_videoResolutionRefreshPending = false;
   SetVideoResolutionInternal(request.resolution, request.forceUpdate);
 }
 

@@ -40,6 +40,7 @@ def harness():
                    'void CWinSystemAmlogicGLESContext::ApplyPendingKernelSwitch()'],
         'base': ['bool CWinSystemAmlogic::CreateNativeWindow('],
         'gfx': ['bool CGraphicContext::SetVideoResolution(',
+                'void CGraphicContext::RequestVideoResolutionRefresh()',
                 'void CGraphicContext::ProcessPendingVideoResolution()',
                 'bool CGraphicContext::SetVideoResolutionInternal('],
         'render': ['void CRenderManager::UpdateResolution(', 'void CRenderManager::FrameMove()'],
@@ -213,11 +214,13 @@ class CGraphicContext:public CCriticalSection{
 public:
   struct ResolutionRequest{RESOLUTION resolution;bool forceUpdate;};
   std::optional<ResolutionRequest> m_pendingVideoResolution;
+  bool m_videoResolutionRefreshPending{false};
   RESOLUTION m_Resolution{RES_DESKTOP};bool m_bFullScreenRoot{true};
   int m_iScreenWidth{1920},m_iScreenHeight{1080};float m_fFPSOverride{0};Rect m_scissors;
   StreamHdrType hdr{StreamHdrType::HDR_TYPE_NONE};RENDER_STEREO_MODE stereo{RENDER_STEREO_MODE_OFF};
   bool SetVideoResolution(RESOLUTION,bool,bool retryPending=true);bool SetVideoResolutionInternal(RESOLUTION,bool,bool retryPending=true);
   void ProcessPendingVideoResolution();
+  void RequestVideoResolutionRefresh();
   RESOLUTION GetVideoResolution(){return m_Resolution;}
   bool IsValidResolution(int res){return res>=0&&res<=3;}
   void UpdateInternalStateWithResolution(int res){m_Resolution=res;auto info=CDisplaySettings::GetInstance().GetResolutionInfo(res);m_iScreenWidth=info.iWidth;m_iScreenHeight=info.iHeight;m_fFPSOverride=info.fRefreshRate;event("provisional:"+std::to_string(res));}
@@ -404,6 +407,8 @@ void PendingAndLatestPayload(){
     auto decoder=f.session.AcquireDecoder();assert(decoder);
     assert(!f.gfx.SetVideoResolution(2,false));
     assert(f.gfx.m_pendingVideoResolution&&f.gfx.m_pendingVideoResolution->resolution==2);
+    f.gfx.RequestVideoResolutionRefresh();
+    f.gfx.RequestVideoResolutionRefresh();
     assert(f.gfx.m_Resolution==1&&f.gfx.m_iScreenWidth==1920&&f.gfx.m_bFullScreenRoot);
     assert(!has("native-read")&&!has("surface-destroy")&&!has("restore-ipt"));
     f.gfx.ProcessPendingVideoResolution();assert(f.gfx.m_pendingVideoResolution);
@@ -415,6 +420,7 @@ void PendingAndLatestPayload(){
   assert(newSession.DisplayBlocked()&&!newSession.AcquireDecoder());
   events.clear();f.gfx.ProcessPendingVideoResolution();
   assert(!f.gfx.m_pendingVideoResolution&&f.gfx.m_Resolution==0&&f.gfx.m_iScreenWidth==1280);
+  assert(!f.gfx.m_videoResolutionRefreshPending);
   assert(!settings.m_fullScreen&&!f.gfx.m_bFullScreenRoot);
   assert(at("surface-destroy")<at("native-set:1280")&&at("bind")<at("geometry"));
   assert(!f.session.DisplayBlocked()&&!newSession.DisplayBlocked()&&f.session.Epoch()==epoch);
