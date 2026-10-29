@@ -1630,10 +1630,13 @@ bool CRenderManager::ContinueDeferredDV(bool staleOnly)
       aml_dv_engage_deferred_disc(false, session);
   }
   // Normal completion follows display readiness and any follow-up requested by
-  // aml_dv_on(). The stale fallback has no fullscreen modeset to wait for: its
-  // admitted engage completes output at the current mode. Do not let an idle
-  // stale poll discharge a transition whose display update is still pending.
-  if ((!staleOnly && !m_bTriggerUpdateResolution) || (staleOnly && pending))
+  // aml_dv_on(). A windowed fallback completes at the current mode, since no
+  // fullscreen update runs there. In fullscreen, retain any follow-up requested
+  // by the fallback too. An idle stale poll cannot discharge a pending update.
+  auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  const bool fullscreen = gfx.IsFullScreenVideo() && gfx.IsFullScreenRoot();
+  if ((!staleOnly && !m_bTriggerUpdateResolution) ||
+      (staleOnly && pending && (!fullscreen || !m_bTriggerUpdateResolution)))
     aml_dv_complete_output_transition(session);
   return true;
 }

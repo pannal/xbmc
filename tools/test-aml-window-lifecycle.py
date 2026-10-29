@@ -49,6 +49,8 @@ def harness():
     for group, path in sources.items():
         source = (ROOT / path).read_text()
         methods.extend(function(source, signature) for signature in signatures[group])
+    begin = function((ROOT / sources['window']).read_text(), 'bool CWinSystemAmlogicGLESContext::BeginRender()')
+    methods.append('void CWinSystemAmlogicGLESContext::BeginHandoff()' + begin[begin.index('{'):begin.index('  if (!CanRender())')] + '}')
     header = (ROOT / 'xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.h').read_text()
     query = function(header, 'bool IsDisplayReadyForVideo()').replace(' override', '')
     render_header = (ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.h').read_text()
@@ -82,6 +84,10 @@ def main():
     source = harness()
     if args.negative_controls:
         controls = [
+            ('old frame releases handoff', 'm_videoMuteHandoff, true,', 'aml_video_mute_controller().HandoffGeneration(), true,'),
+            ('unready display releases handoff', 'IsDisplayReadyForVideo(), GetGfxContext().IsFullScreenVideo()', 'true, GetGfxContext().IsFullScreenVideo()'),
+            ('skipped renders never expire handoff', '  aml_video_mute_controller().Expire(std::chrono::steady_clock::now());', ''),
+
             ('GUI resize suppresses required HDMI handshake',
              'if (((current_resolution.iScreenWidth == res.iScreenWidth',
              'if (((current_resolution.iWidth == res.iWidth && current_resolution.iScreenWidth == res.iScreenWidth'),
@@ -122,6 +128,8 @@ def main():
 
 
 PRELUDE = r'''
+#include "utils/AMLVideoMute.h"
+CAMLVideoMute& aml_video_mute_controller(){static CAMLVideoMute c([](bool){});return c;}
 #include "windowing/amlogic/AMLDisplayLifecycle.h"
 #include "windowing/amlogic/AMLNativeTransaction.h"
 #include "rendering/RenderResource.h"
@@ -227,7 +235,8 @@ public:
   RENDER_STEREO_MODE GetStereoMode(){return stereo;}StreamHdrType GetHDRType(){return hdr;}
   void SetHDRType(StreamHdrType type){hdr=type;event("set-hdr");}
   void SetStereoView(int){event("stereo-view");}
-  bool IsFullScreenVideo(){return true;}bool IsFullScreenRoot(){return m_bFullScreenRoot;}
+  bool fullscreenVideo{true};
+  bool IsFullScreenVideo(){return fullscreenVideo;}bool IsFullScreenRoot(){return m_bFullScreenRoot;}
 };
 CGraphicContext* graphics=nullptr;
 struct IDispResource{
@@ -298,7 +307,7 @@ public:
   @READY_QUERY@
   bool CreateNewWindow(const std::string&,bool,RESOLUTION_INFO&);bool DestroyWindow();
   bool SetFullScreen(bool,RESOLUTION_INFO&,bool);bool ResetRenderSystem(int,int);
-  bool ResizeWindow(int,int,int,int);void PresentRenderImpl(bool);
+  bool ResizeWindow(int,int,int,int);void BeginHandoff();uint64_t m_videoMuteHandoff{0};void PresentRenderImpl(bool);
   void QueueKernelSwitch(const char*,int);void ApplyPendingKernelSwitch();
 };
 void SetKernelSwitch(const char* path,int value){event(std::string("kernel:")+path+":"+std::to_string(value));}
@@ -541,7 +550,24 @@ void OffMainDispatch(){
   Fixture f;messenger.main=false;assert(!f.gfx.SetVideoResolution(2,false));
   assert(events==std::vector<std::string>{"send-resolution"});assert(!f.session.DisplayBlocked());
 }
-int main(){ExactNativeParents();PendingAndLatestPayload();OwnCaptureAndDirectWindow();FailedRebind();FailedGeometry();DelayedResetAndSwap();RenderIntentAndEngage();NoModeAndForcedFrac();GuiResizeKeepsRequiredHandshake();NoModeNeedsReadiness();OffMainDispatch();}
+void CloseHandoffPresentation(){
+  Fixture f;f.gfx.fullscreenVideo=false;
+  auto& mute=aml_video_mute_controller();
+  f.win.BeginHandoff(); // Older frame cannot discharge a handoff published later.
+  auto owner=mute.Acquire();mute.Handoff(owner,std::chrono::steady_clock::now()+std::chrono::seconds(6));
+  const auto generation=mute.HandoffGeneration();assert(generation);
+  f.win.PresentRenderImpl(true);assert(mute.HandoffGeneration()==generation);
+  f.win.BeginHandoff();f.win.PresentRenderImpl(false);assert(mute.HandoffGeneration()==generation);
+  f.win.m_pGLContext.swapOk=false;f.win.PresentRenderImpl(true);assert(mute.HandoffGeneration()==generation);
+  f.win.m_pGLContext.swapOk=true;f.win.m_delayDispReset=true;f.win.m_dispResetTimer.past=false;
+  f.win.PresentRenderImpl(true);assert(mute.HandoffGeneration()==generation);
+  f.win.m_delayDispReset=false;f.gfx.fullscreenVideo=true;
+  f.win.PresentRenderImpl(true);assert(mute.HandoffGeneration()==generation);
+  f.gfx.fullscreenVideo=false;f.win.PresentRenderImpl(true);assert(!mute.HandoffGeneration());
+  owner=mute.Acquire();mute.Handoff(owner,std::chrono::steady_clock::now()-std::chrono::seconds(1));
+  f.win.PresentRenderImpl(false);assert(!mute.HandoffGeneration()); // skipped renders still expire
+}
+int main(){CloseHandoffPresentation();ExactNativeParents();PendingAndLatestPayload();OwnCaptureAndDirectWindow();FailedRebind();FailedGeometry();DelayedResetAndSwap();RenderIntentAndEngage();NoModeAndForcedFrac();GuiResizeKeepsRequiredHandshake();NoModeNeedsReadiness();OffMainDispatch();}
 '''
 
 if __name__ == '__main__':

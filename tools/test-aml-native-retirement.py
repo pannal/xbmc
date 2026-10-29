@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 function = runpy.run_path(str(ROOT / 'tools/test-render-slot-publication.py'))['function']
 
 PREFIX = r'''
+#include "utils/AMLVideoMute.h"
+CAMLVideoMute& aml_video_mute_controller(){static CAMLVideoMute c([](bool){});return c;}
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
 #include "windowing/amlogic/AMLDisplayLifecycle.h"
 #include "windowing/amlogic/AMLDeferredWork.h"
@@ -86,6 +88,7 @@ constexpr int OSD_PQ_PASSTHROUGH=1,DV_GRAPHIC_PQ=2;
 void SetKernelSwitch(int,int){effects.push_back("switch");}
 struct CEGLAttributesVec {void Add(std::initializer_list<std::pair<int,int>>) {}};
 struct EGL {
+  void CloseTextureUploadContext(){}
   bool CreateDisplay(int){effects.push_back("display-create");return true;}
   bool InitializeDisplay(int){return true;}bool ChooseConfig(int){return true;}
   bool CreateContext(const CEGLAttributesVec&){effects.push_back("context-create");return true;}
@@ -95,6 +98,8 @@ struct EGL {
 };
 struct CRenderSystemGLES {bool DestroyRenderSystem(){effects.push_back("render-destroy");return true;}};
 struct CWinSystemAmlogicGLESContext:CWinSystemAmlogic,CRenderSystemGLES {
+  void GuiABFinish(const char*){}
+  void SetNativeGuiWait(bool enabled){assert(!enabled);}
   CAMLDisplayLifecycle m_displayLifecycle;
   bool m_shutdownRequested=false,m_displayGeometryReady=true;
   std::unique_ptr<CAMLDisplayLifecycle::Mutation> m_shutdownAdmission;

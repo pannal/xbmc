@@ -60,6 +60,10 @@ def make_source(aml, header):
             + dirty_production + '\n' + wm_production + '\n' + app + TESTS)
 
 COMMON = r'''
+#include "utils/AMLVideoMute.h"
+#include "utils/GUIFrameTiming.h"
+void aml_native_gui_osd_present(bool){}
+CAMLVideoMute& aml_video_mute_controller(){static CAMLVideoMute c([](bool){});return c;}
 #include "utils/Variant.h"
 #include "utils/DVBackendState.h"
 #include "utils/TransformMatrix.h"
@@ -224,7 +228,7 @@ class CWinSystemAmlogicGLESContext:public CWinSystemAmlogic,public CRenderSystem
  int GetEGLDisplay(){return 1;}int GetEGLSurface(){return 1;}
  bool GuiABIdentity(std::vector<std::string>&);bool GuiABCurrent();void GuiABFinish(const char*);
  bool MessagePump();void GuiABBegin();bool GuiABDraw();void GuiABPresented(bool);void GuiABDrain();void GuiABMemoryFailure() noexcept;
- bool BeginRender();void PresentRenderImpl(bool);
+ bool BeginRender();uint64_t m_videoMuteHandoff{0};void PresentRenderImpl(bool);
  void ObserveEndDisplay(const char*,bool=false){}void ApplyPendingKernelSwitch(){}
  bool BeginGuiComposite(){return true;}bool EndGuiComposite(){return true;}
  void CancelGuiComposite(){GuiABFinish("render_cancelled");}

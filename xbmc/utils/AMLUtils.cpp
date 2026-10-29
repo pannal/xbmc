@@ -25,6 +25,7 @@
 #include <thread>
 
 #include "AMLUtils.h"
+#include "AMLVideoMute.h"
 #include "utils/DetectorAdmission.h"
 #include "utils/ActiveAreaDetector.h"
 #include <map>
@@ -6299,16 +6300,22 @@ bool aml_has_frac_rate_policy()
   return (has_frac_rate_policy == 1);
 }
 
-void aml_video_mute(bool mute)
+CAMLVideoMute& aml_video_mute_controller()
 {
-  static int _mute = -1;
-
-  if (_mute == -1 || (_mute != !!mute))
-  {
-    _mute = !!mute;
-    CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vid_mute", _mute);
-    CLog::Log(LOGDEBUG, "AMLUtils::{} - {} video", __FUNCTION__, mute ? "mute" : "unmute");
-  }
+  static CAMLVideoMute controller([](bool mute) {
+    // A failed sysfs write must not unwind decoder/native admission or strand
+    // ownership. This records a request, not physical VENC acknowledgement.
+    try
+    {
+      CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vid_mute", mute ? 1 : 0);
+      CLog::Log(LOGDEBUG, "AMLUtils::video_mute - {} video", mute ? "mute" : "unmute");
+    }
+    catch (...)
+    {
+      CLog::Log(LOGERROR, "AMLUtils::video_mute - request failed");
+    }
+  });
+  return controller;
 }
 
 void aml_set_audio_passthrough(bool passthrough)

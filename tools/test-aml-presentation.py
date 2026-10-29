@@ -46,7 +46,9 @@ def main():
     publish = publish[:publish.rindex("  return true;")]
     closed = function(source, "void CAMLCodec::CloseDecoderInternal()" if session else "void CAMLCodec::CloseDecoder()")
     close_gate = closed.split('  CLog::Log(LOGINFO, "CAMLCodec::CloseDecoder");', 1)[1]
-    close_gate = close_gate.split("  // Make sure the green-flash hold", 1)[0]
+    marker = ("  // Keep the restart hold" if "  // Keep the restart hold" in close_gate
+              else "  // Make sure the green-flash hold")
+    close_gate = close_gate.split(marker, 1)[0]
     rect = function(source, "void CAMLCodec::SetVideoRect(")
     rect_gate = rect[rect.index("{") + 1:rect.index("  // this routine gets called")]
     release = function(source, "int CAMLCodec::ReleaseFrame(")

@@ -265,6 +265,7 @@ if(AML_FOUND)
                       ScreenshotAML.cpp)
   list(APPEND HEADERS ActiveAreaCache.h
                       AMLUtils.h
+                      AMLVideoMute.h
                       AMLNativeWorker.h
                       ScreenshotAML.h)
 endif()

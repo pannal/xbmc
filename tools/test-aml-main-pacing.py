@@ -24,6 +24,10 @@ def function(path, signature):
 
 
 HARNESS = r"""
+#include "utils/AMLVideoMute.h"
+#include "utils/GUIFrameTiming.h"
+void aml_native_gui_osd_present(bool){}
+CAMLVideoMute& aml_video_mute_controller(){static CAMLVideoMute c([](bool){});return c;}
 #include <cassert>
 #include <chrono>
 #include <memory>
@@ -98,7 +102,9 @@ struct CWinSystemAmlogicGLESContext {
  int CaptureRenderTarget(){return 1;} bool CanRender(){return true;}
  bool IsRenderTargetCurrent(int){return true;}void ApplyPendingKernelSwitch(){}
  void ObserveEndDisplay(const char*,bool = false){}
- void PresentRenderImpl(bool rendered);
+ bool IsDisplayReadyForVideo(){return displayReady;}
+ Gfx& GetGfxContext(){return CServiceBroker::GetWinSystem()->gfx;}
+ uint64_t m_videoMuteHandoff{0};void PresentRenderImpl(bool rendered);
 };
 @AML@
 struct CRenderSystemGLES:CWinSystemAmlogicGLESContext{

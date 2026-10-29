@@ -562,6 +562,9 @@ void test_output_completion() {
   check(aml_dv_output_transition_pending(owner),"same mode waits for follow-up update");
   g_render.ContinueDeferredDV(true);
   check(aml_dv_output_transition_pending(owner),"idle stale poll cannot complete follow-up");
+  g_fullscreen=false;g_render.ContinueDeferredDV(true);
+  check(aml_dv_output_transition_pending(owner),"windowed idle stale poll cannot complete follow-up");
+  g_fullscreen=true;
   g_render.FrameDeferredDV();
   check(!aml_dv_output_transition_pending(owner),"same mode follow-up completes output");
   // No fullscreen update: bounded fallback must complete at the current mode.
@@ -569,6 +572,12 @@ void test_output_completion() {
   g_render.FrameDeferredDV();
   check(!aml_dv_output_transition_pending(owner),"background engage completes output");
   g_fullscreen=true;
+  // A stale engage reached in fullscreen must wait for its own follow-up.
+  deferred_open();owner=s_dvPlaybackSession;g_nowMs+=3100;
+  g_render.ContinueDeferredDV(true);
+  check(aml_dv_output_transition_pending(owner),"fullscreen stale engage waits for follow-up");
+  g_render.FrameDeferredDV();
+  check(!aml_dv_output_transition_pending(owner),"fullscreen fallback follow-up completes output");
   // Consuming a request is not success. Failure keeps blackout eligible for
   // bounded recovery, rather than the next idle update declaring completion.
   deferred_open();owner=s_dvPlaybackSession;throwEngage=true;
@@ -634,7 +643,8 @@ int main() {
             ('complete before programming', ' && transition->programmed.load()', ''),
             ('publish success before effects', '    aml_dv_on(s_dvDiscDeferredMode);', '    if(auto t=std::atomic_load(&s_dvOutputTransition)) { t->programmed=true; }\n    aml_dv_on(s_dvDiscDeferredMode);'),
             ('clear blackout at engage', 'transition->programmed = true;', '{ transition->programmed = true; aml_dv_complete_output_transition(transition->session); }'),
-            ('stale poll discharges follow-up', '(staleOnly && pending)', 'staleOnly'),
+            ('stale poll discharges follow-up', 'staleOnly && pending &&', 'staleOnly &&'),
+            ('fullscreen fallback skips follow-up', '(!fullscreen || !m_bTriggerUpdateResolution)', 'true'),
             ('bypass admission','if (!m_deferredDVNative->TryBegin())','if (false && !m_deferredDVNative->TryBegin())'),
             ('ignore snapshot identity','if (!session || session != std::atomic_load(&s_dvPlaybackSession))','if (false)'),
             ('ignore effect identity','if (!atModeSet && (!session || session != std::atomic_load(&s_dvPlaybackSession)))','if (false)'),

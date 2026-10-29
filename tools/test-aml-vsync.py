@@ -11,6 +11,10 @@ import tempfile
 ROOT=Path(__file__).resolve().parents[1]
 function=runpy.run_path(str(ROOT/'tools/test-render-slot-publication.py'))['function']
 PRELUDE=r"""
+#include "utils/AMLVideoMute.h"
+#include "utils/GUIFrameTiming.h"
+void aml_native_gui_osd_present(bool){}
+CAMLVideoMute& aml_video_mute_controller(){static CAMLVideoMute c([](bool){});return c;}
 #include "windowing/amlogic/AMLDisplayLifecycle.h"
 #include "windowing/amlogic/AMLNativeTransaction.h"
 #include "utils/PlaybackEndDiagnostics.h"
@@ -36,6 +40,8 @@ static int aml_dv_mode(){return 1;}
 static void aml_dv_wait_for_pipeline(){}
 static bool aml_dv_restore_gui_ipt(const char*){return false;}
 static void aml_dv_display_trigger(){}
+static void aml_native_gui_commit(){}
+constexpr int LOGWARNING=2,RENDER_STEREO_MODE_OFF=0;
 static void aml_hdr10plus_vsif_hold(bool){}
 enum class AMLHDMILinkSample {SKIPPED,UNCHANGED,CHANGED};
 static AMLHDMILinkSample aml_hdmi_link_probe(const char*){return AMLHDMILinkSample::SKIPPED;}
@@ -56,7 +62,7 @@ struct CEGLContextUtils{
  bool BindContext(){++binds;bound=bindSuccess;return bound;}
  void DestroySurface(){m_eglSurface=0;bound=false;}
 };
-struct Gfx{StreamHdrType hdr=StreamHdrType::HDR_TYPE_SDR;int GetStereoMode(){return 0;}StreamHdrType GetHDRType(){return hdr;}};
+struct Gfx{bool IsFullScreenVideo(){return true;}StreamHdrType hdr=StreamHdrType::HDR_TYPE_SDR;int GetStereoMode(){return 0;}StreamHdrType GetHDRType(){return hdr;}};
 struct BrokerWindow{Gfx gfx;Gfx& GetGfxContext(){return gfx;}};
 // Keep the existing fixture on the normal DV handshake path.
 struct CSettings{static constexpr int SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS=1;};
@@ -90,7 +96,8 @@ struct CRenderSystemGLES{
  void SetVSync(bool);void ResetVSync(){m_bVsyncInit=false;}
  virtual void SetVSyncImpl(bool)=0;
  virtual bool CanRender(){return m_bRenderCreated;}
- bool ResetRenderSystem(int,int){m_bRenderCreated=true;return true;}
+ int m_nWidth=0,m_nHeight=0;
+ bool ResetRenderSystem(int w,int h){m_nWidth=w;m_nHeight=h;m_bRenderCreated=true;return true;}
  Target CaptureRenderTarget(){return {identity,generation};}
  bool IsRenderTargetCurrent(const Target& t){return t.identity==identity&&t.generation==generation;}
  void InvalidateRenderTarget(){++generation;}
@@ -110,7 +117,7 @@ struct CWinSystemAmlogicGLESContext:CWinSystemAmlogic,CRenderSystemGLES{
  void ObserveEndDisplay(const char*,bool=false){}
  bool CreateNewWindow(const std::string&,bool,RESOLUTION_INFO&);bool DestroyWindow();
  bool ResetRenderSystem(int,int);bool SetFullScreen(bool,RESOLUTION_INFO&,bool);
- void SetVSyncImpl(bool)override;void PresentRenderImpl(bool);
+ void SetVSyncImpl(bool)override;bool IsDisplayReadyForVideo(){return m_displayLifecycle.Ready()&&m_displayGeometryReady&&!m_delayDispReset&&CanRender();}uint64_t m_videoMuteHandoff{0};void PresentRenderImpl(bool);
 };
 """
 TESTS=r"""

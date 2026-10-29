@@ -104,6 +104,7 @@ protected:
   void PresentRenderImpl(bool rendered) override;
 
 private:
+  uint64_t m_videoMuteHandoff{0};
   struct GuiAB
   {
     static constexpr unsigned int BUDGET = 72;

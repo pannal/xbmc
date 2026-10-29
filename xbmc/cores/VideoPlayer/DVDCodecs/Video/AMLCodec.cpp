@@ -25,6 +25,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
+#include "utils/AMLVideoMute.h"
 #include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
 #include "utils/TimeUtils.h"
@@ -1874,6 +1875,7 @@ CAMLCodec::CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints, StreamHdr
 
 CAMLCodec::~CAMLCodec()
 {
+  HoldVideo(false);
   delete am_private;
   am_private = NULL;
   delete m_dll, m_dll = NULL;
@@ -2067,6 +2069,10 @@ bool CAMLCodec::ContinueLifecycle()
   bool success = true;
   try
   {
+    // Wrapper restoration can change DV/HDMI before codec_close. Mask it too.
+    if ((operation == Lifecycle::CLOSE || operation == Lifecycle::REOPEN) &&
+        (m_decoderNeedsClose || m_beforeClose))
+      HoldVideo(VideoRestartHoldWanted());
     if (operation == Lifecycle::CLOSE && m_beforeClose)
     {
       // Consume before invocation: nested retries or exceptions must not replay
@@ -2097,6 +2103,7 @@ bool CAMLCodec::ContinueLifecycle()
     m_lifecycle = Lifecycle::NONE;
     CAMLSession::EndNative(m_nativeLifecycleRequest);
     m_nativeLifecycleRequest.reset();
+    HoldVideo(false);
     CLog::Log(LOGERROR, "p3i-transition t_us={} session={} request={} codec_op={} stage=exception execution_us={}",
               PLAYBACK_DIAGNOSTICS::NowUs(), diagnostic.id, m_lifecycleRequest.serial,
               static_cast<int>(operation), PLAYBACK_DIAGNOSTICS::NowUs() - executionStart);
@@ -2108,6 +2115,8 @@ bool CAMLCodec::ContinueLifecycle()
   m_lifecycle = Lifecycle::NONE;
   CAMLSession::EndNative(m_nativeLifecycleRequest);
   m_nativeLifecycleRequest.reset();
+  if (operation == Lifecycle::CLOSE || !success)
+    HandoffVideoHold();
   const auto completed = m_session.Diagnostics();
   CLog::Log(LOGINFO, "p3i-transition t_us={} session={} epoch={} request={} codec_op={} stage=completed "
             "success={} execution_us={} qbuf={} drop={} qbuf_errors={} qbuf_us={} "
@@ -2210,6 +2219,11 @@ bool CAMLCodec::OpenDecoderInternal()
   // assert the hold here, released after the first applied replacement.
   if (VideoRestartHoldWanted())
     HoldVideo(true);
+  else
+  {
+    HoldVideo(false);
+    aml_video_mute_controller().CancelHandoff();
+  }
 
   am_packet_init(&am_private->am_pkt);
   // default stream type
@@ -2629,9 +2643,6 @@ bool CAMLCodec::OpenDecoderInternal()
 
   CSysfsPath("/sys/class/video/freerun_mode", 1);
 
-  // set video mute to hide waste frames
-  //aml_video_mute(true);
-
   m_opened = true;
   // vcodec is open, update speed if it was
   // changed before VideoPlayer called OpenDecoder.
@@ -2710,8 +2721,8 @@ void CAMLCodec::CloseDecoderInternal()
     m_presentationActive = false;
   }
 
-  // Make sure the green-flash hold can't outlive the decoder.
-  HoldVideo(false);
+  // Keep the restart hold through decoder/DV teardown. ContinueLifecycle
+  // transfers it only after native mutation ends; REOPEN retains its owner.
 
   SetPollDevice(-1);
 
@@ -3717,7 +3728,7 @@ bool CAMLCodec::VideoRestartHoldWanted() const
 
 // Blank or release the whole video output across a decode (re)start so the brief
 // green flash — the decoder reusing the still-displayed frame buffer — isn't
-// shown. Uses aml_video_mute(): a solid-black VENC test pattern after composition
+// shown. Uses an owned solid-black VENC test pattern after composition
 // (no HDMI AVMUTE, DV-tunnel safe), the only stage that reliably catches the flash
 // (a plane-disable loses the restart race). Release requires a current provider's
 // applied replacement receipt on supported routes. Confirmed unsupported routes
@@ -3742,8 +3753,8 @@ void CAMLCodec::HoldVideo(bool hold)
             "videoscreen.delayrefreshchange") * 100);
     if (m_videoHoldActive)
       return;
+    m_videoMuteOwner = aml_video_mute_controller().Acquire();
     m_videoHoldActive = true;
-    aml_video_mute(true);
     // Opt-in seek-edge settle: let the encoder blanking actually reach the wire
     // before the caller resets the decoder. The VENC mute engages a vsync or two
     // after the sysfs write; codec_reset can otherwise scan out a torn first
@@ -3827,8 +3838,24 @@ void CAMLCodec::ReleaseVideoHoldLocked(const char* reason)
   m_videoHoldDVWaiting = false;
   m_videoHoldProviderEpoch = 0;
   m_videoHoldDecodedEpoch = 0;
-  aml_video_mute(false);
+  aml_video_mute_controller().Release(std::exchange(m_videoMuteOwner, {}));
   CLog::Log(LOGDEBUG, "CAMLCodec::HoldVideo - release ({})", reason);
+}
+
+void CAMLCodec::HandoffVideoHold()
+{
+  std::lock_guard<std::mutex> lock(m_videoHoldMutex);
+  if (!m_videoHoldActive)
+    return;
+  // Allow the existing delayed display reset plus one normal hold budget. The
+  // GUI render loop expires this lease even when it cannot present a frame.
+  aml_video_mute_controller().Handoff(m_videoMuteOwner,
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(m_videoHoldTimeoutMs + 3000));
+  m_videoMuteOwner.reset();
+  m_videoHoldActive = false;
+  m_videoHoldDVWaiting = false;
+  m_videoHoldProviderEpoch = 0;
+  m_videoHoldDecodedEpoch = 0;
 }
 
 void CAMLCodec::CheckVideoHold()

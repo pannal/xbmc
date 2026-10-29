@@ -23,6 +23,7 @@ def function(s, sig):
 
 PRELUDE = r'''
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
+#include "utils/AMLVideoMute.h"
 #include <cassert>
 #include <cmath>
 #include <cerrno>
@@ -54,6 +55,7 @@ struct CServiceBroker {static Settings* GetSettingsComponent(){return &settings;
 static bool muted; static unsigned unmutes;
 static std::function<void()> muteHook;
 void aml_video_mute(bool mute){if(muteHook)muteHook();muted=mute;if(!mute)++unmutes;}
+CAMLVideoMute& aml_video_mute_controller(){static CAMLVideoMute c(aml_video_mute);return c;}
 static std::string receiptPath,routePath;
 static int nextQbuf=0, nextPoll=1; static unsigned qbufs; static short nextEvents=POLLOUT;
 struct Device {int IOControl(unsigned long op,v4l2_buffer*){assert(op==VIDIOC_QBUF);++qbufs;errno=EIO;return nextQbuf;}};
@@ -65,6 +67,7 @@ class CAMLCodec {
 public:
  CAMLSession m_session;
  std::shared_ptr<const void> m_dvSession=std::make_shared<const int>(1);
+ std::shared_ptr<const void> m_videoMuteOwner;
  bool m_videoHoldDVWaiting=false;
  struct {StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE;}m_hints;
  bool VideoRestartHoldWanted() const;
@@ -80,7 +83,8 @@ public:
  bool m_keepMPEG2Progressive=false;
  int m_speed=DVD_PLAYSPEED_NORMAL;
  bool VideoHoldDVReady();
- void HoldVideo(bool);void CheckVideoHold();void VideoHoldDecoded();
+ void StartupHold(){@STARTUP_HOLD@}
+ void HandoffVideoHold();void HoldVideo(bool);void CheckVideoHold();void VideoHoldDecoded();
  void ReleaseVideoHoldLocked(const char* reason="cancel");
  @PRESENTATION_TYPES@
  static bool ReadVideoPresentation(VideoPresentation&);
@@ -209,6 +213,21 @@ int main(int argc,char** argv){
  c.HoldVideo(false);
  routeCases(c);
  dvCases(c);
+ // Actual codec release/handoff bodies must not pulse unmute between episodes.
+ c.HoldVideo(true);const unsigned before=unmutes;
+ c.HandoffVideoHold();assert(muted&&!c.m_videoHoldActive&&unmutes==before);
+ const auto lease=aml_video_mute_controller().HandoffGeneration();assert(lease);
+ c.HoldVideo(false);assert(muted&&unmutes==before); // old decoder destruction
+ CAMLCodec next;next.StartupHold();
+ aml_video_mute_controller().Presented(lease,true,true,false);assert(muted);
+ next.HoldVideo(false);assert(!muted&&unmutes==before+1);
+ c.HoldVideo(true);c.HandoffVideoHold();
+ aml_video_mute_controller().Expire(std::chrono::steady_clock::now()+std::chrono::seconds(7));
+ assert(!muted && "abandoned close handoff expires");
+ c.HoldVideo(true);c.HandoffVideoHold();settings.master=false;
+ next.StartupHold();assert(!muted&&!aml_video_mute_controller().HandoffGeneration());
+ settings.master=true;
+
  settings.master=false;c.Reset();assert(!muted);c.Submit();c.Poll();assert(!muted);
  settings.master=true;settings.dvOnly=true;c.Reset();assert(!muted);
  c.m_hints.hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;c.Reset();assert(muted);c.HoldVideo(false);
@@ -238,19 +257,23 @@ def main():
         dq += body[body.index('    videoPicture.dts ='):body.index('    const int infoResult =')]
     methods='\n'.join(function(s,sig) for sig in [
         'bool CAMLCodec::VideoRestartHoldWanted(', 'void CAMLCodec::HoldVideo(', 'bool CAMLCodec::ReadVideoPresentation(',
-        'void CAMLCodec::VideoHoldDecoded(',
+        'void CAMLCodec::VideoHoldDecoded(', 'void CAMLCodec::HandoffVideoHold(',
         'bool CAMLCodec::VideoHoldDVReady(', 'void CAMLCodec::ReleaseVideoHoldLocked(', 'void CAMLCodec::CheckVideoHold(',
         'int CAMLCodec::ReleaseFrame(', 'int CAMLCodec::PollFrame('] if sig in s)
     methods=methods.replace('"/sys/class/video/presentation_state"','receiptPath').replace('"/sys/class/video/presentation_route_state"','routePath')
     assert 'CheckVideoHold();' in function(s,'CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(')
-    assert 'HoldVideo(false);' in function(s,'void CAMLCodec::CloseDecoderInternal(')
+    if not args.baseline_unsupported:
+        assert 'HandoffVideoHold();' in function(s,'bool CAMLCodec::ContinueLifecycle(')
+        assert 'HoldVideo(false);' not in function(s,'void CAMLCodec::CloseDecoderInternal(')
     assert 'HoldVideo(VideoRestartHoldWanted());' in function(s,'void CAMLCodec::ResetInternal(')
     header=(ROOT/'xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h').read_text()
     types=function(header,'enum class VideoPresentationRoute')+';\n'+function(header,'struct VideoPresentation\n')+';'
     aml=(ROOT/'xbmc/utils/AMLUtils.cpp').read_text()
     dv=function(aml,'struct AMLDVOutputTransition')+';\nstatic std::shared_ptr<AMLDVOutputTransition> s_dvOutputTransition;\n'
     dv+=function(aml,'bool aml_dv_output_transition_pending(')+function(aml,'void aml_dv_complete_output_transition(')
-    prelude=PRELUDE.replace('@DQBUF@',dq).replace('@PRESENTATION_TYPES@',types).replace('@DV_TRANSITION@',dv)
+    startup=function(s,'bool CAMLCodec::OpenDecoderInternal(')
+    startup=startup[startup.index('  if (VideoRestartHoldWanted())'):startup.index('  am_packet_init(')]
+    prelude=PRELUDE.replace('@STARTUP_HOLD@',startup).replace('@DQBUF@',dq).replace('@PRESENTATION_TYPES@',types).replace('@DV_TRANSITION@',dv)
     tests=TESTS
     if args.baseline_unsupported:
         prelude=prelude.replace('static bool ReadVideoPresentation(VideoPresentation&);','static bool ReadVideoPresentation(uint64_t&,uint64_t&);').replace('void ReleaseVideoHoldLocked(const char* reason="cancel");','void ReleaseVideoHoldLocked();')

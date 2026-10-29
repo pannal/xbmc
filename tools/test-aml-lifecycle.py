@@ -78,6 +78,9 @@ def main():
     source = harness()
     if args.negative_controls:
         controls = [
+            ('wrapper restore before blackout', '      HoldVideo(VideoRestartHoldWanted());', '      (void)0;'),
+            ('exception strands blackout', '    HoldVideo(false);', '    (void)0;'),
+
             ('open loses preselected pause', '  bool OpenDecoderInternal() {',
              '  bool OpenDecoderInternal() { m_speed=DVD_PLAYSPEED_NORMAL;'),
             ('speed marks applied before driver update', 'm_requestedSpeed = speed;',
@@ -248,6 +251,9 @@ public:
     if(m_opened) {++generation;SetPollDevice(nextDescriptor);}
     return m_opened;
   }
+  bool VideoRestartHoldWanted()const{return true;}
+  void HoldVideo(bool hold){holdActive=hold;}
+  void HandoffVideoHold(){assert(!m_nativeLifecycleRequest && "handoff after native completion");holdActive=false;}
   void CloseDecoderInternal() {
     MutationOnly(); trace.push_back("close");
     if(onClose) onClose();
@@ -678,7 +684,19 @@ void InternalRecovery() {
   assert(codec.AddData(packet,1,1,1));
   assert(!codec.LifecyclePending() && codec.trace.size()==before);
 }
+void CloseMaskOrder() {
+  CAMLCodec codec;assert(codec.OpenDecoder());codec.holdActive=false;
+  codec.onClose=[&]{assert(codec.holdActive && "teardown retains blackout");};
+  assert(codec.CloseDecoder([&]{assert(codec.holdActive && "wrapper restoration starts masked");}));
+  assert(!codec.holdActive);
+  assert(codec.OpenDecoder());codec.holdActive=false;
+  assert(codec.ReopenDecoder());assert(codec.holdActive);
+  codec.holdActive=false;codec.onClose=[&]{assert(codec.holdActive);throw 1;};
+  try{codec.CloseDecoder();assert(false);}catch(int){}
+  assert(!codec.holdActive && "exception releases owned mute");
+}
 int main() {
+  CloseMaskOrder();
   SpeedDuringDisplay(); DecoderDisplayAdmission();
   PollSessionAndDescriptor();
   PollPacingResults(); PendingThroughActualPoll();

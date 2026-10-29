@@ -18,6 +18,7 @@
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/AMLUtils.h"
+#include "utils/AMLVideoMute.h"
 #include "utils/PlaybackDiagnostics.h"
 #include "utils/PlaybackEndDiagnostics.h"
 #include "utils/log.h"
@@ -286,6 +287,7 @@ bool CWinSystemAmlogicGLESContext::DestroyWindowSystem()
 {
   if (!PrepareForShutdown())
     return false;
+  aml_video_mute_controller().CancelHandoff();
   // Also cover direct/failed-startup teardown without Application::Cleanup.
   DestroyRenderSystem();
   ReleaseCompositeResources();
@@ -633,6 +635,7 @@ void CWinSystemAmlogicGLESContext::ObserveEndDisplay(const char* event, bool mil
 
 void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
 {
+  aml_video_mute_controller().Expire(std::chrono::steady_clock::now());
   PLAYBACK_DIAGNOSTICS::endDisplay.Generation(m_displayLifecycle.Serial());
   const auto target = CaptureRenderTarget();
   // GUI-path HDMI link watchdog: catches a sink dropping sync in the menus,
@@ -704,6 +707,8 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   {
     m_presentResult = PresentResult::SWAP_ACCEPTED;
     ApplyPendingKernelSwitch();
+    aml_video_mute_controller().Presented(m_videoMuteHandoff, true,
+        IsDisplayReadyForVideo(), GetGfxContext().IsFullScreenVideo());
   }
   else
     m_presentResult = PresentResult::SWAP_FAILED;
@@ -929,6 +934,8 @@ void CWinSystemAmlogicGLESContext::DisengageMenuComposite()
 
 bool CWinSystemAmlogicGLESContext::BeginRender()
 {
+  // A frame begun before teardown completed cannot release its later handoff.
+  m_videoMuteHandoff = aml_video_mute_controller().HandoffGeneration();
   if (!CanRender())
     return CRenderSystemGLES::BeginRender();
 

@@ -172,6 +172,7 @@ private:
   // applied replacement frame, or a decoded frame on explicitly unsupported
   // routes, masking the brief green flash.
   void          HoldVideo(bool hold);
+  void          HandoffVideoHold();
   void          CheckVideoHold();
   void          VideoHoldDecoded();
   bool          VideoHoldDVReady(); // caller holds m_videoHoldMutex
@@ -242,6 +243,7 @@ private:
   // output is blanked (aml_video_mute, VENC black) across a decode (re)start until
   // an applied replacement frame, then released. Decoder and presenter overlap.
   std::mutex       m_videoHoldMutex;
+  std::shared_ptr<const void> m_videoMuteOwner;
   bool             m_videoHoldActive = false;
   bool             m_videoHoldDVWaiting = false;
   uint64_t         m_videoHoldProviderEpoch = 0;

@@ -377,7 +377,8 @@ bool aml_transfer_pq_at_open();
 // Whether the DV core was engaged when aml_set_transfer_pq last ran.
 bool aml_dv_core_at_open();
 bool aml_has_frac_rate_policy();
-void aml_video_mute(bool mute);
+class CAMLVideoMute;
+CAMLVideoMute& aml_video_mute_controller();
 void aml_set_audio_passthrough(bool passthrough);
 void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
 bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res);
