@@ -13,14 +13,21 @@
 #include <mutex>
 #include <utility>
 
-// One sysfs reference for all Kodi restart holds. Exact owners prevent a late
-// decoder release from unmuting its replacement. The writer must not throw.
+// One kernel mute request for all Kodi restart holds. Exact owners prevent a
+// late decoder release from unmuting its replacement. The writer must not throw.
 class CAMLVideoMute
 {
 public:
   using Owner = std::shared_ptr<const void>;
   using Clock = std::chrono::steady_clock;
-  explicit CAMLVideoMute(std::function<void(bool)> writer) : m_writer(std::move(writer)) {}
+  explicit CAMLVideoMute(std::function<void(bool)> writer, bool resetDedicatedSlot = false)
+    : m_writer(std::move(writer))
+  {
+    // Only a dedicated, idempotent Kodi slot can be reset after process loss.
+    // Never drain the anonymous legacy reference count at startup.
+    if (resetDedicatedSlot)
+      m_writer(false);
+  }
 
   Owner Acquire()
   {

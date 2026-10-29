@@ -6302,19 +6302,33 @@ bool aml_has_frac_rate_policy()
 
 CAMLVideoMute& aml_video_mute_controller()
 {
+  // This process owns only the named Kodi slot. Legacy kernels have an
+  // anonymous shared reference count, whose stale owners cannot be inferred.
+  static const bool dedicated = [] {
+    try
+    {
+      return CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vid_mute_kodi").Exists();
+    }
+    catch (...)
+    {
+      CLog::Log(LOGERROR, "AMLUtils::video_mute - cannot probe dedicated slot");
+      return false;
+    }
+  }();
   static CAMLVideoMute controller([](bool mute) {
     // A failed sysfs write must not unwind decoder/native admission or strand
     // ownership. This records a request, not physical VENC acknowledgement.
     try
     {
-      CSysfsPath("/sys/class/amhdmitx/amhdmitx0/vid_mute", mute ? 1 : 0);
+      CSysfsPath(dedicated ? "/sys/class/amhdmitx/amhdmitx0/vid_mute_kodi"
+                          : "/sys/class/amhdmitx/amhdmitx0/vid_mute", mute ? 1 : 0);
       CLog::Log(LOGDEBUG, "AMLUtils::video_mute - {} video", mute ? "mute" : "unmute");
     }
     catch (...)
     {
       CLog::Log(LOGERROR, "AMLUtils::video_mute - request failed");
     }
-  });
+  }, dedicated);
   return controller;
 }
 
