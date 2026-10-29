@@ -17,6 +17,7 @@
 #include "settings/lib/Setting.h"
 #include "cores/AudioEngine/Utils/PackerMAT.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
+#include "utils/Crc32.h"
 #include "utils/log.h"
 
 #include <algorithm>
@@ -432,6 +433,14 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
       {
         m_trueHDBuffer = m_packerMAT->GetOutputFrame();
         m_dataSize = TRUEHD_BUF_SIZE;
+
+        if (CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG))
+        {
+          // The first eight bytes are reserved for the later IEC header.
+          CLog::Log(LOGDEBUG, "TrueHD delivery codec: mat={} bytes={} payload_crc={:08x}",
+                    m_packerMAT->GetOutputFrameNumber(), m_trueHDBuffer.size(),
+                    Crc32::Compute(m_trueHDBuffer.data() + 8, m_trueHDBuffer.size() - 8));
+        }
 
         if (m_lavStyleSyncEnabled)
         {

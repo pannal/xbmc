@@ -19,6 +19,7 @@
 #include "platform/Platform.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/Crc32.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 
@@ -1246,6 +1247,10 @@ unsigned int CAESinkALSA::AddPackets(uint8_t **data, unsigned int frames, unsign
   unsigned int amount = 0;
   int64_t data_left = (int64_t) frames;
   int frames_written = 0;
+  const bool traceTrueHD = m_passthrough &&
+                          m_format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD &&
+                          CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG);
+  Crc32 acceptedCrc;
 
   while (data_left > 0)
   {
@@ -1278,9 +1283,21 @@ unsigned int CAESinkALSA::AddPackets(uint8_t **data, unsigned int frames, unsign
     if (ret <= 0)
       break;
 
+    if (traceTrueHD && static_cast<unsigned int>(ret) <= amount)
+      acceptedCrc.Compute(static_cast<const char*>(buffer), ret * m_format.m_frameSize);
+
     frames_written += ret;
     data_left -= ret;
     buffer = data[0]+offset*m_format.m_frameSize + frames_written*m_format.m_frameSize;
+  }
+  if (traceTrueHD)
+  {
+    // Successful write returns witness software acceptance, not HDMI/eARC reception.
+    CLog::Log(LOGDEBUG,
+              "TrueHD delivery ALSA: offset={} requested={} accepted={} frame_size={} "
+              "accepted_crc={:08x}",
+              offset, frames, frames_written, m_format.m_frameSize,
+              static_cast<uint32_t>(acceptedCrc));
   }
   return frames_written;
 }

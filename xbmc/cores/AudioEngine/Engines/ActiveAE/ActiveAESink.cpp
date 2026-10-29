@@ -9,10 +9,12 @@
 #include "ActiveAESink.h"
 
 #include "ActiveAE.h"
+#include "ServiceBroker.h"
 #include "cores/AudioEngine/AEResampleFactory.h"
 #include "cores/AudioEngine/Utils/AEBitstreamPacker.h"
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
+#include "utils/Crc32.h"
 #include "utils/EndianSwap.h"
 #include "utils/MemUtils.h"
 #include "utils/log.h"
@@ -1028,6 +1030,12 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   unsigned int written = 0;
   AEDelayStatus status;
 
+  const bool traceTrueHD = m_requestedFormat.m_dataFormat == AE_FMT_RAW && m_needIecPack &&
+                          m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD &&
+                          CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG);
+  const bool traceMAT = traceTrueHD && frames == 61440;
+  const uint32_t payloadCrc = traceMAT ? Crc32::Compute(buffer[0] + 8, frames - 8) : 0;
+
   if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
   {
     bool skipSwap = false;
@@ -1084,6 +1092,23 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   }
 
   int framesOrPackets;
+
+  if (traceMAT)
+  {
+    // carrier_crc includes the IEC header and byte order handed to the sink.
+    CLog::Log(LOGDEBUG,
+              "TrueHD delivery sink: payload_crc={:08x} carrier_bytes={} carrier_crc={:08x} "
+              "frames={} frame_size={}",
+              payloadCrc, totalFrames * m_sinkFormat.m_frameSize,
+              Crc32::Compute(buffer[0], totalFrames * m_sinkFormat.m_frameSize), totalFrames,
+              m_sinkFormat.m_frameSize);
+  }
+  else if (traceTrueHD)
+  {
+    // Separate pause/non-MAT writes from the preceding MAT's acceptance records.
+    CLog::Log(LOGDEBUG, "TrueHD delivery other: input_bytes={} carrier_frames={}",
+              samples->pkt->nb_samples, totalFrames);
+  }
 
   while (frames > 0)
   {
