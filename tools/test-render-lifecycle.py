@@ -549,7 +549,8 @@ struct Graphics
 };
 using CGraphicContext = Graphics;
 struct Window { Graphics graphics; Graphics& GetGfxContext() { return graphics; } };
-struct Cache { void Reset() { trace.push_back("cache-reset"); } };
+struct Cache { void Reset() { trace.push_back("cache-reset"); }
+  void SetVideoActivePicture(std::initializer_list<int>) {} };
 enum class StreamHdrType {NONE};
 struct CStreamDetails { static int DynamicRangeToString(StreamHdrType) { return 0; } };
 struct VideoPicture
@@ -624,6 +625,7 @@ struct CRenderManager
   bool flushResult{true};
   enum { PRESENT_IDLE, PRESENT_READY, STATE_UNCONFIGURED, STATE_CONFIGURING, STATE_CONFIGURED };
   std::shared_ptr<CRenderLifecycle::Request> m_configRequest;
+  Cache m_dataCacheCore;
   VideoPicture m_picture;
   std::unique_ptr<VideoPicture> m_pConfigPicture;
   float m_fps{0}; unsigned m_orientation{0}; int m_NumberBuffers{0};
@@ -701,8 +703,10 @@ struct Aborter
 };
 struct Edl { void Clear() { trace.push_back("edl-clear"); } };
 struct ProcessInfo { void SetDataCache(Cache*) { trace.push_back("set-cache"); } };
+void aml_detector_end_playback(uint64_t) {}
 struct CVideoPlayer
 {
+  uint64_t m_detectorPlaybackId=0;
   struct { void Invalidate() {} } m_vs10Action;
   CRenderManager m_renderManager;
   bool m_bAbortRequest{false}, m_bCloseRequest{false};

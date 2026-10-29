@@ -33,6 +33,7 @@
 #include "settings/SubtitlesSettings.h"
 #include "threads/SingleLock.h"
 #include "utils/AMLUtils.h"
+#include "utils/AMLVideoMute.h"
 #include "utils/PlaybackDiagnostics.h"
 #include "utils/PlaybackEndDiagnostics.h"
 #include "utils/StringUtils.h"
@@ -422,6 +423,11 @@ bool CRenderManager::Configure()
     m_renderState = STATE_CONFIGURED;
 #if defined(HAS_LIBAMCODEC)
     auto* aml = dynamic_cast<CRendererAML*>(m_pRenderer);
+    // A software/non-AML successor has no codec hold to adopt the close
+    // handoff. Supersede it after successful configuration, including a late
+    // old close, without releasing another decoder's active owner.
+    if (!aml)
+      aml_video_mute_controller().CancelHandoff();
     const bool enabled = m_amlIndependentPresenter;
     const bool stereo = !(m_picture.stereoMode.empty() || m_picture.stereoMode == "mono") ||
         CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_OFF;
