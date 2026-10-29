@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Exercise a disc session's deferred DV engage without hardware or a CE build.
+"""Exercise native startup and disc deferred DV output without hardware.
 
-Compile the production CRenderManager::UpdateResolution(), the deferred-engage
+Compile production aml_dv_open/close, CRenderManager::UpdateResolution(), deferred-engage
 functions and the CreateNewWindow() engage gate with stand-ins for the display,
 settings and aml_dv_on(). The stand-in aml_dv_on() requests a resolution update
 exactly when the production IPT branch does (checked against the source): unless
@@ -37,6 +37,7 @@ def function(source, signature):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", metavar="REV", help="test the source at REV")
+    parser.add_argument("--baseline-open", metavar="REV", help="substitute only the old production open policy")
     parser.add_argument("--negative-controls", action="store_true")
     args = parser.parse_args()
 
@@ -58,6 +59,15 @@ def main():
                      dv_on):
         raise SystemExit("aml_dv_on(): IPT update request changed; update the stand-in")
 
+    transition = function(aml, "struct AMLDVOutputTransition") + ";\n"
+    transition += "static std::shared_ptr<AMLDVOutputTransition> s_dvOutputTransition;\n"
+    output = function(aml, "bool aml_dv_output_transition_pending(") + function(aml, "void aml_dv_complete_output_transition(")
+    opening = function(aml, "void aml_dv_open(")
+    if args.baseline_open:
+        old = subprocess.check_output(["git", "show", f"{args.baseline_open}:{AML}"], cwd=ROOT, text=True)
+        opening = function(old, "void aml_dv_open(").replace(
+            "StreamHdrType originalSourceHdrType)", "StreamHdrType originalSourceHdrType, bool startupBlackout)")
+    closing = function(aml, "void aml_dv_close()") + function(aml, "void aml_dv_set_disc_hold(")
     engage = function(aml, "void aml_dv_engage_deferred_disc(")
     stale = function(aml, "void aml_dv_engage_stale_deferred_disc(")
     pending = function(aml, "void aml_dv_cancel_deferred_session(") + function(aml, "bool aml_dv_deferred_disc_pending(")
@@ -66,9 +76,9 @@ def main():
     codec = read("xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp")
     picture = read("xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.cpp")
     assert 'm_dvSession = std::make_shared<const unsigned char>(0);' in codec
-    assert re.search(r'aml_dv_open\([^;\n]+false, m_dvSession(?:, m_originalSourceHdrType)?\);', codec)
-    if 'm_originalSourceHdrType' in codec:
-        assert 'false, m_dvSession, m_originalSourceHdrType);' in codec
+    assert re.search(r'aml_dv_open\([^;]+false, m_dvSession,\s*m_originalSourceHdrType, startupBlackout\);', codec)
+    assert 'startupBlackout = m_videoHoldActive;' in function(codec, 'bool CAMLCodec::OpenDecoderInternal(')
+    assert 'm_videoHoldDVWaiting = m_videoHoldActive && aml_dv_output_transition_pending(m_dvSession);' in function(codec, 'bool CAMLCodec::OpenDecoderInternal(')
     assert 'aml_dv_cancel_deferred_session(m_dvSession);' in function(codec, 'bool CAMLCodec::BeginLifecycle(')
     getpicture = function(codec, "CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(")
     assert getpicture.index('if (!operation)') < getpicture.index('videoPicture.amlDVSession = m_dvSession;')
@@ -111,6 +121,11 @@ struct CStreamDetails {
   template<class T> static const char* DynamicRangeToString(T) { return ""; }
 };
 enum class StreamHdrType { HDR_TYPE_NONE, HDR_TYPE_HDR10, HDR_TYPE_DOLBYVISION };
+enum AVColorPrimaries { AVCOL_PRI_BT709, AVCOL_PRI_BT2020 };
+enum DV_MODE {DV_MODE_ON, DV_MODE_ON_DEMAND, DV_MODE_OFF};
+constexpr unsigned DOLBY_VISION_OUTPUT_MODE_IPT=0, DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL=1,
+ DOLBY_VISION_OUTPUT_MODE_HDR10=2, DOLBY_VISION_OUTPUT_MODE_SDR10=3, DOLBY_VISION_OUTPUT_MODE_BYPASS=5;
+constexpr int DOLBY_VISION_FORCE_OUTPUT_MODE=2, WINDOW_HOME=0;
 enum RENDER_STEREO_MODE { RENDER_STEREO_MODE_OFF, RENDER_STEREO_MODE_UNDEFINED };
 enum STEREOSCOPIC_PLAYBACK_MODE { STEREOSCOPIC_PLAYBACK_MODE_ASK = 0 };
 enum { ADJUST_REFRESHRATE_OFF = 0 };
@@ -120,6 +135,8 @@ int g_refreshSwitching = 1;
 struct CSettings {
   static constexpr auto SETTING_VIDEOPLAYER_STEREOSCOPICPLAYBACKMODE = "stereo";
   static constexpr auto SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE = "adjust";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_DV_KEEP_SDR_STATE = "keepSDR";
+  bool GetBool(const std::string&) const { return false; }
   int GetInt(const std::string& id) const { return id == "adjust" ? g_refreshSwitching : 1; }
 };
 struct CSettingsComponent {
@@ -129,7 +146,13 @@ struct CSettingsComponent {
 struct CStereoscopicsManager {
   RENDER_STEREO_MODE GetStereoModeByUser() { return RENDER_STEREO_MODE_OFF; }
 };
+struct CGUIWindow {
+ struct Property {std::string asString(){return {};}};
+ Property GetProperty(const char*){return {};}
+};
 struct CGUI {
+  CGUI& GetWindowManager(){return *this;}
+  CGUIWindow* GetWindow(int){return nullptr;}
   CStereoscopicsManager m;
   CStereoscopicsManager& GetStereoscopicsManager() { return m; }
 };
@@ -139,12 +162,16 @@ struct CResolutionUtils {
 
 // ---- the display and the DV core --------------------------------------------
 bool g_windowReady = true;
+bool g_delayReset = false;
 bool g_modeChanging = false;  // what aml_display_mode_changing() reports
 bool g_forceSwitch = false;   // CWinSystemAmlogic::m_force_mode_switch
 bool g_fracPolicy = true;     // aml_has_frac_rate_policy()
 bool aml_display_mode_changing(const RESOLUTION_INFO&) { return g_modeChanging; }
 bool aml_has_frac_rate_policy() { return g_fracPolicy; }
 
+@TRANSITION@
+static bool s_dvDiscHold = false;
+static std::atomic<bool> s_pm4kActive{false};
 static bool s_dvDiscDeferred = false;
 static std::shared_ptr<const void> s_dvPlaybackSession;
 CAMLSession nativeSession;
@@ -157,6 +184,25 @@ int64_t g_nowMs = 100000;
 int64_t aml_steady_ms() { return g_nowMs; }
 bool g_dvEnabled = true;
 bool aml_is_dv_enable() { return g_dvEnabled; }
+DV_MODE g_dvMode=DV_MODE_ON_DEMAND;
+DV_MODE aml_dv_mode(){return g_dvMode;}
+const char* aml_dv_mode_to_string(DV_MODE){return "";}
+int aml_dv_type(){return 0;}
+const char* aml_dv_type_to_string(int){return "";}
+unsigned g_mapping=DOLBY_VISION_OUTPUT_MODE_IPT;
+unsigned aml_vs10_by_hdrtype(StreamHdrType,unsigned){return g_mapping;}
+int g_offs=0;
+void aml_dv_off(){g_dvEnabled=false;++g_offs;}
+void aml_dv_auto_letterbox_watch_stop(){}
+void aml_dv_detect_active_area_stop(){}
+unsigned aml_dv_dolby_vision_mode(){return g_mapping;}
+struct CSysfsPath {
+ std::string path;explicit CSysfsPath(const char* p):path(p){}
+ template<class T> CSysfsPath(const char* p,T v):path(p){Set(v);}
+ bool Exists(){return true;}
+ void Set(const char* v){if(path.find("dolby_vision_enable")!=std::string::npos)g_dvEnabled=std::string(v)=="Y";}
+ template<class T>void Set(T){}
+};
 const char* aml_dv_output_mode_to_string(unsigned int) { return "IPT"; }
 void aml_dv_dump_state(const char*) {}
 struct CDVCoreGuard {
@@ -180,6 +226,7 @@ unsigned int aml_dv_on(unsigned int mode, bool force_hdmi = false) {
 }
 
 void aml_dv_engage_deferred_disc(bool, const std::shared_ptr<const void>& session = {});
+@OUTPUT@
 @PENDING@
 @ENGAGE@
 
@@ -192,6 +239,7 @@ void CreateNewWindow(const RESOLUTION_INFO& res) {
   const bool m_force_mode_switch = g_forceSwitch;
 @GATE@
   if (g_modeChanging || (m_force_mode_switch && g_fracPolicy)) ++g_modeSets;
+  if (g_delayReset) g_windowReady = false;
 }
 
 // ---- GfxContext / ServiceBroker ---------------------------------------------
@@ -215,6 +263,9 @@ struct CServiceBroker {
   static CGUI* GetGUI() { static CGUI g; return &g; }
 };
 
+CSettings* settings(){return CServiceBroker::GetSettingsComponent()->GetSettings();}
+@OPENING@
+@CLOSING@
 using CCriticalSection = std::recursive_mutex;
 struct Picture {
   std::string stereoMode;
@@ -265,9 +316,12 @@ void deferred_open() {
   g_render.m_picture.amlDVSession=s_dvPlaybackSession;
   g_engages.clear();
   g_modeSets = 0;
-  s_dvPlaybackActive = true;
-  s_dvDiscDeferred = true;
-  s_dvDiscDeferredSinceMs = g_nowMs;
+  g_dvMode=DV_MODE_ON_DEMAND;g_dvEnabled=false;s_dvDiscHold=true;g_mapping=DOLBY_VISION_OUTPUT_MODE_IPT;
+  {CAMLNativeTransaction native;check(native.TryBegin(),"open admission");
+   aml_dv_open(StreamHdrType::HDR_TYPE_DOLBYVISION,10,AVCOL_PRI_BT709,false,s_dvPlaybackSession,
+               StreamHdrType::HDR_TYPE_DOLBYVISION,true);}
+  check(g_dvEnabled && s_dvDiscDeferred && aml_dv_output_transition_pending(s_dvPlaybackSession),
+        "decoder core enabled, output deferred under blackout");
   g_render.m_bTriggerUpdateResolution = true;  // the codec's first configure
   g_render.m_hdrType_override = StreamHdrType::HDR_TYPE_NONE;
 }
@@ -433,11 +487,109 @@ void test_pending_identity_and_cleanup() {
   g_windowReady=true;permit.reset();g_render.UpdateResolution();
   check(g_engages.size()==1,"display recovery did not retry");
 }
+
+void test_native_startup_policy() {
+  struct Case {bool blackout;StreamHdrType hdr,original;unsigned mapping;DV_MODE mode;
+               bool enabled,sw,disc,owner,defer;};
+  const auto dv=StreamHdrType::HDR_TYPE_DOLBYVISION, hdr=StreamHdrType::HDR_TYPE_HDR10;
+  const Case cases[]={
+    {true,dv,dv,0,DV_MODE_ON_DEMAND,false,false,false,true,true},
+    {true,dv,dv,1,DV_MODE_ON_DEMAND,false,false,false,true,true},
+    {false,dv,dv,0,DV_MODE_ON_DEMAND,false,false,false,true,false},
+    {true,dv,hdr,0,DV_MODE_ON_DEMAND,false,false,false,true,false},
+    {true,hdr,hdr,0,DV_MODE_ON_DEMAND,false,false,false,true,false},
+    {true,dv,dv,2,DV_MODE_ON_DEMAND,false,false,false,true,false},
+    {true,dv,dv,5,DV_MODE_ON_DEMAND,false,false,false,true,false},
+    {true,dv,dv,0,DV_MODE_ON,false,false,false,true,false},
+    {true,dv,dv,0,DV_MODE_OFF,false,false,false,true,false},
+    {true,dv,dv,0,DV_MODE_ON_DEMAND,true,false,false,true,false},
+    {true,dv,dv,0,DV_MODE_ON_DEMAND,false,true,false,true,false},
+    {true,dv,dv,0,DV_MODE_ON_DEMAND,false,false,false,false,false},
+    {false,hdr,hdr,2,DV_MODE_ON_DEMAND,false,false,true,true,true},
+  };
+  for(const auto& c:cases){
+    g_render.CancelDeferredDV();g_dvMode=c.mode;g_dvEnabled=c.enabled;s_dvDiscHold=c.disc;
+    s_dvDiscDeferred=false;g_mapping=c.mapping;g_engages.clear();
+    auto owner=c.owner?std::shared_ptr<const void>(std::make_shared<const int>(0)):nullptr;
+    {CAMLNativeTransaction native;check(native.TryBegin(),"open policy admission");
+     aml_dv_open(c.hdr,10,AVCOL_PRI_BT709,c.sw,owner,c.original,c.blackout);}
+    check(aml_dv_output_transition_pending(owner)==(c.defer&&c.owner),"native startup eligibility");
+    check(s_dvDiscDeferred==c.defer,"native output deferral policy");
+    if(c.defer){
+      check(g_dvEnabled && g_engages.empty(),"deferred open enables core without output");
+      aml_dv_complete_output_transition(owner);
+      check(aml_dv_output_transition_pending(owner),"unprogrammed output cannot complete");
+    }
+  }
+  // Actual ordinary close cancels both pending output and core ownership.
+  g_dvMode=DV_MODE_ON_DEMAND;s_dvDiscHold=false;g_mapping=0;g_dvEnabled=false;
+  auto owner=std::shared_ptr<const void>(std::make_shared<const int>(0));
+  {CAMLNativeTransaction native;check(native.TryBegin(),"close policy admission");
+   aml_dv_open(dv,10,AVCOL_PRI_BT709,false,owner,dv,true);
+   check(aml_dv_output_transition_pending(owner),"ordinary startup armed");
+   aml_dv_set_disc_hold(false);
+   check(aml_dv_output_transition_pending(owner)&&s_dvDiscDeferred,
+         "inactive disc cleanup cannot cancel ordinary startup");
+   aml_dv_close();}
+  check(!aml_dv_output_transition_pending(owner)&&!g_dvEnabled&&!s_dvDiscDeferred,
+        "ordinary close cancels pending output and disables DV");
+  // Disc close still retains the core and deferred engage for the next segment,
+  // but retires the old decoder's blackout completion identity.
+  {CAMLNativeTransaction native;check(native.TryBegin(),"disc close admission");
+   aml_dv_set_disc_hold(true);
+   aml_dv_open(dv,10,AVCOL_PRI_BT709,false,owner,dv,true);aml_dv_close();
+   check(g_dvEnabled&&s_dvDiscDeferred&&!aml_dv_output_transition_pending(owner),"disc close retains core only");
+   auto next=std::shared_ptr<const void>(std::make_shared<const int>(1));
+   aml_dv_open(dv,10,AVCOL_PRI_BT709,false,next,dv,true);
+   aml_dv_complete_output_transition(owner);aml_dv_cancel_deferred_session(owner);
+   check(aml_dv_output_transition_pending(next)&&s_dvDiscDeferred,"next disc segment owns transition");
+   aml_dv_close();aml_dv_set_disc_hold(false);
+   check(!g_dvEnabled&&!s_dvDiscDeferred,"disc exit releases held core");}
+}
+void test_output_completion() {
+  g_modeChanging=true;g_forceSwitch=false;g_refreshSwitching=1;g_windowReady=true;
+  deferred_open();auto owner=s_dvPlaybackSession;
+  g_delayReset=true;g_render.UpdateResolution();
+  check(g_engages.size()==1&&aml_dv_output_transition_pending(owner),"programmed output waits for display reset");
+  g_render.FrameDeferredDV();
+  check(aml_dv_output_transition_pending(owner),"stale poll cannot bypass delayed reset");
+  g_delayReset=false;g_windowReady=true;g_render.UpdateResolution();
+  check(!aml_dv_output_transition_pending(owner),"display ready completes output");
+  // Same output mode must retain the follow-up requested by DV, even though
+  // programming already succeeded. Only the next successful update completes.
+  g_modeChanging=false;deferred_open();owner=s_dvPlaybackSession;
+  g_render.UpdateResolution();
+  check(aml_dv_output_transition_pending(owner),"same mode waits for follow-up update");
+  g_render.ContinueDeferredDV(true);
+  check(aml_dv_output_transition_pending(owner),"idle stale poll cannot complete follow-up");
+  g_render.FrameDeferredDV();
+  check(!aml_dv_output_transition_pending(owner),"same mode follow-up completes output");
+  // No fullscreen update: bounded fallback must complete at the current mode.
+  g_fullscreen=false;deferred_open();owner=s_dvPlaybackSession;g_nowMs+=3100;
+  g_render.FrameDeferredDV();
+  check(!aml_dv_output_transition_pending(owner),"background engage completes output");
+  g_fullscreen=true;
+  // Consuming a request is not success. Failure keeps blackout eligible for
+  // bounded recovery, rather than the next idle update declaring completion.
+  deferred_open();owner=s_dvPlaybackSession;throwEngage=true;
+  try{g_render.UpdateResolution();check(false,"expected failure");}catch(const std::runtime_error&){}
+  throwEngage=false;g_render.UpdateResolution();g_render.ContinueDeferredDV(false);
+  check(aml_dv_output_transition_pending(owner),"failed programming cannot complete output");
+  // A late old renderer/close must not discharge a replacement session.
+  auto old=owner;deferred_open();owner=s_dvPlaybackSession;
+  aml_dv_complete_output_transition(old);aml_dv_cancel_deferred_session(old);
+  check(aml_dv_output_transition_pending(owner),"old identity cannot cancel replacement output");
+  aml_dv_cancel_deferred_session(owner);
+  check(!aml_dv_output_transition_pending(owner),"matching cancellation clears output");
+}
+
 int main() {
   try {
     auto display=CAMLSession::FenceDisplay();check(CAMLSession::TryBeginDisplay(display),"display");
     check(CAMLSession::EndDisplay(display,CAMLSession::DisplayPhase::READY),"ready");
     auto stream=nativeSession.Fence();check(nativeSession.BeginMutation(stream)&&nativeSession.Complete(stream,true),"session");
+    test_native_startup_policy();
+    test_output_completion();
     test_mode_set();
     test_pending_window();
     test_window_without_mode_switch();
@@ -446,14 +598,14 @@ int main() {
     test_no_decoder_waits_quietly();
     test_pending_identity_and_cleanup();
     test_background_fallback();
-    std::cout << "PASS: 6 disc DV policy scenarios plus background fallback and original-session admission/cleanup\n";
+    std::cout << "PASS: native startup eligibility, output completion/cancellation/failure, 6 disc DV scenarios, background fallback and session admission\n";
   } catch (const std::exception& e) {
     std::cerr << "FAIL: " << e.what() << '\n';
     return 1;
   }
 }
 '''
-    for key, value in [("ENGAGE", engage), ("PENDING", pending), ("CONTINUATION", continuation), ("STALE", stale), ("GATE", gate),
+    for key, value in [("TRANSITION", transition), ("OUTPUT", output), ("OPENING", opening), ("CLOSING", closing), ("ENGAGE", engage), ("PENDING", pending), ("CONTINUATION", continuation), ("STALE", stale), ("GATE", gate),
                        ("UPDATE", update), ("FRAME", frame),
                        ("APPLIEDRESOLUTION", applied_resolution),
                        ("APPLIEDSTATE", "std::optional<AppliedResolution> m_appliedResolution;"
@@ -477,6 +629,12 @@ int main() {
     run(harness)
     if args.negative_controls:
         for label,old,new in [
+            ('inactive disc cleanup cancels native startup', '  if (!wasHeld)\n    return; // A non-disc startup can also own a deferred output transition.', ''),
+            ('early output on native startup', '(s_dvDiscHold || nativeStartup)', 's_dvDiscHold'),
+            ('complete before programming', ' && transition->programmed.load()', ''),
+            ('publish success before effects', '    aml_dv_on(s_dvDiscDeferredMode);', '    if(auto t=std::atomic_load(&s_dvOutputTransition)) { t->programmed=true; }\n    aml_dv_on(s_dvDiscDeferredMode);'),
+            ('clear blackout at engage', 'transition->programmed = true;', '{ transition->programmed = true; aml_dv_complete_output_transition(transition->session); }'),
+            ('stale poll discharges follow-up', '(staleOnly && pending)', 'staleOnly'),
             ('bypass admission','if (!m_deferredDVNative->TryBegin())','if (false && !m_deferredDVNative->TryBegin())'),
             ('ignore snapshot identity','if (!session || session != std::atomic_load(&s_dvPlaybackSession))','if (false)'),
             ('ignore effect identity','if (!atModeSet && (!session || session != std::atomic_load(&s_dvPlaybackSession)))','if (false)'),

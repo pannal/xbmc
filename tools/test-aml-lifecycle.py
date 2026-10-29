@@ -48,7 +48,10 @@ def harness():
     close = function(codec, 'void CAMLCodec::CloseDecoderInternal()')
     config_free = close[close.index('  free(am_private->vcodec.config);'):close.index('  // return tsync')]
     prelude = prelude.replace('@CONFIG_FREE@', config_free)
-    prelude = prelude.replace('@DV_CANCEL@', function((ROOT / 'xbmc/utils/AMLUtils.cpp').read_text(), 'void aml_dv_cancel_deferred_session('))
+    aml = (ROOT / 'xbmc/utils/AMLUtils.cpp').read_text()
+    transition = function(aml, 'struct AMLDVOutputTransition') + ';\n'
+    transition += 'static std::shared_ptr<AMLDVOutputTransition> s_dvOutputTransition;\n'
+    prelude = prelude.replace('@DV_CANCEL@', transition + function(aml, 'void aml_dv_cancel_deferred_session('))
     return prelude + methods + TESTS
 
 

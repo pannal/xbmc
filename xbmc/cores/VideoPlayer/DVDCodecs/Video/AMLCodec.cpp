@@ -2422,7 +2422,17 @@ bool CAMLCodec::OpenDecoderInternal()
   if (m_dvOpened)
   {
     m_dvSession = std::make_shared<const unsigned char>(0);
-    aml_dv_open(hints.hdrType, hints.bitdepth, hints.colorPrimaries, false, m_dvSession, m_originalSourceHdrType);
+    bool startupBlackout;
+    {
+      std::lock_guard<std::mutex> lock(m_videoHoldMutex);
+      startupBlackout = m_videoHoldActive;
+    }
+    aml_dv_open(hints.hdrType, hints.bitdepth, hints.colorPrimaries, false, m_dvSession,
+                m_originalSourceHdrType, startupBlackout);
+    // Remember the transition even if it finishes before our first receipt
+    // check, so display setup cannot consume the replacement-frame budget.
+    std::lock_guard<std::mutex> lock(m_videoHoldMutex);
+    m_videoHoldDVWaiting = m_videoHoldActive && aml_dv_output_transition_pending(m_dvSession);
   }
 
   const bool nativeDV = hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
@@ -3726,6 +3736,7 @@ void CAMLCodec::HoldVideo(bool hold)
     m_videoHoldProviderEpoch = 0;
     m_videoHoldDecodedEpoch = 0;
     m_videoHoldStart = std::chrono::steady_clock::now();
+    m_videoHoldDVWaiting = aml_dv_output_transition_pending(m_dvSession);
     m_videoHoldTimeoutMs = std::max(3000,
         CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
             "videoscreen.delayrefreshchange") * 100);
@@ -3794,12 +3805,15 @@ void CAMLCodec::VideoHoldDecoded()
   std::lock_guard<std::mutex> lock(m_videoHoldMutex);
   if (!m_videoHoldActive)
     return;
+  const bool outputReady = VideoHoldDVReady();
+  if (!m_videoHoldActive)
+    return;
   VideoPresentation state;
   if (ReadVideoPresentation(state))
   {
     if (m_videoHoldDecodedEpoch == 0)
       m_videoHoldDecodedEpoch = state.epoch;
-    if (state.epoch == m_videoHoldDecodedEpoch &&
+    if (outputReady && state.epoch == m_videoHoldDecodedEpoch &&
         state.route == VideoPresentationRoute::UNSUPPORTED)
       ReleaseVideoHoldLocked("legacy unsupported route");
   }
@@ -3810,6 +3824,7 @@ void CAMLCodec::ReleaseVideoHoldLocked(const char* reason)
   if (!m_videoHoldActive)
     return;
   m_videoHoldActive = false;
+  m_videoHoldDVWaiting = false;
   m_videoHoldProviderEpoch = 0;
   m_videoHoldDecodedEpoch = 0;
   aml_video_mute(false);
@@ -3820,6 +3835,8 @@ void CAMLCodec::CheckVideoHold()
 {
   std::lock_guard<std::mutex> lock(m_videoHoldMutex);
   if (!m_videoHoldActive)
+    return;
+  if (!VideoHoldDVReady())
     return;
   const auto held = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - m_videoHoldStart);
@@ -3839,6 +3856,30 @@ void CAMLCodec::CheckVideoHold()
     else if (state.epoch == m_videoHoldProviderEpoch && state.applied == state.epoch)
       ReleaseVideoHoldLocked("applied replacement");
   }
+}
+
+bool CAMLCodec::VideoHoldDVReady()
+{
+  if (aml_dv_output_transition_pending(m_dvSession))
+  {
+    m_videoHoldDVWaiting = true;
+    // Separate bounded transition recovery from replacement-frame recovery.
+    // Allow the existing 3s background engage fallback plus the normal hold
+    // budget. No receipt (including unsupported-route DQBUF) may release while
+    // this transition is pending; an abandoned transition still cannot hang.
+    if (std::chrono::steady_clock::now() - m_videoHoldStart >
+        std::chrono::milliseconds(m_videoHoldTimeoutMs + 3000))
+      ReleaseVideoHoldLocked("DV output timeout");
+    return false;
+  }
+  if (m_videoHoldDVWaiting)
+  {
+    m_videoHoldDVWaiting = false;
+    m_videoHoldStart = std::chrono::steady_clock::now();
+    // Keep the sole paused frame's eligibility. Completion of display setup
+    // adds a gate, not a requirement to decode or submit another frame.
+  }
+  return true;
 }
 
 void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect, uint64_t generation, const CAMLSession::Permit& permit)

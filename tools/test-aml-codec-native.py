@@ -162,7 +162,7 @@ def main():
         for name,old,new in [
             ('retain obsolete owner token','m_nativeLifecycleRequest->owner != std::this_thread::get_id()', 'false'),
             ('drop outer token before nested effects','  const Lifecycle operation = m_lifecycle;', '  CAMLSession::EndNative(m_nativeLifecycleRequest);\n  const Lifecycle operation = m_lifecycle;'),
-            ('omit exception completion','    CAMLSession::EndNative(m_nativeLifecycleRequest);\n    m_nativeLifecycleRequest.reset();\n    throw;', '    throw;'),
+            ('omit exception completion','    m_lifecycle = Lifecycle::NONE;\n    CAMLSession::EndNative(m_nativeLifecycleRequest);\n    m_nativeLifecycleRequest.reset();', '    m_lifecycle = Lifecycle::NONE;'),
         ]:
             assert code.count(old)==1,name;run(code.replace(old,new),negative=True);print('rejected:',name)
 

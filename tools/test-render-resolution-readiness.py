@@ -132,6 +132,10 @@ struct Stereo {int user=0;int GetStereoModeByUser(){return user;}};
 struct CGUIComponent {Stereo stereo;Stereo& GetStereoscopicsManager(){return stereo;}
  CGUIComponent& GetWindowManager(){return *this;}void SendMessage(int,int,int,int){}};
 using GUI=CGUIComponent;
+// Native GUI hardware is outside this fixture; no resize is requested here.
+void aml_native_gui_prepare(RESOLUTION){}
+void aml_native_gui_prepare_failed(){}
+bool aml_native_gui_needs_update(RESOLUTION){return false;}
 struct Win;
 struct CGraphicContext:CCriticalSection {
  explicit CGraphicContext(Win* owner):window(owner){}
@@ -140,10 +144,12 @@ struct CGraphicContext:CCriticalSection {
  std::vector<std::pair<int,StreamHdrType>> intents;
  struct ResolutionRequest {RESOLUTION resolution;bool forceUpdate;};
  std::optional<ResolutionRequest> m_pendingVideoResolution;
+ bool m_videoResolutionRefreshPending=false;
  RESOLUTION m_Resolution=RES_DESKTOP;bool m_bFullScreenRoot=true;
  int m_iScreenWidth=1920,m_iScreenHeight=1080;float m_fFPSOverride=0.f;Rect m_scissors;
  bool IsFullScreenVideo(){return fullscreen;}bool IsFullScreenRoot(){return fullscreen&&m_bFullScreenRoot;}
  int GetStereoMode(){return stereo;}
+ RESOLUTION GetVideoResolution(){return m_Resolution;}
  void SetHDRType(StreamHdrType value){++hdrSets;hdr=value;}
  bool IsValidResolution(int res){return res>=0;}
  void UpdateInternalStateWithResolution(int res){m_Resolution=res;}
@@ -190,6 +196,7 @@ void aml_dv_engage_deferred_disc(bool,const std::shared_ptr<const void>&){
  ++dvEffects;dvPending=false;if(dvEffect)dvEffect();
 }
 void aml_dv_engage_stale_deferred_disc(const std::shared_ptr<const void>&){++dvEffects;}
+void aml_dv_complete_output_transition(const std::shared_ptr<const void>&){}
 struct Renderer {int updates=0;void Update(){++updates;}};
 struct Port {int changes=0;void VideoParamsChange(){++changes;}};
 '''
@@ -197,6 +204,7 @@ CLASS = r'''
 struct CRenderManager {
  @RECORD@
  std::optional<AppliedResolution> m_appliedResolution;
+ struct {void SetVideoActivePicture(std::initializer_list<int>){}} m_dataCacheCore;
  CCriticalSection m_resolutionlock;bool m_bTriggerUpdateResolution=true;
  float m_fps=24.f;StreamHdrType m_hdrType_override=StreamHdrType::HDR_TYPE_NONE;
  struct {std::string stereoMode;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;

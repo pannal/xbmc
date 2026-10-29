@@ -7,6 +7,7 @@ validate actual RPU parsing, Kodi threading, GUI visibility or hardware output.
 """
 import argparse
 import ast
+import itertools
 import pathlib
 import re
 import subprocess
@@ -97,23 +98,27 @@ def main():
             return all(evaluate(child, values, available) for child in node)
         if node.get('name') == 'dvnewbackendavailable':
             return available
+        if node.get('name') == 'dvnewsdrrouteavailable':
+            return sdr_available
         equal = str(values[node.get('setting')]) == (node.text or '').strip()
         return not equal if node.get('operator') == '!is' else equal
 
-    for available in [False, True]:
+    for available, sdr_available, sdr_enabled in itertools.product([False, True], repeat=3):
         for type_value in [0, 1, 2, 3, 4]:
             for mode in [0, 1, 2]:
                 for vp in [0, 1]:
-                    for output in [0, 1, 2, 3, 5]:
+                    for output in [0, 1, 2, 3, 4, 5]:
                         for append in [0, 1, 2, 3, 4]:
                             values = {'coreelec.amlogic.dolbyvision.type': type_value,
                                       'coreelec.amlogic.dolbyvision.mode': mode,
                                       'coreelec.amlogic.dolbyvision.video.processor': vp,
                                       'coreelec.amlogic.dolbyvision.vs10.dv': output,
+                                      'coreelec.amlogic.dolbyvision.vs10.sdr.new.backend': 'true' if sdr_enabled else 'false',
                                       prefix + 'append': append}
                             route_allowed = (mode != 2 and vp == 0 and
                                              (type_value == 0 or available and
-                                              type_value in [1, 2, 4] and output in [0, 1]))
+                                              type_value in [1, 2, 4] and
+                                              (output in [0, 1] or sdr_available and sdr_enabled and output in [3, 4])))
                             for suffix, mode_allowed in [('append', True), ('strip', True),
                                                          ('smart.threshold', append == 3),
                                                          ('auto.trigger', append == 4)]:
@@ -145,7 +150,7 @@ def main():
     assert 'm_originalSourceHdrType.store(hints.hdrType)' in codec
     assert 'new CAMLCodec(m_processInfo, m_hints, m_originalSourceHdrType.load())' in codec
     native_codec = read('xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp')
-    assert 'aml_dv_open(hints.hdrType, hints.bitdepth, hints.colorPrimaries, false, m_dvSession, m_originalSourceHdrType)' in native_codec
+    assert re.search(r'aml_dv_open\(hints.hdrType, hints.bitdepth, hints.colorPrimaries, false, m_dvSession,\s*m_originalSourceHdrType, startupBlackout\)', native_codec)
     visibility = read('xbmc/windowing/amlogic/DolbyVisionAML.cpp')
     assert 'set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_CMV40_AUTO_TRIGGER, show)' in visibility
 
@@ -263,9 +268,13 @@ struct CServiceBroker {static SettingsComponent* GetSettingsComponent() {return 
 struct CSetting {std::string id;const std::string& GetId() const {return id;}};
 enum class StreamHdrType {HDR_TYPE_NONE=0,HDR_TYPE_DOLBYVISION=1,HDR_TYPE_HDR10PLUS=2};
 constexpr int DV_TYPE_DISPLAY_LED=0,DV_TYPE_PLAYER_LED_LLDV=1,DV_TYPE_PLAYER_LED_HDR=2,DV_TYPE_VS10_ONLY=3,DV_TYPE_PLAYER_LED_HDR2=4,DV_MODE_OFF=2;
-constexpr int DOLBY_VISION_OUTPUT_MODE_IPT=0,DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL=1;
+constexpr int DOLBY_VISION_OUTPUT_MODE_IPT=0,DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL=1,
+ DOLBY_VISION_OUTPUT_MODE_SDR10=3,DOLBY_VISION_OUTPUT_MODE_SDR8=4;
 bool newBackendAvailable=false;
 bool aml_dv_new_backend_available() {return newBackendAvailable;}
+// Existing converter cases use the legacy capability; XML checks above also cover SDR.
+bool aml_dv_new_sdr_route_available() {return false;}
+''' + function(aml, 'bool aml_dv_sdr_new_backend_type_ok(') + r'''
 struct CDVDVideoCodecAmlogic {
  CBitstreamConverter* m_bitstream=nullptr;
  std::atomic<StreamHdrType> m_originalSourceHdrType{StreamHdrType::HDR_TYPE_DOLBYVISION};
@@ -443,6 +452,7 @@ struct CSysfsPath {
 std::map<std::string,unsigned int> CSysfsPath::nodes;
 int CSysfsPath::reads=0;
 static std::atomic<bool> s_dvNewBackendAvailable{false};
+static std::atomic<bool> s_dvNewSdrRouteSupported{false};
 static std::atomic<int> s_dvNewBackendAvailability{-1};
 ''' + cached_availability + availability + condition + r'''
 enum class StreamHdrType {HDR_TYPE_NONE,HDR_TYPE_DOLBYVISION,HDR_TYPE_HDR10PLUS};

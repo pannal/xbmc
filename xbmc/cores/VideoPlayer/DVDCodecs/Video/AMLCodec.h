@@ -174,6 +174,7 @@ private:
   void          HoldVideo(bool hold);
   void          CheckVideoHold();
   void          VideoHoldDecoded();
+  bool          VideoHoldDVReady(); // caller holds m_videoHoldMutex
   void          ReleaseVideoHoldLocked(const char* reason = "cancel");
   enum class VideoPresentationRoute
   {
@@ -242,6 +243,7 @@ private:
   // an applied replacement frame, then released. Decoder and presenter overlap.
   std::mutex       m_videoHoldMutex;
   bool             m_videoHoldActive = false;
+  bool             m_videoHoldDVWaiting = false;
   uint64_t         m_videoHoldProviderEpoch = 0;
   uint64_t         m_videoHoldDecodedEpoch = 0;
   int              m_videoHoldTimeoutMs = 3000;

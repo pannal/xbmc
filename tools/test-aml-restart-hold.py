@@ -50,6 +50,7 @@ struct Settings {bool master=true,dvOnly=false,settle=false;int GetInt(const cha
 enum class StreamHdrType {HDR_TYPE_NONE,HDR_TYPE_DOLBYVISION};
 struct Graphics {double GetFPS(){return 24.;} Graphics& GetGfxContext(){return *this;}} graphics;
 struct CServiceBroker {static Settings* GetSettingsComponent(){return &settings;} static Graphics* GetWinSystem(){return &graphics;}};
+@DV_TRANSITION@
 static bool muted; static unsigned unmutes;
 static std::function<void()> muteHook;
 void aml_video_mute(bool mute){if(muteHook)muteHook();muted=mute;if(!mute)++unmutes;}
@@ -63,6 +64,8 @@ struct {void Set(){}} g_aml_sync_event;
 class CAMLCodec {
 public:
  CAMLSession m_session;
+ std::shared_ptr<const void> m_dvSession=std::make_shared<const int>(1);
+ bool m_videoHoldDVWaiting=false;
  struct {StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE;}m_hints;
  bool VideoRestartHoldWanted() const;
  std::mutex m_presentationMutex,m_videoHoldMutex;
@@ -76,6 +79,7 @@ public:
  double m_prerollTarget=DVD_NOPTS_VALUE;
  bool m_keepMPEG2Progressive=false;
  int m_speed=DVD_PLAYSPEED_NORMAL;
+ bool VideoHoldDVReady();
  void HoldVideo(bool);void CheckVideoHold();void VideoHoldDecoded();
  void ReleaseVideoHoldLocked(const char* reason="cancel");
  @PRESENTATION_TYPES@
@@ -93,6 +97,41 @@ TESTS = r'''
 void receipt(const char* text){std::ofstream out(receiptPath);out<<text;}
 void routeReceipt(const char* text){std::ofstream out(routePath);out<<text;}
 void age(CAMLCodec& c){c.m_videoHoldStart-=std::chrono::seconds(4);}
+void dvCases(CAMLCodec& c){
+ // Early application and unsupported decode do not expose the bypass interval.
+ s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession);
+ c.Reset();receipt("1 51 51");c.Submit();c.Poll();
+ assert(muted && "applied frame must wait for DV output");
+ routeReceipt("1 51 200 2 0");c.DQBuf();
+ assert(muted && "unsupported decode must wait for DV output");
+ age(c);c.Poll();assert(muted && "DV fallback has its own bounded transition budget");
+ // A programmed output still waits for the renderer's explicit completion.
+ s_dvOutputTransition->programmed=true;c.Poll();assert(muted);
+ auto old=std::shared_ptr<const void>(std::make_shared<const int>(7));
+ aml_dv_complete_output_transition(old);c.Poll();assert(muted);
+ aml_dv_complete_output_transition(c.m_dvSession);c.Poll();
+ assert(!muted && lastReleaseReason=="legacy unsupported route" && "sole decoded paused frame survives output completion");
+ std::remove(routePath.c_str());
+ s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession);
+ c.Reset();receipt("1 52 52");c.Submit();age(c);c.Poll();assert(muted);
+ s_dvOutputTransition->programmed=true;aml_dv_complete_output_transition(c.m_dvSession);c.Poll();
+ assert(!muted && lastReleaseReason=="applied replacement" && "sole submitted paused frame survives output completion");
+ // Completion before the first poll still starts a new frame-receipt budget.
+ s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession);
+ c.Reset();age(c);s_dvOutputTransition->programmed=true;aml_dv_complete_output_transition(c.m_dvSession);
+ c.Poll();assert(muted && "display work must not consume replacement budget");
+ age(c);c.Poll();assert(!muted && lastReleaseReason=="timeout");
+ // Lost renderer, decoder error, close and repeated reset remain bounded.
+ s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession);
+ c.Reset();age(c);age(c);c.Poll();
+ assert(!muted && lastReleaseReason=="DV output timeout" && "abandoned DV transition cannot hang blackout");
+ c.Reset();c.HoldVideo(false);assert(!muted && lastReleaseReason=="cancel");
+ c.Reset();receipt("1 53 53");c.Submit();c.Reset();
+ s_dvOutputTransition->programmed=true;aml_dv_complete_output_transition(c.m_dvSession);c.Poll();
+ assert(muted && "DV completion does not revive pre-reset receipt");
+ c.Submit();c.Poll();assert(!muted);
+ puts("PASS DV blackout: pending/failed output gate, supported/unsupported sole frame, replacement budget, reset/cancel and bounded recovery");
+}
 void routeCases(CAMLCodec& c){
  // One paused/still replacement: route classification can arrive after QBUF,
  // and only the current route-generation receipt permits supported release.
@@ -169,6 +208,7 @@ int main(int argc,char** argv){
  finish.set_value();release.get();renew.get();muteHook={};assert(muted&&c.m_videoHoldProviderEpoch==0);
  c.HoldVideo(false);
  routeCases(c);
+ dvCases(c);
  settings.master=false;c.Reset();assert(!muted);c.Submit();c.Poll();assert(!muted);
  settings.master=true;settings.dvOnly=true;c.Reset();assert(!muted);
  c.m_hints.hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;c.Reset();assert(muted);c.HoldVideo(false);
@@ -199,7 +239,7 @@ def main():
     methods='\n'.join(function(s,sig) for sig in [
         'bool CAMLCodec::VideoRestartHoldWanted(', 'void CAMLCodec::HoldVideo(', 'bool CAMLCodec::ReadVideoPresentation(',
         'void CAMLCodec::VideoHoldDecoded(',
-        'void CAMLCodec::ReleaseVideoHoldLocked(', 'void CAMLCodec::CheckVideoHold(',
+        'bool CAMLCodec::VideoHoldDVReady(', 'void CAMLCodec::ReleaseVideoHoldLocked(', 'void CAMLCodec::CheckVideoHold(',
         'int CAMLCodec::ReleaseFrame(', 'int CAMLCodec::PollFrame('] if sig in s)
     methods=methods.replace('"/sys/class/video/presentation_state"','receiptPath').replace('"/sys/class/video/presentation_route_state"','routePath')
     assert 'CheckVideoHold();' in function(s,'CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(')
@@ -207,7 +247,10 @@ def main():
     assert 'HoldVideo(VideoRestartHoldWanted());' in function(s,'void CAMLCodec::ResetInternal(')
     header=(ROOT/'xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h').read_text()
     types=function(header,'enum class VideoPresentationRoute')+';\n'+function(header,'struct VideoPresentation\n')+';'
-    prelude=PRELUDE.replace('@DQBUF@',dq).replace('@PRESENTATION_TYPES@',types)
+    aml=(ROOT/'xbmc/utils/AMLUtils.cpp').read_text()
+    dv=function(aml,'struct AMLDVOutputTransition')+';\nstatic std::shared_ptr<AMLDVOutputTransition> s_dvOutputTransition;\n'
+    dv+=function(aml,'bool aml_dv_output_transition_pending(')+function(aml,'void aml_dv_complete_output_transition(')
+    prelude=PRELUDE.replace('@DQBUF@',dq).replace('@PRESENTATION_TYPES@',types).replace('@DV_TRANSITION@',dv)
     tests=TESTS
     if args.baseline_unsupported:
         prelude=prelude.replace('static bool ReadVideoPresentation(VideoPresentation&);','static bool ReadVideoPresentation(uint64_t&,uint64_t&);').replace('void ReleaseVideoHoldLocked(const char* reason="cancel");','void ReleaseVideoHoldLocked();')
@@ -234,6 +277,11 @@ def main():
         run(source)
         if args.negative_controls:
             for name,old,new,expected in [
+                ('receipt bypasses DV gate','  if (!VideoHoldDVReady())\n    return;','','applied frame must wait for DV output'),
+                ('decoded bypasses DV gate','if (outputReady && state.epoch','if ((outputReady || true) && state.epoch','unsupported decode must wait for DV output'),
+                ('no post-transition budget','    m_videoHoldDVWaiting = false;\n    m_videoHoldStart = std::chrono::steady_clock::now();','    m_videoHoldDVWaiting = false;','sole decoded paused frame survives output completion'),
+                ('unbounded transition','      ReleaseVideoHoldLocked("DV output timeout");','      (void)0;','abandoned DV transition cannot hang blackout'),
+                ('forget paused receipt','    m_videoHoldDVWaiting = false;\n    m_videoHoldStart =','    m_videoHoldProviderEpoch = m_videoHoldDecodedEpoch = 0;\n    m_videoHoldDVWaiting = false;\n    m_videoHoldStart =','sole decoded paused frame survives output completion'),
                 ('DQBUF releases old frame',dq,dq+'HoldVideo(false);','DQBUF is not applied proof'),
                 ('generic poll means applied','state.applied == state.epoch','true','successful QBUF still needs applied proof'),
                 ('provider mismatch accepted','state.epoch == m_videoHoldProviderEpoch','m_videoHoldProviderEpoch != 0','receipt must match submitted provider'),

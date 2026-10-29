@@ -1629,6 +1629,12 @@ bool CRenderManager::ContinueDeferredDV(bool staleOnly)
     else
       aml_dv_engage_deferred_disc(false, session);
   }
+  // Normal completion follows display readiness and any follow-up requested by
+  // aml_dv_on(). The stale fallback has no fullscreen modeset to wait for: its
+  // admitted engage completes output at the current mode. Do not let an idle
+  // stale poll discharge a transition whose display update is still pending.
+  if ((!staleOnly && !m_bTriggerUpdateResolution) || (staleOnly && pending))
+    aml_dv_complete_output_transition(session);
   return true;
 }
 
@@ -1711,7 +1717,7 @@ void CRenderManager::UpdateResolution(bool force)
         return; // Do not bypass a pending/failed display with the no-mode DV engage.
       }
       // No mode set (refresh switching off, already at the title's mode, or a
-      // window change without a mode switch): a disc session's deferred first
+      // window change without a mode switch): the deferred first
       // DV engage is applied here instead.
       // After the reset, so the resolution update aml_dv_on() may request
       // (DV-Std colour depth, 60 Hz VS10 to DV) is kept for the next frame.

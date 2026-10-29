@@ -102,7 +102,7 @@ static bool s_dvPlaybackActive = false;
 // decoder closes of its segment swaps (aml_dv_set_disc_hold). Guarded by the
 // DV-core lock, like s_dvPlaybackActive.
 static bool s_dvDiscHold = false;
-// The first DV engage of a disc session, deferred from aml_dv_open() to the
+// The first DV engage of a disc session or blacked-out native-DV startup, deferred to the
 // mode set that follows (aml_dv_engage_deferred_disc). Guarded by the DV-core
 // lock.
 static bool s_dvDiscDeferred = false;
@@ -114,6 +114,17 @@ static bool s_dvEngagingAtModeSet = false;
 // When that deferral was made (steady clock, ms; 0 = none), for the last-resort
 // engage from CRenderManager::FrameMove. Read without the DV-core lock.
 static std::atomic<int64_t> s_dvDiscDeferredSinceMs{0};
+
+// Published with the decoder identity. Programming DV is only one part of the
+// transition: the renderer completes it after the resulting display work. A
+// consumed/failed engage must not look like successful completion to blackout.
+struct AMLDVOutputTransition
+{
+  explicit AMLDVOutputTransition(std::shared_ptr<const void> owner) : session(std::move(owner)) {}
+  const std::shared_ptr<const void> session;
+  std::atomic<bool> programmed{false};
+};
+static std::shared_ptr<AMLDVOutputTransition> s_dvOutputTransition;
 
 static int64_t aml_steady_ms()
 {
@@ -1849,7 +1860,7 @@ unsigned int aml_gui_dv_output_mode()
 }
 
 void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries colorPrimaries, bool swDecoded,
-                 std::shared_ptr<const void> session, StreamHdrType originalSourceHdrType)
+                 std::shared_ptr<const void> session, StreamHdrType originalSourceHdrType, bool startupBlackout)
 {
   // Detect PM4K once at playback start for OSD visibility override.
   // MUST stay above the CDVCoreGuard: GetWindow()/GetProperty() take the gfx
@@ -1869,6 +1880,7 @@ void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries 
     native_source.Set(!swDecoded && originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION ? 1u : 0u);
   aml_dv_dump_state("dv_open/pre");
   std::atomic_store(&s_dvPlaybackSession, std::move(session));
+  std::atomic_store(&s_dvOutputTransition, std::shared_ptr<AMLDVOutputTransition>{});
   s_dvPlaybackActive = true;
   s_pm4kActive.store(pm4kActive, std::memory_order_relaxed);
 
@@ -1916,16 +1928,26 @@ void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries 
     // Also when an earlier segment's engage is still deferred (it closed before
     // its mode set): the core is enabled then, but its output is not.
     const bool outputUp = aml_is_dv_enable() && !s_dvDiscDeferred;
-    const bool defer = vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS && s_dvDiscHold &&
+    const auto owner = std::atomic_load(&s_dvPlaybackSession);
+    // Preserve ordinary VS10, always-on DV and unmasked startup behavior. Native
+    // DV with blackout can use the disc path without holding DV across closes.
+    const bool nativeStartup = startupBlackout && owner &&
+                               hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+                               originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+                               (vs10_mode == DOLBY_VISION_OUTPUT_MODE_IPT ||
+                                vs10_mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL);
+    const bool defer = vs10_mode != DOLBY_VISION_OUTPUT_MODE_BYPASS && (s_dvDiscHold || nativeStartup) &&
                        dv_mode == DV_MODE_ON_DEMAND && !outputUp;
     if (defer)
     {
       s_dvDiscDeferred = true;
       s_dvDiscDeferredMode = vs10_mode;
       s_dvDiscDeferredSinceMs = aml_steady_ms();
+      if (owner)
+        std::atomic_store(&s_dvOutputTransition, std::make_shared<AMLDVOutputTransition>(owner));
       CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_policy", DOLBY_VISION_FORCE_OUTPUT_MODE);
       CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_enable", "Y");
-      CLog::Log(LOGINFO, "AMLUtils::{} - disc session: DV output mode [{}] deferred to the mode set",
+      CLog::Log(LOGINFO, "AMLUtils::{} - DV output mode [{}] deferred to the mode set",
                 __FUNCTION__, aml_dv_output_mode_to_string(vs10_mode));
     }
     else
@@ -1963,6 +1985,7 @@ void aml_dv_close()
     native_source.Set(0u);
   aml_dv_dump_state("dv_close/pre");
   std::atomic_store(&s_dvPlaybackSession, std::shared_ptr<const void>{});
+  std::atomic_store(&s_dvOutputTransition, std::shared_ptr<AMLDVOutputTransition>{});
   s_dvPlaybackActive = false;
   s_pm4kActive.store(false, std::memory_order_relaxed);
 
@@ -2035,10 +2058,11 @@ void aml_dv_set_disc_hold(bool hold)
 
   const bool wasHeld = s_dvDiscHold;
   s_dvDiscHold = false;
+  if (!wasHeld)
+    return; // A non-disc startup can also own a deferred output transition.
+  std::atomic_store(&s_dvOutputTransition, std::shared_ptr<AMLDVOutputTransition>{});
   s_dvDiscDeferred = false;
   s_dvDiscDeferredSinceMs = 0;
-  if (!wasHeld)
-    return;
 
   // The last decoder may have closed under the hold, leaving DV on for the GUI.
   // A decoder still open switches it off in its own aml_dv_close(). Not only
@@ -2060,6 +2084,24 @@ void aml_dv_cancel_deferred_session(const std::shared_ptr<const void>& session)
   auto expected = session;
   std::atomic_compare_exchange_strong(&s_dvPlaybackSession, &expected,
                                      std::shared_ptr<const void>{});
+  auto transition = std::atomic_load(&s_dvOutputTransition);
+  if (transition && transition->session == session)
+    std::atomic_compare_exchange_strong(&s_dvOutputTransition, &transition,
+                                       std::shared_ptr<AMLDVOutputTransition>{});
+}
+
+bool aml_dv_output_transition_pending(const std::shared_ptr<const void>& session)
+{
+  const auto transition = std::atomic_load(&s_dvOutputTransition);
+  return session && transition && transition->session == session;
+}
+
+void aml_dv_complete_output_transition(const std::shared_ptr<const void>& session)
+{
+  auto transition = std::atomic_load(&s_dvOutputTransition);
+  if (session && transition && transition->session == session && transition->programmed.load())
+    std::atomic_compare_exchange_strong(&s_dvOutputTransition, &transition,
+                                       std::shared_ptr<AMLDVOutputTransition>{});
 }
 
 bool aml_dv_deferred_disc_pending(const std::shared_ptr<const void>& session, bool staleOnly)
@@ -2091,7 +2133,7 @@ void aml_dv_engage_deferred_disc(bool atModeSet, const std::shared_ptr<const voi
   if (!aml_is_dv_enable())
     return;
 
-  CLog::Log(LOGINFO, "AMLUtils::{} - disc session: engaging DV output mode [{}] {}", __FUNCTION__,
+  CLog::Log(LOGINFO, "AMLUtils::{} - engaging DV output mode [{}] {}", __FUNCTION__,
             aml_dv_output_mode_to_string(s_dvDiscDeferredMode),
             atModeSet ? "before the mode set" : "without a mode set");
   s_dvEngagingAtModeSet = atModeSet;
@@ -2105,6 +2147,9 @@ void aml_dv_engage_deferred_disc(bool atModeSet, const std::shared_ptr<const voi
     throw;
   }
   s_dvEngagingAtModeSet = false;
+  const auto transition = std::atomic_load(&s_dvOutputTransition);
+  if (transition && transition->session == std::atomic_load(&s_dvPlaybackSession))
+    transition->programmed = true;
   aml_dv_dump_state("disc_deferred/engaged");
 }
 
@@ -2112,7 +2157,7 @@ void aml_dv_engage_stale_deferred_disc(const std::shared_ptr<const void>& sessio
 {
   if (!aml_dv_deferred_disc_pending(session, true))
     return;
-  CLog::Log(LOGINFO, "AMLUtils::{} - disc session: no mode set within 3000 ms", __FUNCTION__);
+  CLog::Log(LOGINFO, "AMLUtils::{} - no mode set within 3000 ms", __FUNCTION__);
   aml_dv_engage_deferred_disc(false, session);
 }
 
