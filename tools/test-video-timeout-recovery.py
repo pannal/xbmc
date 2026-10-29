@@ -25,11 +25,12 @@ source = source.replace('struct CVideoPlayerAudio {',
                         f.block(messages, 'class CDVDMsgPlayerSeekChapter :') + ';\nstruct CVideoPlayerAudio {')
 source = source.replace('struct CCurrentStream {', 'using IDVDStreamPlayerVideo=CVideoPlayerVideo;\nstruct CCurrentStream {')
 source = source.replace('struct CCurrentStream {', '''
-constexpr int CACHESTATE_FULL=6,CACHESTATE_INIT=7,DVDSTATE_NORMAL=0;
+constexpr int CACHESTATE_FULL=6,DVDSTATE_NORMAL=0;
 namespace StreamFlags {constexpr unsigned FLAG_STILL_IMAGES=1;}
 struct CDVDInputStream {struct IMenus {virtual ~IMenus()=default;virtual bool IsTimeSearchAllowed() const=0;};};
 struct CCurrentStream {''')
-source = source.replace('  int id=0,syncState=', '  struct {unsigned flags=0;} hint;\n  int id=0,syncState=')
+source = source.replace('struct {std::shared_ptr<const void> subtitleProbeSource;} hint;',
+                        'struct {std::shared_ptr<const void> subtitleProbeSource;unsigned flags=0;} hint;')
 source = source.replace('struct ProcessInfo { double', 'struct ProcessInfo {float speed=1; float GetNewSpeed() const {return speed;} double')
 source = source.replace('struct Input {bool realtime=false; bool IsRealtime() const {return realtime;} } input;\n  Input* m_pInputStream=&input;', '''
 struct Input: CDVDInputStream::IMenus {

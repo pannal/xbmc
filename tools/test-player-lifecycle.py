@@ -650,6 +650,48 @@ static void subtitle_geometry_intent() {
 }
 
 
+static void startup_timeout_wait() {
+  // The first picture was admitted, but audio has not supplied its start note.
+  // GetPicture may exhaust the native buffers while the presenter holds them.
+  // Repeated five-second no-output reports must not destroy those pictures.
+  for(bool async:{false,true}) for(int speed:{DVD_PLAYSPEED_PAUSE,DVD_PLAYSPEED_NORMAL}) {
+    CVideoPlayerVideo video; video.m_pVideoCodec->asynchronous=async;
+    video.m_syncState=IDVDStreamPlayer::SYNC_WAITSYNC; video.m_speed=speed;
+    video.m_recoveryGeneration.AdvanceTo(17);
+    video.m_decoderFlushRecovery.OnNoOutputTimeout();
+    for(int interval=0;interval<3;++interval) {
+      video.Recover(CDVDVideoCodec::VC_FLUSHED_TIMEOUT);
+      assert(video.m_pVideoCodec->resets==0);
+      assert(video.m_renderManager.discards==0 && !video.m_pendingRecoveryDiscard);
+      assert(!video.m_pendingNoOutputRecovery && !video.m_pVideoCodec->LifecyclePending());
+      assert(receive(video.m_messageParent,0)==MSGQ_TIMEOUT);
+    }
+    // Audio eventually starts and the parent resynchronizes video. A genuine
+    // subsequent stall still resets locally, then escalates on the second one.
+    video.m_syncState=IDVDStreamPlayer::SYNC_INSYNC; video.m_speed=DVD_PLAYSPEED_NORMAL;
+    for(int attempt=1;attempt<=2;++attempt) {
+      video.Recover(CDVDVideoCodec::VC_FLUSHED_TIMEOUT);
+      if(async) {video.m_pVideoCodec->ready=true;video.Step();}
+      assert(video.m_pVideoCodec->resets==attempt && video.m_renderManager.discards==attempt);
+      assert(receive(video.m_messageParent,0)==
+             (attempt==1?MSGQ_TIMEOUT:100+CDVDMsg::PLAYER_VIDEO_RECOVERY));
+    }
+  }
+  // Do not conceal a native dequeue error merely because startup is waiting.
+  for(bool async:{false,true}) {
+    CVideoPlayerVideo video; video.m_pVideoCodec->asynchronous=async;
+    video.m_syncState=IDVDStreamPlayer::SYNC_WAITSYNC; video.m_speed=DVD_PLAYSPEED_PAUSE;
+    video.Recover(CDVDVideoCodec::VC_FLUSHED);
+    if(async) {video.m_pVideoCodec->ready=true;video.Step();}
+    assert(video.m_pVideoCodec->resets==1 && video.m_renderManager.discards==1);
+  }
+  // Before the first picture, paused startup can be a real decoder stall.
+  CVideoPlayerVideo starting; starting.m_syncState=IDVDStreamPlayer::SYNC_STARTING;
+  starting.m_speed=DVD_PLAYSPEED_PAUSE; starting.m_pVideoCodec->asynchronous=false;
+  starting.Recover(CDVDVideoCodec::VC_FLUSHED_TIMEOUT);
+  assert(starting.m_pVideoCodec->resets==1 && starting.m_renderManager.discards==1);
+}
+
 static void timeout_recovery() {
   for(bool async:{false,true}) {
     CVideoPlayerVideo video; video.m_pVideoCodec->asynchronous=async;
@@ -696,7 +738,7 @@ static void timeout_recovery() {
   assert(receive(drain.m_messageParent,0)==MSGQ_TIMEOUT && !drain.m_pendingNoOutputRecovery);
 }
 
-int main() { timeout_recovery(); subtitle_geometry_intent(); audio_seek_eof(); queues(); continuation(); multiple_flushes(); failed_lifecycle(); cancelled_session(); parent_wait(); nested_and_renderer(); stale_and_clock_policy(); }
+int main() { startup_timeout_wait(); timeout_recovery(); subtitle_geometry_intent(); audio_seek_eof(); queues(); continuation(); multiple_flushes(); failed_lifecycle(); cancelled_session(); parent_wait(); nested_and_renderer(); stale_and_clock_policy(); }
 '''
 
 
@@ -785,6 +827,10 @@ def main():
         run(source, directory, 'player-lifecycle')
         if args.negative_controls:
             mutants = {
+                'reset-during-startup-wait': ('m_syncState == IDVDStreamPlayer::SYNC_WAITSYNC)\n    {', 'false)\n    {'),
+                'ignore-real-error-during-wait': ('if (decoderState == CDVDVideoCodec::VC_FLUSHED_TIMEOUT &&\n        m_syncState ==', 'if (m_syncState =='),
+                'ignore-timeout-before-first-picture': ('m_syncState == IDVDStreamPlayer::SYNC_WAITSYNC)\n    {', 'm_syncState != IDVDStreamPlayer::SYNC_INSYNC)\n    {'),
+                'carry-wait-timeout-into-playback': ('      m_decoderFlushRecovery.OnStreamFlush();\n      m_pendingNoOutputRecovery.reset();\n      return false;', '      m_pendingNoOutputRecovery.reset();\n      return false;'),
                 'subtitle-deferred-forces-retention': ('deferred.preserveSubtitleGeometry);', 'true);'),
                 'subtitle-deferred-discards-geometry': ('deferred.preserveSubtitleGeometry);', 'false);'),
                 'subtitle-default-retains-geometry': ('bool preserveSubtitleGeometry=false);', 'bool preserveSubtitleGeometry=true);'),

@@ -984,6 +984,19 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   if (decoderState == CDVDVideoCodec::VC_FLUSHED ||
       decoderState == CDVDVideoCodec::VC_FLUSHED_TIMEOUT)
   {
+    // The first picture is already queued; presentation is waiting for the
+    // parent's A/V resync. Held native buffers can prevent further output.
+    // A local reset here discards those pictures and advances decode ahead of
+    // the frozen clock, creating another timeout before playback can catch up.
+    // Keep real dequeue errors and startup without a first picture recoverable.
+    if (decoderState == CDVDVideoCodec::VC_FLUSHED_TIMEOUT &&
+        m_syncState == IDVDStreamPlayer::SYNC_WAITSYNC)
+    {
+      m_decoderFlushRecovery.OnStreamFlush();
+      m_pendingNoOutputRecovery.reset();
+      return false;
+    }
+
     CLog::Log(LOGDEBUG, "CVideoPlayerVideo - video decoder was flushed");
     bool requestRecovery = false;
     CVideoRecoveryPlaybackState playback;

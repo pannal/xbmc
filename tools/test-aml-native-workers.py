@@ -73,6 +73,7 @@ struct DV{bool ready=false;bool Retire(){return ready;}};
 struct CWinSystemAmlogic{std::unique_ptr<DV> m_dolbyVisionAML=std::make_unique<DV>();bool RetireNativeTransactions();};
 @RETIRE@
 struct CWinSystemAmlogicGLESContext:CWinSystemAmlogic{
+ struct {void CloseTextureUploadContext(){}} m_pGLContext; // EGL lifetime has separate coverage
  void GuiABFinish(const char*){} // diagnostics are a boundary of the shutdown fixture
  void SetNativeGuiWait(bool){} // lease policy is covered by the native GUI wait fixture
  bool m_shutdownRequested=false;CAMLDisplayLifecycle m_displayLifecycle;

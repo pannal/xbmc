@@ -118,7 +118,7 @@ public:
   bool m_opened = true, m_dvBackendPaused = false, m_stream_eof = false;
   bool m_drain = false, m_no_data_since_reset = false, m_buffer_level_ready = true;
   bool m_keepMPEG2Progressive = false, m_repairTimestamps = false;
-  float m_minimum_buffer_level = 10.0f;
+  float m_minimum_buffer_level = 10.0f, m_dataLevel = 0.0f;
   int m_speed = DVD_PLAYSPEED_NORMAL, m_decoder_drain_timeout = 5, m_decoder_timeout = 5;
   std::shared_ptr<const void> m_dvSession;
   uint64_t m_dvBackendEpoch = 0, m_dvBackendSampleTime = 0;

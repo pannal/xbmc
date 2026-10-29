@@ -137,7 +137,7 @@ public:
     VC_NOBUFFER, //< last FFmpeg GetBuffer failed
     VC_REOPEN, //< decoder request to re-open
     VC_EOF, //< EOF
-    VC_FLUSHED_TIMEOUT //< the decoder lost its state after producing no output before its timeout
+    VC_FLUSHED_TIMEOUT //< no output before the watchdog deadline; player decides whether to reset
   };
 
   static_assert(VC_NONE == 0 && VC_ERROR == 1 && VC_FATAL == 2 && VC_BUFFER == 3 &&
