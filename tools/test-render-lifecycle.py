@@ -479,9 +479,14 @@ def main():
              'CSingleExit graphics(CServiceBroker::GetWinSystem()->GetGfxContext());', ''),
             ('delayed configure payload corrupted', 'payload->CopyRef(picture);',
              'payload->CopyRef(picture); payload->iWidth += 1;'),
-            ('failed configure accepted as unchanged', 'm_renderState == STATE_CONFIGURED && ', ''),
-            ('failed configure leaves presentation pending',
-             'm_renderState = STATE_UNCONFIGURED;\n    m_presentstep = PRESENT_IDLE;',
+            ('failed configure accepted while GUI inactive',
+             'if (!m_bRenderGUI && m_renderState == STATE_CONFIGURED && m_pRenderer != nullptr)',
+             'if (!m_bRenderGUI)'),
+            ('inactive configured renderer recreated',
+             'if (!m_bRenderGUI && m_renderState == STATE_CONFIGURED && m_pRenderer != nullptr)',
+             'if (false)'),
+            ('retired renderer leaves presentation pending',
+             'm_renderState = STATE_UNCONFIGURED;\n  m_presentstep = PRESENT_IDLE;',
              'm_renderState = STATE_UNCONFIGURED;'),
         ]:
             assert before in source, label
@@ -509,6 +514,12 @@ def caller_harness():
     configuration_failure = function(configure, '  else\n  {')
     prelude = CALLER_PRELUDE.replace('@CREATE_FAILED@', creation_failure)
     prelude = prelude.replace('@CONFIGURE_FAILED@', configuration_failure)
+    uninit = function(source, 'void CRenderManager::UnInitOnMain()')
+    # Keep teardown's actual state transitions: omitting m_bRenderGUI=false
+    # previously hid a false-success retry after failed renderer setup.
+    uninit_state = uninit[uninit.index('  m_renderState = STATE_UNCONFIGURED;'):
+                          uninit.index('  CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType')]
+    prelude = prelude.replace('@UNINIT_STATE@', uninit_state)
     gles = (ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/LinuxRendererGLES.cpp').read_text()
     gles_config = function(gles, 'bool CLinuxRendererGLES::Configure(')
     gles_close = function(gles, 'void CLinuxRendererGLES::UnInit()')
@@ -564,6 +575,7 @@ struct VideoPicture
   { return iWidth == other.iWidth && iHeight == other.iHeight; }
   void CopyRef(const VideoPicture& other) { *this = other; }
   void SetParams(const VideoPicture& other) { *this = other; pixels.reset(); }
+  void Reset() { *this = {}; }
 };
 struct Settings { int GetInt(int) { return 0; } };
 struct SettingsComponent { Settings* GetSettings() { static Settings value; return &value; } };
@@ -659,6 +671,7 @@ struct CRenderManager
     {
       m_presentstep = PRESENT_IDLE;
       m_renderState = STATE_CONFIGURED;
+      m_bRenderGUI = true;
     }
     @CONFIGURE_FAILED@
     m_pConfigPicture.reset();
@@ -676,6 +689,7 @@ struct CRenderManager
   {
     assert(std::this_thread::get_id() == mainThread);
     ++preInitCalls;
+    m_bRenderGUI = true;
     trace.push_back("preinit");
   }
   void UnInitOnMain()
@@ -686,6 +700,7 @@ struct CRenderManager
     if (m_pRenderer) m_pRenderer->CloseNative();
     m_pRenderer = nullptr;
     m_pConfigPicture.reset();
+    @UNINIT_STATE@
     trace.push_back("uninit");
   }
   bool FlushOnMain(bool saveBuffers)
@@ -937,6 +952,13 @@ static void production_native_admission()
     assert(manager.m_configRequest->status == CRenderLifecycle::Status::FAILED);
     assert(manager.unInitCalls == 1 && !manager.m_pRenderer && !manager.m_pConfigPicture);
     assert(nativeOpens==1 && nativeCloses==1 && !manager.backend.m_dvOpened);
+    assert(manager.m_renderState == CRenderManager::STATE_UNCONFIGURED && !manager.m_bRenderGUI);
+    manager.configureResult = true;
+    manager.throwConfigure = false;
+    throwNativeOpen = false;
+    assert(manager.Configure(input,24.0f,0,StreamHdrType::NONE,3));
+    assert(manager.configurations == 2 && manager.m_pRenderer && manager.m_bRenderGUI);
+    assert(manager.m_renderState == CRenderManager::STATE_CONFIGURED);
     assert(session.AcquireDecoder() && manager.m_lifecycle->Close());
   }
   throwNativeOpen=false;
@@ -992,7 +1014,9 @@ static void production_configure_request()
   assert(!failed.Configure(original, 24.0f, 0, StreamHdrType::NONE, 3));
   assert(failed.m_configRequest->status == CRenderLifecycle::Status::FAILED);
   assert(failed.configurations == 1 && !failed.m_configuredFramePending);
-  assert(failed.m_presentstep == CRenderManager::PRESENT_IDLE && failed.m_presentevent.notifications == 2);
+  assert(failed.m_renderState == CRenderManager::STATE_UNCONFIGURED && !failed.m_bRenderGUI);
+  assert(!failed.m_pRenderer && failed.m_picture.iWidth == 0);
+  assert(failed.m_presentstep == CRenderManager::PRESENT_IDLE && failed.m_presentevent.notifications == 3);
   // A matching retry cannot convert an explicitly failed main completion into success.
   assert(!failed.Configure(original, 24.0f, 0, StreamHdrType::NONE, 3));
   assert(!failed.m_configuredFramePending);
@@ -1001,6 +1025,7 @@ static void production_configure_request()
   failed.configureResult = true;
   assert(failed.Configure(original, 25.0f, 0, StreamHdrType::NONE, 3));
   assert(failed.configurations == 4 && failed.m_configuredFramePending);
+  assert(failed.m_bRenderGUI && failed.m_pRenderer);
   assert(failed.m_configRequest->Wait(0ms));
   assert(failed.m_lifecycle->Close());
 
@@ -1009,11 +1034,24 @@ static void production_configure_request()
   assert(!creation.Configure(original,24.0f,0,StreamHdrType::NONE,3));
   assert(!creation.m_pConfigPicture && !creation.m_pRenderer);
   assert(creation.m_renderState == CRenderManager::STATE_UNCONFIGURED);
-  assert(creation.m_presentstep == CRenderManager::PRESENT_IDLE && creation.m_presentevent.notifications == 2);
+  assert(creation.m_presentstep == CRenderManager::PRESENT_IDLE && creation.m_presentevent.notifications == 3);
   creation.createResult = true;
   assert(creation.Configure(original,24.0f,0,StreamHdrType::NONE,3));
   assert(creation.configurations == 2 && creation.m_configRequest->Wait(0ms));
   assert(creation.m_lifecycle->Close());
+
+  // A configured renderer may still defer changes while the GUI is inactive.
+  // Keep that background-playback behavior; only failed/unconfigured setup retries.
+  CRenderManager inactive;
+  assert(inactive.Configure(original,24.0f,0,StreamHdrType::NONE,3));
+  inactive.m_bRenderGUI = false;
+  assert(inactive.Configure(picture(720),25.0f,0,StreamHdrType::NONE,3));
+  assert(inactive.configurations == 1 && !inactive.m_bRenderGUI);
+  assert(inactive.m_picture.IsSameParams(original));
+  inactive.m_bRenderGUI = true; // FrameMove resumes GUI rendering.
+  assert(inactive.Configure(picture(720),25.0f,0,StreamHdrType::NONE,3));
+  assert(inactive.configurations == 2 && inactive.m_picture.iWidth == 720);
+  assert(inactive.m_lifecycle->Close());
 }
 
 static void graphics_release_while_waiting()

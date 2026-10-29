@@ -177,7 +177,10 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
         return false;
       m_configRequest.reset();
     }
-    if (!m_bRenderGUI)
+    // Inactive GUI rendering may defer changes to a working renderer, but
+    // failed setup also clears m_bRenderGUI while retiring that renderer.
+    // Such a retry must configure again instead of reporting false success.
+    if (!m_bRenderGUI && m_renderState == STATE_CONFIGURED && m_pRenderer != nullptr)
       return true;
 
     if (m_renderState == STATE_CONFIGURED && m_picture.IsSameParams(picture) && m_fps == fps && m_orientation == orientation &&
@@ -750,6 +753,8 @@ void CRenderManager::UnInitOnMain()
   DeleteRenderer();
 
   m_renderState = STATE_UNCONFIGURED;
+  m_presentstep = PRESENT_IDLE;
+  m_presentevent.notifyAll();
   m_picture.Reset();
   m_bRenderGUI = false;
   CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(m_picture.hdrType);
