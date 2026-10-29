@@ -52,6 +52,8 @@ struct State {
  bool cacheHit=true,useCache=true,needsChecking=false,async=true,directFails=false,cacheFails=false,emptyPath=false;
  bool uploadUnsupported=false,throwUpload=false;int blockDecode=0;bool blockUpload=false,blockAfterUpload=false;
  std::atomic<int>decodes{0},uploads{0},refreshes{0},destroyed{0},gpuDestroyedWithLock{0},leases{0},releases{0};
+ // Background delay setting, on so that deferral is exercised; the product default is off.
+ bool delayBackgrounds=true;
  Barrier decodeBarrier,uploadBarrier;
  void Decode(int n){if(n==blockDecode)decodeBarrier.Wait();}
 };
@@ -113,7 +115,10 @@ struct FakeCache {
 struct FakeGraphics {int GetWidth()const{return 3840;}int GetHeight()const{return 2160;}};
 struct FakeWindow {FakeGraphics gfx;FakeGraphics&GetGfxContext(){return gfx;}};
 struct FakeAdvanced {bool m_guiAsyncTextureUpload=true;};
-struct FakeSettings {FakeAdvanced*GetAdvancedSettings(){static thread_local FakeAdvanced a;a.m_guiAsyncTextureUpload=currentState->async;return &a;}};
+struct CSettings {static constexpr auto SETTING_LOOKANDFEEL_DELAYBACKGROUNDIMAGES="lookandfeel.delaybackgroundimages";
+ bool GetBool(const std::string&id)const{Check(id==SETTING_LOOKANDFEEL_DELAYBACKGROUNDIMAGES,"only the background delay setting is read");return currentState->delayBackgrounds;}};
+struct FakeSettings {FakeAdvanced*GetAdvancedSettings(){static thread_local FakeAdvanced a;a.m_guiAsyncTextureUpload=currentState->async;return &a;}
+ CSettings*GetSettings(){static CSettings s;return &s;}};
 struct CServiceBroker {
  static FakeGUI*GetGUI(){static FakeGUI g;return &g;}static FakeCache*GetTextureCache(){static FakeCache c;return &c;}
  static FakeWindow*GetWinSystem(){static FakeWindow w;return &w;}static FakeSettings*GetSettingsComponent(){static FakeSettings s;return &s;}

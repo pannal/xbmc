@@ -149,6 +149,14 @@ CGUITexture::CGUITexture(const CGUITexture& right)
 
   m_isAllocated = NO;
   m_invalid = true;
+  // A copy of an allocated texture, such as a crossfade's outgoing image,
+  // continues showing it, so its first request is not a new background image.
+  m_continuation = right.IsAllocated();
+}
+
+bool CGUITexture::IsBackgroundRequest() const
+{
+  return !m_continuation && IsBackgroundSized(m_posX, m_posY, m_width, m_height);
 }
 
 bool CGUITexture::AllocateOnDemand()
@@ -211,7 +219,8 @@ void CGUITexture::Render(int32_t depthOffset, int32_t overrideDepth)
       CRect textureCoords(0.0f, 0.0f, 1.0f, 1.0f);
       CServiceBroker::GetWinSystem()->GetGfxContext().ClipRect(vertex, textureCoords);
       if (!vertex.IsEmpty())
-        CServiceBroker::GetGUI()->GetLargeTextureManager().RequestImageUpload(m_info.filename);
+        CServiceBroker::GetGUI()->GetLargeTextureManager().RequestImageUpload(
+            m_info.filename, IsBackgroundRequest());
     }
     return;
   }
@@ -407,8 +416,7 @@ bool CGUITexture::AllocResources()
     { // use our large image background loader
       CTextureArray texture;
       if (CServiceBroker::GetGUI()->GetLargeTextureManager().GetImage(
-              m_info.filename, texture, !IsAllocated(), m_use_cache,
-              !IsAllocated() && IsBackgroundSized(m_posX, m_posY, m_width, m_height)))
+              m_info.filename, texture, !IsAllocated(), m_use_cache, IsBackgroundRequest()))
       {
         if (m_isAllocated != LARGE)
           m_invalid = true;
@@ -779,6 +787,7 @@ bool CGUITexture::SetFileName(const std::string& filename)
   // filenames mid-animation
   FreeResources();
   m_info.filename = filename;
+  m_continuation = false;
 
   // disable large loader and cache for gifs
   if (StringUtils::EndsWithNoCase(m_info.filename, ".gif"))

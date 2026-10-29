@@ -65,9 +65,10 @@ struct CTextureArray {std::vector<std::shared_ptr<CTexture>>m_textures;std::vect
 static CTextureArray Published(bool alpha=false){CTextureArray a;auto t=std::make_shared<CTexture>();t->alpha=alpha;a.m_textures.push_back(t);a.m_delays.push_back(100);return a;}
 struct LargeManager {struct Entry{CTextureArray data;bool failed=false;unsigned refs=0;};std::map<std::string,Entry>entries;
  struct Request{std::string path;bool first,defer;};std::vector<Request>requests;
- std::vector<std::string>demands;unsigned gets=0;
+ std::vector<std::string>demands;std::vector<bool>backgroundDemands;unsigned gets=0;bool motion=false;
+ bool IsBackgroundMotion()const{return motion;}
  bool GetImage(const std::string&p,CTextureArray&t,bool first,bool,bool defer=false){requests.push_back({p,first,defer});++gets;auto&e=entries[p];if(first)++e.refs;t=e.data;return !e.failed;}
- void RequestImageUpload(const std::string&p){demands.push_back(p);}
+ void RequestImageUpload(const std::string&p,bool background=false){demands.push_back(p);backgroundDemands.push_back(background);}
  void ReleaseImage(const std::string&p,bool){auto&e=entries[p];if(e.refs)--e.refs;}
  void Publish(const std::string&p,bool alpha=false){entries[p].data=Published(alpha);}
  unsigned Demand(const std::string&p)const{return static_cast<unsigned>(std::count(demands.begin(),demands.end(),p));}};
@@ -98,7 +99,7 @@ struct CServiceBroker {static Window*GetWinSystem(){return &window;}static GUI*G
 class CGUITexture {public:
  CGUITexture(float x=10,float y=10,float w=40,float h=40){m_posX=x;m_posY=y;m_width=w;m_height=h;m_vertex=CRect(x,y,x+w,y+h);}
  CGUITexture(const CGUITexture&);virtual~CGUITexture()=default;CGUITexture*Clone()const{return new CGUITexture(*this);}
- bool AllocateOnDemand();bool Process(unsigned);bool AllocResources();bool CalculateSize();void FreeResources(bool immediately=false);
+ bool AllocateOnDemand();bool IsBackgroundRequest()const;bool Process(unsigned);bool AllocResources();bool CalculateSize();void FreeResources(bool immediately=false);
  bool ReadyToRender()const;bool SetVisible(bool);bool SetAlpha(unsigned char);bool SetDiffuseColor(unsigned,const CGUIListItem*item=nullptr);
  bool SetPosition(float,float);bool SetWidth(float);bool SetHeight(float);bool SetFileName(const std::string&);void SetUseCache(bool);
  void ResetAnimState();bool UpdateAnimFrame(unsigned);int GetOrientation()const;static void OrientateTexture(CRect&,float,float,int);
@@ -113,7 +114,7 @@ class CGUITexture {public:
  CRect m_vertex{10,10,50,50};bool m_invalid=true,m_use_cache=true;std::optional<bool>m_lastReadyState;unsigned char m_alpha=255;
  float m_frameWidth=0,m_frameHeight=0,m_texCoordsScaleU=1,m_texCoordsScaleV=1;int m_currentLoop=0;unsigned m_currentFrame=0,m_lasttime=0;
  float m_diffuseU=1,m_diffuseV=1,m_diffuseScaleU=1,m_diffuseScaleV=1;CPoint m_diffuseOffset;bool m_allocateDynamically=false;
- enum ALLOCATE_TYPE {NO=0,NORMAL,LARGE,NORMAL_FAILED,LARGE_FAILED};ALLOCATE_TYPE m_isAllocated=NO;
+ enum ALLOCATE_TYPE {NO=0,NORMAL,LARGE,NORMAL_FAILED,LARGE_FAILED};ALLOCATE_TYPE m_isAllocated=NO;bool m_continuation=false;
  CTextureInfo m_info;CAspectRatio m_aspect;CTextureArray m_diffuse,m_texture;unsigned begins=0,ends=0,draws=0,allocations=0;};
 #define GUIPROFILER_RENDER_BEGIN(x) ((void)0)
 #define GUIPROFILER_RENDER_END(x) ((void)0)
@@ -181,6 +182,16 @@ static void Copies(){
  Check(!copy->IsAllocated(),"copy starts with independent allocation state");copy->AllocResources();Check(gui.large.entries["large"].refs==2,"copy acquires independent manager reference");
  copy->FreeResources();Check(gui.large.entries["large"].refs==1,"copy release preserves another consumer");source.Render();Check(gui.large.Demand("large")==1,"remaining consumer still requests GPU admission");
 }
+static void DemandClassification(){
+ Reset();CGUITexture background(0,0,100,100);Pending(background);background.Render();CGUITexture poster(0,0,30,50);poster.m_info.filename="poster";poster.AllocResources();poster.Render();
+ Check(gui.large.demands.size()==2&&gui.large.backgroundDemands[0]&&!gui.large.backgroundDemands[1],"draw demand reports its consumer type");
+ Check(gui.large.requests.back().path=="poster"&&!gui.large.requests.back().defer,"poster poll is not a background request");
+}
+static void BackgroundCopies(){ Reset();CGUITexture shown(0,0,100,100);shown.m_info.filename="shown";gui.large.Publish("shown");shown.AllocResources();auto fade=std::unique_ptr<CGUITexture>(shown.Clone());fade->SetFileName("next");gui.large.requests.clear();fade->AllocResources();
+ Check(gui.large.requests.size()==1&&gui.large.requests[0].path=="next"&&gui.large.requests[0].defer,"copy loading a new file is a new background request");
+ Reset();CGUITexture fresh(0,0,100,100);fresh.m_info.filename="fresh";auto unallocated=std::unique_ptr<CGUITexture>(fresh.Clone());unallocated->AllocResources();
+ Check(gui.large.requests.size()==1&&gui.large.requests[0].defer,"copy of an unallocated background texture is a new background request");
+}
 static void Replacement(){
  Reset();CGUIImage image;CDirtyRegionList dirty;gui.large.Publish("large");image.m_texture->m_aspect.ratio=CAspectRatio::AR_KEEP;image.m_texture->m_width=40;image.m_texture->m_height=80;image.w=40;image.h=80;
  image.Process(100,dirty);Check(image.m_texture->ReadyToRender(),"old fitted texture ready");const CRect oldVertex=image.m_texture->m_vertex;
@@ -212,6 +223,9 @@ static void DeferredIncomingFade(){
  CGUITexture oldSource(0,0,100,100);oldSource.m_info.filename="old";gui.large.Publish("old");oldSource.AllocResources();
  image.m_fadingTextures.push_back(new CGUIImage::CFadingTexture(&oldSource,100));oldSource.FreeResources();CDirtyRegionList dirty;
  image.Process(116,dirty);image.DoRender();const auto incoming=std::find_if(gui.large.requests.begin(),gui.large.requests.end(),[](const LargeManager::Request&r){return r.path=="large"&&r.first;});Check(incoming!=gui.large.requests.end()&&incoming->defer,"incoming background uses deferred classification");
+ const auto copies=std::count_if(gui.large.requests.begin(),gui.large.requests.end(),[](const LargeManager::Request&r){return r.path=="old"&&r.first;});
+ const auto deferredCopies=std::count_if(gui.large.requests.begin(),gui.large.requests.end(),[](const LargeManager::Request&r){return r.path=="old"&&r.first&&r.defer;});
+ Check(copies==2&&deferredCopies==1,"outgoing fade copy is not a new background request");
  for(unsigned time=132;time<=2116;time+=16)image.Process(time,dirty);
  Check(image.m_currentFadeTime==0&&image.m_texture->m_alpha==0,"long deferred decode preserves zero-alpha incoming fade");
  Check(image.m_fadingTextures.size()==1&&image.m_fadingTextures[0]->m_fadeTime==100&&image.m_fadingTextures[0]->m_texture->ReadyToRender(),"long deferred decode retains ready outgoing image");
@@ -220,7 +234,45 @@ static void DeferredIncomingFade(){
  Check(image.m_currentFadeTime>0&&image.m_currentFadeTime<image.m_crossFadeTime,"deferred fade resumes at ordinary frame step");
  Check(image.m_fadingTextures[0]->m_fadeTime<100,"deferred old fade starts only after publication");
 }
-int main(){try{Admission();OuterCullAndAutosize();PublicationAndFades();Copies();Replacement();BackgroundClassification();DeferredIncomingFade();std::printf("PASS %u frontend checks\n",checks);return 0;}catch(const std::exception&e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
+static CGUIImage*FadingImage(bool background,bool published){auto*image=new CGUIImage;if(background){image->m_texture=std::make_unique<CGUITexture>(0,0,100,100);image->x=image->y=0;image->w=image->h=100;}
+ image->m_lastRenderTime=100;if(published)gui.large.Publish("large");
+ for(const char*path:{"a","b"}){CGUITexture source(image->x,image->y,image->w,image->h);source.m_info.filename=path;gui.large.Publish(path);source.AllocResources();
+  image->m_fadingTextures.push_back(new CGUIImage::CFadingTexture(&source,path[0]=='a'?40:50));source.FreeResources();}
+ return image;}
+static void MotionEndsFade(){CDirtyRegionList dirty;
+ {Reset();std::unique_ptr<CGUIImage>image(FadingImage(true,true));image->Process(116,dirty);
+  Check(image->m_fadingTextures.size()==2&&image->m_currentFadeTime==16,"background fade runs while the GUI is still");
+  gui.large.motion=true;const unsigned before=image->dirty;image->Process(132,dirty);
+  Check(image->m_fadingTextures.empty()&&image->m_currentFadeTime==100&&image->m_texture->m_alpha==image->GetFadeLevel(100)&&image->dirty>before,"motion ends a background crossfade");
+  Check(!gui.large.entries["a"].refs&&!gui.large.entries["b"].refs,"ended fade releases its outgoing copies");
+  image->Process(148,dirty);Check(image->m_currentFadeTime==100&&image->m_fadingTextures.empty(),"ended fade stays ended");}
+ {Reset();std::unique_ptr<CGUIImage>image(FadingImage(true,false));gui.large.motion=true;image->Process(116,dirty);
+  Check(image->m_fadingTextures.size()==1&&image->m_fadingTextures[0]->m_texture->GetFileName()=="b"&&image->m_fadingTextures[0]->m_fadeTime==100&&
+        image->m_fadingTextures[0]->m_texture->m_alpha==image->GetFadeLevel(100),"pending incoming keeps the outgoing image during motion");
+  Check(image->m_currentFadeTime==0&&image->m_texture->m_alpha==0,"pending incoming does not skip its own fade");
+  gui.large.motion=false;gui.large.Publish("large");image->Process(132,dirty);image->Process(148,dirty);
+  Check(image->m_currentFadeTime>0&&image->m_currentFadeTime<100&&image->m_fadingTextures.size()==1,"incoming fades in once motion stops");}
+ {Reset();std::unique_ptr<CGUIImage>image(FadingImage(false,true));gui.large.motion=true;image->Process(116,dirty);
+  Check(image->m_fadingTextures.size()==2&&image->m_currentFadeTime==16,"poster fade continues during motion");}
+}
+static void AddCopy(CGUIImage&image,const std::string&path,unsigned fade){CGUITexture source(image.x,image.y,image.w,image.h);source.m_info.filename=path;if(!path.empty())gui.large.Publish(path);
+ source.AllocResources();image.m_fadingTextures.push_back(new CGUIImage::CFadingTexture(&source,fade));source.FreeResources();}
+static void Background(CGUIImage&image,const std::string&incoming){image.m_texture=std::make_unique<CGUITexture>(0,0,100,100);image.m_texture->m_info.filename=incoming;image.x=image.y=0;image.w=image.h=100;image.m_lastRenderTime=100;}
+static void MotionEmptyIncoming(){CDirtyRegionList dirty;
+ {Reset();CGUIImage image;Background(image,"");AddCopy(image,"a",100);gui.large.motion=true;image.Process(116,dirty);image.Process(132,dirty);
+  Check(image.m_fadingTextures.size()==1&&image.m_fadingTextures[0]->m_fadeTime==100&&image.m_fadingTextures[0]->m_texture->m_alpha==image.GetFadeLevel(100),"empty incoming keeps the outgoing image during motion");
+  gui.large.motion=false;image.Process(148,dirty);
+  Check(image.m_fadingTextures.size()==1&&image.m_fadingTextures[0]->m_fadeTime==84,"outgoing image fades to blank at the ordinary step once motion stops");
+  for(unsigned time=164;time<=320;time+=16){image.Process(time,dirty);}Check(image.m_fadingTextures.empty()&&!gui.large.entries["a"].refs,"faded outgoing image is released");}
+ {Reset();CGUIImage image;Background(image,"");AddCopy(image,"a",40);AddCopy(image,"b",50);gui.large.motion=true;image.Process(116,dirty);
+  Check(image.m_fadingTextures.size()==1&&image.m_fadingTextures[0]->m_texture->GetFileName()=="b"&&image.m_fadingTextures[0]->m_fadeTime==100&&!gui.large.entries["a"].refs,
+        "switching mid-fade to an empty image keeps the last outgoing image");}
+ {Reset();CGUIImage image;Background(image,"large");AddCopy(image,"a",100);AddCopy(image,"",100);gui.large.motion=true;image.Process(116,dirty);
+  Check(image.m_fadingTextures.size()==1&&image.m_fadingTextures[0]->m_texture->GetFileName()=="a"&&image.m_fadingTextures[0]->m_fadeTime==100,"passing an empty image keeps the last visible outgoing image");
+  gui.large.motion=false;gui.large.Publish("large");image.Process(132,dirty);image.Process(148,dirty);
+  Check(image.m_currentFadeTime>0&&image.m_currentFadeTime<100&&image.m_fadingTextures.size()==1&&image.m_fadingTextures[0]->m_fadeTime<100,"crossfade from the kept image runs once motion stops");}
+}
+int main(){try{Admission();OuterCullAndAutosize();PublicationAndFades();Copies();Replacement();BackgroundClassification();DeferredIncomingFade();BackgroundCopies();DemandClassification();MotionEndsFade();MotionEmptyIncoming();std::printf("PASS %u frontend checks\n",checks);return 0;}catch(const std::exception&e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
 '''
 
 
@@ -229,7 +281,7 @@ def source_code(root, sources):
     aspect = header[header.index('#define ASPECT_ALIGN_CENTER'):header.index('class CTextureInfo')]
     methods = [function(texture,'bool IsBackgroundSized(')]
     methods += [function(texture, sig) for sig in (
-        'CGUITexture::CGUITexture(const CGUITexture& right)', 'bool CGUITexture::AllocateOnDemand(',
+        'CGUITexture::CGUITexture(const CGUITexture& right)', 'bool CGUITexture::IsBackgroundRequest(', 'bool CGUITexture::AllocateOnDemand(',
         'bool CGUITexture::Process(', 'void CGUITexture::Render(int32_t', 'void CGUITexture::Render(float',
         'bool CGUITexture::AllocResources(', 'bool CGUITexture::CalculateSize(', 'void CGUITexture::FreeResources(',
         'bool CGUITexture::ReadyToRender(', 'void CGUITexture::ResetAnimState(', 'bool CGUITexture::UpdateAnimFrame(',
@@ -290,7 +342,19 @@ def mutations(code):
              ('background-ignores-screen-scaling','gfx.ScaleFinalXCoord(posX + width, posY) - gfx.ScaleFinalXCoord(posX, posY)','width','background classification uses final screen scaling'),
              ('background-callsite-disabled','IsBackgroundSized(m_posX, m_posY, m_width, m_height)','false','first large background requests scroll deferral'),
              ('foreground-callsite-misclassified','IsBackgroundSized(m_posX, m_posY, m_width, m_height)','true','first poster remains foreground'),
-             ('deferred-fade-clock-stopped','m_lastRenderTime = currentTime;','if (m_texture->ReadyToRender()) m_lastRenderTime = currentTime;','deferred fade resumes at ordinary frame step')]
+             ('fade-copy-deferred','return !m_continuation && IsBackgroundSized','return IsBackgroundSized','outgoing fade copy is not a new background request'),
+             ('demand-not-classified','RequestImageUpload(\n            m_info.filename, IsBackgroundRequest());','RequestImageUpload(\n            m_info.filename);','draw demand reports its consumer type'),
+             ('copy-continuation-sticky','  m_continuation = false;\n','','copy loading a new file is a new background request'),
+             ('unallocated-copy-continues','m_continuation = right.IsAllocated();','m_continuation = true;','copy of an unallocated background texture is a new background request'),
+             ('deferred-fade-clock-stopped','m_lastRenderTime = currentTime;','if (m_texture->ReadyToRender()) m_lastRenderTime = currentTime;','deferred fade resumes at ordinary frame step'),
+             ('motion-fade-continues','GetLargeTextureManager().IsBackgroundMotion())','GetLargeTextureManager().IsBackgroundMotion() && false)','motion ends a background crossfade'),
+             ('motion-ends-foreground-fade','        m_texture->IsBackgroundRequest() &&\n','','poster fade continues during motion'),
+             ('motion-drops-outgoing','      if (!ready)\n      {\n        const auto visible','      if (false)\n      {\n        const auto visible','pending incoming keeps the outgoing image during motion'),
+             ('motion-dims-kept-image','        kept->m_fadeTime = m_crossFadeTime;\n','        (void)0;\n','pending incoming keeps the outgoing image during motion'),
+             ('motion-empty-is-ready','const bool ready = m_texture->ReadyToRender();','const bool ready = m_texture->ReadyToRender() || m_texture->GetFileName().empty();','empty incoming keeps the outgoing image during motion'),
+             ('motion-keeps-empty-copy','{ return !texture->m_texture->GetFileName().empty(); }','{ return texture != nullptr; }','passing an empty image keeps the last visible outgoing image'),
+             ('held-outgoing-fades','      if (!holdOutgoing && (m_texture->ReadyToRender() || m_texture->GetFileName().empty()))','      if ((holdOutgoing || !holdOutgoing) && (m_texture->ReadyToRender() || m_texture->GetFileName().empty()))','empty incoming keeps the outgoing image during motion'),
+             ('motion-skips-pending-fade','      if (ready)\n        m_currentFadeTime = m_crossFadeTime;','      m_currentFadeTime = m_crossFadeTime;','pending incoming does not skip its own fade')]
     for name,old,new,witness in changes:
         assert code.count(old)==1,name+' mutation anchor not unique'
         yield name,code.replace(old,new,1),witness

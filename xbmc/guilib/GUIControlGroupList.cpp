@@ -9,9 +9,12 @@
 #include "GUIControlGroupList.h"
 
 #include "GUIAction.h"
+#include "GUIComponent.h"
 #include "GUIControlProfiler.h"
 #include "GUIFont.h" // for XBFONT_* definitions
+#include "GUILargeTextureManager.h"
 #include "GUIMessage.h"
+#include "ServiceBroker.h"
 #include "guilib/guiinfo/GUIInfoLabels.h"
 #include "input/actions/Action.h"
 #include "input/actions/ActionIDs.h"
@@ -57,6 +60,9 @@ void CGUIControlGroupList::Process(unsigned int currentTime, CDirtyRegionList &d
 {
   if (m_scroller.Update(currentTime))
     MarkDirtyRegion();
+  // Like containers, report each frame in which the scroller moves.
+  if (m_scroller.IsScrolling())
+    CServiceBroker::GetGUI()->GetLargeTextureManager().SetScrolling();
 
   // first we update visibility of all our items, to ensure our size and
   // alignment computations are correct.

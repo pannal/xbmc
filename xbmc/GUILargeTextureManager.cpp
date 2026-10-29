@@ -14,6 +14,7 @@
 #include "guilib/GUIComponent.h"
 #include "guilib/Texture.h"
 #include "settings/AdvancedSettings.h"
+#include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/JobManager.h"
 #include "utils/TimeUtils.h"
@@ -212,8 +213,9 @@ bool CGUILargeTextureManager::GetImage(const std::string& path,
                                       CTextureArray& texture,
                                       bool firstRequest,
                                       const bool useCache,
-                                      bool deferWhileScrolling)
+                                      bool background)
 {
+  const bool defer = firstRequest && background && DeferBackgrounds();
   std::unique_lock<CCriticalSection> lock(m_listSection);
 
   // O(1) lookup in allocated textures
@@ -222,37 +224,60 @@ bool CGUILargeTextureManager::GetImage(const std::string& path,
   {
     CLargeTexture *image = it->second;
     if (firstRequest)
+    {
       image->AddRef();
+      if (defer)
+      {
+        // The image may still be loaded after a recent release, or because
+        // another consumer, such as a hidden view's image, keeps it. Showing it
+        // now would start this consumer's fade during this frame's motion, like
+        // a new decode would.
+        if (!image->m_held)
+        {
+          image->m_held = true;
+          image->m_deferredSince = CTimeUtils::GetFrameTime();
+        }
+        m_hasDeferred = true;
+      }
+    }
+    // A hold only delays background consumers.
+    if (image->m_held && background)
+      return true;
     texture = image->GetTexture();
     return texture.size() > 0 || image->m_pendingTexture != nullptr;
   }
 
   if (firstRequest)
-    QueueImage(path, useCache, deferWhileScrolling);
+    QueueImage(path, useCache, defer);
 
   return true;
 }
 
-void CGUILargeTextureManager::RequestImageUpload(const std::string& path)
+void CGUILargeTextureManager::RequestImageUpload(const std::string& path, bool background)
 {
   std::unique_lock<CCriticalSection> lock(m_listSection);
   auto allocated = m_allocatedLookup.find(path);
   if (allocated != m_allocatedLookup.end())
   {
     allocated->second->m_gpuDemand = true;
+    allocated->second->m_foregroundDemand |= !background;
     QueueUpload(allocated->second);
   }
   else
   {
     auto queued = m_queuedLookup.find(path);
     if (queued != m_queuedLookup.end())
+    {
       queued->second->m_gpuDemand = true;
+      queued->second->m_foregroundDemand |= !background;
+    }
   }
 }
 
 void CGUILargeTextureManager::QueueUpload(CLargeTexture* image)
 {
-  if (!image->m_gpuDemand || !image->m_pendingTexture || image->m_uploadJobID != 0)
+  if (!image->m_gpuDemand || !image->m_pendingTexture || image->m_uploadJobID != 0 ||
+      (image->m_held && !image->m_foregroundDemand))
     return;
 
   // A visible upload can run even when normal-priority decoders fill their pool.
@@ -337,7 +362,14 @@ void CGUILargeTextureManager::QueueImage(const std::string& path, bool useCache,
   if (it != m_queuedLookup.end())
   {
     it->second->AddRef();
-    if (!defer)
+    if (defer && !it->second->m_background)
+    {
+      // Joining a foreground decode. The completion hold applies to this
+      // consumer and times out from its request.
+      it->second->m_background = true;
+      it->second->m_deferredSince = CTimeUtils::GetFrameTime();
+    }
+    else if (!defer)
     {
       // A foreground consumer must not inherit another consumer's background
       // deferral. Preserve the original request's cache policy and token.
@@ -359,6 +391,7 @@ void CGUILargeTextureManager::QueueImage(const std::string& path, bool useCache,
   image->m_asyncUpload =
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAsyncTextureUpload;
   image->m_useCache = useCache;
+  image->m_background = defer;
   image->m_deferredSince = CTimeUtils::GetFrameTime();
   // Register before admission; a callback cannot enter until this lock releases.
   m_queued.emplace_back(0, image);
@@ -395,17 +428,20 @@ void CGUILargeTextureManager::SetScrolling()
 void CGUILargeTextureManager::ProcessDeferred()
 {
   const bool scrolling = m_scrolling.exchange(false);
+  m_moved = scrolling;
   std::unique_lock<CCriticalSection> lock(m_listSection);
   if (!m_hasDeferred)
     return;
 
   const unsigned int now = CTimeUtils::GetFrameTime();
+  const auto waits = [scrolling, now](const CLargeTexture* image)
+  { return scrolling && now - image->m_deferredSince < MAX_DEFER_TIME; };
   bool deferred = false;
   for (auto it = m_queued.begin(); it != m_queued.end();)
   {
     if (it->first != 0)
       ++it;
-    else if (scrolling && now - it->second->m_deferredSince < MAX_DEFER_TIME)
+    else if (waits(it->second))
     {
       deferred = true;
       ++it;
@@ -413,7 +449,30 @@ void CGUILargeTextureManager::ProcessDeferred()
     else
       it = StartQueuedImage(it);
   }
+  for (CLargeTexture* image : m_allocated)
+  {
+    if (!image->m_held)
+      continue;
+    if (waits(image))
+      deferred = true;
+    else
+    {
+      image->m_held = false;
+      QueueUpload(image);
+    }
+  }
   m_hasDeferred = deferred;
+}
+
+bool CGUILargeTextureManager::IsBackgroundMotion() const
+{
+  return (m_scrolling || m_moved) && DeferBackgrounds();
+}
+
+bool CGUILargeTextureManager::DeferBackgrounds()
+{
+  return CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+      CSettings::SETTING_LOOKANDFEEL_DELAYBACKGROUNDIMAGES);
 }
 
 void CGUILargeTextureManager::OnJobComplete(unsigned int jobID, bool success, CJob *job)
@@ -457,6 +516,13 @@ void CGUILargeTextureManager::OnJobComplete(unsigned int jobID, bool success, CJ
       m_queued.erase(it);
       m_allocated.push_back(image);
       m_allocatedLookup[path] = image;
+      if (success && image->m_background)
+      {
+        // Motion may have started again while decoding. The hold keeps the
+        // request's original timeout.
+        image->m_held = true;
+        m_hasDeferred = true;
+      }
       QueueUpload(image);
       return;
     }

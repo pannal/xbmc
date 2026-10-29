@@ -20836,3 +20836,15 @@ msgstr "Gemeinsam für Untertitel-Rahmenerkennung, native Dolby-Vision-L5-Erkenn
 msgctxt "#69384"
 msgid "Active picture and subtitle positioning"
 msgstr "Aktiver Bildbereich und Untertitelpositionierung"
+
+#. Label of setting "Interface -> Skin -> Delay background images during motion"
+#: system/settings/settings.xml
+msgctxt "#69385"
+msgid "Delay background images during motion"
+msgstr "Hintergrundbilder während Bewegungen verzögern"
+
+#. Help text of setting "Interface -> Skin -> Delay background images during motion"
+#: system/settings/settings.xml
+msgctxt "#69386"
+msgid "Waits until lists stop scrolling and interface animations finish before showing a newly selected full-screen background image (such as fanart), at most three seconds. Enable this if loading such a large image during motion drops frames, for example with a 4K display."
+msgstr "Wartet, bis Listen nicht mehr scrollen und Animationen der Oberfläche beendet sind, bevor ein neu ausgewähltes bildschirmfüllendes Hintergrundbild (z. B. Fanart) angezeigt wird, höchstens drei Sekunden. Aktivieren, wenn das Laden eines so großen Bildes während einer Bewegung zu ausgelassenen Bildern führt, zum Beispiel bei einem 4K-Bildschirm."

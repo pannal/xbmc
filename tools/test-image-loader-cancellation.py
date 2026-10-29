@@ -87,7 +87,9 @@ struct FakeCache {
 struct FakeGraphics {int GetWidth()const{return 3840;}int GetHeight()const{return 2160;}};
 struct FakeWindow {FakeGraphics gfx;FakeGraphics& GetGfxContext(){return gfx;}};
 struct FakeAdvanced {bool m_guiAsyncTextureUpload=true;};
-struct FakeSettings {FakeAdvanced* GetAdvancedSettings(){static thread_local FakeAdvanced a;a.m_guiAsyncTextureUpload=currentState->async;return &a;}};
+struct CSettings {static constexpr auto SETTING_LOOKANDFEEL_DELAYBACKGROUNDIMAGES="lookandfeel.delaybackgroundimages";bool GetBool(const std::string&)const{return true;}};
+struct FakeSettings {FakeAdvanced* GetAdvancedSettings(){static thread_local FakeAdvanced a;a.m_guiAsyncTextureUpload=currentState->async;return &a;}
+ CSettings* GetSettings(){static CSettings s;return &s;}};
 struct CServiceBroker {
  static FakeGUI* GetGUI(){static FakeGUI g;return &g;}
  static FakeCache* GetTextureCache(){static FakeCache c;return &c;}

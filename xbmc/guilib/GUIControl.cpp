@@ -12,6 +12,7 @@
 #include "GUIComponent.h"
 #include "GUIControlProfiler.h"
 #include "GUIInfoManager.h"
+#include "GUILargeTextureManager.h"
 #include "GUIMessage.h"
 #include "GUITexture.h"
 #include "GUIWindowManager.h"
@@ -964,6 +965,7 @@ bool CGUIControl::Animate(unsigned int currentTime)
 
   m_transform.Reset();
   bool changed = false;
+  bool moving = false;
 
   CPoint center(GetXPosition() + GetWidth() * 0.5f, GetYPosition() + GetHeight() * 0.5f);
   for (unsigned int i = 0; i < m_animations.size(); i++)
@@ -974,6 +976,8 @@ bool CGUIControl::Animate(unsigned int currentTime)
     UpdateStates(anim.GetType(), anim.GetProcess(), anim.GetState());
     // and render the animation effect
     changed |= (anim.GetProcess() != ANIM_PROCESS_NONE);
+    // Repeating animations never come to rest, so background loads do not wait for them.
+    moving |= anim.GetState() == ANIM_STATE_IN_PROCESS && !anim.IsRepeating();
     anim.RenderAnimation(m_transform, center);
 
     // debug stuff
@@ -982,6 +986,9 @@ bool CGUIControl::Animate(unsigned int currentTime)
     //  CLog::Log(LOGDEBUG, "Animating control {}", m_controlID);
     //}
   }
+
+  if (moving)
+    CServiceBroker::GetGUI()->GetLargeTextureManager().SetScrolling();
 
   return changed;
 }

@@ -139,6 +139,7 @@ public:
     return m_isAllocated == NORMAL_FAILED || m_isAllocated == LARGE_FAILED;
   }
   bool ReadyToRender() const;
+  bool IsBackgroundRequest() const;
 
 protected:
   CGUITexture(float posX, float posY, float width, float height, const CTextureInfo& texture);
@@ -202,6 +203,7 @@ protected:
   bool m_allocateDynamically;
   enum ALLOCATE_TYPE { NO = 0, NORMAL, LARGE, NORMAL_FAILED, LARGE_FAILED };
   ALLOCATE_TYPE m_isAllocated;
+  bool m_continuation{false}; // copied from an allocated texture showing this file
 
   CTextureInfo m_info;
   CAspectRatio m_aspect;

@@ -97,7 +97,7 @@ struct CGUILargeTextureManager
  {
   std::string path="art";
   std::shared_ptr<CTexture> texture,m_pendingTexture;
-  bool m_asyncUpload=false,m_gpuDemand=false;
+  bool m_asyncUpload=false,m_gpuDemand=false,m_background=false,m_held=false;
   unsigned m_uploadJobID=0;
   void SetTexture(std::shared_ptr<CTexture> value) { texture=std::move(value); }
   const std::string& GetPath() const { return path; }
@@ -107,6 +107,7 @@ struct CGUILargeTextureManager
  std::vector<std::pair<unsigned,CLargeTexture*>> m_queued;
  std::vector<CLargeTexture*> m_allocated;
  std::unordered_map<std::string,CLargeTexture*> m_queuedLookup,m_allocatedLookup;
+ bool m_hasDeferred=false;
  // This suite tests the synchronous-publication branch after actual context
  // work. Demand-aware admission executes separately in test-image-upload-demand.
  void QueueUpload(CLargeTexture*) {}
