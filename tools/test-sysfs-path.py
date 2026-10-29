@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Exercise production CSysfsPath reads with real filesystem/stream operations.
+"""Exercise production CSysfsPath reads/writes with real stream operations.
 
 Only logging and StringUtils::Trim are adapters. Failed reads must yield nullopt;
 valid scalar zero and valid empty string must remain distinguishable from failure.
+Writes use temporary files and local /dev/full to exercise buffered rejection.
+--write-baseline REF must reproduce undetected buffered write errors at that ref.
 """
 import argparse
 import os
@@ -22,6 +24,11 @@ void Check(bool value, const char* name) {
   if (!value) { std::cerr << "failed: " << name << '\n'; ++failures; }
 }
 void Write(const char* name, const char* value) {std::ofstream(name) << value;}
+template<class F> void MustThrow(F operation, const char* name) {
+  bool threw = false;
+  try { operation(); } catch (const std::runtime_error&) { threw = true; }
+  Check(threw, name);
+}
 int main() {
   Write("integer", "3\n"); Write("zero", "0"); Write("negative", "-7");
   Write("decimal", "1.25"); Write("empty", ""); Write("blank", " \n\t");
@@ -47,8 +54,23 @@ int main() {
   std::filesystem::create_directory("directory");
   Check(!CSysfsPath("directory").Get<int>(), "directory scalar read");
   Check(!CSysfsPath("directory").Get<std::string>(), "directory string read");
+  CSysfsPath("integer").Set(42);
+  Check(CSysfsPath("integer").Get<int>() == 42, "integer write visible on return");
+  CSysfsPath("integer").Set(0);
+  Check(CSysfsPath("integer").Get<std::string>() == "0", "write truncates old value without newline");
+  CSysfsPath("text", "new text");
+  Check(CSysfsPath("text").Get<std::string>() == "new text", "constructor write");
+  CSysfsPath("optional-missing", 1);
+  Check(!std::filesystem::exists("optional-missing"), "optional absent node remains untouched");
+  MustThrow([] { CSysfsPath("directory").Set(1); }, "write open directory fails");
+  MustThrow([] { CSysfsPath("missing-parent/node").Set(1); }, "write open missing parent fails");
+  // A short insertion is buffered; ENOSPC arrives only when the file is closed.
+  Check(std::filesystem::exists("/dev/full"), "local /dev/full required for write rejection");
+  MustThrow([] { CSysfsPath("/dev/full").Set(1); }, "buffered scalar write fails");
+  MustThrow([] { CSysfsPath("/dev/full", "0"); }, "buffered constructor write fails");
+  MustThrow([] { CSysfsPath("/dev/full").Set(std::string(65536, '1')); }, "unbuffered large write fails");
   if (failures) return 1;
-  std::cout << "sysfs read contracts passed\n";
+  std::cout << "sysfs read/write contracts passed\n";
 }
 '''
 
@@ -70,6 +92,7 @@ struct StringUtils {static std::string& Trim(std::string& value) {
     (folder / 'test.cpp').write_text(TEST)
     subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++17', '-Wall', '-Wextra',
                     '-Werror', '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                    '-fno-pie', '-no-pie',
                     '-I', str(folder), str(folder / 'test.cpp'), str(folder / 'SysfsPath.cpp'),
                     '-o', str(folder / 'test')], check=True)
     return subprocess.run([str(folder / 'test')], cwd=folder, capture_output=True, text=True,
@@ -77,12 +100,18 @@ struct StringUtils {static std::string& Trim(std::string& value) {
                                            'UBSAN_OPTIONS': 'halt_on_error=1'})
 
 
-def main(baseline, controls):
+def main(baseline, controls, write_baseline):
     paths = ['xbmc/platform/linux/SysfsPath.h', 'xbmc/platform/linux/SysfsPath.cpp']
-    source = [subprocess.check_output(['git', 'show', BASELINE + ':' + path], cwd=ROOT, text=True)
-              if baseline else (ROOT / path).read_text() for path in paths]
+    ref = write_baseline or (BASELINE if baseline else None)
+    source = [subprocess.check_output(['git', 'show', ref + ':' + path], cwd=ROOT, text=True)
+              if ref else (ROOT / path).read_text() for path in paths]
     with tempfile.TemporaryDirectory(prefix='sysfs-reads-') as scratch:
         result = run(Path(scratch) / 'positive', *source)
+        if write_baseline:
+            assert result.returncode == 1 and 'failed: buffered scalar write fails' in result.stderr, result.stderr
+            assert 'failed: buffered constructor write fails' in result.stderr, result.stderr
+            print('Original buffered-write failure reproduced:', result.stderr.strip())
+            return
         if baseline:
             assert result.returncode == 1 and 'failed: missing' in result.stderr, result.stderr
             print('Original failed-read contract reproduced:', result.stderr.strip())
@@ -92,6 +121,8 @@ def main(baseline, controls):
         if controls:
             for label, index, old, new in [
                 ('scalar failure', 0, 'if (!(file >> value))', 'file >> value; if (file.bad())'),
+                ('buffered write failure', 0, 'file.close();', ''),
+                ('close failbit ignored', 0, 'if (!file)', 'if (file.bad())'),
                 ('string open failure', 1, '!file.is_open() || file.bad()', 'file.bad()'),
                 ('known zero', 0, 'return value;', 'if (value == T{}) { return std::nullopt; }\n      return value;'),
                 ('valid empty string', 1, 'return StringUtils::Trim(value);', 'if (value.empty()) { return std::nullopt; }\n    return StringUtils::Trim(value);')]:
@@ -105,7 +136,9 @@ def main(baseline, controls):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--baseline', action='store_true')
+    baselines = parser.add_mutually_exclusive_group()
+    baselines.add_argument('--baseline', action='store_true')
+    baselines.add_argument('--write-baseline', metavar='REF')
     parser.add_argument('--controls', action='store_true')
     args = parser.parse_args()
-    main(args.baseline, args.controls)
+    main(args.baseline, args.controls, args.write_baseline)

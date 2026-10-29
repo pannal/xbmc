@@ -58,7 +58,10 @@ public:
 
     file << value;
 
-    if (file.bad())
+    // Short sysfs values can remain buffered until close. Check afterwards
+    // so open, write and close failures all follow the same error path.
+    file.close();
+    if (!file)
     {
       CLog::LogF(LOGERROR, "error write to '{}'", m_path);
       throw std::runtime_error("error write to " + m_path);
