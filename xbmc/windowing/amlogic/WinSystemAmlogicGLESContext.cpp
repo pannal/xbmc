@@ -104,6 +104,25 @@ unsigned int ReadUint(const char* path)
   return sysfs.Exists() ? sysfs.Get<unsigned int>().value_or(0) : 0;
 }
 
+// The HDR type the sink sees: VS10 sends HDR10, HDR10+ and HLG out as DV when
+// mapped to it. aml_dv_on() reports that with a DV override, but only when
+// the DV mode changes, so a title switched in while DV was already out (a DV
+// title, then an HLG one mapped to DV, without stop) kept its source type.
+// The route is the one aml_dv_open() admitted, not the VS10 setting: software
+// decoding and SDR BT.2020 force Bypass whatever the setting, and a deferred
+// disc engage counts with the mode it will engage at this mode set.
+// SDR stays as is: here it cannot be told from no video at all.
+StreamHdrType SinkHdrType(StreamHdrType hdrType)
+{
+  if (hdrType != StreamHdrType::HDR_TYPE_HDR10 && hdrType != StreamHdrType::HDR_TYPE_HDR10PLUS &&
+      hdrType != StreamHdrType::HDR_TYPE_HLG)
+    return hdrType;
+  const unsigned int mode = aml_dv_open_output_mode();
+  return (mode == DOLBY_VISION_OUTPUT_MODE_IPT || mode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL)
+             ? StreamHdrType::HDR_TYPE_DOLBYVISION
+             : hdrType;
+}
+
 // Rendered frames must report no PQ menu graphics for this long before the
 // composite is released, so BD-J clear/redraw cycles do not flap the route.
 // Frames that are not rendered (a static menu, nothing dirty) never release it.
@@ -372,7 +391,10 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   }
 
   // If changing in or out of Dolby Vision and it is on then make sure we do a mode swtich - TODO: combine with DV InfoFrame?
-  StreamHdrType hdrType = CServiceBroker::GetWinSystem()->GetGfxContext().GetHDRType();
+  // Compared and cached as the sink sees it, else the stop after such a
+  // switch is not a DV exit: no forced mode switch, no exit re-handshake, and
+  // the sink stays latched in DV over the SDR GUI.
+  StreamHdrType hdrType = SinkHdrType(CServiceBroker::GetWinSystem()->GetGfxContext().GetHDRType());
   const auto bypass_dv_mode_switch_gui = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS);
 
   bool force_mode_switch_by_dv = !bypass_dv_mode_switch_gui &&
