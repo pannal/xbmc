@@ -19,7 +19,7 @@ extract = runpy.run_path(str(ROOT / 'tools/test-render-slot-publication.py'))['f
 
 
 def harness():
-    source = fixture['harness']().replace('int main() { timeout_recovery();', 'void adjacent_checks() { timeout_recovery();')
+    source = fixture['harness']().replace('int main() {', 'void adjacent_checks() {')
     message = (ROOT / 'xbmc/cores/VideoPlayer/DVDMessage.h').read_text()
     impl = (ROOT / 'xbmc/cores/VideoPlayer/DVDMessage.cpp').read_text()
     parent = (ROOT / 'xbmc/cores/VideoPlayer/VideoPlayer.cpp').read_text()

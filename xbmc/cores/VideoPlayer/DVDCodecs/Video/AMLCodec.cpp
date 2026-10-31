@@ -1989,8 +1989,9 @@ bool CAMLCodec::CloseDecoder(std::function<void()> beforeClose)
   return BeginLifecycle(Lifecycle::CLOSE, std::move(beforeClose));
 }
 
-bool CAMLCodec::Reset()
+bool CAMLCodec::Reset(bool holdVideo)
 {
+  m_resetHoldsVideo = holdVideo;
   return BeginLifecycle(Lifecycle::RESET);
 }
 
@@ -2796,8 +2797,12 @@ void CAMLCodec::SetInputEnded()
 {
   if (!m_opened || m_inputEnded)
     return;
+  CLog::Log(LOGDEBUG, "CAMLCodec::SetInputEnded");
   m_dll->codec_set_eos(&am_private->vcodec, 1);
   m_inputEnded = true;
+  // The wait for the last pictures starts now, also in a drain that started
+  // without the end of the input
+  m_tp_input_ended = m_tp_drain_start = std::chrono::system_clock::now();
 }
 
 void CAMLCodec::ResetInternal()
@@ -2812,7 +2817,8 @@ void CAMLCodec::ResetInternal()
   // brief window where the decoder reallocs over the keeper-pinned frame isn't
   // shown. Read live so the settings take effect on the next seek; released on
   // an applied replacement frame (with a bounded fail-safe).
-  HoldVideo(VideoRestartHoldWanted());
+  if (std::exchange(m_resetHoldsVideo, true))
+    HoldVideo(VideoRestartHoldWanted());
 
   SetPollDevice(-1);
 
@@ -3614,7 +3620,13 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     const int64_t poll_ms =
         (static_cast<int64_t>(am_private->video_rate.load(std::memory_order_relaxed)) * 10000 +
          UNIT_FREQ - 1) / UNIT_FREQ;
-    bool frames_flowing = elapsed_since_last_frame < std::chrono::milliseconds(poll_ms);
+    // At the end of the input, the decoder outputs the kept pictures some time
+    // after the end of stream, also after a pause or a gap in the input
+    auto idle = elapsed_since_last_frame;
+    if (m_inputEnded)
+      idle = std::min(idle, std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now() - m_tp_input_ended));
+    bool frames_flowing = idle < std::chrono::milliseconds(poll_ms);
     if (buffer_level > 0.0f &&
         (drain_elapsed < std::chrono::seconds(m_decoder_drain_timeout) || frames_flowing))
       return CDVDVideoCodec::VC_NONE;

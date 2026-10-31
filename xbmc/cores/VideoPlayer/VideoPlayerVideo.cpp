@@ -344,7 +344,8 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
       request && request->state == CVideoFlushRequest::State::PENDING)
     request->state = CVideoFlushRequest::State::CANCELLED;
   m_pendingResetMessage.reset();
-  m_waitingDrain.reset();
+  m_drain = {};
+  m_draining = false;
   m_pendingRecoveryDiscard = false;
   m_pendingNoOutputRecovery.reset();
 #if defined(HAS_LIBAMCODEC)
@@ -376,7 +377,9 @@ bool CVideoPlayerVideo::HasData() const
   // entirely in its buffer long before the end. Counting only the message
   // queue made the player hit demuxer EOF there and leave its main loop, which
   // froze the time display and ignored seeks while the tail kept playing.
-  return m_messageQueue.GetDataSize() > 0 || m_hwDataLevel > 0;
+  // A drain still has pictures to show. At the end of the input, the player
+  // waits for them.
+  return m_messageQueue.GetDataSize() > 0 || m_hwDataLevel > 0 || m_draining;
 }
 
 bool CVideoPlayerVideo::IsInited() const
@@ -454,7 +457,8 @@ void CVideoPlayerVideo::Process()
     if (m_paused)
       iPriority = 1;
 
-    if (m_waitingDrain)
+    // Packets and stream changes follow the drain
+    if (m_drain.kind != DrainKind::NONE)
       iPriority = 1;
 
     if (onlyPrioMsgs)
@@ -492,16 +496,14 @@ void CVideoPlayerVideo::Process()
       continuingReset = true;
       ret = MSGQ_OK;
     }
-    else if (!lifecyclePending && m_waitingDrain && CanOutputPicture())
-    {
-      pMsg = std::move(m_waitingDrain);
-      ret = MSGQ_OK;
-    }
     else
     {
+      // The next drain step waits only for the messages that are already queued
+      const bool drainStep =
+          !lifecyclePending && m_drain.kind != DrainKind::NONE && CanOutputPicture();
       const auto inputStart = diagnostics ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
-      ret = m_messageQueue.Get(pMsg, lifecyclePending ? 10ms : timeout, iPriority,
-                               lifecyclePending);
+      ret = m_messageQueue.Get(pMsg, lifecyclePending ? 10ms : drainStep ? 0ms : timeout,
+                               iPriority, lifecyclePending);
       if (diagnostics)
         m_diagnostics.input.Add(PLAYBACK_DIAGNOSTICS::NowUs() - inputStart);
       if (diagnostics && ret == MSGQ_TIMEOUT)
@@ -540,6 +542,13 @@ void CVideoPlayerVideo::Process()
           continue;
         }
       }
+      else if (m_drain.kind != DrainKind::NONE)
+      {
+        // The decoder outputs no picture that the renderer cannot take
+        if (CanOutputPicture())
+          ContinueDrain(frametime, pts);
+        continue;
+      }
       // don't ask for a new frame if we can't deliver it to renderer
       else if (CanOutputPicture())
       {
@@ -557,18 +566,11 @@ void CVideoPlayerVideo::Process()
       //Okey, start rendering at stream fps now instead, we are likely in a stillframe
       if (!m_stalled)
       {
-        // squeeze pictures out
-        while (!m_bStop && m_pVideoCodec)
-        {
-          m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN);
-          if (!ProcessDecoderOutput(frametime, pts))
-            break;
-        }
-
-        CLog::Log(LOGDEBUG, "CVideoPlayerVideo - Stillframe detected, switching to forced {:f} fps",
-                  m_fFrameRate);
-        m_stalled = true;
-        pts += frametime * 4;
+        // Squeeze pictures out. A pause is no still frame, and the renderer takes
+        // no picture in a pause.
+        if (CanOutputPicture())
+          StartDrain(DrainKind::STILL, DVD_CODEC_CTRL_DRAIN);
+        continue;
       }
 
       // Waiting timed out, output last picture
@@ -616,6 +618,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))
     {
+      AbortDrain();
       m_decoderFlushRecovery.OnStreamFlush();
       m_pendingNoOutputRecovery.reset();
       // The parent advanced the generation before queueing the reset.
@@ -651,6 +654,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH)) // private message sent by (CVideoPlayerVideo::Flush())
     {
+      AbortDrain();
       m_decoderFlushRecovery.OnStreamFlush();
       m_pendingNoOutputRecovery.reset();
       m_recoveryGeneration.AdvanceTo(
@@ -658,7 +662,6 @@ void CVideoPlayerVideo::Process()
       m_isEOS = false;
       m_inputEnded = false;
       m_messageQueue.Flush(CDVDMsg::VIDEO_DRAIN);
-      m_waitingDrain.reset();
       m_syncEpoch = std::static_pointer_cast<CDVDMsgStreamFlush>(pMsg)->epoch;
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       if (m_pVideoCodec && !continuingReset)
@@ -720,59 +723,16 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_STREAMCHANGE))
     {
-      auto msg = std::static_pointer_cast<CDVDMsgVideoCodecChange>(pMsg);
-      m_mpeg2Cadence.Drain();
-
       // No packet follows before OpenStream replaces or reconfigures the decoder
-      while (!m_bStop && m_pVideoCodec)
-      {
-        m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN | DVD_CODEC_CTRL_END_OF_INPUT);
-        bool cont = ProcessDecoderOutput(frametime, pts);
-
-        if (!cont)
-          break;
-      }
-
-      if (m_pVideoCodec && m_pVideoCodec->LifecyclePending())
-      {
-        m_pendingResetMessage = pMsg;
-        continue;
-      }
-      OpenStream(msg->m_hints, std::move(msg->m_codec), msg->m_recoveryGeneration);
-      msg->m_codec = NULL;
-      if (m_picture.videoBuffer)
-      {
-        m_picture.videoBuffer->Release();
-        m_picture.videoBuffer = nullptr;
-      }
+      StartDrain(DrainKind::STREAM_CHANGE, DVD_CODEC_CTRL_DRAIN | DVD_CODEC_CTRL_END_OF_INPUT,
+                 pMsg);
     }
     else if (pMsg->IsType(CDVDMsg::VIDEO_DRAIN))
     {
-      // The decoder outputs no picture that the renderer cannot take, so the
-      // drain would poll until the decoder timeout, and the messages that
-      // resume or flush the playback would wait. Only those messages come
-      // until a picture can go out.
-      if (!CanOutputPicture())
-      {
-        m_waitingDrain = std::move(pMsg);
-        continue;
-      }
-      m_inputEnded = true;
-      // The tail is decoded as is; the parent also rejects recovery at end of stream.
-      m_decoderFlushRecovery.OnStreamFlush();
-      m_pendingNoOutputRecovery.reset();
-      m_isEOS = false;
-      m_mpeg2Cadence.Drain();
-      const int drain{DVD_CODEC_CTRL_DRAIN |
-                      (std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value
-                           ? DVD_CODEC_CTRL_END_OF_INPUT
-                           : 0)};
-      while (!m_bStop && m_pVideoCodec)
-      {
-        m_pVideoCodec->SetCodecControl(drain);
-        if (!ProcessDecoderOutput(frametime, pts))
-          break;
-      }
+      StartDrain(DrainKind::INPUT,
+                 DVD_CODEC_CTRL_DRAIN | (std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value
+                                             ? DVD_CODEC_CTRL_END_OF_INPUT
+                                             : 0));
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
@@ -986,6 +946,98 @@ bool CVideoPlayerVideo::CanOutputPicture() const
   return (m_speed != DVD_PLAYSPEED_PAUSE || m_processInfo.IsFrameAdvance() ||
           m_syncState != IDVDStreamPlayer::SYNC_INSYNC) &&
          !m_paused;
+}
+
+// A drain that is in progress ends first
+void CVideoPlayerVideo::StartDrain(DrainKind kind, int control, std::shared_ptr<CDVDMsg> streamChange)
+{
+  AbortDrain();
+  m_drain = {kind, control, false, std::move(streamChange)};
+  m_draining = true;
+}
+
+void CVideoPlayerVideo::ContinueDrain(double& frametime, double& pts)
+{
+  if (m_pVideoCodec && !m_drain.started)
+  {
+    if (m_drain.kind == DrainKind::INPUT && (m_drain.control & DVD_CODEC_CTRL_END_OF_INPUT) &&
+        m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET) > 0)
+    {
+      // More input came after the end of the input (a growing file), so the
+      // input did not end. A drain would stop the decoder until the queue is empty.
+      CLog::Log(LOGDEBUG, "CVideoPlayerVideo - more input after the end of the input, no drain");
+      m_drain = {};
+      m_draining = false;
+      return;
+    }
+    if (m_drain.kind == DrainKind::INPUT)
+    {
+      m_inputEnded = true;
+      // The tail is decoded as is; the parent also rejects recovery at end of stream.
+      m_decoderFlushRecovery.OnStreamFlush();
+      m_pendingNoOutputRecovery.reset();
+      m_isEOS = false;
+    }
+    if (m_drain.kind != DrainKind::STILL)
+      m_mpeg2Cadence.Drain();
+    m_drain.started = true;
+  }
+  if (m_pVideoCodec)
+  {
+    m_pVideoCodec->SetCodecControl(m_drain.control);
+    if (ProcessDecoderOutput(frametime, pts))
+      return;
+  }
+  EndDrain(frametime, pts);
+}
+
+void CVideoPlayerVideo::EndDrain(double& frametime, double& pts)
+{
+  const SDrain drain{std::exchange(m_drain, {})};
+  m_draining = false;
+  if (drain.kind == DrainKind::STILL)
+  {
+    CLog::Log(LOGDEBUG, "CVideoPlayerVideo - Stillframe detected, switching to forced {:f} fps",
+              m_fFrameRate);
+    m_stalled = true;
+    pts += frametime * 4;
+
+    // Waiting timed out, output last picture
+    if (m_picture.videoBuffer)
+    {
+      m_picture.pts = pts;
+      m_outputSate = OutputPicture(&m_picture);
+      pts += frametime;
+    }
+  }
+  else if (drain.kind == DrainKind::STREAM_CHANGE)
+  {
+    if (m_pVideoCodec && m_pVideoCodec->LifecyclePending())
+      m_pendingResetMessage = drain.streamChange;
+    else
+      OpenStreamChange(drain.streamChange);
+  }
+}
+
+// A flush or a reset discards the pictures of the drain. A held stream change
+// opens the next stream before the flush or the reset, as the drain did.
+void CVideoPlayerVideo::AbortDrain()
+{
+  const SDrain drain{std::exchange(m_drain, {})};
+  m_draining = false;
+  if (drain.kind == DrainKind::STREAM_CHANGE)
+    OpenStreamChange(drain.streamChange);
+}
+
+void CVideoPlayerVideo::OpenStreamChange(const std::shared_ptr<CDVDMsg>& msg)
+{
+  auto change = std::static_pointer_cast<CDVDMsgVideoCodecChange>(msg);
+  OpenStream(change->m_hints, std::move(change->m_codec), change->m_recoveryGeneration);
+  if (m_picture.videoBuffer)
+  {
+    m_picture.videoBuffer->Release();
+    m_picture.videoBuffer = nullptr;
+  }
 }
 
 bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
