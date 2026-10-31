@@ -85,7 +85,9 @@ public:
    \param texture texture object to hold the resulting texture
    \param orientation orientation of resulting texture
    \param firstRequest true if this is the first time we are requesting this texture
-   \param deferWhileScrolling defer a new background-sized request until scrolling stops
+   \param background the consumer is a background request; a new one waits while the GUI moves
+   \param direct the consumer is neither a background request nor a selection image, such as a
+                 list row; only counted when this is the first request
    \return true if the image exists, else false.
    \sa CGUITextureArray and CGUITexture
    */
@@ -93,7 +95,11 @@ public:
                 CTextureArray& texture,
                 bool firstRequest,
                 bool useCache = true,
-                bool background = false);
+                bool background = false,
+                bool direct = false);
+
+  // True if a direct consumer, such as a list row, holds a reference to this image.
+  bool HasDirectConsumer(const std::string& path);
 
   // Containers and group lists report each frame in which their scroller runs,
   // and controls each frame in which a non-repeating animation runs.
@@ -105,6 +111,9 @@ public:
   // True if background images wait for motion and the GUI moved in this or the
   // previous frame. Controls processed before the moving one see it a frame late.
   bool IsBackgroundMotion() const;
+
+  // True if window images following the selection wait like background images.
+  static bool DelaysSelectionImages();
 
   // Admit GPU work for an existing request. This does not acquire another reference.
   // A background consumer's demand waits while the image is held.
@@ -120,8 +129,9 @@ public:
    \param path path of the image to release.
    \param immediately if set true the image is immediately unloaded once its reference count reaches zero
                       rather than being unloaded after a delay.
+   \param direct the reference was acquired by a direct consumer, see GetImage.
    */
-  void ReleaseImage(const std::string &path, bool immediately = false);
+  void ReleaseImage(const std::string& path, bool immediately = false, bool direct = false);
 
   /*!
    \brief Cleanup images that are no longer in use.
@@ -173,10 +183,15 @@ private:
     bool m_held{false};
     // A foreground consumer requested its upload.
     bool m_foregroundDemand{false};
+    // References held by direct consumers, such as list rows.
+    unsigned int m_directRefs{0};
   };
 
   static bool DeferBackgrounds();
-  void QueueImage(const std::string& path, bool useCache = true, bool defer = false);
+  void QueueImage(const std::string& path,
+                  bool useCache = true,
+                  bool defer = false,
+                  bool direct = false);
   void QueueUpload(CLargeTexture* image);
   void CancelUpload(unsigned int jobID);
 

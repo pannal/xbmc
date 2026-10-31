@@ -21,16 +21,21 @@ namespace
 {
 // Declared screen coverage is a conservative background heuristic, not a test
 // of decoded pixel size or actual visibility after clipping and transforms.
-bool IsBackgroundSized(float posX, float posY, float width, float height)
+bool IsBackgroundSized(float posX, float posY, float width, float height, float share = 0.5f)
 {
   const CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
   const float screenWidth =
       gfx.ScaleFinalXCoord(posX + width, posY) - gfx.ScaleFinalXCoord(posX, posY);
   const float screenHeight =
       gfx.ScaleFinalYCoord(posX, posY + height) - gfx.ScaleFinalYCoord(posX, posY);
-  return 2 * screenWidth * screenHeight >=
-         static_cast<float>(gfx.GetWidth()) * static_cast<float>(gfx.GetHeight());
+  return screenWidth * screenHeight >=
+         share * static_cast<float>(gfx.GetWidth()) * static_cast<float>(gfx.GetHeight());
 }
+
+// A window image that follows the selection, such as an info panel poster,
+// waits with background images from a tenth of the screen, so small logos and
+// flags still change at once.
+constexpr float SELECTION_IMAGE_SHARE = 0.1f;
 } // namespace
 
 CreateGUITextureFunc CGUITexture::m_createGUITextureFunc;
@@ -152,11 +157,22 @@ CGUITexture::CGUITexture(const CGUITexture& right)
   // A copy of an allocated texture, such as a crossfade's outgoing image,
   // continues showing it, so its first request is not a new background image.
   m_continuation = right.IsAllocated();
+  m_followsSelection = right.m_followsSelection;
 }
 
 bool CGUITexture::IsBackgroundRequest() const
 {
-  return !m_continuation && IsBackgroundSized(m_posX, m_posY, m_width, m_height);
+  if (m_continuation)
+    return false;
+  if (IsBackgroundSized(m_posX, m_posY, m_width, m_height))
+    return true;
+  if (!m_followsSelection ||
+      !IsBackgroundSized(m_posX, m_posY, m_width, m_height, SELECTION_IMAGE_SHARE))
+    return false;
+  // A list row showing the same file, such as next to a poster view's big
+  // poster, moves with the list. Delaying the image would show that file twice.
+  auto& images = CServiceBroker::GetGUI()->GetLargeTextureManager();
+  return images.DelaysSelectionImages() && !images.HasDirectConsumer(m_info.filename);
 }
 
 bool CGUITexture::AllocateOnDemand()
@@ -415,8 +431,13 @@ bool CGUITexture::AllocResources()
     if (m_isAllocated != NORMAL)
     { // use our large image background loader
       CTextureArray texture;
+      const bool firstRequest = !IsAllocated();
+      const bool background = IsBackgroundRequest();
+      // The kind of reference is kept for its release.
+      if (firstRequest)
+        m_directConsumer = !background && !m_followsSelection;
       if (CServiceBroker::GetGUI()->GetLargeTextureManager().GetImage(
-              m_info.filename, texture, !IsAllocated(), m_use_cache, IsBackgroundRequest()))
+              m_info.filename, texture, firstRequest, m_use_cache, background, m_directConsumer))
       {
         if (m_isAllocated != LARGE)
           m_invalid = true;
@@ -578,7 +599,8 @@ bool CGUITexture::CalculateSize()
 void CGUITexture::FreeResources(bool immediately /* = false */)
 {
   if (m_isAllocated == LARGE || m_isAllocated == LARGE_FAILED)
-    CServiceBroker::GetGUI()->GetLargeTextureManager().ReleaseImage(m_info.filename, immediately || (m_isAllocated == LARGE_FAILED));
+    CServiceBroker::GetGUI()->GetLargeTextureManager().ReleaseImage(
+        m_info.filename, immediately || (m_isAllocated == LARGE_FAILED), m_directConsumer);
   else if (m_isAllocated == NORMAL && m_texture.size())
     CServiceBroker::GetGUI()->GetTextureManager().ReleaseTexture(m_info.filename, immediately);
 

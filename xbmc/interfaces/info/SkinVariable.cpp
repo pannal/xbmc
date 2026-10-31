@@ -13,6 +13,8 @@
 #include "guilib/GUIComponent.h"
 #include "utils/XBMCTinyXML.h"
 
+#include <algorithm>
+
 using namespace INFO;
 using namespace KODI;
 
@@ -57,6 +59,16 @@ int CSkinVariableString::GetContext() const
 const std::string& CSkinVariableString::GetName() const
 {
   return m_name;
+}
+
+bool CSkinVariableString::IsListItemDependent() const
+{
+  return std::any_of(m_conditionLabelPairs.begin(), m_conditionLabelPairs.end(),
+                     [](const ConditionLabelPair& pair)
+                     {
+                       return (pair.m_condition && pair.m_condition->ListItemDependent()) ||
+                              pair.m_label.IsListItemDependent();
+                     });
 }
 
 std::string CSkinVariableString::GetValue(int contextWindow,

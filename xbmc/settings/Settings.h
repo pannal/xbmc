@@ -42,6 +42,8 @@ public:
   static constexpr auto SETTING_LOOKANDFEEL_STEREOSTRENGTH = "lookandfeel.stereostrength";
   static constexpr auto SETTING_LOOKANDFEEL_DELAYBACKGROUNDIMAGES =
       "lookandfeel.delaybackgroundimages";
+  static constexpr auto SETTING_LOOKANDFEEL_DELAYSELECTIONIMAGES =
+      "lookandfeel.delayselectionimages";
   static constexpr auto SETTING_LOCALE_LANGUAGE = "locale.language";
   static constexpr auto SETTING_LOCALE_COUNTRY = "locale.country";
   static constexpr auto SETTING_LOCALE_CHARSET = "locale.charset";

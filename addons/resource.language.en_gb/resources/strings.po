@@ -28171,3 +28171,15 @@ msgstr ""
 msgctxt "#69386"
 msgid "Waits until lists stop scrolling and interface animations finish before showing a newly selected full-screen background image (such as fanart), at most three seconds. Enable this if loading such a large image during motion drops frames, for example with a 4K display."
 msgstr ""
+
+#. Label of setting "Interface -> Skin -> Delay background images during motion -> Also delay images of the selected item"
+#: system/settings/settings.xml
+msgctxt "#69387"
+msgid "Also delay images of the selected item"
+msgstr ""
+
+#. Help text of setting "Interface -> Skin -> Delay background images during motion -> Also delay images of the selected item"
+#: system/settings/settings.xml
+msgctxt "#69388"
+msgid "Also waits for motion to stop before showing a large image that follows the selected item outside the list, such as the poster in an info panel. Images in the list itself are not delayed. Requires delaying background images during motion."
+msgstr ""

@@ -54,6 +54,8 @@ struct State {
  std::atomic<int>decodes{0},uploads{0},refreshes{0},destroyed{0},gpuDestroyedWithLock{0},leases{0},releases{0};
  // Background delay setting, on so that deferral is exercised; the product default is off.
  bool delayBackgrounds=true;
+ // Selection image delay setting, the child of the background delay.
+ bool delaySelection=false;
  Barrier decodeBarrier,uploadBarrier;
  void Decode(int n){if(n==blockDecode)decodeBarrier.Wait();}
 };
@@ -116,7 +118,9 @@ struct FakeGraphics {int GetWidth()const{return 3840;}int GetHeight()const{retur
 struct FakeWindow {FakeGraphics gfx;FakeGraphics&GetGfxContext(){return gfx;}};
 struct FakeAdvanced {bool m_guiAsyncTextureUpload=true;};
 struct CSettings {static constexpr auto SETTING_LOOKANDFEEL_DELAYBACKGROUNDIMAGES="lookandfeel.delaybackgroundimages";
- bool GetBool(const std::string&id)const{Check(id==SETTING_LOOKANDFEEL_DELAYBACKGROUNDIMAGES,"only the background delay setting is read");return currentState->delayBackgrounds;}};
+ static constexpr auto SETTING_LOOKANDFEEL_DELAYSELECTIONIMAGES="lookandfeel.delayselectionimages";
+ bool GetBool(const std::string&id)const{Check(id==SETTING_LOOKANDFEEL_DELAYBACKGROUNDIMAGES||id==SETTING_LOOKANDFEEL_DELAYSELECTIONIMAGES,"only the delay settings are read");
+  return id==SETTING_LOOKANDFEEL_DELAYBACKGROUNDIMAGES?currentState->delayBackgrounds:currentState->delaySelection;}};
 struct FakeSettings {FakeAdvanced*GetAdvancedSettings(){static thread_local FakeAdvanced a;a.m_guiAsyncTextureUpload=currentState->async;return &a;}
  CSettings*GetSettings(){static CSettings s;return &s;}};
 struct CServiceBroker {

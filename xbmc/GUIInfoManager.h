@@ -101,6 +101,8 @@ public:
                     const std::shared_ptr<CGUIListItem>& item = nullptr);
 
   int TranslateString(const std::string &strCondition);
+  // Also reports whether the info or one of its arguments shows list item info.
+  int TranslateString(const std::string& strCondition, bool& listItemDependent);
   int TranslateSingleString(const std::string &strCondition, bool &listItemDependent);
 
   std::string GetLabel(int info, int contextWindow, std::string* fallback = nullptr) const;
@@ -120,6 +122,8 @@ public:
    */
   bool GetItemInt(int &value, const CGUIListItem *item, int contextWindow, int info) const;
   bool GetItemBool(const CGUIListItem *item, int contextWindow, int condition) const;
+  // A list item info, or a skin variable whose conditions or labels use one.
+  bool IsListItemDependentInfo(int info) const;
 
   /*! \brief Set currently playing file item
    */

@@ -63,13 +63,15 @@ struct CTextureArray {std::vector<std::shared_ptr<CTexture>>m_textures;std::vect
  bool m_texCoordsArePixels=false;unsigned size()const{return m_textures.size();}
  void Reset(){m_textures.clear();m_delays.clear();}};
 static CTextureArray Published(bool alpha=false){CTextureArray a;auto t=std::make_shared<CTexture>();t->alpha=alpha;a.m_textures.push_back(t);a.m_delays.push_back(100);return a;}
-struct LargeManager {struct Entry{CTextureArray data;bool failed=false;unsigned refs=0;};std::map<std::string,Entry>entries;
+struct LargeManager {struct Entry{CTextureArray data;bool failed=false;unsigned refs=0,direct=0;};std::map<std::string,Entry>entries;
  struct Request{std::string path;bool first,defer;};std::vector<Request>requests;
  std::vector<std::string>demands;std::vector<bool>backgroundDemands;unsigned gets=0;bool motion=false;
- bool IsBackgroundMotion()const{return motion;}
- bool GetImage(const std::string&p,CTextureArray&t,bool first,bool,bool defer=false){requests.push_back({p,first,defer});++gets;auto&e=entries[p];if(first)++e.refs;t=e.data;return !e.failed;}
+ bool IsBackgroundMotion()const{return motion;}bool selectionImages=false;bool DelaysSelectionImages()const{return selectionImages;}
+ bool GetImage(const std::string&p,CTextureArray&t,bool first,bool,bool defer=false,bool direct=false){requests.push_back({p,first,defer});++gets;auto&e=entries[p];if(first){++e.refs;e.direct+=direct;}t=e.data;return !e.failed;}
+ bool HasDirectConsumer(const std::string&p){auto e=entries.find(p);return e!=entries.end()&&e->second.direct>0;}
+ unsigned Direct(const std::string&p){return entries[p].direct;}
  void RequestImageUpload(const std::string&p,bool background=false){demands.push_back(p);backgroundDemands.push_back(background);}
- void ReleaseImage(const std::string&p,bool){auto&e=entries[p];if(e.refs)--e.refs;}
+ void ReleaseImage(const std::string&p,bool,bool direct=false){auto&e=entries[p];if(e.refs)--e.refs;if(direct&&e.direct)--e.direct;}
  void Publish(const std::string&p,bool alpha=false){entries[p].data=Published(alpha);}
  unsigned Demand(const std::string&p)const{return static_cast<unsigned>(std::count(demands.begin(),demands.end(),p));}};
 struct NormalManager {bool CanLoad(const std::string&p){return p=="normal";}CTextureArray Load(const std::string&p,bool bundle=false){return !bundle&&p=="normal"?Published():CTextureArray{};}
@@ -114,7 +116,8 @@ class CGUITexture {public:
  CRect m_vertex{10,10,50,50};bool m_invalid=true,m_use_cache=true;std::optional<bool>m_lastReadyState;unsigned char m_alpha=255;
  float m_frameWidth=0,m_frameHeight=0,m_texCoordsScaleU=1,m_texCoordsScaleV=1;int m_currentLoop=0;unsigned m_currentFrame=0,m_lasttime=0;
  float m_diffuseU=1,m_diffuseV=1,m_diffuseScaleU=1,m_diffuseScaleV=1;CPoint m_diffuseOffset;bool m_allocateDynamically=false;
- enum ALLOCATE_TYPE {NO=0,NORMAL,LARGE,NORMAL_FAILED,LARGE_FAILED};ALLOCATE_TYPE m_isAllocated=NO;bool m_continuation=false;
+ enum ALLOCATE_TYPE {NO=0,NORMAL,LARGE,NORMAL_FAILED,LARGE_FAILED};ALLOCATE_TYPE m_isAllocated=NO;bool m_continuation=false;bool m_followsSelection=false;bool m_directConsumer=false;
+ void SetFollowsSelection(bool follows){m_followsSelection=follows;}
  CTextureInfo m_info;CAspectRatio m_aspect;CTextureArray m_diffuse,m_texture;unsigned begins=0,ends=0,draws=0,allocations=0;};
 #define GUIPROFILER_RENDER_BEGIN(x) ((void)0)
 #define GUIPROFILER_RENDER_END(x) ((void)0)
@@ -125,12 +128,17 @@ class CGUIControl {public:virtual~CGUIControl()=default;virtual void Render(){}v
  TransformMatrix m_cachedTransform;unsigned m_hitColor=0xffffffff;CRect m_hitRect,m_renderRegion{10,10,50,50};
  struct Bounds{bool valid=false;unsigned frame=0;CRect bounds;TransformMatrix reference;int screenWidth=0,screenHeight=0;}m_renderedBounds;
  float x=10,y=10,w=40,h=40;unsigned dirty=0;};
-struct ImageInfo {std::string fallback;const std::string&GetFallback()const{return fallback;}};
+struct ImageInfo {std::string fallback,label="large";bool constant=false,listItem=true;const std::string&GetFallback()const{return fallback;}bool IsConstant()const{return constant;}
+ bool IsListItemDependent()const{return listItem;}
+ std::string GetItemLabel(const CGUIListItem*,bool,std::string*)const{return label;}std::string GetLabel(int,bool,std::string*)const{return label;}};
+constexpr int ANIM_TYPE_HIDDEN=1;
 class CGUIImage:public CGUIControl {public:
  @FADING@
  CGUIImage(){m_texture=std::make_unique<CGUITexture>();}~CGUIImage(){for(auto*p:m_fadingTextures)delete p;}
  void Process(unsigned,CDirtyRegionList&)override;void Render()override;CRect CalcRenderRegion()const override;
  bool ProcessFading(CFadingTexture*,unsigned,unsigned,bool&);unsigned char GetFadeLevel(unsigned)const;
+ void UpdateInfo(const CGUIListItem*);void SetFileName(const std::string&file){m_texture->SetFileName(file);}bool HasProcessed()const{return true;}
+ bool IsAnimating(int)const{return false;}bool IsVisibleFromSkin()const{return true;}int m_parentID=0;
  void UpdateDiffuseColor(const CGUIListItem*){}std::unique_ptr<CGUITexture>m_texture;std::vector<CFadingTexture*>m_fadingTextures;
  ImageInfo m_info;std::string m_currentFallback;unsigned m_crossFadeTime=100,m_currentFadeTime=0,m_lastRenderTime=0;
  unsigned m_diffuseColor=0xffffffff,m_lastDiffuseColor=0xffffffff;};
@@ -272,14 +280,44 @@ static void MotionEmptyIncoming(){CDirtyRegionList dirty;
   gui.large.motion=false;gui.large.Publish("large");image.Process(132,dirty);image.Process(148,dirty);
   Check(image.m_currentFadeTime>0&&image.m_currentFadeTime<100&&image.m_fadingTextures.size()==1&&image.m_fadingTextures[0]->m_fadeTime<100,"crossfade from the kept image runs once motion stops");}
 }
-int main(){try{Admission();OuterCullAndAutosize();PublicationAndFades();Copies();Replacement();BackgroundClassification();DeferredIncomingFade();BackgroundCopies();DemandClassification();MotionEndsFade();MotionEmptyIncoming();std::printf("PASS %u frontend checks\n",checks);return 0;}catch(const std::exception&e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
+static void SelectionImages(){CGUIListItem row;
+ const auto request=[](bool option,const CGUIListItem*item,float width,bool constant,bool listItem=true){Reset();gui.large.selectionImages=option;CGUIImage image;image.m_info.constant=constant;image.m_info.listItem=listItem;
+  image.m_texture=std::make_unique<CGUITexture>(0,0,width,30);image.UpdateInfo(item);image.m_texture->AllocResources();
+  Check(gui.large.requests.size()==1,"selection fixture makes one request");return gui.large.requests.back().defer;};
+ Check(request(true,nullptr,40,false),"selection image waits like a background");
+ Check(!request(false,nullptr,40,false),"selection images are foreground with the option off");
+ Check(!request(true,&row,40,false),"list row images never wait");
+ Check(!request(true,nullptr,30,false),"small selection image stays foreground");
+ Check(!request(true,nullptr,40,true),"constant window image is not a selection image");
+ Check(!request(true,nullptr,40,false,false),"playback window image is not a selection image");
+}
+static void PosterExemption(){CGUIListItem row;CDirtyRegionList dirty;
+ const auto rowImage=[&row](CGUIImage&image){image.m_texture=std::make_unique<CGUITexture>(0,0,20,30);image.UpdateInfo(&row);image.m_texture->AllocResources();};
+ const auto selection=[](CGUIImage&image,float width=40,float height=30){image.m_texture=std::make_unique<CGUITexture>(0,0,width,height);image.x=image.y=0;image.w=width;image.h=height;image.UpdateInfo(nullptr);};
+ {Reset();gui.large.selectionImages=true;CGUIImage list;rowImage(list);Check(gui.large.Direct("large")==1,"list row is a direct consumer");
+  CGUIImage poster;selection(poster);poster.m_texture->AllocResources();
+  Check(!gui.large.requests.back().defer,"selection image shown by a list row is not delayed");
+  Check(gui.large.Direct("large")==1,"selection image is not a direct consumer");
+  CGUIImage fanart;fanart.m_info.listItem=false;selection(fanart,100,50);fanart.m_texture->AllocResources();
+  Check(gui.large.requests.back().defer&&gui.large.Direct("large")==1,"background image shown by a list row is still delayed");
+  poster.m_texture->FreeResources();fanart.m_texture->FreeResources();list.m_texture->FreeResources();
+  Check(gui.large.Direct("large")==0&&gui.large.entries["large"].refs==0,"released list row no longer exempts");
+  CGUIImage later;selection(later);later.m_texture->AllocResources();
+  Check(gui.large.requests.back().defer,"selection image waits once no list row shows its file");}
+ for(const bool listed:{true,false}){Reset();gui.large.selectionImages=true;CGUIImage list;if(listed)rowImage(list);
+  CGUIImage poster;selection(poster);poster.m_lastRenderTime=100;gui.large.Publish("large");AddCopy(poster,"a",50);
+  gui.large.motion=true;poster.Process(116,dirty);
+  if(listed)Check(poster.m_fadingTextures.size()==1&&poster.m_currentFadeTime==16,"selection image shown by a list row crossfades during motion");
+  else Check(poster.m_fadingTextures.empty()&&poster.m_currentFadeTime==100,"selection image without a list row ends its fade during motion");}
+}
+int main(){try{Admission();OuterCullAndAutosize();PublicationAndFades();Copies();Replacement();BackgroundClassification();DeferredIncomingFade();BackgroundCopies();DemandClassification();MotionEndsFade();MotionEmptyIncoming();SelectionImages();PosterExemption();std::printf("PASS %u frontend checks\n",checks);return 0;}catch(const std::exception&e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
 '''
 
 
 def source_code(root, sources):
     texture, header, image, control, gfx = [sources[p] for p in FILES[:5]]
     aspect = header[header.index('#define ASPECT_ALIGN_CENTER'):header.index('class CTextureInfo')]
-    methods = [function(texture,'bool IsBackgroundSized(')]
+    methods = [function(texture,'bool IsBackgroundSized('), re.search(r'constexpr float SELECTION_IMAGE_SHARE = [^;]+;', texture).group(0)]
     methods += [function(texture, sig) for sig in (
         'CGUITexture::CGUITexture(const CGUITexture& right)', 'bool CGUITexture::IsBackgroundRequest(', 'bool CGUITexture::AllocateOnDemand(',
         'bool CGUITexture::Process(', 'void CGUITexture::Render(int32_t', 'void CGUITexture::Render(float',
@@ -290,7 +328,7 @@ def source_code(root, sources):
         'bool CGUITexture::SetFileName(', 'void CGUITexture::SetUseCache(', 'int CGUITexture::GetOrientation(',
         'void CGUITexture::OrientateTexture(')]
     methods += [function(gfx, sig) for sig in ('bool CGraphicContext::SetClipRegion(', 'void CGraphicContext::RestoreClipRegion(', 'void CGraphicContext::ClipRect(')]
-    methods += [function(image, sig) for sig in ('void CGUIImage::Process(', 'void CGUIImage::Render(', 'bool CGUIImage::ProcessFading(', 'unsigned char CGUIImage::GetFadeLevel(', 'CRect CGUIImage::CalcRenderRegion(')]
+    methods += [function(image, sig) for sig in ('void CGUIImage::Process(', 'void CGUIImage::UpdateInfo(', 'void CGUIImage::Render(', 'bool CGUIImage::ProcessFading(', 'unsigned char CGUIImage::GetFadeLevel(', 'CRect CGUIImage::CalcRenderRegion(')]
     methods += [function(control, 'void CGUIControl::DoRender(')]
     fading=function(sources['xbmc/guilib/GUIImage.h'], 'class CFadingTexture')+';'
     return PRELUDE.replace('@ASPECT@', aspect).replace('@FADING@', fading).replace('CRect*=nullptr','CRect* = nullptr')+'\n'+'\n\n'.join(methods)+'\n'+TESTS
@@ -338,15 +376,24 @@ def mutations(code):
     for name,old,new,witness in pairs:
         assert code.count(old)==1, name+' mutation anchor not unique'
         yield name,code.replace(old,new,1),witness
-    changes=[('background-boundary-exclusive','return 2 * screenWidth * screenHeight >=','return 2 * screenWidth * screenHeight >','half-screen boundary is background'),
+    changes=[('background-boundary-exclusive','return screenWidth * screenHeight >=','return screenWidth * screenHeight >','half-screen boundary is background'),
              ('background-ignores-screen-scaling','gfx.ScaleFinalXCoord(posX + width, posY) - gfx.ScaleFinalXCoord(posX, posY)','width','background classification uses final screen scaling'),
              ('background-callsite-disabled','IsBackgroundSized(m_posX, m_posY, m_width, m_height)','false','first large background requests scroll deferral'),
              ('foreground-callsite-misclassified','IsBackgroundSized(m_posX, m_posY, m_width, m_height)','true','first poster remains foreground'),
-             ('fade-copy-deferred','return !m_continuation && IsBackgroundSized','return IsBackgroundSized','outgoing fade copy is not a new background request'),
+             ('fade-copy-deferred','  if (m_continuation)\n    return false;\n','','outgoing fade copy is not a new background request'),
              ('demand-not-classified','RequestImageUpload(\n            m_info.filename, IsBackgroundRequest());','RequestImageUpload(\n            m_info.filename);','draw demand reports its consumer type'),
              ('copy-continuation-sticky','  m_continuation = false;\n','','copy loading a new file is a new background request'),
              ('unallocated-copy-continues','m_continuation = right.IsAllocated();','m_continuation = true;','copy of an unallocated background texture is a new background request'),
              ('deferred-fade-clock-stopped','m_lastRenderTime = currentTime;','if (m_texture->ReadyToRender()) m_lastRenderTime = currentTime;','deferred fade resumes at ordinary frame step'),
+             ('selection-images-ignored','  if (!m_followsSelection ||\n','  if (true ||\n','selection image waits like a background'),
+             ('selection-option-ignored','return images.DelaysSelectionImages() && !images','return !images','selection images are foreground with the option off'),
+             ('poster-exemption-dropped',' && !images.HasDirectConsumer(m_info.filename);',';','selection image shown by a list row is not delayed'),
+             ('selection-counts-as-direct','m_directConsumer = !background && !m_followsSelection;','m_directConsumer = !background;','selection image is not a direct consumer'),
+             ('direct-release-forgotten','immediately || (m_isAllocated == LARGE_FAILED), m_directConsumer);','immediately || (m_isAllocated == LARGE_FAILED));','released list row no longer exempts'),
+             ('background-counts-as-direct','m_directConsumer = !background && !m_followsSelection;','m_directConsumer = !m_followsSelection;','background image shown by a list row is still delayed'),
+             ('list-rows-follow-selection','m_texture->SetFollowsSelection(!item && m_info.IsListItemDependent());','m_texture->SetFollowsSelection(m_info.IsListItemDependent());','list row images never wait'),
+             ('playback-follows-selection','m_texture->SetFollowsSelection(!item && m_info.IsListItemDependent());','m_texture->SetFollowsSelection(!item);','playback window image is not a selection image'),
+             ('selection-size-floor-dropped','constexpr float SELECTION_IMAGE_SHARE = 0.1f;','constexpr float SELECTION_IMAGE_SHARE = 0.0f;','small selection image stays foreground'),
              ('motion-fade-continues','GetLargeTextureManager().IsBackgroundMotion())','GetLargeTextureManager().IsBackgroundMotion() && false)','motion ends a background crossfade'),
              ('motion-ends-foreground-fade','        m_texture->IsBackgroundRequest() &&\n','','poster fade continues during motion'),
              ('motion-drops-outgoing','      if (!ready)\n      {\n        const auto visible','      if (false)\n      {\n        const auto visible','pending incoming keeps the outgoing image during motion'),

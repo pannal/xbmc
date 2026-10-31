@@ -5751,6 +5751,14 @@
           <default>false</default>
           <control type="toggle" />
         </setting>
+        <setting id="lookandfeel.delayselectionimages" type="boolean" parent="lookandfeel.delaybackgroundimages" label="69387" help="69388">
+          <level>1</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="enable" setting="lookandfeel.delaybackgroundimages">true</dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
         <setting id="lookandfeel.enablerssfeeds" type="boolean" label="13305" help="36111">
           <level>0</level>
           <default>false</default>
