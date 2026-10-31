@@ -1494,12 +1494,12 @@ static int mpeg_add_header(am_private_t *para, am_packet_t *pkt)
     return write_av_packet(para, pkt);
 }
 
-int pre_header_feeding(am_private_t *para, am_packet_t *pkt)
+static int write_codec_header(am_private_t *para, am_packet_t *pkt)
 {
     int ret;
     if (para->stream_type == AM_STREAM_ES) {
         if (pkt->hdr == NULL) {
-            pkt->hdr = (hdr_buf_t*)malloc(sizeof(hdr_buf_t));
+            pkt->hdr = (hdr_buf_t*)calloc(1, sizeof(hdr_buf_t));
             pkt->hdr->data = (char *)malloc(HDR_BUF_SIZE);
             if (!pkt->hdr->data) {
                 //CLog::Log(LOGDEBUG, "[pre_header_feeding] NOMEM!");
@@ -1579,19 +1579,10 @@ int pre_header_feeding(am_private_t *para, am_packet_t *pkt)
                 return ret;
             }
         }
-
-        if (pkt->hdr) {
-            if (pkt->hdr->data) {
-                free(pkt->hdr->data);
-                pkt->hdr->data = NULL;
-            }
-            free(pkt->hdr);
-            pkt->hdr = NULL;
-        }
     }
     else if (para->stream_type == AM_STREAM_PS) {
         if (pkt->hdr == NULL) {
-            pkt->hdr = (hdr_buf_t*)malloc(sizeof(hdr_buf_t));
+            pkt->hdr = (hdr_buf_t*)calloc(1, sizeof(hdr_buf_t));
             pkt->hdr->data = (char*)malloc(HDR_BUF_SIZE);
             if (!pkt->hdr->data) {
                 CLog::Log(LOGDEBUG, "[pre_header_feeding] NOMEM!");
@@ -1605,16 +1596,22 @@ int pre_header_feeding(am_private_t *para, am_packet_t *pkt)
                 return ret;
             }
         }
-        if (pkt->hdr) {
-            if (pkt->hdr->data) {
-                free(pkt->hdr->data);
-                pkt->hdr->data = NULL;
-            }
-            free(pkt->hdr);
-            pkt->hdr = NULL;
-        }
     }
     return PLAYER_SUCCESS;
+}
+
+// write_av_packet sends pkt->hdr before every packet, so the codec header
+// buffer must not outlive the header write, also when the write fails or the
+// stream has no header (an HEVC stream without extradata).
+int pre_header_feeding(am_private_t *para, am_packet_t *pkt)
+{
+    const int ret = write_codec_header(para, pkt);
+    if (pkt->hdr) {
+        free(pkt->hdr->data);
+        free(pkt->hdr);
+        pkt->hdr = NULL;
+    }
+    return ret;
 }
 
 int divx3_prefix(am_packet_t *pkt)
