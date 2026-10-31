@@ -123,6 +123,7 @@ protected:
   void Process() override;
 
   bool ProcessDecoderOutput(double &frametime, double &pts);
+  bool CanOutputPicture() const;
   void UpdatePlayerInfo();
   void SendMessageBack(const std::shared_ptr<CDVDMsg>& pMsg, int priority = 0);
   MsgQueueReturnCode GetMessage(std::shared_ptr<CDVDMsg>& pMsg,
@@ -204,6 +205,8 @@ protected:
   int m_iSubtitlePlane{0}; ///< 3D MVC subtitle depth plane (ss_offset_sequence_id)
   std::unique_ptr<CDVDVideoCodec> m_pVideoCodec;
   std::shared_ptr<CDVDMsg> m_pendingResetMessage;
+  // A drain that waits until the renderer can take a picture
+  std::shared_ptr<CDVDMsg> m_waitingDrain;
   bool m_pendingRecoveryDiscard{false};
   std::shared_ptr<CVideoFlushRequest> m_flushRequest;
   CPtsTracker m_ptsTracker;

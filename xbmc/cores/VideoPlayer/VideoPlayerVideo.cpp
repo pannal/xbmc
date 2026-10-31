@@ -334,6 +334,7 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
       request && request->state == CVideoFlushRequest::State::PENDING)
     request->state = CVideoFlushRequest::State::CANCELLED;
   m_pendingResetMessage.reset();
+  m_waitingDrain.reset();
   m_pendingRecoveryDiscard = false;
   m_pendingNoOutputRecovery.reset();
 #if defined(HAS_LIBAMCODEC)
@@ -443,6 +444,9 @@ void CVideoPlayerVideo::Process()
     if (m_paused)
       iPriority = 1;
 
+    if (m_waitingDrain)
+      iPriority = 1;
+
     if (onlyPrioMsgs)
     {
       iPriority = 1;
@@ -476,6 +480,11 @@ void CVideoPlayerVideo::Process()
     {
       pMsg = std::move(m_pendingResetMessage);
       continuingReset = true;
+      ret = MSGQ_OK;
+    }
+    else if (!lifecyclePending && m_waitingDrain && CanOutputPicture())
+    {
+      pMsg = std::move(m_waitingDrain);
       ret = MSGQ_OK;
     }
     else
@@ -522,9 +531,7 @@ void CVideoPlayerVideo::Process()
         }
       }
       // don't ask for a new frame if we can't deliver it to renderer
-      else if ((m_speed != DVD_PLAYSPEED_PAUSE ||
-                m_processInfo.IsFrameAdvance() ||
-                m_syncState != IDVDStreamPlayer::SYNC_INSYNC) && !m_paused)
+      else if (CanOutputPicture())
       {
         if (ProcessDecoderOutput(frametime, pts))
         {
@@ -641,6 +648,7 @@ void CVideoPlayerVideo::Process()
       m_isEOS = false;
       m_inputEnded = false;
       m_messageQueue.Flush(CDVDMsg::VIDEO_DRAIN);
+      m_waitingDrain.reset();
       m_syncEpoch = std::static_pointer_cast<CDVDMsgStreamFlush>(pMsg)->epoch;
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       if (m_pVideoCodec && !continuingReset)
@@ -729,6 +737,15 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::VIDEO_DRAIN))
     {
+      // The decoder outputs no picture that the renderer cannot take, so the
+      // drain would poll until the decoder timeout, and the messages that
+      // resume or flush the playback would wait. Only those messages come
+      // until a picture can go out.
+      if (!CanOutputPicture())
+      {
+        m_waitingDrain = std::move(pMsg);
+        continue;
+      }
       m_inputEnded = true;
       // The tail is decoded as is; the parent also rejects recovery at end of stream.
       m_decoderFlushRecovery.OnStreamFlush();
@@ -945,6 +962,15 @@ void CVideoPlayerVideo::PublishNoOutputRecovery()
             "CVideoPlayerVideo - Amlogic decoder produced no frame after its flush/reset; "
             "requesting generation-checked parent recovery");
   m_messageParent.Put(std::make_shared<CDVDMsgVideoRecoveryRequest>(*generation));
+}
+
+// The renderer takes a new picture while the playback runs or steps a frame,
+// and for the first picture after a reset
+bool CVideoPlayerVideo::CanOutputPicture() const
+{
+  return (m_speed != DVD_PLAYSPEED_PAUSE || m_processInfo.IsFrameAdvance() ||
+          m_syncState != IDVDStreamPlayer::SYNC_INSYNC) &&
+         !m_paused;
 }
 
 bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
