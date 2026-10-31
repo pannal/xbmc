@@ -127,6 +127,7 @@ public:
   void SetPrerollTarget(double target) { m_prerollTarget = target; }
   void          SetDrain(bool drain){m_drain = drain; if (drain) m_tp_drain_start = std::chrono::system_clock::now();};
   void          SetStreamEOF(bool eof){m_stream_eof = eof;};
+  void          SetInputEnded();
   void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect, uint64_t generation, const CAMLSession::Permit& permit);
   void          SetVideoRate(int videoRate);
   void RefreshDecoderRate(const CAMLSession::Permit& permit);
@@ -220,6 +221,8 @@ private:
   uint64_t         m_presentationGeneration = 0;
   bool             m_drain = false;
   bool             m_stream_eof = false;
+  // The decoder knows that no input follows until a reset
+  bool             m_inputEnded = false;
   // True between a codec_reset and the next AddData: nothing is drainable in
   // that state, see the m_drain branch in GetPicture.
   bool             m_no_data_since_reset = false;

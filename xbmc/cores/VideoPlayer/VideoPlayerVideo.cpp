@@ -314,8 +314,18 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
   // wait until buffers are empty
   if (bWaitForBuffers && m_speed > 0)
   {
-    SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN), 0);
+    SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::VIDEO_DRAIN, true), 0);
     m_messageQueue.WaitUntilEmpty();
+    // The queue is empty when the drain starts. The last pictures come from the
+    // decoder after that, and the renderer shows the queued pictures at their
+    // times: a stop before them cut the end of every video.
+    XbmcThreads::EndTime<> timer(2s);
+    int lateFrames, queued, discard;
+    double presentPts;
+    while (!timer.IsTimePast() &&
+           (!m_isEOS || (m_renderManager.GetStats(lateFrames, presentPts, queued, discard) &&
+                         queued > 0)))
+      CThread::Sleep(10ms);
   }
 
   ++m_syncRequest; // Reject reports still queued by the retiring stream.
@@ -713,9 +723,10 @@ void CVideoPlayerVideo::Process()
       auto msg = std::static_pointer_cast<CDVDMsgVideoCodecChange>(pMsg);
       m_mpeg2Cadence.Drain();
 
+      // No packet follows before OpenStream replaces or reconfigures the decoder
       while (!m_bStop && m_pVideoCodec)
       {
-        m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN);
+        m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN | DVD_CODEC_CTRL_END_OF_INPUT);
         bool cont = ProcessDecoderOutput(frametime, pts);
 
         if (!cont)
@@ -752,9 +763,13 @@ void CVideoPlayerVideo::Process()
       m_pendingNoOutputRecovery.reset();
       m_isEOS = false;
       m_mpeg2Cadence.Drain();
+      const int drain{DVD_CODEC_CTRL_DRAIN |
+                      (std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value
+                           ? DVD_CODEC_CTRL_END_OF_INPUT
+                           : 0)};
       while (!m_bStop && m_pVideoCodec)
       {
-        m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN);
+        m_pVideoCodec->SetCodecControl(drain);
         if (!ProcessDecoderOutput(frametime, pts))
           break;
       }

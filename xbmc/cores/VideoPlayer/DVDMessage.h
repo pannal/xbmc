@@ -64,7 +64,7 @@ public:
 
     // video related messages
     VIDEO_SET_ASPECT,               // set aspectratio of video
-    VIDEO_DRAIN,                    // wait for decoder to output last frame
+    VIDEO_DRAIN,                    // wait for decoder to output last frame (bool: the input ended)
 
     // subtitle related messages
     SUBTITLE_CLUTCHANGE,
