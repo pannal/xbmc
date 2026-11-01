@@ -163,6 +163,11 @@ int CApplicationMessenger::SendMsg(uint32_t messageId, int param1, int param2, v
   return SendMsg(ThreadMessage{ messageId, param1, param2, payload }, true);
 }
 
+int CApplicationMessenger::SendMsg(uint32_t messageId, int64_t param3)
+{
+  return SendMsg(ThreadMessage{messageId, param3}, true);
+}
+
 int CApplicationMessenger::SendMsg(uint32_t messageId, int param1, int param2, void* payload, std::string strParam)
 {
   return SendMsg(ThreadMessage{messageId, param1, param2, payload, std::move(strParam),

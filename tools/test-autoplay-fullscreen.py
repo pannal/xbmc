@@ -14,7 +14,7 @@ retirement = runpy.run_path(str(ROOT / 'tools/test-player-retirement.py'))
 function = retirement['function']
 PRELUDE = retirement['PRELUDE'].replace(
     'bool IsDVDFile()const{return false;}',
-    'bool IsDVDFile()const{return false;} bool video=true;bool IsVideo()const{return video;} bool IsCDDA()const{return false;} bool IsOnDVD()const{return false;}')
+    'bool IsDVDFile()const{return false;} bool IsCDDA()const{return false;} bool IsOnDVD()const{return false;}')
 PRELUDE = PRELUDE.replace('struct CPlayerOptions {};', 'struct CPlayerOptions {bool fullscreen=false;};')
 PRELUDE = PRELUDE.replace('#include <cassert>', '#include <cassert>\n#include <functional>')
 PRELUDE = PRELUDE.replace('CCriticalSection* applicationLock=nullptr;', 'std::function<void()> onClose;CCriticalSection* applicationLock=nullptr;')
@@ -27,9 +27,9 @@ PRELUDE = PRELUDE.replace('int created=0;', """int created=0;bool failCreate=fal
   bool HasPendingOpen()const;bool HasPendingVideoOpen()const;
   bool HasPlayer()const{return bool(m_pPlayer);}
   bool PreparePlaybackCleanup();bool PlaybackCleanupCompleted()const;bool PlaybackCleanupPending()const{return m_cleanupPending;}
-  bool IsPlaying(){return m_pPlayer&&m_pPlayer->playing;}
-  bool IsPlayingVideo(){return IsPlaying()&&m_pPlayer->hasVideo;}
-  bool IsPlayingAudio(){return IsPlaying()&&m_pPlayer->hasAudio;}
+  bool IsPlaying()const;
+  bool IsPlayingVideo(){return IsPlaying()&&m_pPlayer&&m_pPlayer->hasVideo;}
+  bool IsPlayingAudio(){return IsPlaying()&&m_pPlayer&&m_pPlayer->hasAudio;}
   std::string GetName(){return "old";}""")
 PRELUDE = PRELUDE.replace('assert(!m_pPlayer);++created;', 'assert(!m_pPlayer);if(failCreate)return;++created;')
 HARNESS = r"""
@@ -67,7 +67,7 @@ struct CPlayListPlayer {
  bool m_bIsDeferredPlayPending=false;void StopMessage(int);
  int m_iCurrentPlayList=1,m_iCurrentSong=0;bool atEnd=false;CPlayList list;CApplication* app=nullptr;
  int GetNextItemIdx(int){return atEnd?2:1;}const CPlayList& GetPlaylist(int){return list;}
- void Reset(){}int GetCurrentPlaylist(){return m_iCurrentPlayList;}
+ void Reset(){}void ResetCurrentPlaylist(){m_iCurrentPlayList=TYPE_NONE;}int GetCurrentPlaylist(){return m_iCurrentPlayList;}
  bool Play(int,const std::string&,bool);bool PlayNext(int offset=1,bool bAutoPlay=true);
 };
 struct CServiceBroker {
@@ -82,7 +82,7 @@ struct CServiceBroker {
 struct Services {CPlayerCoreFactory factory;CPlayerCoreFactory& GetPlayerCoreFactory(){return factory;}};
 struct CApplication {
  CApplicationPlayer player;CApplicationStackHelper stack;CApplicationPowerHandling power;
- Services services;Services* m_ServiceManager=&services;bool m_bStop=false;
+ Services services;Services* m_ServiceManager=&services;bool m_bStop=false,m_playbackCleanupDeferred=false;
  std::shared_ptr<CFileItem> m_itemCurrentFile=std::make_shared<CFileItem>();
  IPlayerCallback callback;
  template<class T>T* GetComponent(){if constexpr(std::is_same_v<T,CApplicationPlayer>)return &player;
@@ -212,11 +212,14 @@ def main():
     parser.add_argument('--negative-control',action='store_true')
     args=parser.parse_args()
     source=(ROOT/'xbmc/application/ApplicationPlayer.cpp').read_text()
-    signatures=['std::shared_ptr<IPlayer> CApplicationPlayer::GetInternal()',
+    signatures=['std::shared_ptr<IPlayer> CApplicationPlayer::GetInternal()', 'bool CApplicationPlayer::IsPlaying() const',
                 'void CApplicationPlayer::ContinueClose()', 'void CApplicationPlayer::CompleteCloseCompletions()', 'bool CApplicationPlayer::ClosePlayer(',
                 'void CApplicationPlayer::OnPlaybackStopped()', 'void CApplicationPlayer::OpenNext(',
                 'void CApplicationPlayer::ResetPlayer(', 'bool CApplicationPlayer::OpenFile(']
-    signatures+=['bool CApplicationPlayer::HasPendingOpen() const',
+    signatures+=['bool CApplicationPlayer::HasPendingOpen() const', 'uint64_t CApplicationPlayer::BeginOpen()',
+                  'void CApplicationPlayer::EndOpen(', 'void CApplicationPlayer::Supersede(',
+                  'bool CApplicationPlayer::IsPlayingOpenedVideo() const',
+                  'bool CApplicationPlayer::OpenRequested() const', 'bool CApplicationPlayer::StopRequested() const',
                      'bool CApplicationPlayer::HasPendingVideoOpen() const',
                      'bool CApplicationPlayer::PreparePlaybackCleanup()',
                      'bool CApplicationPlayer::PlaybackCleanupCompleted() const']
@@ -226,7 +229,7 @@ def main():
     cleanup=function(application,'void CApplication::PlaybackCleanup()')
     ended_body=application[application.index('  case GUI_MSG_PLAYBACK_ENDED:'):application.index('  case GUI_MSG_PLAYLISTPLAYER_STOPPED:')]
     assert ended_body.index('OnPlaybackStopped()')<ended_body.index('PlayNext(1, true)')<ended_body.index('PlaybackCleanup()')
-    playfile=function(application,'bool CApplication::PlayFile(')
+    playfile=function(application,'bool CApplication::StartPlayback(')
     assert 'options.fullscreen = !CServiceBroker::GetPlaylistPlayer().HasPlayedFirstFile()' in playfile
     code=PRELUDE+'\n'.join(function(source,s) for s in signatures)+HARNESS
     code=code.replace('@CONTINUATION@',continuation).replace('@CLEANUP@',cleanup)
@@ -256,7 +259,7 @@ def main():
             run(code.replace(needle,'').replace('  if (HasPendingOpen())\n    return false;','')
                 .replace('generation != m_openGeneration || HasPendingOpen() || HasPlayer()',
                          'generation != m_openGeneration || HasPlayer()'),
-                "Assertion `gfx.fullscreen'")
+                "Assertion `gfx.fullscreen&&CServiceBroker::gui.wm.previous==0&&app.stack.clears==0'")
             needle='  if (opening && !appPlayer->HasPendingOpen() && (!openingVideo || !appPlayer->IsPlaying()))'
             assert code.count(needle)==1
             run(code.replace(needle,needle.replace('if (opening', 'if (false && opening')),
@@ -267,9 +270,9 @@ def main():
             needle='  if (m_cleanupGeneration == m_openGeneration && !m_cleanupPending)\n    return false;'
             assert code.count(needle)==1
             run(code.replace(needle,''),'gfx.restores==1')
-            needle='  m_cleanupPending = false;\n  const std::string newPlayer'
+            needle='  m_cleanupPending = false;\n  Supersede(Supersession::OPEN);\n'
             assert code.count(needle)==1
-            run(code.replace(needle,'  const std::string newPlayer'),'!app.player.PlaybackCleanupPending()')
+            run(code.replace(needle,'  Supersede(Supersession::OPEN);\n'),'!app.player.PlaybackCleanupPending()')
             needle='  if (!m_cleanupPending)\n  {'
             assert code.count(needle)==1
             run(code.replace(needle,'  if (true)\n  {'),'old->closes==calls+10')
@@ -280,9 +283,11 @@ def main():
             assert code.count(needle)==1
             run(code.replace(needle,'  if (!cleanup)'),
                 'CServiceBroker::gui.wm.active==HOME&&app.stack.clears==1')
-            needle='if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen())'
-            assert code.count(needle)==2
-            run(code.replace(needle,'if (appPlayer->HasPlayer())'),'!app.player.HasPendingOpen()')
+            needles=('if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen() || appPlayer->IsOpening())',
+                     'if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen() ||\n        (!m_bIsDeferredPlayPending')
+            assert all(code.count(needle)==1 for needle in needles)
+            run(code.replace(needles[0],'if (appPlayer->HasPlayer() || appPlayer->IsOpening())')
+                .replace(needles[1],'if (appPlayer->HasPlayer() ||\n        (!m_bIsDeferredPlayPending'),'!app.player.HasPendingOpen()')
 
 
 if __name__=='__main__':main()

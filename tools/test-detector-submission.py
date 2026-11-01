@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Production PlayMedia preparation + playlist request transfer.
+"""Production PlayMedia (StartMedia) preparation + playlist request transfer.
 
 Resolver, GUI, playlist expansion and player opening are recording boundaries.
 Checks metadata writeback, one-shot ownership and reusable-entry cleanup.
@@ -17,6 +17,7 @@ PREFIX=r'''
 #include "utils/Variant.cpp"
 #pragma GCC diagnostic pop
 #include "utils/DetectorAdmission.h"
+#include "utils/ScopeGuard.h"
 #include <cassert>
 #include <chrono>
 #include <iostream>
@@ -58,19 +59,27 @@ using AddonPtr=std::shared_ptr<CFileItem>;
 namespace ADDON{enum AddonType{GAMEDLL};struct OnlyEnabled{enum CHOICE{CHOICE_YES};};}
 using ADDON::AddonType;using ADDON::OnlyEnabled;
 struct AddonManager{bool GetAddon(const std::string&,AddonPtr&,ADDON::AddonType,ADDON::OnlyEnabled::CHOICE){return false;}};
-struct CServiceBroker{static PVRManager GetPVRManager(){return {};}static AddonManager GetAddonMgr(){return {};}};
+// The open intents have their own suite; no stop cancels a request here.
+struct CApplicationPlayer{uint64_t BeginOpen(){return 1;}bool OpenSuperseded(uint64_t)const{return false;}};
+struct Components{template<class T>T* GetComponent()const{static T component;return &component;}};
+struct PlaylistPlayer{void ResetCurrentPlaylist(){}};
+struct CServiceBroker{static PVRManager GetPVRManager(){return {};}static AddonManager GetAddonMgr(){return {};}
+ static Components GetAppComponents(){return {};}static PlaylistPlayer GetPlaylistPlayer(){return {};}};
 struct CApplication {
- std::vector<CFileItem> requests;std::optional<bool> playlistDecision;
- bool PlayMedia(CFileItem&,const std::string&,PLAYLIST::Id);
- bool PlayFile(CFileItem i,const std::string&,bool){DETECTOR_ADMISSION::CaptureItem(i);requests.push_back(i);return true;}
+ std::vector<CFileItem> requests;std::optional<bool> playlistDecision;int m_nextPlaylistItem=-1;
+ bool PlayMedia(CFileItem& i,const std::string& p,PLAYLIST::Id id){return StartMedia(i,p,id,1);}
+ bool StartMedia(CFileItem&,const std::string&,PLAYLIST::Id,uint64_t);void EndOpen(uint64_t){}
+ template<class T>T* GetComponent(){return CServiceBroker::GetAppComponents().GetComponent<T>();}
+ bool PlayFile(CFileItem i,const std::string&,bool,bool=false,uint64_t=0){DETECTOR_ADMISSION::CaptureItem(i);requests.push_back(i);return true;}
  bool ProcessAndStartPlaylist(const std::string&,PLAYLIST::CPlayList&,PLAYLIST::Id,int track=0,std::optional<bool> skip=std::nullopt){assert(track==0);playlistDecision=skip;return true;}
 }g_application;
 bool PVR::GUI::Playback::PlayMedia(const CFileItem& i){return g_application.PlayFile(i,"",false);}
 @PLAYMEDIA@
 bool playlistAttempt(const std::shared_ptr<CFileItem>& item,std::optional<bool> detectorSkip){
  const std::string player;const bool bAutoPlay=false;
+ const auto appPlayer=CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();const uint64_t attempt=appPlayer->BeginOpen();
  @TRANSFER@
- return ret;
+ (void)superseded;return ret;
 }
 int main(){
  CFileItem entry;entry.plugin=true;
@@ -106,7 +115,7 @@ def source():
     body=function(playlist,'bool CPlayListPlayer::Play(int iSong,')
     a=body.index('  // A submitted request owns its snapshot;')
     b=body.index('  // OpenFile can release GUI ownership',a)
-    return PREFIX.replace('@PLAYMEDIA@',function(app,'bool CApplication::PlayMedia(')).replace('@TRANSFER@',body[a:b])
+    return PREFIX.replace('@PLAYMEDIA@',function(app,'bool CApplication::StartMedia(')).replace('@TRANSFER@',body[a:b])
 
 
 def main():
@@ -114,8 +123,8 @@ def main():
     os.environ.setdefault('ASAN_OPTIONS','detect_leaks=0')
     code=source();run(code)
     if a.negative_controls:
-        original='bool CApplication::PlayMedia(CFileItem& item,'
-        replacement='bool CApplication::PlayMedia(CFileItem& inputItem,'
+        original='bool CApplication::StartMedia(CFileItem& item,'
+        replacement='bool CApplication::StartMedia(CFileItem& inputItem,'
         assert original in code
         broken=code.replace(original,replacement,1).replace('  // Preserve the existing resolver/MIME updates', '  CFileItem item(inputItem);\n  // Preserve the existing resolver/MIME updates',1)
         run(broken,negative=True);print('REJECTED: resolver writeback suppressed')

@@ -209,7 +209,7 @@ public:
   struct {void notifyAll(){}} m_presentevent;
   struct {bool sync=false;void UpdateClockSync(bool v){sync=v;}} port;
   decltype(port)* m_playerPort=&port;
-  struct {double pts=0;void SetRenderPts(double value){pts=value;}} m_dataCacheCore;
+  struct {double pts=0;struct Picture {};void SetRenderPts(double value){pts=value;}void SetVideoActivePicture(Picture){}} m_dataCacheCore;
   int invalidations=0;
   void InvalidateReservations(){++invalidations;}
   void ClearFrameSelection(){}

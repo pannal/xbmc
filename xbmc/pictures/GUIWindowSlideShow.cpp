@@ -1077,7 +1077,12 @@ bool CGUIWindowSlideShow::OnMessage(CGUIMessage& message)
         {
           m_bPlayingVideo = false;
           m_iVideoSlide = -1;
-          if (m_bSlideShow)
+          // An explicit stop that came before the end notification pauses the
+          // slideshow, as GUI_MSG_PLAYBACK_STOPPED does.
+          const auto& components = CServiceBroker::GetAppComponents();
+          if (m_bSlideShow && components.GetComponent<CApplicationPlayer>()->StopRequested())
+            m_bPause = true;
+          else if (m_bSlideShow)
           {
             m_bPause = false;
             if (m_iCurrentSlide == m_iNextSlide)

@@ -34,6 +34,7 @@
 #include "playlists/PlayList.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/ScopeGuard.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/Variant.h"
@@ -103,9 +104,18 @@ bool CPlayListPlayer::OnMessage(CGUIMessage &message)
       }
     }
     break;
+  case GUI_MSG_PLAYBACK_ENDED:
   case GUI_MSG_PLAYBACK_STOPPED:
     {
-      if (m_iCurrentPlayList != TYPE_NONE && m_bPlaybackStarted)
+      // An explicit stop ends the playlist, also when the playback reached the
+      // end first or the playlist item did not start yet. The stop of a
+      // playback that a newer open replaces does not stop the playlist: the
+      // playlist stop closes the player and drops the newer open.
+      const auto& components = CServiceBroker::GetAppComponents();
+      const auto appPlayer = components.GetComponent<CApplicationPlayer>();
+      const bool stopped{message.GetMessage() == GUI_MSG_PLAYBACK_STOPPED &&
+                         m_bPlaybackStarted && !appPlayer->OpenRequested()};
+      if (m_iCurrentPlayList != TYPE_NONE && (stopped || appPlayer->StopRequested()))
       {
         CGUIMessage msg(GUI_MSG_PLAYLISTPLAYER_STOPPED, 0, 0, m_iCurrentPlayList, m_iCurrentSong);
         CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
@@ -342,14 +352,26 @@ bool CPlayListPlayer::Play(int iSong,
   if (iSong >= playlistSize)
     iSong = playlistSize - 1;
 
+  // A stop or a newer open supersedes the attempt, also a restart of the same
+  // item; a superseded attempt is not a failed item. The attempt starts before
+  // the expansion and lasts until the failure handling started the next item.
+  const auto appPlayer =
+      CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+  const KODI::UTILS::CScopeGuard<uint64_t, 0, void(uint64_t)> attempt(
+      [&](uint64_t intent) { g_application.EndOpen(intent); }, appPlayer->BeginOpen());
+
   // check if the item itself is a playlist, and can be expanded
   // only allow a few levels, this could end up in a loop
   // if they refer to each other in a loop
   for (int i=0; i<5; i++)
   {
-    if(!playlist.Expand(iSong))
+    if (!playlist.Expand(iSong, [&] { return appPlayer->OpenSuperseded(attempt); }))
       break;
   }
+  // The expansion can wake a network share, and the wake dialog processes
+  // messages: a stop or a newer open during the dialog supersedes the attempt
+  if (appPlayer->OpenSuperseded(attempt))
+    return false;
 
   const CFileItemPtr item = playlist.TryGet(iSong);
   if (!item)
@@ -371,7 +393,8 @@ bool CPlayListPlayer::Play(int iSong,
   item->ClearProperty(DETECTOR_ADMISSION::ITEM_SKIP);
   item->ClearProperty(DETECTOR_PLAYBACK::PROPERTY);
   item->SetDetectorBinding({});
-  bool ret = g_application.PlayFile(request, player, bAutoPlay);
+  bool ret = g_application.PlayFile(request, player, bAutoPlay, true, attempt);
+  const bool superseded = appPlayer->OpenSuperseded(attempt);
   // OpenFile can release GUI ownership while Python changes the playlist.
   const auto selectionIsCurrent = [&]() {
     return m_iCurrentPlayList.load() == playlistId &&
@@ -379,7 +402,7 @@ bool CPlayListPlayer::Play(int iSong,
   };
   if (!ret)
   {
-    if (!selectionIsCurrent())
+    if (superseded || !selectionIsCurrent())
       return false;
 
     const int currentSong = m_iCurrentSong.load();
@@ -409,7 +432,8 @@ bool CPlayListPlayer::Play(int iSong,
 
       // open error dialog
       HELPERS::ShowOKDialogText(CVariant{16026}, CVariant{16027});
-      if (!selectionIsCurrent())
+      // A stop or a newer open during the dialog supersedes this attempt
+      if (appPlayer->OpenSuperseded(attempt) || !selectionIsCurrent())
         return false;
 
       CGUIMessage msg(GUI_MSG_PLAYLISTPLAYER_STOPPED, 0, 0, playlistId, m_iCurrentSong.load());
@@ -546,6 +570,14 @@ void CPlayListPlayer::Reset()
   // its likely that the playlist changed
   CGUIMessage msg(GUI_MSG_PLAYLIST_CHANGED, 0, 0);
   CServiceBroker::GetGUI()->GetWindowManager().SendMessage(msg);
+}
+
+void CPlayListPlayer::ResetCurrentPlaylist()
+{
+  if (m_iCurrentPlayList == TYPE_NONE)
+    return;
+  Reset();
+  SetCurrentPlaylist(TYPE_NONE);
 }
 
 bool CPlayListPlayer::HasPlayedFirstFile() const
@@ -1039,10 +1071,8 @@ void PLAYLIST::CPlayListPlayer::OnApplicationMessage(KODI::MESSAGING::ThreadMess
     // first check if we were called from the PlayFile() function
     if (pMsg->lpVoid && pMsg->param2 == 0)
     {
-      // Discard the current playlist, if TMSG_MEDIA_PLAY gets posted with just a single item.
-      // Otherwise items may fail to play, when started while a playlist is playing.
-      Reset();
-
+      // PlayFile ends the playlist for a new single item. A restart keeps the
+      // playlist and its position.
       CFileItem *item = static_cast<CFileItem*>(pMsg->lpVoid);
       g_application.PlayFile(*item, "", pMsg->param1 != 0);
       delete item;
@@ -1072,16 +1102,19 @@ void PLAYLIST::CPlayListPlayer::OnApplicationMessage(KODI::MESSAGING::ThreadMess
         if (list->Size() == 1 && !(*list)[0]->IsPlayList())
         {
           CFileItemPtr item = (*list)[0];
+          // A stop or a newer open during the resolution supersedes the request
+          const auto intent = appPlayer->BeginOpen();
           // if the item is a plugin we need to resolve the URL to ensure the infotags are filled.
-          if (URIUtils::HasPluginPath(*item) &&
-              !XFILE::CPluginDirectory::GetResolvedPluginResult(*item))
+          if ((!URIUtils::HasPluginPath(*item) ||
+               XFILE::CPluginDirectory::GetResolvedPluginResult(*item)) &&
+              !appPlayer->OpenSuperseded(intent))
           {
-            return;
+            if (item->IsAudio() || item->IsVideo())
+              Play(item, pMsg->strParam);
+            else
+              g_application.PlayMedia(*item, pMsg->strParam, playlistId);
           }
-          if (item->IsAudio() || item->IsVideo())
-            Play(item, pMsg->strParam);
-          else
-            g_application.PlayMedia(*item, pMsg->strParam, playlistId);
+          g_application.EndOpen(intent);
         }
         else
         {
@@ -1147,11 +1180,22 @@ void PLAYLIST::CPlayListPlayer::OnApplicationMessage(KODI::MESSAGING::ThreadMess
     wakeScreensaver();
 
     // A replacement can remain queued even after the original player retires.
-    if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen())
+    // A stop request cancels the opens in progress (StopPlaying). During a
+    // deferred play, the screensaver stops its own video; that stop cancels nothing.
+    if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen() ||
+        (!m_bIsDeferredPlayPending && appPlayer->IsOpening()))
     {
       auto completion = pMsg->DeferCompletion();
       if (m_bIsDeferredPlayPending)
+      {
+        // An open that reaches the player during the close is newer than the
+        // stop and keeps the playlist (StopPlaying).
+        const auto generation = appPlayer->GetOpenGeneration();
         appPlayer->ClosePlayer(false, std::move(completion));
+        // Without an end or stop notification to come, the stop ends the playlist.
+        if (appPlayer->GetOpenGeneration() == generation && !appPlayer->StopRequested())
+          ResetCurrentPlaylist();
+      }
       else
         g_application.StopPlaying(std::move(completion));
     }
@@ -1189,6 +1233,9 @@ void PLAYLIST::CPlayListPlayer::OnApplicationMessage(KODI::MESSAGING::ThreadMess
 
     break;
   }
+  case TMSG_MEDIA_SEEK_STACK_TIME:
+    g_application.SeekStackTime(pMsg->param3);
+    break;
   default:
     break;
   }

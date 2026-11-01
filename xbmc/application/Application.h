@@ -132,12 +132,21 @@ public:
   void OnApplicationMessage(KODI::MESSAGING::ThreadMessage* pMsg) override;
 
   bool PlayMedia(CFileItem& item, const std::string& player, PLAYLIST::Id playlistId);
+  // Ends an open that CApplicationPlayer::BeginOpen registered. Terminal cleanup
+  // that waited for the open runs after the last open.
+  void EndOpen(uint64_t intent);
   bool ProcessAndStartPlaylist(const std::string& strPlayList,
                                PLAYLIST::CPlayList& playlist,
                                PLAYLIST::Id playlistId,
                                int track = 0,
                                std::optional<bool> detectorSkip = std::nullopt);
-  bool PlayFile(CFileItem item, const std::string& player, bool bRestart = false);
+  // A new open (bRestart false) that is not a playlist item ends the playlist.
+  // A playlist attempt passes the intent of the attempt; other opens begin one.
+  bool PlayFile(CFileItem item,
+                const std::string& player,
+                bool bRestart = false,
+                bool playlistItem = false,
+                uint64_t attempt = 0);
   void StopPlaying(std::shared_ptr<CEvent> completion = {});
   void Restart(bool bSamePosition = true);
   void DelayedPlayerRestart();
@@ -170,6 +179,8 @@ public:
 
   void SeekPercentage(float percent);
   void SeekTime( double dTime = 0.0 );
+  // Main thread: seeks the playing regular stack to the time, also into another part
+  void SeekStackTime(int64_t timeMs);
 
   void UpdateLibraries();
 
@@ -244,13 +255,35 @@ protected:
   bool m_bInitializing = true;
 
   int m_nextPlaylistItem = -1;
+  // Terminal cleanup waits for the outcome of an open that has not reached the player.
+  bool m_playbackCleanupDeferred{false};
 
   std::chrono::time_point<std::chrono::steady_clock> m_lastRenderTime;
   bool m_skipGuiRender = false;
 
   std::unique_ptr<MUSIC_INFO::CMusicInfoScanner> m_musicInfoScanner;
 
-  bool PlayStack(CFileItem& item, bool bRestart);
+  bool StartMedia(CFileItem& item,
+                  const std::string& player,
+                  PLAYLIST::Id playlistId,
+                  uint64_t intent);
+  struct StagedStack;
+  bool PlayStack(CFileItem& item, bool bRestart, uint64_t intent);
+  // Opens another part of the current stack. The stack plays the part when the
+  // open is accepted.
+  bool PlayStackPart(int part, CFileItem item);
+  // The open of a part of the current stack that is not accepted yet
+  struct StackPartOpen
+  {
+    uint64_t intent = 0;
+    int part = -1;
+  } m_stackPartOpen;
+  bool StartPlayback(CFileItem item,
+                     const std::string& player,
+                     bool bRestart,
+                     bool playlistItem,
+                     uint64_t intent,
+                     StagedStack* staged = nullptr);
 
   void HandlePortEvents();
 

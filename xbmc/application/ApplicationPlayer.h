@@ -19,8 +19,10 @@
 #include "threads/CriticalSection.h"
 #include "threads/SystemClock.h"
 
+#include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 class CAction;
@@ -50,13 +52,40 @@ public:
   bool PreparePlaybackCleanup();
   bool PlaybackCleanupCompleted() const;
   bool PlaybackCleanupPending() const { return m_cleanupPending; }
+  // Main registers an open before resolution or dialogs, which can process the
+  // end or stop notification of the current player.
+  uint64_t BeginOpen();
+  void EndOpen(uint64_t intent);
+  bool IsOpening() const { return !m_openIntents.empty(); }
+  // A stop cancels the opens that began before the stop and did not reach the
+  // player yet.
+  void CancelOpens() { m_opensCancelledAt = ++m_intentSequence; }
+  // A stop, or a newer open that reached OpenFile, supersedes every older open
+  // still in progress, whatever started the older open. A newer open that fails
+  // before OpenFile does not. One request owns one intent.
+  bool OpenSuperseded(uint64_t intent) const
+  {
+    return intent < m_opensCancelledAt || intent < m_lastAcceptedIntent;
+  }
+  // The player plays the video item of the last open. The player can report the
+  // video stream later.
+  bool IsPlayingOpenedVideo() const;
+  // Every open that reaches OpenFile advances the generation
+  uint64_t GetOpenGeneration() const { return m_openGeneration; }
+  // The newest intent before the end or stop notification of the player: a
+  // newer open, also during its resolution, or an explicit stop. The
+  // notification can still report the end. An intent without an outstanding
+  // notification clears the state.
+  bool OpenRequested() const;
+  bool StopRequested() const;
   std::string GetCurrentPlayer() const;
   float GetPlaySpeed() const;
   float GetPlayTempo() const;
   bool HasPlayer() const;
   bool OpenFile(const CFileItem& item, const CPlayerOptions& options,
                 const CPlayerCoreFactory &factory,
-                const std::string &playerName, IPlayerCallback& callback);
+                const std::string &playerName, IPlayerCallback& callback,
+                uint64_t intent);
   void OpenNext(const CPlayerCoreFactory &factory);
   // Main-thread observations of the accepted deferred replacement.
   bool HasPendingOpen() const;
@@ -217,16 +246,36 @@ public:
 private:
   std::shared_ptr<const IPlayer> GetInternal() const;
   std::shared_ptr<IPlayer> GetInternal();
+  std::shared_ptr<IPlayer> GetControllable();
+  // Sets the start of a newer item that waits for the close; false without one
+  bool SeekWaitingItem(int64_t time, bool relative);
   void CreatePlayer(const CPlayerCoreFactory &factory, const std::string &player, IPlayerCallback& callback);
   void ContinueClose();
 
   std::shared_ptr<IPlayer> m_pPlayer;
   std::shared_ptr<IPlayer> m_closingPlayer;
+  // The controls that took the player (GetControllable) and still run, per thread,
+  // under m_playerLock
+  std::map<std::thread::id, int> m_controls;
   std::vector<std::shared_ptr<CEvent>> m_closeCompletionEvents;
   std::vector<std::shared_ptr<CEvent>> m_retiredCloseCompletionEvents;
   bool m_closeAcknowledged{false};
   bool m_waitForPlaybackStop{false};
   bool m_shutdown{false};
+  enum class Supersession
+  {
+    NONE,
+    OPEN,
+    STOP,
+  };
+  void Supersede(Supersession supersession);
+  Supersession m_supersededBy{Supersession::NONE};
+  uint64_t m_supersededAt{0};
+  uint64_t m_intentSequence{0};
+  uint64_t m_opensCancelledAt{0};
+  uint64_t m_lastAcceptedIntent{0};
+  std::vector<uint64_t> m_openIntents;
+  bool m_openedVideo{false};
   uint64_t m_openGeneration{0};
   std::optional<uint64_t> m_cleanupGeneration;
   bool m_cleanupPending{false};
@@ -247,5 +296,6 @@ private:
     CPlayerOptions options = {};
     std::string playerName;
     IPlayerCallback *callback = nullptr;
+    uint64_t intent = 0;
   } m_nextItem;
 };

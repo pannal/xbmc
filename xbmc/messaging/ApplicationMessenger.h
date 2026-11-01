@@ -47,6 +47,7 @@
 #define TMSG_MEDIA_UNPAUSE                TMSG_MASK_PLAYLISTPLAYER + 16
 #define TMSG_MEDIA_PAUSE_IF_PLAYING       TMSG_MASK_PLAYLISTPLAYER + 17
 #define TMSG_MEDIA_SEEK_TIME              TMSG_MASK_PLAYLISTPLAYER + 18
+#define TMSG_MEDIA_SEEK_STACK_TIME        TMSG_MASK_PLAYLISTPLAYER + 19
 
 #define TMSG_SHUTDOWN                     TMSG_MASK_APPLICATION + 0
 #define TMSG_POWERDOWN                    TMSG_MASK_APPLICATION + 1
@@ -270,6 +271,18 @@ public:
    * \return meaning of the return varies based on the message
    */
   int SendMsg(uint32_t messageId, int param1, int param2 = -1, void* payload = nullptr);
+
+  /*!
+   * \brief Send a blocking message and wait for a response
+   *
+   * Under no circumstances shall the caller hold a lock when calling SendMsg as there's
+   * no guarantee what the receiver will do to answer the request.
+   *
+   * \param [in] messageId defined further up in this file
+   * \param [in] param3 value depends on the message being sent
+   * \return meaning of the return varies based on the message
+   */
+  int SendMsg(uint32_t messageId, int64_t param3);
 
   /*!
    * \brief Send a blocking message and wait for a response

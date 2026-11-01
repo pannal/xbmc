@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 
 class CFileItem;
 class CFileItemList;
@@ -26,6 +27,11 @@ public:
   ~CApplicationStackHelper() = default;
 
   void Clear();
+  /*!
+  \brief Take over the stack that a request prepared, when the open of the request is accepted.
+  The registrations of the current stack stay until the new stack starts playing.
+  */
+  void Adopt(CApplicationStackHelper&& stack);
   void OnPlayBackStarted(const CFileItem& item);
 
   /*!
@@ -62,14 +68,6 @@ public:
   bool HasNextStackPartFileItem() const;
 
   /*!
-  \brief sets the next stack part as the current and returns a reference to it
-  */
-  const CFileItem& SetNextStackPartCurrentFileItem()
-  {
-    return GetStackPartFileItem(++m_currentStackPosition);
-  }
-
-  /*!
   \brief sets a given stack part as the current and returns a reference to it
   \param partNumber the number of the part that needs to become the current one
   */
@@ -77,6 +75,12 @@ public:
   {
     return GetStackPartFileItem(m_currentStackPosition = partNumber);
   }
+
+  /*!
+  \brief Returns a FileItem part of a (non-ISO) stack playback
+  \param partNumber the requested part number in the stack
+  */
+  const CFileItem& GetStackPartFileItem(int partNumber) const;
 
   /*!
   \brief Returns the FileItem currently playing back as part of a (non-ISO) stack playback
@@ -178,7 +182,9 @@ public:
   */
   void SetRegisteredStackTotalTimeMs(const CFileItem& item, uint64_t totalTimeMs);
 
-  CCriticalSection m_critSection;
+  // Orders the registrations: the player threads (the start and the close of an
+  // item), the jobs and the main thread read and change the registrations.
+  mutable CCriticalSection m_critSection;
 
 protected:
   /*!
@@ -186,7 +192,6 @@ protected:
   \param partNumber the requested part number in the stack
   */
   CFileItem& GetStackPartFileItem(int partNumber);
-  const CFileItem& GetStackPartFileItem(int partNumber) const;
 
   class StackPartInformation
   {
@@ -204,12 +209,18 @@ protected:
   };
 
   typedef std::shared_ptr<StackPartInformation> StackPartInformationPtr;
-  typedef std::map<std::string, StackPartInformationPtr> Stackmap;
+  // A registration belongs to a part of one stack (the path of the part, the path
+  // of the stack, the position of the part): another stack, a single video with
+  // the same file and a repeated part of the stack have separate registrations.
+  using RegistrationKey = std::tuple<std::string, std::string, int>;
+  typedef std::map<RegistrationKey, StackPartInformationPtr> Stackmap;
   Stackmap m_stackmap;
-  StackPartInformationPtr GetStackPartInformation(const std::string& key);
-  StackPartInformationPtr GetStackPartInformation(const std::string& key) const;
+  static RegistrationKey GetRegistrationKey(const CFileItem& item);
+  StackPartInformationPtr GetStackPartInformation(const RegistrationKey& key);
+  StackPartInformationPtr GetStackPartInformation(const RegistrationKey& key) const;
 
   std::unique_ptr<CFileItemList> m_currentStack;
   int m_currentStackPosition = 0;
   bool m_currentStackIsDiscImageStack = false;
+  std::string m_currentStackPath; // the stack of the registrations of the current stack
 };

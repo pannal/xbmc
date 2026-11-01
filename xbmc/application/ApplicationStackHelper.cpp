@@ -21,6 +21,14 @@
 
 using namespace XFILE;
 
+namespace
+{
+// The part items of a stack carry the path of the stack and the position of the
+// part: the key of the registration
+constexpr const char* STACK_PATH_PROPERTY = "stack_path";
+constexpr const char* STACK_PART_PROPERTY = "stack_part";
+} // namespace
+
 CApplicationStackHelper::CApplicationStackHelper(void)
   : m_currentStack(new CFileItemList)
 {
@@ -28,31 +36,47 @@ CApplicationStackHelper::CApplicationStackHelper(void)
 
 void CApplicationStackHelper::Clear()
 {
+  std::unique_lock<CCriticalSection> lock(m_critSection);
   m_currentStackPosition = 0;
   m_currentStack->Clear();
+  m_currentStackPath.clear();
+}
+
+void CApplicationStackHelper::Adopt(CApplicationStackHelper&& stack)
+{
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  for (auto& registration : stack.m_stackmap)
+    m_stackmap[registration.first] = std::move(registration.second);
+  stack.m_stackmap.clear();
+  // Other threads read the current stack without the lock (a seek, the time of
+  // the stack): the list stays, and only the items change, as in a new stack.
+  m_currentStack->Assign(*stack.m_currentStack);
+  stack.m_currentStack->Clear();
+  m_currentStackPosition = stack.m_currentStackPosition;
+  m_currentStackIsDiscImageStack = stack.m_currentStackIsDiscImageStack;
+  m_currentStackPath = std::move(stack.m_currentStackPath);
+  stack.m_currentStackPath.clear();
 }
 
 void CApplicationStackHelper::OnPlayBackStarted(const CFileItem& item)
 {
   std::unique_lock<CCriticalSection> lock(m_critSection);
 
-  // time to clean up stack map
-  if (!HasRegisteredStack(item))
-    m_stackmap.clear();
-  else
+  // time to clean up stack map. The player can report the start of an older item
+  // after the main thread accepted a newer stack: the registrations of the
+  // current stack stay.
+  const auto stack = HasRegisteredStack(item) ? GetRegisteredStack(item) : nullptr;
+  Stackmap::iterator itr = m_stackmap.begin();
+  while (itr != m_stackmap.end())
   {
-    auto stack = GetRegisteredStack(item);
-    Stackmap::iterator itr = m_stackmap.begin();
-    while (itr != m_stackmap.end())
+    if ((stack && itr->second->m_pStack == stack) ||
+        (!m_currentStackPath.empty() && std::get<1>(itr->first) == m_currentStackPath))
     {
-      if (itr->second->m_pStack != stack)
-      {
-        itr = m_stackmap.erase(itr);
-      }
-      else
-      {
-        ++itr;
-      }
+      ++itr;
+    }
+    else
+    {
+      itr = m_stackmap.erase(itr);
     }
   }
 }
@@ -72,8 +96,14 @@ bool CApplicationStackHelper::InitializeStack(const CFileItem & item)
   for (int i = 0; i < m_currentStack->Size(); i++)
   {
     // keep cross-references between stack parts and the stack
+    GetStackPartFileItem(i).SetProperty(STACK_PATH_PROPERTY, item.GetPath());
+    GetStackPartFileItem(i).SetProperty(STACK_PART_PROPERTY, i);
     SetRegisteredStack(GetStackPartFileItem(i), stack);
     SetRegisteredStackPartNumber(GetStackPartFileItem(i), i);
+  }
+  {
+    std::unique_lock<CCriticalSection> lock(m_critSection);
+    m_currentStackPath = item.GetPath();
   }
   m_currentStackIsDiscImageStack = URIUtils::IsDiscImageStack(item.GetDynPath());
 
@@ -250,25 +280,29 @@ int CApplicationStackHelper::GetStackPartNumberAtTimeMs(uint64_t msecs)
 
 void CApplicationStackHelper::ClearAllRegisteredStackInformation()
 {
+  std::unique_lock<CCriticalSection> lock(m_critSection);
   m_stackmap.clear();
 }
 
 std::shared_ptr<const CFileItem> CApplicationStackHelper::GetRegisteredStack(
     const CFileItem& item) const
 {
-  return GetStackPartInformation(item.GetPath())->m_pStack;
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  return GetStackPartInformation(GetRegistrationKey(item))->m_pStack;
 }
 
 bool CApplicationStackHelper::HasRegisteredStack(const CFileItem& item) const
 {
-  const auto it = m_stackmap.find(item.GetPath());
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  const auto it = m_stackmap.find(GetRegistrationKey(item));
   return it != m_stackmap.end() && it->second != nullptr;
 }
 
 void CApplicationStackHelper::SetRegisteredStack(const CFileItem& item,
                                                  std::shared_ptr<CFileItem> stackItem)
 {
-  GetStackPartInformation(item.GetPath())->m_pStack = std::move(stackItem);
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  GetStackPartInformation(GetRegistrationKey(item))->m_pStack = std::move(stackItem);
 }
 
 CFileItem& CApplicationStackHelper::GetStackPartFileItem(int partNumber)
@@ -283,36 +317,49 @@ const CFileItem& CApplicationStackHelper::GetStackPartFileItem(int partNumber) c
 
 int CApplicationStackHelper::GetRegisteredStackPartNumber(const CFileItem& item)
 {
-  return GetStackPartInformation(item.GetPath())->m_lStackPartNumber;
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  return GetStackPartInformation(GetRegistrationKey(item))->m_lStackPartNumber;
 }
 
 void CApplicationStackHelper::SetRegisteredStackPartNumber(const CFileItem& item, int partNumber)
 {
-  GetStackPartInformation(item.GetPath())->m_lStackPartNumber = partNumber;
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  GetStackPartInformation(GetRegistrationKey(item))->m_lStackPartNumber = partNumber;
 }
 
 uint64_t CApplicationStackHelper::GetRegisteredStackPartStartTimeMs(const CFileItem& item) const
 {
-  return GetStackPartInformation(item.GetPath())->m_lStackPartStartTimeMs;
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  return GetStackPartInformation(GetRegistrationKey(item))->m_lStackPartStartTimeMs;
 }
 
 void CApplicationStackHelper::SetRegisteredStackPartStartTimeMs(const CFileItem& item, uint64_t startTime)
 {
-  GetStackPartInformation(item.GetPath())->m_lStackPartStartTimeMs = startTime;
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  GetStackPartInformation(GetRegistrationKey(item))->m_lStackPartStartTimeMs = startTime;
 }
 
 uint64_t CApplicationStackHelper::GetRegisteredStackTotalTimeMs(const CFileItem& item) const
 {
-  return GetStackPartInformation(item.GetPath())->m_lStackTotalTimeMs;
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  return GetStackPartInformation(GetRegistrationKey(item))->m_lStackTotalTimeMs;
 }
 
 void CApplicationStackHelper::SetRegisteredStackTotalTimeMs(const CFileItem& item, uint64_t totalTime)
 {
-  GetStackPartInformation(item.GetPath())->m_lStackTotalTimeMs = totalTime;
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  GetStackPartInformation(GetRegistrationKey(item))->m_lStackTotalTimeMs = totalTime;
+}
+
+CApplicationStackHelper::RegistrationKey CApplicationStackHelper::GetRegistrationKey(
+    const CFileItem& item)
+{
+  return {item.GetPath(), item.GetProperty(STACK_PATH_PROPERTY).asString(),
+          static_cast<int>(item.GetProperty(STACK_PART_PROPERTY).asInteger(-1))};
 }
 
 CApplicationStackHelper::StackPartInformationPtr CApplicationStackHelper::GetStackPartInformation(
-    const std::string& key)
+    const RegistrationKey& key)
 {
   if (m_stackmap.count(key) == 0)
   {
@@ -323,7 +370,7 @@ CApplicationStackHelper::StackPartInformationPtr CApplicationStackHelper::GetSta
 }
 
 CApplicationStackHelper::StackPartInformationPtr CApplicationStackHelper::GetStackPartInformation(
-    const std::string& key) const
+    const RegistrationKey& key) const
 {
   const auto it = m_stackmap.find(key);
   if (it == m_stackmap.end())
