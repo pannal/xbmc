@@ -114,6 +114,9 @@ public:
 
   bool IsInitialized() const { return !m_bInitializing; }
   bool IsStopping() const { return m_bStop; }
+  // A stop waits for the close of the player. Only the main thread sees the
+  // waiting stop.
+  bool IsStopPending() const;
 
   bool CreateGUI();
   bool InitWindow(RESOLUTION res = RES_INVALID);

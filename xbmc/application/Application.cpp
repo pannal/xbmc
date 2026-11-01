@@ -2305,6 +2305,11 @@ bool CApplication::StopBeforeRun(bool renderGUI)
   return Cleanup();
 }
 
+bool CApplication::IsStopPending() const
+{
+  return CServiceBroker::GetAppMessenger()->IsProcessThread() && m_pendingStop.has_value();
+}
+
 bool CApplication::Stop(int exitCode)
 {
 #if defined(TARGET_ANDROID)

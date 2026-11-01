@@ -109,7 +109,7 @@ CGameClient::CGameClient(const ADDON::AddonInfoPtr& addonInfo)
 
 CGameClient::~CGameClient(void)
 {
-  CloseFile();
+  CloseFile(true);
   CGameClientSubsystem::DestroySubsystems(m_subsystems);
 }
 
@@ -228,7 +228,7 @@ bool CGameClient::OpenFile(const CFileItem& file,
   if (!Initialized())
     return false;
 
-  CloseFile();
+  CloseFile(true);
 
   GAME_ERROR error = GAME_ERROR_FAILED;
 
@@ -269,7 +269,7 @@ bool CGameClient::OpenStandalone(RETRO::IStreamManager& streamManager, IGameInpu
   if (!Initialized())
     return false;
 
-  CloseFile();
+  CloseFile(true);
 
   GAME_ERROR error = GAME_ERROR_FAILED;
 
@@ -462,13 +462,14 @@ void CGameClient::Reset()
   }
 }
 
-void CGameClient::CloseFile()
+void CGameClient::CloseFile(bool saveGame)
 {
   std::unique_lock<CCriticalSection> lock(m_critSection);
 
   if (m_bIsPlaying)
   {
-    m_inGameSaves->Save();
+    if (saveGame)
+      m_inGameSaves->Save();
     m_inGameSaves.reset();
 
     m_bIsPlaying = false;

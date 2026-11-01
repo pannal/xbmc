@@ -8,6 +8,7 @@
 
 #include "GUIDialogProgress.h"
 
+#include "application/Application.h"
 #include "guilib/GUIProgressControl.h"
 #include "guilib/GUIWindowManager.h"
 #include "guilib/LocalizeStrings.h"
@@ -91,6 +92,10 @@ void CGUIDialogProgress::Progress()
   if (m_active)
   {
     ProcessRenderLoop();
+    // A stop that waits for the close of the player cancels the progress like
+    // the user: the wait ends, also a wait in the open of the player
+    if (g_application.IsStopPending())
+      m_iChoice = CHOICE_CANCELED;
   }
 }
 

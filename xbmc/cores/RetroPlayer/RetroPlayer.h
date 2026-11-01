@@ -16,6 +16,7 @@
 #include "guilib/DispResource.h"
 #include "threads/CriticalSection.h"
 
+#include <atomic>
 #include <memory>
 
 namespace KODI
@@ -113,6 +114,13 @@ private:
   void RegisterWindowCallbacks();
   void UnregisterWindowCallbacks();
 
+  // The open of the item, without the ownership of the item
+  bool OpenItem(const CFileItem& file, const CPlayerOptions& options);
+  // True if a close cancelled the open
+  bool OpenCancelled();
+  // Releases the item
+  void CloseItem();
+
   /**
    * \brief Dump game information (if any) to the debug log.
    */
@@ -140,6 +148,22 @@ private:
 
   // Synchronization parameters
   CCriticalSection m_mutex;
+  // The item of the player. The open owns the item until the open returns: a
+  // close during the open (a newer item retires the player in a dialog of the
+  // open) cancels the open, and the close completes after the open released the
+  // item. A close without an item changes nothing.
+  enum class ItemState
+  {
+    NONE,
+    OPENING,
+    OPEN,
+    CLOSING,
+  };
+  CCriticalSection m_itemMutex;
+  ItemState m_itemState = ItemState::NONE;
+  // The close reports the end only of a started game. Controls from other
+  // threads (JSON-RPC) read the state.
+  std::atomic<bool> m_started{false};
 };
 } // namespace RETRO
 } // namespace KODI

@@ -72,6 +72,35 @@ CRetroPlayer::~CRetroPlayer()
 
 bool CRetroPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options)
 {
+  {
+    std::unique_lock<CCriticalSection> lock(m_itemMutex);
+    m_itemState = ItemState::OPENING;
+  }
+
+  const bool opened = OpenItem(file, options);
+
+  {
+    std::unique_lock<CCriticalSection> lock(m_itemMutex);
+    if (m_itemState == ItemState::OPENING && opened)
+    {
+      m_itemState = ItemState::OPEN;
+      return true;
+    }
+    if (m_itemState == ItemState::CLOSING)
+      CLog::Log(LOGINFO, "RetroPlayer[PLAYER]: Closed during the open");
+  }
+
+  // A failed or closed open releases the item like a close: the shared agent
+  // input stops, an opened game closes, and the cached game client unloads.
+  CloseItem();
+
+  std::unique_lock<CCriticalSection> lock(m_itemMutex);
+  m_itemState = ItemState::NONE;
+  return false;
+}
+
+bool CRetroPlayer::OpenItem(const CFileItem& file, const CPlayerOptions& options)
+{
   CFileItem fileCopy(file);
 
   std::string savestatePath;
@@ -86,6 +115,8 @@ bool CRetroPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options
               "RetroPlayer[PLAYER]: No compatible game client selected, aborting playback");
     return false;
   }
+  if (OpenCancelled())
+    return false;
 
   // Check if we should open in standalone mode
   const bool bStandalone = fileCopy.GetPath().empty();
@@ -106,7 +137,7 @@ bool CRetroPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options
   std::unique_lock<CCriticalSection> lock(m_mutex);
 
   if (IsPlaying())
-    CloseFile();
+    CloseItem();
 
   PrintGameInfo(fileCopy);
 
@@ -157,6 +188,9 @@ bool CRetroPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options
       CLog::Log(LOGERROR, "RetroPlayer[PLAYER]: Failed to initialize {}", gameClientId);
   }
 
+  if (OpenCancelled())
+    return false;
+
   if (bSuccess && !bStandalone)
   {
     CSavestateDatabase savestateDb;
@@ -185,9 +219,6 @@ bool CRetroPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options
 
   if (bSuccess)
   {
-    // Switch to fullscreen
-    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SWITCHTOFULLSCREEN);
-
     m_cheevos = std::make_shared<CCheevos>(m_gameClient.get(),
                                            m_gameServices.GameSettings().GetRAUsername(),
                                            m_gameServices.GameSettings().GetRAToken());
@@ -196,8 +227,19 @@ bool CRetroPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options
 
     // Initialize gameplay
     CreatePlayback(savestatePath);
+  }
+
+  if (OpenCancelled())
+    return false;
+
+  if (bSuccess)
+  {
+    // Switch to fullscreen
+    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SWITCHTOFULLSCREEN);
+
     RegisterWindowCallbacks();
     m_playbackControl = std::make_unique<CGUIPlaybackControl>(*this);
+    m_started = true;
     m_callback.OnPlayBackStarted(fileCopy);
     m_callback.OnAVStarted(fileCopy);
     if (!bStandalone)
@@ -206,21 +248,48 @@ bool CRetroPlayer::OpenFile(const CFileItem& file, const CPlayerOptions& options
     // Set video framerate
     m_processInfo->SetVideoFps(static_cast<float>(m_gameClient->GetFrameRate()));
   }
-  else
-  {
-    m_input.reset();
-    m_streamManager.reset();
-    if (m_gameClient)
-      m_gameClient->Unload();
-    m_gameClient.reset();
-  }
 
   return bSuccess;
 }
 
+bool CRetroPlayer::OpenCancelled()
+{
+  // Every step of the open can wait in a dialog (also a wake dialog of a network
+  // share), and a newer item can retire the player in the dialog. The open then
+  // asks nothing more and starts nothing.
+  std::unique_lock<CCriticalSection> lock(m_itemMutex);
+  return m_itemState == ItemState::CLOSING;
+}
+
 bool CRetroPlayer::CloseFile(bool reopen /* = false */)
 {
+  {
+    std::unique_lock<CCriticalSection> lock(m_itemMutex);
+    if (m_itemState == ItemState::NONE)
+      return true;
+    // A close during the open leaves the release of the item to the open. The
+    // application calls CloseFile each frame until the close completes, and
+    // opens a newer item (also with the same shared game client) after the
+    // close completes.
+    const bool open = m_itemState == ItemState::OPEN;
+    m_itemState = ItemState::CLOSING;
+    if (!open)
+      return false;
+  }
+
+  CloseItem();
+
+  std::unique_lock<CCriticalSection> lock(m_itemMutex);
+  m_itemState = ItemState::NONE;
+  return true;
+}
+
+void CRetroPlayer::CloseItem()
+{
   CLog::Log(LOGDEBUG, "RetroPlayer[PLAYER]: Closing file");
+
+  // Only a started game has a game to save and an end to report
+  const bool started = m_started.exchange(false);
 
   m_autoSave.reset();
 
@@ -230,7 +299,7 @@ bool CRetroPlayer::CloseFile(bool reopen /* = false */)
 
   std::unique_lock<CCriticalSection> lock(m_mutex);
 
-  if (m_gameClient && m_gameServices.GameSettings().AutosaveEnabled())
+  if (started && m_gameClient && m_gameServices.GameSettings().AutosaveEnabled())
   {
     std::string savePath = m_playback->CreateSavestate(true);
     if (!savePath.empty())
@@ -239,15 +308,19 @@ bool CRetroPlayer::CloseFile(bool reopen /* = false */)
       CLog::Log(LOGDEBUG, "RetroPlayer[SAVE]: Failed to save state at close");
   }
 
-  m_playback.reset();
+  // The player keeps a playback without a game: a query of the player after a
+  // failed or closed open, also from a caller that holds the player, needs one.
+  ResetPlayback();
 
   if (m_input)
     m_input->StopAgentManager();
 
   m_cheevos.reset();
 
+  // A game that never started saves nothing: the in-game saves of the game have
+  // no game client in the path, and a cancelled open must not change them.
   if (m_gameClient)
-    m_gameClient->CloseFile();
+    m_gameClient->CloseFile(started);
 
   m_input.reset();
 
@@ -264,9 +337,8 @@ bool CRetroPlayer::CloseFile(bool reopen /* = false */)
   }
   m_processInfo.reset();
   CLog::Log(LOGDEBUG, "RetroPlayer[PLAYER]: Playback ended");
-  m_callback.OnPlayBackEnded();
-
-  return true;
+  if (started)
+    m_callback.OnPlayBackEnded();
 }
 
 bool CRetroPlayer::IsPlaying() const
@@ -392,6 +464,11 @@ uint64_t CRetroPlayer::GetTotalTime()
 
 void CRetroPlayer::SetSpeed(float speed)
 {
+  // Only a started game has a speed: a failed, cancelled or closed open has no
+  // streams, and an open in progress has no game yet.
+  if (!m_started)
+    return;
+
   if (m_playback->GetSpeed() != static_cast<double>(speed))
   {
     if (speed == 1.0f)
@@ -424,7 +501,7 @@ bool CRetroPlayer::OnAction(const CAction& action)
   {
     case ACTION_PLAYER_RESET:
     {
-      if (m_gameClient)
+      if (m_started)
       {
         float speed = static_cast<float>(m_playback->GetSpeed());
 
