@@ -416,6 +416,16 @@ public:
                                                                                    userdata);
   }
 
+  void OnSetNextAVTransportURIResult(NPT_Result res,
+                                     PLT_DeviceDataReference& device,
+                                     void* userdata) override
+  {
+    NPT_AutoLock lock(g_UserDataLock);
+    CHECK_USERDATA_RETURN(userdata);
+    static_cast<PLT_MediaControllerDelegate*>(userdata)->OnSetNextAVTransportURIResult(res, device,
+                                                                                       userdata);
+  }
+
   void OnSeekResult(NPT_Result res, PLT_DeviceDataReference& device, void* userdata) override
   {
     NPT_AutoLock lock(g_UserDataLock);
@@ -482,6 +492,13 @@ public:
     CHECK_USERDATA_RETURN(userdata);
     static_cast<PLT_MediaControllerDelegate*>(userdata)->OnGetTransportInfoResult(res, device, info,
                                                                                   userdata);
+  }
+
+  void OnSetVolumeResult(NPT_Result res, PLT_DeviceDataReference& device, void* userdata) override
+  {
+    NPT_AutoLock lock(g_UserDataLock);
+    CHECK_USERDATA_RETURN(userdata);
+    static_cast<PLT_MediaControllerDelegate*>(userdata)->OnSetVolumeResult(res, device, userdata);
   }
 
   bool OnMRAdded(PLT_DeviceDataReference& device) override
