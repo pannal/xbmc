@@ -8,6 +8,7 @@ The handler bootstrap and ApplyStyle are fixtures; rasterization is real. This
 is not full Kodi style/UI, GPU, device, or bitmap/SPU producer validation.
 """
 import argparse
+import ctypes.util
 import os
 from pathlib import Path
 import runpy
@@ -21,10 +22,15 @@ function = runpy.run_path(str(ROOT / 'tools/test-render-slot-publication.py'))['
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--ass-include', type=Path, default=Path('/usr/include'))
-    parser.add_argument('--ass-library', default='-lass')
+    parser.add_argument('--ass-include', type=Path, help='default: libass staged in the firmware install_pkg tree (CE_BUILD_DIR/../install_pkg)')
+    parser.add_argument('--ass-library', help='linker argument; default: the host libass runtime')
     parser.add_argument('--font', default='/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
     args = parser.parse_args()
+    build = Path(os.environ.get('CE_BUILD_DIR', Path.home() / 'p3i/build.CoreELEC-Amlogic-ng.arm-21/build'))
+    args.ass_include = args.ass_include or next((build.parent / 'install_pkg').glob('libass-*/usr/include'), Path('/usr/include'))
+    host = ctypes.util.find_library('ass')
+    args.ass_library = args.ass_library or (host and '-Wl,-l:' + host)
+    assert args.ass_library, 'Host libass runtime missing: pass --ass-library'
     assert Path(args.font).is_file(), args.font
     source = (ROOT / 'xbmc/cores/VideoPlayer/DVDSubtitles/DVDSubtitlesLibass.cpp').read_text()
     code = PRELUDE
