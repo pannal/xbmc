@@ -32,6 +32,7 @@ PRELUDE = r'''
 #include <cstdio>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <stdexcept>
 #include <string>

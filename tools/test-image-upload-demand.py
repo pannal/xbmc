@@ -28,6 +28,7 @@ PRELUDE=r'''
 #include <cstdio>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -62,6 +63,8 @@ struct State {
 static thread_local State*currentState=nullptr;
 struct CTexture {
  State*state;bool uploaded=false;
+ bool m_uploadingInWorker=false,backgroundTexture=false;
+ void SetBackgroundTexture(bool background){backgroundTexture=background;}
  explicit CTexture(State*s):state(s){}
  ~CTexture(){++state->destroyed;if(uploaded&&heldLocks)++state->gpuDestroyedWithLock;}
  unsigned GetWidth()const{Check(state->leases==0,"metadata read after upload lease release");return 64;}
@@ -202,10 +205,13 @@ static void QueuedUploadGraceExpiry(){State s;Harness h(s);h.Init();h.Next();h.R
  Check(h.images.m_allocated.size()==1&&h.jobs.Queued()==1,"last-ref queued upload survives original cache grace");
  CTextureArray array;Check(h.Get(array,true)&&!array.size(),"queued upload grace reacquisition keeps entry");h.Request();Check(h.jobs.Queued()==1,"reacquired queued upload remains coalesced");
  h.images.ReleaseImage("A",false);frameTime=4000;h.images.CleanupUnusedImages();
- Check(h.images.m_allocated.empty()&&h.jobs.Queued()==0&&s.uploads==0&&s.destroyed==1,"expired cache entry cancels queued promotion and retires private texture");++cases;
+ // An admitted upload keeps its callback so the single upload reservation is always retired.
+ Check(h.images.m_allocated.empty()&&h.jobs.Queued()==1&&s.uploads==0&&s.destroyed==0,"expired cache entry keeps its admitted upload callback");
+ Check(!h.Next()&&h.images.m_activeUploadJobID==0&&s.uploads==0&&s.destroyed==1,"expired cache entry cancels admitted promotion and retires private texture");++cases;
 }
 static void CancelQueuedUpload(){State s;Harness h(s);h.Init();h.Next();h.Request();Check(h.jobs.Queued()==1,"upload queued before cancellation");h.images.ReleaseImage("A",true);
- Check(h.jobs.Queued()==0&&h.images.m_allocated.empty(),"final immediate release cancels queued upload");Check(s.uploads==0&&s.destroyed==1,"queued cancellation has no upload and retires private texture");++cases;
+ Check(h.jobs.Queued()==1&&h.images.m_allocated.empty(),"final immediate release keeps the admitted upload callback");
+ Check(!h.Next()&&h.images.m_activeUploadJobID==0,"cancelled admitted upload retires the upload reservation");Check(s.uploads==0&&s.destroyed==1,"queued cancellation has no upload and retires private texture");++cases;
 }
 static void CancelRunningUpload(){State s;s.blockUpload=true;Harness h(s);h.Init();h.Next();h.Request();auto*job=h.Start();std::exception_ptr error;
  std::thread t([&]{try{h.Work(job);}catch(...){error=std::current_exception();}});s.uploadBarrier.Await();h.images.ReleaseImage("A",true);s.uploadBarrier.Release();t.join();if(error)std::rethrow_exception(error);
@@ -221,9 +227,12 @@ static void CancelMutatingUpload(){State s;s.blockAfterUpload=true;Harness h(s);
 static void StaleUploadCallback(){State s;Harness h(s);h.Init();h.Next();h.Request();unsigned oldID=h.jobs.First();auto*old=h.Start();
  // Worker has completed but JobManager's already copied callback has not run.
  Check(old->DoWork()&&s.uploads==1,"old upload completes before callback/cancel race");
- h.images.ReleaseImage("A",true);h.Init();h.Next();h.Request();unsigned newID=h.jobs.First();Check(newID!=oldID,"new same-path upload has distinct job ID");
+ h.images.ReleaseImage("A",true);h.Init();h.Next();h.Request();
+ // One upload is admitted at a time: the replacement waits for the stale job's callback.
+ Check(h.jobs.Queued()==0&&h.images.m_activeUploadJobID==oldID,"replacement upload waits for the admitted stale upload");
  h.images.OnJobComplete(oldID,true,old);CTextureArray array;
- Check(h.Get(array)&&!array.size()&&h.images.m_allocatedLookup.at("A")->m_uploadJobID==newID,"stale upload callback cannot publish into replacement path");
+ Check(h.Get(array)&&!array.size(),"stale upload callback cannot publish into replacement path");
+ unsigned newID=h.jobs.First();Check(newID!=0&&newID!=oldID&&h.images.m_allocatedLookup.at("A")->m_uploadJobID==newID,"new same-path upload has distinct job ID");
  h.jobs.OnJobComplete(false,old);h.Next();Check(h.Get(array)&&array.size()==1&&s.uploads==2,"replacement publishes only after own upload");
  array.Free();Check(!s.gpuDestroyedWithLock,"stale uploaded texture retires outside callback/global locks");++cases;
 }
@@ -276,19 +285,21 @@ def mutations(files):
         'prefetch decode performs no eager GPU upload')
     yield ('undemanded-admission',edit('void CGUILargeTextureManager::QueueUpload(',
         '!image->m_gpuDemand || ', ''), 'undemanded decoded entry queues no upload')
-    yield ('duplicate-promotion',edit('void CGUILargeTextureManager::QueueUpload(',
-        ' || image->m_uploadJobID != 0', ''), 'many consumers coalesce one upload promotion')
-    yield ('early-publication',edit('void CGUILargeTextureManager::QueueUpload(',
-        '  if (image->m_uploadJobID == 0)',
-        '  if (image->m_uploadJobID != 0) image->SetTexture(image->m_pendingTexture);\n  if (image->m_uploadJobID == 0)'),
+    # Duplicate queue entries are not observable with one admitted upload:
+    # RemoveUpload erases every entry and a consumed texture is never re-admitted.
+    yield ('parallel-admission',edit('void CGUILargeTextureManager::StartNextUpload(',
+        '  if (m_activeUploadJobID != 0)\n    return;\n', ''), 'replacement upload waits for the admitted stale upload')
+    yield ('early-publication',edit('void CGUILargeTextureManager::StartNextUpload(',
+        '    if (m_activeUploadJobID != 0)\n      return;',
+        '    if (m_activeUploadJobID != 0)\n    {\n      next->SetTexture(next->m_pendingTexture);\n      return;\n    }'),
         'promotion admission preserves publication barrier')
     yield ('missing-completion-demand-recheck',edit('void CGUILargeTextureManager::OnJobComplete(',
         '      QueueUpload(image);', '      (void)image;'), 'decode callback rechecks earlier demand')
     yield ('stale-id-publication',edit('void CGUILargeTextureManager::OnJobComplete(',
-        'image->m_uploadJobID == 0 || image->m_uploadJobID != jobID', 'image->m_uploadJobID == 0'),
+        '      if (image->m_uploadJobID != jobID)\n        continue;\n', ''),
         'stale upload callback cannot publish into replacement path')
-    yield ('rejected-upload-stranded',edit('void CGUILargeTextureManager::QueueUpload(',
-        '    image->SetTexture(std::move(image->m_pendingTexture));', '    (void)image;'),
+    yield ('rejected-upload-stranded',edit('void CGUILargeTextureManager::StartNextUpload(',
+        '    next->SetTexture(std::move(next->m_pendingTexture));', '    (void)next;'),
         'rejected or unsupported upload retains CPU fallback')
     yield ('pending-is-failure',edit('bool CGUILargeTextureManager::GetImage(',
         ' || image->m_pendingTexture != nullptr', ''), 'private decoded pending is not failed or published')

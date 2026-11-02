@@ -70,7 +70,8 @@ struct LargeManager {struct Entry{CTextureArray data;bool failed=false;unsigned 
  bool GetImage(const std::string&p,CTextureArray&t,bool first,bool,bool defer=false,bool direct=false){requests.push_back({p,first,defer});++gets;auto&e=entries[p];if(first){++e.refs;e.direct+=direct;}t=e.data;return !e.failed;}
  bool HasDirectConsumer(const std::string&p){auto e=entries.find(p);return e!=entries.end()&&e->second.direct>0;}
  unsigned Direct(const std::string&p){return entries[p].direct;}
- void RequestImageUpload(const std::string&p,bool background=false){demands.push_back(p);backgroundDemands.push_back(background);}
+ void RequestImageUpload(const std::string&p,bool background=false,bool prefetch=false,std::optional<unsigned> =std::nullopt){demands.push_back(p);backgroundDemands.push_back(background);prefetches.push_back(prefetch);}
+ std::vector<bool>prefetches;
  void ReleaseImage(const std::string&p,bool,bool direct=false){auto&e=entries[p];if(e.refs)--e.refs;if(direct&&e.direct)--e.direct;}
  void Publish(const std::string&p,bool alpha=false){entries[p].data=Published(alpha);}
  unsigned Demand(const std::string&p)const{return static_cast<unsigned>(std::count(demands.begin(),demands.end(),p));}};
@@ -95,13 +96,15 @@ struct CGraphicContext {std::stack<CRect>m_clipRegions;std::stack<CPoint>m_origi
  void BeginControlBounds(CRect*){}void EndControlBounds(){}unsigned GetControlBoundsFrame(){return 1;}
  void GetGUIScaling(const RESOLUTION_INFO&,float&x,float&y,TransformMatrix*){x=y=1;}};
 struct Window {CGraphicContext gfx;CGraphicContext&GetGfxContext(){return gfx;}};
+struct AdvancedSettings {bool m_guiAsyncTextureUpload=false;};
+struct SettingsComponent {AdvancedSettings advanced;AdvancedSettings*GetAdvancedSettings(){return &advanced;}};
 struct GUI {LargeManager large;NormalManager normal;LargeManager&GetLargeTextureManager(){return large;}NormalManager&GetTextureManager(){return normal;}};
-static Window window;static GUI gui;
-struct CServiceBroker {static Window*GetWinSystem(){return &window;}static GUI*GetGUI(){return &gui;}};
+static Window window;static GUI gui;static SettingsComponent settings;
+struct CServiceBroker {static Window*GetWinSystem(){return &window;}static GUI*GetGUI(){return &gui;}static SettingsComponent*GetSettingsComponent(){return &settings;}};
 class CGUITexture {public:
  CGUITexture(float x=10,float y=10,float w=40,float h=40){m_posX=x;m_posY=y;m_width=w;m_height=h;m_vertex=CRect(x,y,x+w,y+h);}
  CGUITexture(const CGUITexture&);virtual~CGUITexture()=default;CGUITexture*Clone()const{return new CGUITexture(*this);}
- bool AllocateOnDemand();bool IsBackgroundRequest()const;bool Process(unsigned);bool AllocResources();bool CalculateSize();void FreeResources(bool immediately=false);
+ bool AllocateOnDemand();bool IsBackgroundRequest()const;bool Process(unsigned);void RequestUploadAhead(unsigned);bool AllocResources();bool CalculateSize();void FreeResources(bool immediately=false);
  bool ReadyToRender()const;bool SetVisible(bool);bool SetAlpha(unsigned char);bool SetDiffuseColor(unsigned,const CGUIListItem*item=nullptr);
  bool SetPosition(float,float);bool SetWidth(float);bool SetHeight(float);bool SetFileName(const std::string&);void SetUseCache(bool);
  void ResetAnimState();bool UpdateAnimFrame(unsigned);int GetOrientation()const;static void OrientateTexture(CRect&,float,float,int);
@@ -143,7 +146,7 @@ class CGUIImage:public CGUIControl {public:
  ImageInfo m_info;std::string m_currentFallback;unsigned m_crossFadeTime=100,m_currentFadeTime=0,m_lastRenderTime=0;
  unsigned m_diffuseColor=0xffffffff,m_lastDiffuseColor=0xffffffff;};
 static unsigned checks=0;static void Check(bool ok,const char*message){++checks;if(!ok)throw std::runtime_error(message);}
-static void Reset(){window=Window{};gui=GUI{};}
+static void Reset(){window=Window{};gui=GUI{};settings=SettingsComponent{};}
 '''
 
 TESTS = r'''
@@ -310,7 +313,14 @@ static void PosterExemption(){CGUIListItem row;CDirtyRegionList dirty;
   if(listed)Check(poster.m_fadingTextures.size()==1&&poster.m_currentFadeTime==16,"selection image shown by a list row crossfades during motion");
   else Check(poster.m_fadingTextures.empty()&&poster.m_currentFadeTime==100,"selection image without a list row ends its fade during motion");}
 }
-int main(){try{Admission();OuterCullAndAutosize();PublicationAndFades();Copies();Replacement();BackgroundClassification();DeferredIncomingFade();BackgroundCopies();DemandClassification();MotionEndsFade();MotionEmptyIncoming();SelectionImages();PosterExemption();std::printf("PASS %u frontend checks\n",checks);return 0;}catch(const std::exception&e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
+static void UploadAhead(){
+ const auto process=[](float x,float w,float h){Reset();settings.advanced.m_guiAsyncTextureUpload=true;CGUITexture t(x,10,w,h);Pending(t);return t;};
+ {CGUITexture t=process(10,30,50);Check(gui.large.demands.size()==1&&!gui.large.prefetches[0]&&!gui.large.backgroundDemands[0],"visible pending poster requests upload from Process");}
+ {CGUITexture t=process(110,30,50);Check(gui.large.demands.size()==1&&gui.large.prefetches[0],"nearby pending poster is a speculative prefetch");}
+ {CGUITexture t=process(0,100,100);Check(gui.large.demands.empty(),"background image is not prefetched");}
+ {Reset();CGUITexture t(10,10,30,50);Pending(t);Check(gui.large.demands.empty(),"synchronous uploads skip prefetch");}
+}
+int main(){try{Admission();OuterCullAndAutosize();PublicationAndFades();Copies();Replacement();BackgroundClassification();DeferredIncomingFade();BackgroundCopies();DemandClassification();MotionEndsFade();MotionEmptyIncoming();SelectionImages();PosterExemption();UploadAhead();std::printf("PASS %u frontend checks\n",checks);return 0;}catch(const std::exception&e){std::fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
 '''
 
 
@@ -320,7 +330,7 @@ def source_code(root, sources):
     methods = [function(texture,'bool IsBackgroundSized('), re.search(r'constexpr float SELECTION_IMAGE_SHARE = [^;]+;', texture).group(0)]
     methods += [function(texture, sig) for sig in (
         'CGUITexture::CGUITexture(const CGUITexture& right)', 'bool CGUITexture::IsBackgroundRequest(', 'bool CGUITexture::AllocateOnDemand(',
-        'bool CGUITexture::Process(', 'void CGUITexture::Render(int32_t', 'void CGUITexture::Render(float',
+        'bool CGUITexture::Process(', 'void CGUITexture::RequestUploadAhead(', 'void CGUITexture::Render(int32_t', 'void CGUITexture::Render(float',
         'bool CGUITexture::AllocResources(', 'bool CGUITexture::CalculateSize(', 'void CGUITexture::FreeResources(',
         'bool CGUITexture::ReadyToRender(', 'void CGUITexture::ResetAnimState(', 'bool CGUITexture::UpdateAnimFrame(',
         'bool CGUITexture::SetPosition(', 'bool CGUITexture::SetWidth(', 'bool CGUITexture::SetHeight(',
@@ -385,6 +395,7 @@ def mutations(code):
              ('copy-continuation-sticky','  m_continuation = false;\n','','copy loading a new file is a new background request'),
              ('unallocated-copy-continues','m_continuation = right.IsAllocated();','m_continuation = true;','copy of an unallocated background texture is a new background request'),
              ('deferred-fade-clock-stopped','m_lastRenderTime = currentTime;','if (m_texture->ReadyToRender()) m_lastRenderTime = currentTime;','deferred fade resumes at ordinary frame step'),
+             ('upload-ahead-skipped','  RequestUploadAhead(currentTime);\n','','visible pending poster requests upload from Process'),
              ('selection-images-ignored','  if (!m_followsSelection ||\n','  if (true ||\n','selection image waits like a background'),
              ('selection-option-ignored','return images.DelaysSelectionImages() && !images','return !images','selection images are foreground with the option off'),
              ('poster-exemption-dropped',' && !images.HasDirectConsumer(m_info.filename);',';','selection image shown by a list row is not delayed'),

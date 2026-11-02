@@ -353,7 +353,9 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     int32_t m_guiAnisotropicFiltering{0};
     bool m_guiFrontToBackRendering{false};
     bool m_guiGeometryClear{true};
-    bool m_guiAsyncTextureUpload{false};
+    bool m_guiAsyncTextureUpload{true};
+    bool m_guiAFBCFanart{true};
+    bool m_guiAFBCImages{true};
 
     unsigned int m_addonPackageFolderSize;
 

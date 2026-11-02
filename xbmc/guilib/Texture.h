@@ -93,6 +93,8 @@ public:
    * \brief Uploads the texture to the GPU. 
    */
   void LoadToGPUAsync(const std::atomic_bool* cancelled = nullptr);
+  // Set by the large-image manager before publication or upload-job admission.
+  void SetBackgroundTexture(bool background) { m_backgroundTexture = background; }
 
   virtual void CreateTextureObject() = 0;
   virtual void DestroyTextureObject() = 0;
@@ -108,6 +110,8 @@ private:
   CTexture(const CTexture& copy) = delete;
 
 protected:
+  bool m_backgroundTexture{false};
+  bool m_uploadingInWorker{false};
   bool LoadFromFileInMem(unsigned char* buffer, size_t size, const std::string& mimeType,
                          unsigned int maxWidth, unsigned int maxHeight);
   bool LoadFromFileInternal(const std::string& texturePath, unsigned int maxWidth, unsigned int maxHeight, bool requirePixels, const std::string& strMimeType = "");

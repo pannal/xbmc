@@ -22,6 +22,7 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <exception>
@@ -195,10 +196,10 @@ void CGUILargeTextureManager::CleanupUnusedImages(bool immediately)
     CLargeTexture *image = *it;
     // Save path before potential deletion to avoid use-after-free
     const std::string path = image->GetPath();
-    const unsigned int uploadJobID = image->m_uploadJobID;
+    if (image->m_refCount == 0)
+      RemoveUpload(image);
     if (image->DeleteIfRequired(immediately))
     {
-      CancelUpload(uploadJobID);
       m_allocatedLookup.erase(path);
       it = m_allocated.erase(it);
     }
@@ -251,7 +252,7 @@ bool CGUILargeTextureManager::GetImage(const std::string& path,
   }
 
   if (firstRequest)
-    QueueImage(path, useCache, defer, direct);
+    QueueImage(path, useCache, defer, background, direct);
 
   return true;
 }
@@ -266,49 +267,128 @@ bool CGUILargeTextureManager::HasDirectConsumer(const std::string& path)
   return queued != m_queuedLookup.end() && queued->second->m_directRefs > 0;
 }
 
-void CGUILargeTextureManager::RequestImageUpload(const std::string& path, bool background)
+void CGUILargeTextureManager::RequestImageUpload(const std::string& path,
+                                                 bool background,
+                                                 bool prefetch,
+                                                 std::optional<unsigned int> requestFrame)
 {
   std::unique_lock<CCriticalSection> lock(m_listSection);
+  CLargeTexture* image = nullptr;
   auto allocated = m_allocatedLookup.find(path);
   if (allocated != m_allocatedLookup.end())
-  {
-    allocated->second->m_gpuDemand = true;
-    allocated->second->m_foregroundDemand |= !background;
-    QueueUpload(allocated->second);
-  }
+    image = allocated->second;
   else
   {
     auto queued = m_queuedLookup.find(path);
     if (queued != m_queuedLookup.end())
-    {
-      queued->second->m_gpuDemand = true;
-      queued->second->m_foregroundDemand |= !background;
-    }
+      image = queued->second;
   }
+  if (!image || !image->m_refCount)
+    return;
+
+  if (requestFrame)
+    m_uploadFrame = *requestFrame;
+  if (image->m_lastUploadRequest != m_uploadFrame)
+  {
+    image->m_uploadPriority = 0;
+    image->m_foregroundDemand = false;
+  }
+  image->m_lastUploadRequest = m_uploadFrame;
+  image->m_uploadPriority = std::max(image->m_uploadPriority, prefetch ? 1u : background ? 2u : 3u);
+  image->m_uploadVisible |= !prefetch;
+  image->m_gpuDemand = true;
+  image->m_foregroundDemand |= !background;
+  QueueUpload(image);
+  // Speculative callers only enqueue; the frame pump and completion callbacks
+  // select work. A visible request can start without waiting for that pump.
+  if (!prefetch)
+    StartNextUpload();
 }
 
 void CGUILargeTextureManager::QueueUpload(CLargeTexture* image)
 {
-  if (!image->m_gpuDemand || !image->m_pendingTexture || image->m_uploadJobID != 0 ||
+  if (!image->m_refCount || !image->m_gpuDemand || !image->m_pendingTexture ||
+      image->m_uploadJobID != 0 || image->m_uploadQueued ||
       (image->m_held && !image->m_foregroundDemand))
     return;
-
-  // A visible upload can run even when normal-priority decoders fill their pool.
-  image->m_uploadJobID = CServiceBroker::GetJobManager()->AddJob(
-      new CTextureUploadJob(image->m_pendingTexture, image->m_cancelled), this, CJob::PRIORITY_HIGH);
-  if (image->m_uploadJobID == 0)
+  if (image->m_uploadPriority == 1)
   {
-    // Rejected jobs have never uploaded. Preserve the existing main-context
-    // fallback, and retain the entry's reference during synchronous job deletion.
-    image->SetTexture(std::move(image->m_pendingTexture));
+    const auto speculative =
+        std::count_if(m_uploadQueue.begin(), m_uploadQueue.end(),
+                      [](const CLargeTexture* entry) { return entry->m_uploadPriority == 1; });
+    if (speculative >= MAX_PREFETCH_UPLOADS)
+    {
+      // Do not let retained visible-cache work consume the speculative budget,
+      // or let predictions from an older frame exclude newly approaching rows.
+      const auto stale = std::find_if(
+          m_uploadQueue.begin(), m_uploadQueue.end(), [this](const CLargeTexture* entry)
+          { return entry->m_uploadPriority == 1 && entry->m_lastUploadRequest != m_uploadFrame; });
+      if (stale == m_uploadQueue.end())
+        return;
+      RemoveUpload(*stale);
+    }
+  }
+  m_uploadQueue.push_back(image);
+  image->m_uploadQueued = true;
+}
+
+void CGUILargeTextureManager::RemoveUpload(CLargeTexture* image)
+{
+  if (image->m_uploadQueued)
+  {
+    m_uploadQueue.erase(std::remove(m_uploadQueue.begin(), m_uploadQueue.end(), image),
+                        m_uploadQueue.end());
+    image->m_uploadQueued = false;
   }
 }
 
-void CGUILargeTextureManager::CancelUpload(unsigned int jobID)
+void CGUILargeTextureManager::StartNextUpload()
 {
-  if (jobID != 0)
+  if (m_activeUploadJobID != 0)
+    return;
+
+  while (!m_uploadQueue.empty())
   {
-    CServiceBroker::GetJobManager()->CancelJob(jobID);
+    CLargeTexture* next = nullptr;
+    int priority = -1;
+    for (auto it = m_uploadQueue.begin(); it != m_uploadQueue.end();)
+    {
+      CLargeTexture* image = *it;
+      const unsigned int age = m_uploadFrame - image->m_lastUploadRequest;
+      if (!image->m_refCount || !image->m_pendingTexture ||
+          (!image->m_uploadVisible && age > PREFETCH_MAX_AGE))
+      {
+        image->m_uploadQueued = false;
+        it = m_uploadQueue.erase(it);
+        continue;
+      }
+      ++it;
+      if (image->m_held && !image->m_foregroundDemand)
+        continue;
+      // Current visible posters precede fanart and speculative work. Previously
+      // visible retained images may finish warming the cache only after them.
+      const int rank = image->m_lastUploadRequest == m_uploadFrame
+                           ? static_cast<int>(image->m_uploadPriority)
+                           : 0;
+      if (rank > priority)
+      {
+        next = image;
+        priority = rank;
+      }
+    }
+    if (!next)
+      return;
+    RemoveUpload(next);
+    // There is one upload context. Waiting images stay in this queue instead
+    // of consuming decoder workers while blocked on its lease or glFinish.
+    next->m_uploadJobID = CServiceBroker::GetJobManager()->AddJob(
+        new CTextureUploadJob(next->m_pendingTexture, next->m_cancelled), this,
+        CJob::PRIORITY_HIGH);
+    m_activeUploadJobID = next->m_uploadJobID;
+    if (m_activeUploadJobID != 0)
+      return;
+    // Queue rejection has not touched the texture; preserve main-thread fallback.
+    next->SetTexture(std::move(next->m_pendingTexture));
   }
 }
 
@@ -321,12 +401,18 @@ void CGUILargeTextureManager::ReleaseImage(const std::string& path, bool immedia
   if (allocIt != m_allocatedLookup.end())
   {
     CLargeTexture *image = allocIt->second;
-    const unsigned int uploadJobID = image->m_uploadJobID;
     if (direct && image->m_directRefs)
       image->m_directRefs--;
+    if (image->m_refCount == 1)
+    {
+      RemoveUpload(image);
+      image->m_gpuDemand = image->m_foregroundDemand = image->m_uploadVisible = false;
+      image->m_uploadPriority = 0;
+    }
     if (image->DecrRef(immediately) && immediately)
     {
-      CancelUpload(uploadJobID);
+      // Keep the single admitted job's callback: even a deleted entry must
+      // release its scheduler reservation. Its lifetime token cancels work.
       m_allocatedLookup.erase(allocIt);
       // Also remove from vector
       for (listIterator it = m_allocated.begin(); it != m_allocated.end(); ++it)
@@ -370,6 +456,7 @@ void CGUILargeTextureManager::ReleaseImage(const std::string& path, bool immedia
 void CGUILargeTextureManager::QueueImage(const std::string& path,
                                          bool useCache,
                                          bool defer,
+                                         bool backgroundTexture,
                                          bool direct)
 {
   if (path.empty())
@@ -381,6 +468,7 @@ void CGUILargeTextureManager::QueueImage(const std::string& path,
   auto it = m_queuedLookup.find(path);
   if (it != m_queuedLookup.end())
   {
+    it->second->m_backgroundTexture |= backgroundTexture;
     it->second->AddRef();
     if (direct)
       it->second->m_directRefs++;
@@ -413,6 +501,7 @@ void CGUILargeTextureManager::QueueImage(const std::string& path,
   image->m_asyncUpload =
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAsyncTextureUpload;
   image->m_useCache = useCache;
+  image->m_backgroundTexture = backgroundTexture;
   image->m_background = defer;
   image->m_directRefs = direct ? 1 : 0;
   image->m_deferredSince = CTimeUtils::GetFrameTime();
@@ -453,8 +542,12 @@ void CGUILargeTextureManager::ProcessDeferred()
   const bool scrolling = m_scrolling.exchange(false);
   m_moved = scrolling;
   std::unique_lock<CCriticalSection> lock(m_listSection);
+  m_uploadFrame = CTimeUtils::GetFrameTime();
   if (!m_hasDeferred)
+  {
+    StartNextUpload();
     return;
+  }
 
   const unsigned int now = CTimeUtils::GetFrameTime();
   const auto waits = [scrolling, now](const CLargeTexture* image)
@@ -485,6 +578,7 @@ void CGUILargeTextureManager::ProcessDeferred()
     }
   }
   m_hasDeferred = deferred;
+  StartNextUpload();
 }
 
 bool CGUILargeTextureManager::IsBackgroundMotion() const
@@ -512,15 +606,21 @@ void CGUILargeTextureManager::OnJobComplete(unsigned int jobID, bool success, CJ
   // Entries and their job IDs are protected by m_listSection. Searching here
   // avoids allocating tracking storage after a job has already been admitted.
   // A copied callback after release cannot match a replacement path's new ID.
-  for (CLargeTexture* image : m_allocated)
+  if (jobID == m_activeUploadJobID && jobID != 0)
   {
-    if (image->m_uploadJobID == 0 || image->m_uploadJobID != jobID)
-      continue;
-    image->m_uploadJobID = 0;
-    if (success)
-      image->SetTexture(std::move(image->m_pendingTexture));
-    else
-      image->m_pendingTexture.reset(); // The job still owns any partially uploaded texture.
+    m_activeUploadJobID = 0;
+    for (CLargeTexture* image : m_allocated)
+    {
+      if (image->m_uploadJobID != jobID)
+        continue;
+      image->m_uploadJobID = 0;
+      if (success)
+        image->SetTexture(std::move(image->m_pendingTexture));
+      else
+        image->m_pendingTexture.reset(); // The job still owns any partially uploaded texture.
+      break;
+    }
+    StartNextUpload();
     return;
   }
   for (queueIterator it = m_queued.begin(); it != m_queued.end(); ++it)
@@ -531,6 +631,7 @@ void CGUILargeTextureManager::OnJobComplete(unsigned int jobID, bool success, CJ
       CLargeTexture *image = it->second;
       if (success)
       {
+        loader->m_texture->SetBackgroundTexture(image->m_backgroundTexture);
         if (image->m_asyncUpload)
           image->m_pendingTexture = std::move(loader->m_texture);
         else
@@ -554,6 +655,7 @@ void CGUILargeTextureManager::OnJobComplete(unsigned int jobID, bool success, CJ
         m_hasDeferred = true;
       }
       QueueUpload(image);
+      StartNextUpload();
       return;
     }
   }

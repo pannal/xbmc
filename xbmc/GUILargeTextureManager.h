@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -117,7 +118,10 @@ public:
 
   // Admit GPU work for an existing request. This does not acquire another reference.
   // A background consumer's demand waits while the image is held.
-  void RequestImageUpload(const std::string& path, bool background = false);
+  void RequestImageUpload(const std::string& path,
+                          bool background = false,
+                          bool prefetch = false,
+                          std::optional<unsigned int> requestFrame = std::nullopt);
 
   /*!
    \brief Request a texture to be unloaded.
@@ -174,10 +178,17 @@ private:
     bool m_asyncUpload{false};
     bool m_gpuDemand{false};
     unsigned int m_uploadJobID{0};
+    bool m_uploadQueued{false};
+    // A screen/draw request was made, rather than only speculative prefetch.
+    bool m_uploadVisible{false};
+    // Per GUI clock tick: nearby=1, background=2, on-screen foreground=3.
+    unsigned int m_uploadPriority{0};
+    unsigned int m_lastUploadRequest{0};
     bool m_useCache{true};
     unsigned int m_deferredSince{0};
     // A background consumer asked for this image, whether or not a foreground one did.
     bool m_background{false};
+    bool m_backgroundTexture{false};
     // Not handed to background consumers, nor uploaded unless a foreground
     // consumer demands it, until motion stops or the request times out.
     bool m_held{false};
@@ -191,9 +202,19 @@ private:
   void QueueImage(const std::string& path,
                   bool useCache = true,
                   bool defer = false,
+                  bool backgroundTexture = false,
                   bool direct = false);
   void QueueUpload(CLargeTexture* image);
-  void CancelUpload(unsigned int jobID);
+  void StartNextUpload(); // m_listSection held; at most one job owns the upload context
+  void RemoveUpload(CLargeTexture* image);
+
+  std::vector<CLargeTexture*> m_uploadQueue;
+  unsigned int m_activeUploadJobID{0};
+  // Updated on the GUI thread under m_listSection. Workers never read the
+  // unsynchronized global GUI animation clock when ranking queued images.
+  unsigned int m_uploadFrame{0};
+  static constexpr int MAX_PREFETCH_UPLOADS = 8;
+  static constexpr unsigned int PREFETCH_MAX_AGE = 250;
 
   std::vector< std::pair<unsigned int, CLargeTexture *> > m_queued;
   std::vector<CLargeTexture *> m_allocated;

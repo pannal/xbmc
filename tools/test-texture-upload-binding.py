@@ -112,11 +112,13 @@ using CWinSystemBase=Window;
 static Window window;static bool windowPresent=true;
 struct CServiceBroker{static Window*GetWinSystem(){return windowPresent?&window:nullptr;}};
 class CTexture{public:virtual~CTexture()=default;
+ bool m_uploadingInWorker=false;
  void LoadToGPUAsync(const std::atomic_bool*cancelled=nullptr);virtual void LoadToGPU()=0;virtual void SyncGPU()=0;};
 class CGLTexture:public CTexture{public:
  unsigned m_texture=0;int pixels=0;bool throwUpload=false;unsigned loadCalls=0;
  explicit CGLTexture(int data):pixels(data){}
  void LoadToGPU()override{++loadCalls;Check(Model::current>Model::PRIMARY,"upload uses worker context");
+  Check(m_uploadingInWorker,"worker marker covers texture upload");
   if(!m_texture)m_texture=Model::Create(pixels)->name;
   glBindTexture(GL_TEXTURE_2D,m_texture);auto obj=Model::names.at(m_texture);
   Model::contexts[Model::current].pending.push_back(obj);Model::events.push_back({"upload",Model::current,obj->generation});
@@ -185,6 +187,7 @@ static void Failures(){
  for(bool upload:{false,true})for(bool badRelease:{false,true}){Reset();CGLTexture texture(31);texture.throwUpload=upload;Model::throwSync=!upload;window.throwRelease=badRelease;bool preserved=false;
   try{texture.LoadToGPUAsync();}catch(const std::runtime_error&e){preserved=std::string(e.what())==(upload?"upload sentinel":"sync sentinel");}
   Check(preserved&&window.releaseCalls==1&&!window.leased&&Model::current==Model::NONE,"exception guard preserves original failure and releases lease");
+  Check(!texture.m_uploadingInWorker,"worker marker is cleared after upload/sync exceptions");
   Check(EventIndex("publish")==Model::events.size(),"exception never reaches publication");
   // No assertion of binding/object reclamation on exceptional paths: SyncGPU's
   // normal cleanup may not have executed. Context teardown clears the fixture.

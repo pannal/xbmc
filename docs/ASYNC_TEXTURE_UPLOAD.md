@@ -1,19 +1,24 @@
 # Amlogic asynchronous GUI texture upload
 
-Asynchronous GUI texture upload is **off by default**. Matched device tests
-showed better frame pacing with it disabled. To opt in for further testing,
-add this override and restart Kodi:
+Asynchronous GUI texture upload is **on by default**. Device tests once showed
+better frame pacing without it, when several uploads could be admitted at once;
+with uploads limited to one admitted job, it removes the 12-17 ms render-thread
+upload of each new 1920x1080 fanart, and with AFBC artwork (also on by default
+where the kernel reports its ION cache fix, see `tools/afbc-fanart/README.md`)
+it removed missed refreshes from held List, WideList and Fanart view scrolls on
+an AM6B+ with a 3840x2160 GUI. To use synchronous uploads, add this override
+and restart Kodi:
 
 ```xml
 <advancedsettings>
   <gui>
-    <asynctextureupload>true</asynctextureupload>
+    <asynctextureupload>false</asynctextureupload>
   </gui>
 </advancedsettings>
 ```
 
-Existing explicit `true` overrides remain enabled. Remove the override or set
-it to `false` and restart Kodi to use synchronous uploads.
+Remove the override or set it to `true` and restart Kodi to return to
+asynchronous uploads.
 
 When enabled, large-image decoding and GPU upload run as separate jobs. Decoded
 images stay private until a clipped draw attempt requests their upload through
@@ -190,8 +195,8 @@ motion reports and the group list's report call. The list and panel scroll tests
 verify that containers report their scroller's active frames.
 
 Host tests and compiler acceptance do not establish Mali context sharing,
-physical pixels, smoothness or safe deferred driver deletion. Async remains
-opt-in; broader physical acceptance is unfinished.
+physical pixels, smoothness or safe deferred driver deletion. Async is on by
+default; broader physical acceptance is unfinished.
 Continue validating normally rebuilt artifacts with matched async off/on/off
 cold-artwork and warm comparisons, actual worker-thread uploads,
 shared-texture visibility/completion, cancellation, skin/display transitions

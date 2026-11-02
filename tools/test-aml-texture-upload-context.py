@@ -318,6 +318,9 @@ struct CServiceBroker
 // act while an upload is in progress.
 struct CTexture
 {
+  bool m_uploadingInWorker{false};
+  bool backgroundTexture{false};
+  void SetBackgroundTexture(bool value) { backgroundTexture = value; }
   std::atomic<bool> hold{false};
   std::atomic<bool> uploading{false};
   std::atomic<bool> uploaded{false};
@@ -690,7 +693,15 @@ def main():
 
     for name, (path, pattern, replacement) in mutations.items():
         mutated = dict(current)
-        mutated[path], count = re.subn(pattern, replacement, current[path])
+        if name == 'bind-without-surface':
+            # Mutate worker admission only. Converter-cache retirement also
+            # binds the upload context, but is a separate teardown operation.
+            start = current[path].index('bool CEGLContextUtils::BindTextureUploadContext(')
+            end = current[path].index('bool CEGLContextUtils::UnbindTextureUploadContext(', start)
+            changed, count = re.subn(pattern, replacement, current[path][start:end])
+            mutated[path] = current[path][:start] + changed + current[path][end:]
+        else:
+            mutated[path], count = re.subn(pattern, replacement, current[path])
         assert count == (2 if hardened and name == 'bind-without-surface' else 1), 'mutation did not apply: ' + name
         bad = run_case(args.output, 'negative-' + name,
                        source_builder(*(mutated[p] for p in files), baseline=False))

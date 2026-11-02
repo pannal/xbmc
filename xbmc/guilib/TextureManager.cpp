@@ -524,18 +524,18 @@ void CGUITextureManager::FreeUnusedTextures(unsigned int timeDelay)
     // sanity check before delete in that case.
 #if defined(TARGET_DARWIN_EMBEDDED)
     auto winSystem = dynamic_cast<WIN_SYSTEM_CLASS*>(CServiceBroker::GetWinSystem());
-    if (!winSystem->IsBackgrounded() || glIsTexture(m_unusedHwTextures[i]))
+    if (!winSystem->IsBackgrounded() || glIsTexture(m_unusedHwTextures[i].name))
 #endif
-      glDeleteTextures(1, (GLuint*) &m_unusedHwTextures[i]);
+      glDeleteTextures(1, &m_unusedHwTextures[i].name);
   }
 #endif
   m_unusedHwTextures.clear();
 }
 
-void CGUITextureManager::ReleaseHwTexture(unsigned int texture)
+void CGUITextureManager::ReleaseHwTexture(unsigned int texture, std::shared_ptr<void> backing)
 {
   std::unique_lock<CCriticalSection> lock(CServiceBroker::GetWinSystem()->GetGfxContext());
-  m_unusedHwTextures.push_back(texture);
+  m_unusedHwTextures.push_back({texture, std::move(backing)});
 }
 
 void CGUITextureManager::Cleanup()

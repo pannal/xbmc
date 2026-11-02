@@ -9,12 +9,16 @@
 #include "GUITexture.h"
 
 #include "GUILargeTextureManager.h"
+#include "ServiceBroker.h"
 #include "Texture.h"
 #include "TextureManager.h"
+#include "settings/AdvancedSettings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/MathUtils.h"
 #include "utils/StringUtils.h"
 #include "windowing/GraphicContext.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace
@@ -205,6 +209,8 @@ bool CGUITexture::Process(unsigned int currentTime)
   if (m_invalid)
     changed |= CalculateSize();
 
+  RequestUploadAhead(currentTime);
+
   if (m_isAllocated)
   {
     // Only report change on ready state transition, not every frame while loading
@@ -217,6 +223,30 @@ bool CGUITexture::Process(unsigned int currentTime)
   }
 
   return changed;
+}
+
+void CGUITexture::RequestUploadAhead(unsigned int currentTime)
+{
+  if (!m_visible || m_isAllocated != LARGE || m_texture.size() ||
+      !CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAsyncTextureUpload ||
+      IsBackgroundRequest())
+    return;
+
+  auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  // Process visits the container's existing preload range before Render culls
+  // offscreen items. Use projected bounds, including origins and animations,
+  // instead of waiting for the first clipped drawing attempt to admit upload.
+  const CRect bounds = gfx.GenerateAABB(CRect(m_posX, m_posY, m_posX + m_width, m_posY + m_height));
+  if (bounds.IsEmpty())
+    return;
+  const CRect screen(0, 0, gfx.GetWidth(), gfx.GetHeight());
+  const bool visible = bounds.Intersects(screen);
+  const float x = std::min(bounds.Width(), screen.Width() / 4);
+  const float y = std::min(bounds.Height(), screen.Height() / 2);
+  const CRect ahead(screen.x1 - x, screen.y1 - y, screen.x2 + x, screen.y2 + y);
+  if (visible || bounds.Intersects(ahead))
+    CServiceBroker::GetGUI()->GetLargeTextureManager().RequestImageUpload(m_info.filename, false,
+                                                                          !visible, currentTime);
 }
 
 void CGUITexture::Render(int32_t depthOffset, int32_t overrideDepth)
