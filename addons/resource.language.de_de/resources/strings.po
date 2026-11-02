@@ -19050,8 +19050,8 @@ msgid "TrueHD Atmos dialogue normalisation defeat (0 dB)"
 msgstr "TrueHD Atmos-Dialognormalisierung deaktivieren (0 dB)"
 
 msgctxt "#55002"
-msgid "Force the dialogue normalisation value to (0 dB) in TrueHD Atmos bitstreams. This disables receiver-side dialogue normalisation for the Atmos presentation, preventing unwanted volume reduction during passthrough playback. The attenuation this removes is headroom that the mix may rely on, so on titles mastered close to full scale the loudest moments can overload the receiver and make it mute for about a second. Turn this off if that happens."
-msgstr "Dialognormalisierungswert in TrueHD Atmos-Bitstreams auf 0 dB erzwingen. Dadurch wird die receiverseitige Dialognormalisierung für die Atmos-Wiedergabe deaktiviert und eine unerwünschte Lautstärkereduzierung bei Passthrough-Wiedergabe verhindert. Die entfernte Absenkung ist Headroom, auf den die Abmischung angewiesen sein kann. Bei Titeln, die nahe der Vollaussteuerung gemastert wurden, können die lautesten Stellen daher den Receiver übersteuern und ihn für etwa eine Sekunde stummschalten. In diesem Fall diese Option deaktivieren."
+msgid "Force dialogue normalisation to 0 dB in TrueHD Atmos streams without Evolution metadata, disabling receiver-side volume reduction. Streams declaring Evolution metadata retain their original normalisation so protected frame data stays unchanged."
+msgstr "Setzt die Dialognormalisierung in TrueHD Atmos-Streams ohne Evolution-Metadaten auf 0 dB und verhindert so eine receiverseitige Lautstärkeabsenkung. Bei Streams, die Evolution-Metadaten signalisieren, bleibt die ursprüngliche Normalisierung erhalten, damit geschützte Frame-Daten unverändert bleiben."
 
 msgctxt "#55003"
 msgid "AC3 / EAC3 dialogue normalisation defeat (0 dB)"

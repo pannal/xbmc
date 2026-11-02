@@ -362,7 +362,7 @@ unsigned int CAEStreamParser::DetectType(uint8_t* data, unsigned int size)
         data[4] == 0xf8 && data[5] == 0x72 && data[6] == 0x6f && data[7] == 0xba)
     {
       unsigned int skip = SyncTrueHD(data, size);
-      if (m_hasSync)
+      if (m_hasSync || m_needBytes)
         return skipped + skip;
       else
         possible = skipped;
@@ -1863,9 +1863,13 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
   // if TrueHD
   for (; left; ++skip, ++data, --left)
   {
-    // if we dont have sync and there is less the 8 bytes, then break out
-    if (!m_hasSync && left < 8)
-      return size;
+    // Even while synced, wait for the header instead of examining stale bytes
+    // beyond the available fragment in the backing buffer.
+    if (left < 8)
+    {
+      m_needBytes = 8;
+      return skip;
+    }
 
     // if its a major audio unit
     uint16_t length = ((data[0] & 0x0F) << 8 | data[1]) << 1;
@@ -1874,7 +1878,10 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
     {
       // we need 32 bytes to sync on a master audio unit
       if (left < 32)
+      {
+        m_needBytes = 32;
         return skip;
+      }
 
       // get the rate and ensure its valid
       int rate = (data[8] & 0xf0) >> 4;
@@ -1891,7 +1898,10 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
       }
 
       if (left < 4 + major_sync_size)
+      {
+        m_needBytes = 4 + major_sync_size;
         return skip;
+      }
 
       // verify the crc of the audio unit
       uint16_t crc = av_crc(m_crcTrueHD, 0, data + 4, major_sync_size - 4);
@@ -1984,8 +1994,14 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
         m_thdFieldsValid = true;
       }
 
-      // Defeat 16ch dialog normalization on every major sync frame, so the receiver
-      // applies no dialnorm attenuation to the Atmos presentation.
+      // Evolution data can authenticate the AU prefix, including this major header.
+      // Recomputing its CRC does not update that protection. Preserve the original
+      // normalization from the stream declaration, even when this particular AU
+      // has no Evolution trailer; changing gain only at protected AUs would step it.
+      // FBA flags bit 12 declares Evolution data in EXTRA_DATA (AU bytes 14..15).
+      const bool hasEvolutionData = (data[14] & 0x10) != 0;
+
+      // Defeat 16ch dialog normalization only for streams without that declaration.
       //
       // THD_DIALNORM_DEFEAT (31) states -31 dBFS, which is the reference level the
       // decoder normalises to, so the resulting gain is 0 dB. A frame that already
@@ -1996,7 +2012,7 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
       // flags, so the decoder ignores those fields; the log above reports them, so
       // a stream that does set them will be visible.
       bool dialNormDefeated = false;
-      if (m_defeatTrueHDDialNorm && hasExtChannelMeaning &&
+      if (m_defeatTrueHDDialNorm && !hasEvolutionData && hasExtChannelMeaning &&
           fields.dialNorm16ch != THD_DIALNORM_DEFEAT)
       {
         data[30] |= 0x0F; // set dialnorm bits [4:1] = 1111
@@ -2053,6 +2069,8 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
           atmosStr = ", dialNorm: " + std::to_string(m_info.m_dialNorm) + " dB";
           if (dialNormDefeated)
             atmosStr += " (defeated from " + std::to_string(origDialNorm) + " dB)";
+          else if (m_defeatTrueHDDialNorm && hasEvolutionData && hasExtChannelMeaning)
+            atmosStr += " (normalization retained for Evolution data)";
           if (atmosChannels)
             atmosStr += ", atmosChannels: " + std::to_string(atmosChannels);
           // the pair is the whole point: elements are bed + objects together,
@@ -2084,19 +2102,25 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
       if (!m_hasSync)
         continue;
 
-      // if there is not enough data left to verify the packet, just return the skip amount
-      if (left < static_cast<unsigned int>(m_substreams) * 4)
-        return skip;
-
       // verify the parity
       int p = 0;
       uint8_t check = 0;
       for (int i = -1; i < m_substreams; ++i)
       {
+        if (left < static_cast<unsigned int>(p + 2))
+        {
+          m_needBytes = p + 2;
+          return skip;
+        }
         check ^= data[p++];
         check ^= data[p++];
         if (i == -1 || data[p - 2] & 0x80)
         {
+          if (left < static_cast<unsigned int>(p + 2))
+          {
+            m_needBytes = p + 2;
+            return skip;
+          }
           check ^= data[p++];
           check ^= data[p++];
         }
