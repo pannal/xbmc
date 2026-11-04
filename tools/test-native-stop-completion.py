@@ -2,9 +2,9 @@
 """Production synchronous stop dispatch and close ownership with recording boundaries.
 
 Runs SendMsg/ProcessMessages, the media-stop handler, Application stop/cleanup and
-ApplicationPlayer retirement methods. Original successful/failed CloseFile bodies
-are extracted from f69d242e7c's parent. Replay unchanged PM4K final credits/monitor
-methods using observed native Stop return state. GUI, renderer and worker completion
+ApplicationPlayer retirement methods. Replay unchanged PM4K final credits/monitor
+methods using observed native Stop return state; PM4K is a clone of
+https://github.com/pannal/plex-for-kodi beside this tree, named script.plexmod. GUI, renderer and worker completion
 are controlled boundaries, not a device or media-decoder test.
 """
 import argparse
@@ -18,7 +18,6 @@ import tempfile
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINE = 'f69d242e7c^'
 PM4K = ROOT.parent / 'script.plexmod'
 fixture = runpy.run_path(str(ROOT / 'tools/test-autoplay-fullscreen.py'))
 function = fixture['function']
@@ -70,26 +69,6 @@ using KODI::MESSAGING::CApplicationMessenger;
 using KODI::MESSAGING::ThreadMessage;
 '''
 
-LEGACY = r'''
-struct LegacyVideo {
- struct Stream {void Abort(){}};
- Stream* m_pDemuxer=nullptr;Stream* m_pSubtitleDemuxer=nullptr;Stream* m_pInputStream=nullptr;
- struct Renderer {bool ready=true;int uninit=0,pumps=0;bool UnInit(){++uninit;return ready;}void ProcessLifecycleRequests(){++pumps;}}m_renderManager;
- struct Edl {void Clear(){}}m_Edl;
- struct Info {void SetDataCache(CacheCore*){}}info;Info* m_processInfo=&info;
- bool m_bStop=false,m_bAbortRequest=false,m_bCloseRequest=false,m_HasVideo=true,m_HasAudio=true,running=true,terminalQueued=false;
- bool CloseFile(bool=false);bool IsRunning(){return running;}
- void StopThread(bool wait){m_bStop=true;if(wait)running=false;}
- void Join(std::chrono::milliseconds){running=false;terminalQueued=true;}
-};
-struct LegacyManager {
- CCriticalSection m_playerLock;std::shared_ptr<LegacyVideo> m_pPlayer;
- struct {std::shared_ptr<CFileItem> pItem;}m_nextItem;
- std::shared_ptr<LegacyVideo> GetInternal();void ClosePlayer();void ResetPlayer();bool CloseFile(bool=false);
-};
-@METHODS@
-'''
-
 TESTS = r'''
 static void wait_queued(CApplicationMessenger& messenger){
  auto deadline=std::chrono::steady_clock::now()+2s;
@@ -128,19 +107,6 @@ static bool native_probe(bool enforce){
           <<",\"fullscreen_restored_before_retirement\":"<<prematureRestore<<"}\n";
  if(enforce)assert(!returnedPlaying&&!prematureRestore&&!fullscreenAtReply);
  return returnedPlaying;
-}
-static void original_close(){
- for(bool succeeds:{false,true}){
-  LegacyManager app;auto old=std::make_shared<LegacyVideo>();app.m_pPlayer=old;
-  old->m_renderManager.ready=succeeds;
-  CApplicationMessenger messenger;messenger.target=[&](ThreadMessage*){app.ClosePlayer();};
-  auto caller=std::async(std::launch::async,[&]{messenger.SendMsg(ThreadMessage{5},true);return app.m_pPlayer&& !app.m_pPlayer->m_bStop;});
-  wait_queued(messenger);messenger.ProcessMessages();
-  assert(caller.get()==!succeeds);
-  assert(bool(app.m_pPlayer)==!succeeds);
-  if(succeeds)assert(old->terminalQueued&&!old->m_HasVideo&&old->m_renderManager.uninit==2);
- }
- std::cout<<"PASS original native successful Stop completes thread/renderer retirement; failed UnInit retains player\n";
 }
 static void reply_cases(){
  // Both dispatcher queues preserve a transferred reply and its shared result.
@@ -192,7 +158,8 @@ static void reply_cases(){
   else {CFileItem next;next.id=99;app.player.OpenFile(next,{},app.services.factory,"new",app.callback);}
   old->canClose=true;app.player.ContinueClose();app.PlaybackCleanup();app.player.CompleteCloseCompletions();
   assert(first.wait_for(1s)==std::future_status::ready&&second.wait_for(1s)==std::future_status::ready);
-  assert(!first.get()&&!second.get());
+  // the reply reports the newer open that waits for the close as playback
+  assert(first.get()==!shutdown&&second.get()==!shutdown);
   app.player.OpenNext(app.services.factory);
   assert(app.player.created==(shutdown?0:1));
   if(!shutdown)assert(app.player.m_pPlayer->lastItem==99);
@@ -237,14 +204,12 @@ static void reply_cases(){
  assert(caller.wait_for(1s)==std::future_status::ready);caller.get();
  std::cout<<"PASS synchronous/main/posted/empty/repeated/superseded/shutdown stop ownership\n";
 }
-int main(int argc,char**){original_close();native_probe(argc==1);if(argc==1){reply_cases();autoplay_cases();}}
+int main(){native_probe(true);reply_cases();autoplay_cases();}
 '''
 
 
-def build(baseline=None):
+def build():
     def source(path):
-        if baseline:
-            return subprocess.check_output(['git','show',baseline+':'+path],cwd=ROOT,text=True)
         return (ROOT/path).read_text()
     prelude=fixture['PRELUDE']
     prelude=prelude.replace('struct CEvent {bool signaled=false;void Set(){signaled=true;}};', '')
@@ -255,30 +220,25 @@ def build(baseline=None):
  void lock(){mutex.lock();held=true;}void unlock(){held=false;mutex.unlock();}
 };
 '''+prelude[end:]
-    if baseline:
-        prelude=prelude.replace('bool ClosePlayer(bool=false,std::shared_ptr<CEvent> = {});void ResetPlayer(std::shared_ptr<CEvent> = {});',
-                                'bool ClosePlayer(bool=false);void ResetPlayer();')
     prelude=prelude.replace('  ~IPlayer(){', '  std::function<void()> onDestroy;\n  ~IPlayer(){if(onDestroy)onDestroy();')
     application=source('xbmc/application/Application.cpp')
     player=source('xbmc/application/ApplicationPlayer.cpp')
-    methods=['std::shared_ptr<IPlayer> CApplicationPlayer::GetInternal()',
+    methods=['std::shared_ptr<IPlayer> CApplicationPlayer::GetInternal()', 'bool CApplicationPlayer::IsPlaying() const',
              'void CApplicationPlayer::ContinueClose()', 'void CApplicationPlayer::CompleteCloseCompletions()', 'bool CApplicationPlayer::ClosePlayer(',
              'void CApplicationPlayer::OnPlaybackStopped()', 'void CApplicationPlayer::OpenNext(',
              'void CApplicationPlayer::ResetPlayer(', 'bool CApplicationPlayer::OpenFile(',
-             'bool CApplicationPlayer::HasPendingOpen() const', 'bool CApplicationPlayer::HasPendingVideoOpen() const',
-             'bool CApplicationPlayer::PreparePlaybackCleanup()', 'bool CApplicationPlayer::PlaybackCleanupCompleted() const']
-    if baseline:
-        methods.remove('void CApplicationPlayer::CompleteCloseCompletions()')
-    if not baseline:
-        for message,callback in [('GUI_MSG_PLAYBACK_STOPPED','OnPlayBackStopped()'),('GUI_MSG_PLAYBACK_ENDED','OnPlayBackEnded()')]:
-            terminal=application[application.index('  case '+message+':'):]
-            terminal=terminal[:terminal.index(callback)+len(callback)]
-            assert terminal.rindex('PlaybackCleanup()') < terminal.rindex('CompleteCloseCompletions()') < terminal.rindex(callback)
+             'bool CApplicationPlayer::HasPendingOpen() const', 'uint64_t CApplicationPlayer::BeginOpen()',
+                  'void CApplicationPlayer::EndOpen(', 'void CApplicationPlayer::Supersede(',
+                  'bool CApplicationPlayer::OpenRequested() const', 'bool CApplicationPlayer::StopRequested() const', 'bool CApplicationPlayer::HasPendingVideoOpen() const',
+             'bool CApplicationPlayer::PreparePlaybackCleanup()', 'bool CApplicationPlayer::PlaybackCleanupCompleted() const',
+             'bool CApplicationPlayer::IsPlayingOpenedVideo() const']
+    for message,callback in [('GUI_MSG_PLAYBACK_STOPPED','OnPlayBackStopped()'),('GUI_MSG_PLAYBACK_ENDED','OnPlayBackEnded()')]:
+        terminal=application[application.index('  case '+message+':'):]
+        terminal=terminal[:terminal.index(callback)+len(callback)]
+        assert terminal.rindex('PlaybackCleanup()') < terminal.rindex('CompleteCloseCompletions()') < terminal.rindex(callback)
     frame=function(application,'void CApplication::FrameMove(')
     continuation=frame[frame.index('  const bool openingVideo ='):frame.index('  // this will go away')]
     harness=fixture['HARNESS'].replace('int main(){','int autoplay_cases(){')
-    if baseline:
-        harness=harness.replace('void StopPlaying(std::shared_ptr<CEvent> = {});','void StopPlaying();')
     # Main's implicit return is unavailable in a named test function.
     pos=harness.rfind('\n}')
     harness=harness[:pos]+'\n return 0;'+harness[pos:]
@@ -296,21 +256,11 @@ def build(baseline=None):
     messenger=source('xbmc/messaging/ApplicationMessenger.cpp')
     mm='\n'.join(function(messenger,s) for s in ['int CApplicationMessenger::SendMsg(ThreadMessage&&',
             'void CApplicationMessenger::ProcessMessages()', 'void CApplicationMessenger::ProcessWindowMessages()', 'void CApplicationMessenger::Cleanup()'])
-    oldplayer=subprocess.check_output(['git','show',BASELINE+':xbmc/application/ApplicationPlayer.cpp'],cwd=ROOT,text=True)
-    oldvideo=subprocess.check_output(['git','show',BASELINE+':xbmc/cores/VideoPlayer/VideoPlayer.cpp'],cwd=ROOT,text=True)
-    lm=function(oldvideo,'bool CVideoPlayer::CloseFile(').replace('CVideoPlayer::','LegacyVideo::')
-    lm+='\n'+'\n'.join(function(oldplayer,s) for s in ['std::shared_ptr<IPlayer> CApplicationPlayer::GetInternal()',
-        'void CApplicationPlayer::ClosePlayer()', 'void CApplicationPlayer::ResetPlayer()', 'bool CApplicationPlayer::CloseFile('])
-    lm=lm.replace('CApplicationPlayer::','LegacyManager::').replace('std::shared_ptr<IPlayer>','std::shared_ptr<LegacyVideo>')
-    tests=TESTS
-    if baseline:
-        tests=tests[:tests.index('static void reply_cases()')]+\
-            'int main(){original_close();native_probe(false);}'
-        tests=tests.replace('app.player.CompleteCloseCompletions();','')
     thread_message=source('xbmc/messaging/ThreadMessage.h').replace('#pragma once','')
     return '#include <mutex>\n'+EVENT+prelude+'\n'.join(function(player,s) for s in methods)+harness+\
-        MESSENGER.replace('@METHODS@',mm).replace('@THREADMESSAGE@',thread_message)+LEGACY.replace('@METHODS@',lm)+\
-        tests.replace('auto wakeScreensaver=[]{};', 'auto wakeScreensaver=[]{};const bool m_bIsDeferredPlayPending=CServiceBroker::playlist.m_bIsDeferredPlayPending;').replace('@MEDIASTOP@',stop)
+        MESSENGER.replace('@METHODS@',mm).replace('@THREADMESSAGE@',thread_message)+\
+        TESTS.replace('auto wakeScreensaver=[]{};', 'auto wakeScreensaver=[]{};const bool m_bIsDeferredPlayPending=CServiceBroker::playlist.m_bIsDeferredPlayPending;'
+                      'auto ResetCurrentPlaylist=[]{CServiceBroker::playlist.ResetCurrentPlaylist();};').replace('@MEDIASTOP@',stop)
 
 
 def addon_replay(early, corrected=False):
@@ -364,22 +314,20 @@ def addon_replay(early, corrected=False):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--baseline',nargs='?',const='0acd9d09fa',help='replay pre-correction native sources from this revision')
     parser.add_argument('--negative-controls',action='store_true',help='prove changed dispatch, close and ownership assertions fail when reverted')
     args=parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='native-stop-') as tmp:
-        out=Path(tmp);code=build(args.baseline);(out/'test.cpp').write_text(code)
+        out=Path(tmp);code=build();(out/'test.cpp').write_text(code)
         subprocess.run([os.environ.get('CXX','g++'),'-std=c++17','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-pthread',
                         '-fsanitize=address,undefined','-fno-omit-frame-pointer','-I'+str(ROOT/'xbmc'),str(out/'test.cpp'),'-o',str(out/'test')],check=True)
-        result=subprocess.run([str(out/'test')]+(['probe'] if args.baseline else []),text=True,capture_output=True,timeout=20)
+        result=subprocess.run([str(out/'test')],text=True,capture_output=True,timeout=20)
         print(result.stdout,end='');print(result.stderr,end='');result.check_returncode()
         observed=json.loads(next(line for line in result.stdout.splitlines() if line.startswith('{')))
         early=bool(observed['current_stop_returned_while_old_playing'])
-        assert early==bool(args.baseline),observed
+        assert not early,observed
         for corrected in (False,True):
             addon_replay(early,corrected)
         if args.negative_controls:
-            assert not args.baseline, 'negative controls target the corrected production sources'
             mutations=[
                 ('dispatcher retains reply before receiver',
                  '    ProcessMessage(pMsg);\n\n    std::shared_ptr<CEvent> waitEvent = pMsg->waitEvent;',

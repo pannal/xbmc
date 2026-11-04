@@ -511,7 +511,7 @@ bool CPlayList::LoadData(const std::string& strData)
 }
 
 
-bool CPlayList::Expand(int position)
+bool CPlayList::Expand(int position, const std::function<bool()>& superseded)
 {
   const CFileItemPtr item = TryGet(position);
   if (!item)
@@ -522,7 +522,7 @@ bool CPlayList::Expand(int position)
 
   std::string path = item->GetDynPath();
 
-  if (!playlist->Load(path))
+  if (!playlist->Load(path) || superseded())
     return false;
 
   // remove any item that points back to itself

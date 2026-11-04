@@ -58,5 +58,8 @@ std::unique_ptr<CFileItem> ContentUtils::GeneratePlayableTrailerItem(const CFile
   trailerItem->SetArt(item.GetArt());
   videoInfoTag->m_iDbId = -1;
   videoInfoTag->m_iFileId = -1;
+  // The open of the trailer reads the bookmarks of this file, not of the movie.
+  videoInfoTag->m_strFileNameAndPath = trailerItem->GetPath();
+  videoInfoTag->m_iBookmarkId = -1;
   return trailerItem;
 }

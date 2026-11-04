@@ -8,7 +8,10 @@
 
 #include "ApplicationPlayer.h"
 
+#include "FileItem.h"
 #include "ServiceBroker.h"
+#include "application/ApplicationComponents.h"
+#include "application/ApplicationVolumeHandling.h"
 #include "cores/DataCacheCore.h"
 #include "cores/IPlayer.h"
 #include "cores/VideoPlayer/VideoPlayer.h"
@@ -19,6 +22,8 @@
 #include "settings/SettingsComponent.h"
 #include "threads/Event.h"
 
+#include <algorithm>
+#include <cmath>
 #include <mutex>
 
 using namespace std::chrono_literals;
@@ -35,10 +40,34 @@ std::shared_ptr<IPlayer> CApplicationPlayer::GetInternal()
   return m_pPlayer;
 }
 
+std::shared_ptr<IPlayer> CApplicationPlayer::GetControllable()
+{
+  // The user stopped a closing player: a control would resume, pause or seek the
+  // stopped item, and a remote renderer would play the item again.
+  std::unique_lock<CCriticalSection> lock(m_playerLock);
+  if (!m_pPlayer || m_pPlayer == m_closingPlayer)
+    return nullptr;
+  // A control that took the player before a close (also on another thread:
+  // JSON-RPC, Python) can reach the player after the close. The close completes
+  // after the control, so the control changes no shared state of a newer
+  // playback (the data cache, the pause notification).
+  const auto thread = std::this_thread::get_id();
+  ++m_controls[thread];
+  return std::shared_ptr<IPlayer>(m_pPlayer.get(), [this, player = m_pPlayer, thread](IPlayer*) {
+    std::unique_lock<CCriticalSection> lock(m_playerLock);
+    if (--m_controls[thread] == 0)
+      m_controls.erase(thread);
+  });
+}
+
 bool CApplicationPlayer::ClosePlayer(bool shutdown, std::shared_ptr<CEvent> completion)
 {
   m_shutdown = m_shutdown || shutdown;
-  m_nextItem.pItem.reset();
+  Supersede(Supersession::STOP);
+  {
+    std::unique_lock<CCriticalSection> lock(m_playerLock);
+    m_nextItem.pItem.reset();
+  }
   ResetPlayer(std::move(completion));
   return !GetInternal();
 }
@@ -47,7 +76,8 @@ void CApplicationPlayer::ResetPlayer(std::shared_ptr<CEvent> completion)
 {
   if (!m_closingPlayer)
   {
-    m_closingPlayer = GetInternal();
+    std::unique_lock<CCriticalSection> lock(m_playerLock);
+    m_closingPlayer = m_pPlayer;
     m_closeAcknowledged = false;
   }
   // Attach the reply before close/destruction can reenter with another player.
@@ -73,10 +103,18 @@ void CApplicationPlayer::ContinueClose()
 
   {
     std::unique_lock<CCriticalSection> lock(m_playerLock);
+    // A control on another thread that took the player before the close still
+    // runs: the main thread does not wait, and the next frame completes the
+    // close. A control on this thread is below this frame: a modal dialog of the
+    // player (the Game OSD of a pause) runs the frames until the close completes.
+    const auto thread = std::this_thread::get_id();
+    if (std::any_of(m_controls.begin(), m_controls.end(),
+                    [thread](const auto& control) { return control.first != thread; }))
+      return;
     if (m_pPlayer == original)
       m_pPlayer.reset();
+    m_closingPlayer.reset();
   }
-  m_closingPlayer.reset();
   // Move replies before destruction, which can reenter and start another close.
   auto completions = std::move(m_closeCompletionEvents);
   m_closeCompletionEvents.clear();
@@ -99,7 +137,7 @@ bool CApplicationPlayer::PreparePlaybackCleanup()
 {
   if (HasPendingOpen())
     return false;
-  if (IsPlaying() && !m_closingPlayer)
+  if (IsPlaying())
     return true; // Existing nonterminal audio/video cleanup policy stays in Application.
   if (m_cleanupGeneration == m_openGeneration && !m_cleanupPending)
     return false;
@@ -153,27 +191,40 @@ std::string CApplicationPlayer::GetCurrentPlayer() const
 
 bool CApplicationPlayer::OpenFile(const CFileItem& item, const CPlayerOptions& options,
                                   const CPlayerCoreFactory &factory,
-                                  const std::string &playerName, IPlayerCallback& callback)
+                                  const std::string &playerName, IPlayerCallback& callback,
+                                  uint64_t intent)
 {
   if (m_shutdown)
     return false;
+  // A queued open keeps the intent of the request; a later open is newer.
+  m_lastAcceptedIntent = std::max(m_lastAcceptedIntent, intent);
   // Every new intent, including a failed or deferred open, supersedes terminal
   // cleanup of the previous player. Main still owns its close continuation.
   ++m_openGeneration;
   m_cleanupPending = false;
+  Supersede(Supersession::OPEN);
   const std::string newPlayer = playerName.empty() ? factory.GetDefaultPlayer(item) : playerName;
   auto player = GetInternal();
+  // Only VideoPlayer opens the next item in the playing player. A remote player
+  // (UPnP) opens synchronously and processes messages during the open, so a
+  // newer item replaces the player: the close of the old player delivers every
+  // notification of the old item before the newer open, and a newer open
+  // during the open of a remote player never runs in the same player.
   const bool replace = player &&
       (m_closingPlayer || !player->IsPlaying() || item.IsDiscImage() || item.IsDVDFile() ||
-       player->m_name != newPlayer || (player->m_type != "video" && player->m_type != "remote"));
+       player->m_name != newPlayer || player->m_type != "video");
   if (replace)
   {
     // One owned latest intent. Closing the original is never cancelled by a
     // replacement; only the item to open after its retirement may change.
-    m_nextItem.pItem = std::make_shared<CFileItem>(item);
-    m_nextItem.options = options;
-    m_nextItem.playerName = newPlayer;
-    m_nextItem.callback = &callback;
+    {
+      std::unique_lock<CCriticalSection> lock(m_playerLock);
+      m_nextItem.pItem = std::make_shared<CFileItem>(item);
+      m_nextItem.options = options;
+      m_nextItem.playerName = newPlayer;
+      m_nextItem.callback = &callback;
+      m_nextItem.intent = intent;
+    }
     ResetPlayer();
     return true; // Accepted for the normal main-frame continuation.
   }
@@ -187,16 +238,76 @@ bool CApplicationPlayer::OpenFile(const CFileItem& item, const CPlayerOptions& o
   }
 
   bool ret = player->OpenFile(item, options);
+  // A backend that processes messages during the open (UPnP) can run a stop,
+  // which retired the player, or a newer open, which owns the state.
+  if (OpenSuperseded(intent))
+    return false;
   m_waitForPlaybackStop = ret;
+  m_openedVideo = ret && item.IsVideo();
+  // Only a request newer than the request of this playback supersedes the
+  // notification of the playback, also a request that is still in progress.
+  m_supersededBy = Supersession::NONE;
+  m_supersededAt = intent;
 
-  m_nextItem.pItem.reset();
+  {
+    std::unique_lock<CCriticalSection> lock(m_playerLock);
+    m_nextItem.pItem.reset();
+  }
 
   // reset caching timers
   m_audioStreamUpdate.SetExpired();
   m_videoStreamUpdate.SetExpired();
   m_subtitleStreamUpdate.SetExpired();
 
+  // The opened player plays at the volume of the application, also the player of
+  // a newer item that waited for the close of the old player (OpenNext).
+  if (ret)
+  {
+    const auto appVolume =
+        CServiceBroker::GetAppComponents().GetComponent<CApplicationVolumeHandling>();
+    player->SetVolume(appVolume->GetVolumeRatio());
+    player->SetMute(appVolume->IsMuted());
+  }
+
   return ret;
+}
+
+uint64_t CApplicationPlayer::BeginOpen()
+{
+  m_openIntents.push_back(++m_intentSequence);
+  return m_intentSequence;
+}
+
+void CApplicationPlayer::EndOpen(uint64_t intent)
+{
+  m_openIntents.erase(std::remove(m_openIntents.begin(), m_openIntents.end(), intent),
+                      m_openIntents.end());
+}
+
+bool CApplicationPlayer::IsPlayingOpenedVideo() const
+{
+  return m_openedVideo && !m_closingPlayer && IsPlaying();
+}
+
+void CApplicationPlayer::Supersede(Supersession supersession)
+{
+  // Only a notification that has not arrived yet can be superseded. Without
+  // one, no state outlives this intent.
+  m_supersededBy = m_waitForPlaybackStop ? supersession : Supersession::NONE;
+  m_supersededAt = ++m_intentSequence;
+}
+
+bool CApplicationPlayer::OpenRequested() const
+{
+  // An open that has not reached the player supersedes older intents only.
+  return m_supersededBy == Supersession::OPEN ||
+         (!m_openIntents.empty() && m_openIntents.back() > m_supersededAt);
+}
+
+bool CApplicationPlayer::StopRequested() const
+{
+  return m_supersededBy == Supersession::STOP &&
+         (m_openIntents.empty() || m_openIntents.back() < m_supersededAt);
 }
 
 bool CApplicationPlayer::HasPendingOpen() const
@@ -214,9 +325,13 @@ void CApplicationPlayer::OpenNext(const CPlayerCoreFactory &factory)
   if (m_closingPlayer || m_waitForPlaybackStop || m_shutdown || !m_nextItem.pItem)
     return;
   // Move the full payload before OpenFile can replace it or reset the queue.
-  auto next = std::move(m_nextItem);
-  m_nextItem = {};
-  OpenFile(*next.pItem, next.options, factory, next.playerName, *next.callback);
+  auto next = [this] {
+    std::unique_lock<CCriticalSection> lock(m_playerLock);
+    auto taken = std::move(m_nextItem);
+    m_nextItem = {};
+    return taken;
+  }();
+  OpenFile(*next.pItem, next.options, factory, next.playerName, *next.callback, next.intent);
 }
 
 bool CApplicationPlayer::HasPlayer() const
@@ -301,8 +416,19 @@ bool CApplicationPlayer::IsPaused() const
 
 bool CApplicationPlayer::IsPlaying() const
 {
-  std::shared_ptr<const IPlayer> player = GetInternal();
-  return (player && player->IsPlaying());
+  std::shared_ptr<const IPlayer> player;
+  {
+    std::unique_lock<CCriticalSection> lock(m_playerLock);
+    // A newer open that waits for the close of the old player continues the
+    // playback, like an open in progress. A stopped player that closes is not
+    // playing: after a stop, the user and the playlist see no playback.
+    if (m_nextItem.pItem)
+      return true;
+    if (m_pPlayer == m_closingPlayer)
+      return false;
+    player = m_pPlayer;
+  }
+  return player && player->IsPlaying();
 }
 
 bool CApplicationPlayer::IsPausedPlayback() const
@@ -332,7 +458,7 @@ bool CApplicationPlayer::IsPlayingRDS() const
 
 void CApplicationPlayer::Pause()
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  std::shared_ptr<IPlayer> player = GetControllable();
   if (player)
   {
     player->Pause();
@@ -341,28 +467,28 @@ void CApplicationPlayer::Pause()
 
 void CApplicationPlayer::SetMute(bool bOnOff)
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  std::shared_ptr<IPlayer> player = GetControllable();
   if (player)
     player->SetMute(bOnOff);
 }
 
 void CApplicationPlayer::SetVolume(float volume)
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  std::shared_ptr<IPlayer> player = GetControllable();
   if (player)
     player->SetVolume(volume);
 }
 
 void CApplicationPlayer::Seek(bool bPlus, bool bLargeStep, bool bChapterOverride)
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  std::shared_ptr<IPlayer> player = GetControllable();
   if (player)
     player->Seek(bPlus, bLargeStep, bChapterOverride);
 }
 
 void CApplicationPlayer::SeekPercentage(float fPercent)
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  std::shared_ptr<IPlayer> player = GetControllable();
   if (player)
     player->SeekPercentage(fPercent);
 }
@@ -381,20 +507,47 @@ bool CApplicationPlayer::CanSeek() const
 
 bool CApplicationPlayer::SeekScene(bool bPlus)
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  std::shared_ptr<IPlayer> player = GetControllable();
   return (player && player->SeekScene(bPlus));
+}
+
+bool CApplicationPlayer::SeekWaitingItem(int64_t time, bool relative)
+{
+  // A newer item that waits for the close of the old player opens at the time
+  // of the seek, like a new request for the time: the players read the start
+  // time (VideoPlayer, UPnP) or the start offset of the item (PAPlayer). A
+  // relative seek from a start in percent needs the length of the item, the
+  // start offset of a cue sheet track is the start of the track, and the saved
+  // player state of a disc holds the position, which a start time of 0 does not
+  // replace: these seeks drop, like the other seeks, which need the opened item.
+  std::unique_lock<CCriticalSection> lock(m_playerLock);
+  if (!m_nextItem.pItem)
+    return false;
+  CPlayerOptions& options = m_nextItem.options;
+  CFileItem& item = *m_nextItem.pItem;
+  if ((relative && options.startpercent > 0.0) || item.HasProperty("item_start") ||
+      !options.state.empty())
+    return true;
+  options.starttime = std::max(0.0, (relative ? options.starttime : 0.0) + time / 1000.0);
+  options.startpercent = 0.0;
+  item.SetStartOffset(std::llround(options.starttime * 1000.0));
+  return true;
 }
 
 void CApplicationPlayer::SeekTime(int64_t iTime)
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  if (SeekWaitingItem(iTime, false))
+    return;
+  std::shared_ptr<IPlayer> player = GetControllable();
   if (player)
     player->SeekTime(iTime);
 }
 
 void CApplicationPlayer::SeekTimeRelative(int64_t iTime)
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  if (SeekWaitingItem(iTime, true))
+    return;
+  std::shared_ptr<IPlayer> player = GetControllable();
   if (player)
   {
     // use relative seeking if implemented by player
@@ -579,21 +732,21 @@ float CApplicationPlayer::GetCachePercentage() const
 
 void CApplicationPlayer::SetSpeed(float speed)
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  std::shared_ptr<IPlayer> player = GetControllable();
   if (player)
     player->SetSpeed(speed);
 }
 
 void CApplicationPlayer::SetTempo(float tempo)
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  std::shared_ptr<IPlayer> player = GetControllable();
   if (player)
     player->SetTempo(tempo);
 }
 
 void CApplicationPlayer::FrameAdvance(int frames)
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  std::shared_ptr<IPlayer> player = GetControllable();
   if (player)
     player->FrameAdvance(frames);
 }
@@ -667,7 +820,7 @@ int CApplicationPlayer::GetProgramsCount() const
 
 bool CApplicationPlayer::OnAction(const CAction &action)
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  std::shared_ptr<IPlayer> player = GetControllable();
   return (player && player->OnAction(action));
 }
 
@@ -828,7 +981,7 @@ void CApplicationPlayer::GetSubtitleCapabilities(std::vector<int>& subCaps) cons
 
 int  CApplicationPlayer::SeekChapter(int iChapter)
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  std::shared_ptr<IPlayer> player = GetControllable();
   if (player)
     return player->SeekChapter(iChapter);
   else
@@ -837,14 +990,15 @@ int  CApplicationPlayer::SeekChapter(int iChapter)
 
 void CApplicationPlayer::SetPlaySpeed(float speed)
 {
-  std::shared_ptr<IPlayer> player = GetInternal();
+  std::shared_ptr<IPlayer> player = GetControllable();
   if (!player)
     return;
 
   if (!IsPlayingAudio() && !IsPlayingVideo())
     return ;
 
-  SetSpeed(speed);
+  // the player that the reset took: a newer player after a close keeps its speed
+  player->SetSpeed(speed);
 }
 
 float CApplicationPlayer::GetPlaySpeed() const

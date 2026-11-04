@@ -71,8 +71,10 @@ void CApplicationPlayerCallback::OnPlayBackStarted(const CFileItem& file)
   auto& components = CServiceBroker::GetAppComponents();
   const auto stackHelper = components.GetComponent<CApplicationStackHelper>();
 
-  if (stackHelper->IsPlayingISOStack() || stackHelper->IsPlayingRegularStack())
-    itemCurrentFile = std::make_shared<CFileItem>(*stackHelper->GetRegisteredStack(file));
+  // An item that started for an older request is not a part of the current stack
+  const auto stack = stackHelper->GetRegisteredStack(file);
+  if (stack && (stackHelper->IsPlayingISOStack() || stackHelper->IsPlayingRegularStack()))
+    itemCurrentFile = std::make_shared<CFileItem>(*stack);
   else
     itemCurrentFile = std::make_shared<CFileItem>(file);
 
@@ -97,8 +99,6 @@ void CApplicationPlayerCallback::OnPlayerCloseFile(const CFileItem& file,
   auto& components = CServiceBroker::GetAppComponents();
   const auto stackHelper = components.GetComponent<CApplicationStackHelper>();
 
-  std::unique_lock<CCriticalSection> lock(stackHelper->m_critSection);
-
   CFileItem fileItem(file);
   CBookmark bookmark = bookmarkParam;
   CBookmark resumeBookmark;
@@ -109,16 +109,22 @@ void CApplicationPlayerCallback::OnPlayerCloseFile(const CFileItem& file,
   if (bookmark.timeInSeconds == 0.0)
     return;
 
-  if (stackHelper->GetRegisteredStack(fileItem) != nullptr &&
-      stackHelper->GetRegisteredStackTotalTimeMs(fileItem) > 0)
+  std::shared_ptr<const CFileItem> stack;
   {
-    // regular stack case: we have to save the bookmark on the stack
-    fileItem = *stackHelper->GetRegisteredStack(file);
-    // the bookmark coming from the player is only relative to the current part, thus needs to be corrected with these attributes (start time will be 0 for non-stackparts)
-    bookmark.timeInSeconds += stackHelper->GetRegisteredStackPartStartTimeMs(file) / 1000.0;
-    if (stackHelper->GetRegisteredStackTotalTimeMs(file) > 0)
+    // The registrations change on other threads. Read them together under the
+    // lock; the save below runs without the lock, so the main thread does not
+    // wait for the database at the open of the next part.
+    std::unique_lock<CCriticalSection> lock(stackHelper->m_critSection);
+    stack = stackHelper->GetRegisteredStack(file);
+    if (stack && stackHelper->GetRegisteredStackTotalTimeMs(file) > 0)
+    {
+      // regular stack case: we have to save the bookmark on the stack
+      fileItem = *stack;
+      // the bookmark coming from the player is only relative to the current part, thus needs to be corrected with these attributes (start time will be 0 for non-stackparts)
+      bookmark.timeInSeconds += stackHelper->GetRegisteredStackPartStartTimeMs(file) / 1000.0;
       bookmark.totalTimeInSeconds = stackHelper->GetRegisteredStackTotalTimeMs(file) / 1000.0;
-    bookmark.partNumber = stackHelper->GetRegisteredStackPartNumber(file);
+      bookmark.partNumber = stackHelper->GetRegisteredStackPartNumber(file);
+    }
   }
 
   percent = bookmark.timeInSeconds / bookmark.totalTimeInSeconds * 100;
@@ -144,7 +150,7 @@ void CApplicationPlayerCallback::OnPlayerCloseFile(const CFileItem& file,
   else if (bookmark.timeInSeconds > advancedSettings->m_videoIgnoreSecondsAtStart)
   {
     resumeBookmark = bookmark;
-    if (stackHelper->GetRegisteredStack(file) != nullptr)
+    if (stack)
     {
       // also update video info tag with total time
       fileItem.GetVideoInfoTag()->m_streamDetails.SetVideoDuration(

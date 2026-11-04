@@ -154,7 +154,9 @@ public:
                 IGameInputCallback* input);
   bool OpenStandalone(RETRO::IStreamManager& streamManager, IGameInputCallback* input);
   void Reset();
-  void CloseFile();
+  // Releases the game. A game that never started keeps the in-game saves (SRAM,
+  // RTC) on disk unchanged: saveGame is false.
+  void CloseFile(bool saveGame);
   const std::string& GetGamePath() const { return m_gamePath; }
 
   // Playback control

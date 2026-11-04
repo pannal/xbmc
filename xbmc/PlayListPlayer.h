@@ -122,6 +122,12 @@ public:
   */
   void Reset();
 
+  /*!
+   \brief Resets the playlist position and selects no playlist, without the
+   playlist stop notification, which closes the player.
+  */
+  void ResetCurrentPlaylist();
+
   void ClearPlaylist(PLAYLIST::Id playlistId);
   void Clear();
 

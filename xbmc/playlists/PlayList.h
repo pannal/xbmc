@@ -11,6 +11,7 @@
 #include "PlayListTypes.h"
 #include "threads/CriticalSection.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -50,7 +51,10 @@ public:
   void Remove(const std::string& strFileName);
   void Remove(int position);
   bool Swap(int position1, int position2);
-  bool Expand(int position); // expands any playlist at position into this playlist
+  // Expands any playlist at position into this playlist. The load can process
+  // messages; when superseded returns true after the load, this playlist stays
+  // unchanged.
+  bool Expand(int position, const std::function<bool()>& superseded);
   void Clear();
   int size() const;
   int RemoveDVDItems();

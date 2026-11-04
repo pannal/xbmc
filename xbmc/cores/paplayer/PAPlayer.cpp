@@ -529,6 +529,10 @@ inline bool PAPlayer::PrepareStream(StreamInfo *si)
 
 bool PAPlayer::CloseFile(bool reopen)
 {
+  // A completed close is final. The application can create a newer player before
+  // the destructor of this player: a repeated close resets the cache of the newer player.
+  if (m_closed)
+    return true;
   if (reopen)
     CServiceBroker::GetActiveAE()->KeepConfiguration(3000);
 
@@ -553,6 +557,7 @@ bool PAPlayer::CloseFile(bool reopen)
     }
   }
   CServiceBroker::GetDataCacheCore().Reset();
+  m_closed = true;
   return true;
 }
 

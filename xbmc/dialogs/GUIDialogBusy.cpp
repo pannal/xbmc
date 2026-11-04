@@ -9,6 +9,7 @@
 #include "GUIDialogBusy.h"
 
 #include "ServiceBroker.h"
+#include "application/Application.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
 #include "threads/IRunnable.h"
@@ -90,7 +91,9 @@ bool CGUIDialogBusy::WaitOnEvent(CEvent &event, unsigned int displaytime /* = 10
       {
         if (level == dialog->m_waiters)
           dialog->ProcessRenderLoop(false);
-        if (allowCancel && dialog->m_cancelled)
+        // A stop that waits for the close of the player cancels the wait like the
+        // user, also a wait in the open of the player
+        if (allowCancel && (dialog->m_cancelled || g_application.IsStopPending()))
         {
           cancelled = true;
           break;

@@ -106,6 +106,10 @@ bool CExternalPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &opti
 
 bool CExternalPlayer::CloseFile(bool reopen)
 {
+  // The close always completes. The application can create a newer player before
+  // the destructor of this player: a repeated close resets the cache of the newer player.
+  if (m_bAbortRequest)
+    return true;
   m_bAbortRequest = true;
 
   if (m_dialog && m_dialog->IsActive()) m_dialog->Close();
