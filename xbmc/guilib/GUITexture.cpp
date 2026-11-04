@@ -272,17 +272,7 @@ void CGUITexture::Render(int32_t depthOffset, int32_t overrideDepth)
   }
 
   // set our draw color
-  #define MIX_ALPHA(a,c) (((a * (c >> 24)) / 255) << 24) | (c & 0x00ffffff)
-
-  // diffuse color
-  UTILS::COLOR::Color color =
-      (m_info.diffuseColor) ? (UTILS::COLOR::Color)m_info.diffuseColor : m_diffuseColor;
-  // clang-format off
-  if (m_alpha != 0xFF)
-    color = MIX_ALPHA(m_alpha, color);
-  // clang-format on
-
-  color = CServiceBroker::GetWinSystem()->GetGfxContext().MergeColor(color);
+  UTILS::COLOR::Color color = GetRenderColor();
 
   if (overrideDepth >= 0)
   {
@@ -407,29 +397,155 @@ void CGUITexture::Render(float left,
   }
 
   float x[4], y[4], z[4];
+  ScaleQuad(vertex, x, y, z);
+  CServiceBroker::GetWinSystem()->GetGfxContext().CaptureControlQuad(x, y, z);
+  Draw(x, y, z, texture, diffuse, orientation);
+}
+
+void CGUITexture::ScaleQuad(const CRect& vertex, float* x, float* y, float* z)
+{
+  const auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
 
 #define ROUND_TO_PIXEL(x) static_cast<float>(MathUtils::round_int(static_cast<double>(x)))
 
-  x[0] = ROUND_TO_PIXEL(CServiceBroker::GetWinSystem()->GetGfxContext().ScaleFinalXCoord(vertex.x1, vertex.y1));
-  y[0] = ROUND_TO_PIXEL(CServiceBroker::GetWinSystem()->GetGfxContext().ScaleFinalYCoord(vertex.x1, vertex.y1));
-  z[0] = ROUND_TO_PIXEL(CServiceBroker::GetWinSystem()->GetGfxContext().ScaleFinalZCoord(vertex.x1, vertex.y1));
-  x[1] = ROUND_TO_PIXEL(CServiceBroker::GetWinSystem()->GetGfxContext().ScaleFinalXCoord(vertex.x2, vertex.y1));
-  y[1] = ROUND_TO_PIXEL(CServiceBroker::GetWinSystem()->GetGfxContext().ScaleFinalYCoord(vertex.x2, vertex.y1));
-  z[1] = ROUND_TO_PIXEL(CServiceBroker::GetWinSystem()->GetGfxContext().ScaleFinalZCoord(vertex.x2, vertex.y1));
-  x[2] = ROUND_TO_PIXEL(CServiceBroker::GetWinSystem()->GetGfxContext().ScaleFinalXCoord(vertex.x2, vertex.y2));
-  y[2] = ROUND_TO_PIXEL(CServiceBroker::GetWinSystem()->GetGfxContext().ScaleFinalYCoord(vertex.x2, vertex.y2));
-  z[2] = ROUND_TO_PIXEL(CServiceBroker::GetWinSystem()->GetGfxContext().ScaleFinalZCoord(vertex.x2, vertex.y2));
-  x[3] = ROUND_TO_PIXEL(CServiceBroker::GetWinSystem()->GetGfxContext().ScaleFinalXCoord(vertex.x1, vertex.y2));
-  y[3] = ROUND_TO_PIXEL(CServiceBroker::GetWinSystem()->GetGfxContext().ScaleFinalYCoord(vertex.x1, vertex.y2));
-  z[3] = ROUND_TO_PIXEL(CServiceBroker::GetWinSystem()->GetGfxContext().ScaleFinalZCoord(vertex.x1, vertex.y2));
+  x[0] = ROUND_TO_PIXEL(gfx.ScaleFinalXCoord(vertex.x1, vertex.y1));
+  y[0] = ROUND_TO_PIXEL(gfx.ScaleFinalYCoord(vertex.x1, vertex.y1));
+  z[0] = ROUND_TO_PIXEL(gfx.ScaleFinalZCoord(vertex.x1, vertex.y1));
+  x[1] = ROUND_TO_PIXEL(gfx.ScaleFinalXCoord(vertex.x2, vertex.y1));
+  y[1] = ROUND_TO_PIXEL(gfx.ScaleFinalYCoord(vertex.x2, vertex.y1));
+  z[1] = ROUND_TO_PIXEL(gfx.ScaleFinalZCoord(vertex.x2, vertex.y1));
+  x[2] = ROUND_TO_PIXEL(gfx.ScaleFinalXCoord(vertex.x2, vertex.y2));
+  y[2] = ROUND_TO_PIXEL(gfx.ScaleFinalYCoord(vertex.x2, vertex.y2));
+  z[2] = ROUND_TO_PIXEL(gfx.ScaleFinalZCoord(vertex.x2, vertex.y2));
+  x[3] = ROUND_TO_PIXEL(gfx.ScaleFinalXCoord(vertex.x1, vertex.y2));
+  y[3] = ROUND_TO_PIXEL(gfx.ScaleFinalYCoord(vertex.x1, vertex.y2));
+  z[3] = ROUND_TO_PIXEL(gfx.ScaleFinalZCoord(vertex.x1, vertex.y2));
 
   if (y[2] == y[0]) y[2] += 1.0f;
   if (x[2] == x[0]) x[2] += 1.0f;
   if (y[3] == y[1]) y[3] += 1.0f;
   if (x[3] == x[1]) x[3] += 1.0f;
+}
 
-  CServiceBroker::GetWinSystem()->GetGfxContext().CaptureControlQuad(x, y, z);
-  Draw(x, y, z, texture, diffuse, orientation);
+UTILS::COLOR::Color CGUITexture::GetOwnColor(bool fade) const
+{
+  // diffuse color
+  UTILS::COLOR::Color color =
+      (m_info.diffuseColor) ? (UTILS::COLOR::Color)m_info.diffuseColor : m_diffuseColor;
+  if (fade && m_alpha != 0xFF)
+    color = (((m_alpha * (color >> 24)) / 255) << 24) | (color & 0x00ffffff);
+  return color;
+}
+
+UTILS::COLOR::Color CGUITexture::GetRenderColor(bool fade) const
+{
+  return CServiceBroker::GetWinSystem()->GetGfxContext().MergeColor(GetOwnColor(fade));
+}
+
+bool CGUITexture::IsOpaque() const
+{
+  return m_texture.size() == 1 && !m_texture.m_textures[0]->HasAlpha() &&
+         ((GetOwnColor(false) >> 24) & 0xFF) == 0xFF;
+}
+
+bool CGUITexture::RenderCrossfade(CGUITexture& outgoing, bool dissolve)
+{
+  // Both images must share one quad: single-frame and borderless, without a
+  // diffuse texture, in the same declared and fitted rectangle.
+  if (!m_visible || !outgoing.m_visible || m_texture.size() != 1 ||
+      outgoing.m_texture.size() != 1 || m_diffuse.size() || outgoing.m_diffuse.size() ||
+      m_info.border != CRect() || outgoing.m_info.border != CRect() || !m_info.m_infill ||
+      !outgoing.m_info.m_infill || m_vertex != outgoing.m_vertex || m_posX != outgoing.m_posX ||
+      m_posY != outgoing.m_posY || m_width != outgoing.m_width ||
+      m_height != outgoing.m_height || !CanDrawCrossfade())
+    return false;
+
+  UTILS::COLOR::Color color = GetRenderColor();
+  UTILS::COLOR::Color outgoingColor = outgoing.GetRenderColor();
+  auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  unsigned char groupAlpha = 0xFF;
+
+  // Two opaque images, translucent only through the crossfade, dissolve at full
+  // coverage: the outgoing image stays opaque under the incoming one. Like
+  // either image alone, the pair then hides what is behind it and is drawn in
+  // the opaque front-to-back pass with depth writes. Drawn as two fading
+  // images, everything behind it had to be drawn too and showed through.
+  if (IsOpaque() && outgoing.IsOpaque())
+  {
+    // Only while limitbackgroundfades keeps an opaque image to one pair, and
+    // only for an outgoing image that began its fade at full strength and
+    // alone. A fade that stacked see-through layers, or that a new image may
+    // still interrupt without the limit, keeps the separate fading draws
+    // until it completes: otherwise a partly faded outgoing image would jump
+    // to full strength, or back, in one frame.
+    if (!dissolve ||
+        !CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiLimitBackgroundFades)
+      return false;
+    // A fading parent, such as a window or a group behind a dialog, fades the
+    // dissolved pair as a whole: it is composed as at full opacity and then
+    // mixed with what is behind it in the back-to-front pass. Composing two
+    // translucent images instead would change the pair's brightness in one
+    // frame whenever the parent starts or stops fading.
+    groupAlpha = static_cast<unsigned char>((gfx.MergeColor(0xFF000000) >> 24) & 0xFF);
+    if (groupAlpha == 0xFF ? gfx.GetRenderOrder() == RENDER_ORDER_BACK_TO_FRONT
+                           : gfx.GetRenderOrder() == RENDER_ORDER_FRONT_TO_BACK)
+      return true;
+    color = (color & 0x00FFFFFF) | (GetOwnColor() & 0xFF000000);
+    outgoingColor |= 0xFF000000;
+  }
+  else
+  {
+    // Separate draws of two translucent images run in the back-to-front pass
+    // only. An opaque image keeps its ordinary pass and depth writes.
+    if (((color >> 24) & 0xFF) == 0xFF && !m_texture.m_textures[0]->HasAlpha())
+      return false;
+    if (((outgoingColor >> 24) & 0xFF) == 0xFF && !outgoing.m_texture.m_textures[0]->HasAlpha())
+      return false;
+    if (gfx.GetRenderOrder() == RENDER_ORDER_FRONT_TO_BACK)
+      return true;
+  }
+
+  m_depth = gfx.GetTransformDepth(0);
+  const bool clip = m_vertex.Width() > m_width || m_vertex.Height() > m_height;
+  if (clip && !gfx.SetClipRegion(m_posX, m_posY, m_width, m_height))
+    return true;
+
+  // Clip and orient each image's coordinates as its own Render would.
+  const auto frame = [](const CGUITexture& image)
+  {
+    CPoint size(image.m_frameWidth, image.m_frameHeight);
+    if (!image.m_texture.m_texCoordsArePixels)
+    {
+      size.x *= image.m_texCoordsScaleU;
+      size.y *= image.m_texCoordsScaleV;
+    }
+    return size;
+  };
+  const CPoint size = frame(*this);
+  const CPoint outgoingSize = frame(outgoing);
+  CRect vertex = m_vertex;
+  CRect coords(0, 0, size.x, size.y);
+  gfx.ClipRect(vertex, coords);
+  CRect outgoingVertex = m_vertex;
+  CRect outgoingCoords(0, 0, outgoingSize.x, outgoingSize.y);
+  gfx.ClipRect(outgoingVertex, outgoingCoords);
+  if (!vertex.IsEmpty())
+  {
+    const int orientation = GetOrientation();
+    const int outgoingOrientation = outgoing.GetOrientation();
+    OrientateTexture(coords, size.x, size.y, orientation);
+    OrientateTexture(outgoingCoords, outgoingSize.x, outgoingSize.y, outgoingOrientation);
+    float x[4], y[4], z[4];
+    ScaleQuad(vertex, x, y, z);
+    gfx.CaptureControlQuad(x, y, z);
+    DrawCrossfade(x, y, z, m_texture.m_textures[0].get(), coords, orientation, color,
+                  outgoing.m_texture.m_textures[0].get(), outgoingCoords, outgoingOrientation,
+                  outgoingColor, groupAlpha);
+  }
+
+  if (clip)
+    gfx.RestoreClipRegion();
+  return true;
 }
 
 bool CGUITexture::AllocResources()

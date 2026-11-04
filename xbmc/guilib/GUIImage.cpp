@@ -12,6 +12,8 @@
 #include "GUILargeTextureManager.h"
 #include "GUIMessage.h"
 #include "ServiceBroker.h"
+#include "settings/AdvancedSettings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/log.h"
 
 #include <algorithm>
@@ -167,6 +169,7 @@ void CGUIImage::Process(unsigned int currentTime, CDirtyRegionList &dirtyregions
       if (kept)
       {
         kept->m_fadeTime = m_crossFadeTime;
+        kept->m_dissolve = true; // alone at full strength again
         m_fadingTextures.push_back(kept);
         holdOutgoing = true;
       }
@@ -228,12 +231,32 @@ void CGUIImage::Process(unsigned int currentTime, CDirtyRegionList &dirtyregions
   if (m_texture->Process(currentTime))
     MarkDirtyRegion();
 
+  if (m_pendingBackground && (m_fadingTextures.empty() || !m_crossFadeTime))
+  {
+    auto request = std::move(*m_pendingBackground);
+    m_pendingBackground.reset();
+    SetFileName(request.first, false, request.second);
+  }
+
   CGUIControl::Process(currentTime, dirtyregions);
 }
 
 void CGUIImage::Render()
 {
   if (!IsVisible()) return;
+
+  // Draw a crossfade pair in one pass, shading each pixel once instead of once
+  // per image. The result equals drawing the outgoing and then the incoming
+  // image; an opaque pair keeps the outgoing image opaque and dissolves.
+  if (m_fadingTextures.size() == 1 &&
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiSinglePassCrossfade &&
+      m_texture->ReadyToRender() && m_fadingTextures.front()->m_texture->ReadyToRender() &&
+      m_texture->RenderCrossfade(*m_fadingTextures.front()->m_texture,
+                                 m_fadingTextures.front()->m_dissolve))
+  {
+    CGUIControl::Render();
+    return;
+  }
 
   for (auto& itr : m_fadingTextures)
     itr->m_texture->Render();
@@ -304,6 +327,14 @@ void CGUIImage::FreeTextures(bool immediately /* = false */)
     delete m_fadingTextures[i];
   m_fadingTextures.clear();
   m_currentTexture.clear();
+  if (m_pendingBackground && m_info.IsConstant())
+  {
+    // A hidden constant image has no UpdateInfo call to restore its latest
+    // filename. Preserve the queued request for its next resource allocation.
+    m_texture->SetUseCache(m_pendingBackground->second);
+    m_texture->SetFileName(m_pendingBackground->first);
+  }
+  m_pendingBackground.reset();
   if (!m_info.IsConstant()) // constant textures never change
     m_texture->SetFileName("");
 }
@@ -383,7 +414,24 @@ void CGUIImage::SetFileName(const std::string& strFileName, bool setConstant, co
   if (setConstant)
     m_info.SetLabel(strFileName, "", GetParentID());
 
-  // Set whether or not to use cache
+  // A transition runs until the outgoing image is gone and the current one is
+  // at full strength.
+  if (m_crossFadeTime && m_texture->ReadyToRender() && strFileName != m_currentTexture &&
+      (!m_fadingTextures.empty() || m_currentFadeTime < m_crossFadeTime) &&
+      (m_texture->IsBackgroundRequest() || m_texture->IsOpaque()) &&
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiLimitBackgroundFades)
+  {
+    // Never interrupt a visible background fade with a third image. Retain
+    // only the latest selection, without starting its decode or upload yet.
+    // Keeping the active pair avoids a brightness jump from dropping a layer.
+    // An opaque image, such as a poster, likewise keeps one pair: it then
+    // dissolves over an outgoing image at full strength and hides what is
+    // behind both, where a third image would draw all of them see-through.
+    m_pendingBackground = std::make_pair(strFileName, useCache);
+    return;
+  }
+  // Returning to the current incoming image also withdraws a queued selection.
+  m_pendingBackground.reset();
   m_texture->SetUseCache(useCache);
 
   if (m_crossFadeTime)
@@ -394,7 +442,15 @@ void CGUIImage::SetFileName(const std::string& strFileName, bool setConstant, co
 
     if (m_texture->ReadyToRender() || m_texture->GetFileName().empty())
     { // save the current image
-      m_fadingTextures.push_back(new CFadingTexture(m_texture.get(), m_currentFadeTime));
+      // A second outgoing image stacks the transition. Its layers are then
+      // drawn see-through until it completes, however their opacity changes,
+      // or an outgoing image that had partly faded would jump back to full
+      // strength once the stack drops to one pair.
+      for (CFadingTexture* texture : m_fadingTextures)
+        texture->m_dissolve = false;
+      auto* outgoing = new CFadingTexture(m_texture.get(), m_currentFadeTime);
+      outgoing->m_dissolve = m_fadingTextures.empty() && m_currentFadeTime == m_crossFadeTime;
+      m_fadingTextures.push_back(outgoing);
       MarkDirtyRegion();
     }
     m_currentFadeTime = 0;

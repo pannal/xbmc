@@ -451,6 +451,8 @@ void CAdvancedSettings::Initialize()
   m_guiVisualizeDirtyRegions = false;
   m_guiAlgorithmDirtyRegions = 3;
   m_guiSmartRedraw = false;
+  m_guiLimitBackgroundFades = true;
+  m_guiSinglePassCrossfade = true;
   m_guiAVChangeFlagTimeout = 8;
   m_airTunesPort = 36666;
   m_airPlayPort = 36667;
@@ -1397,6 +1399,8 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetBoolean(pElement, "asynctextureupload", m_guiAsyncTextureUpload);
     XMLUtils::GetBoolean(pElement, "afbcfanart", m_guiAFBCFanart);
     XMLUtils::GetBoolean(pElement, "afbcimages", m_guiAFBCImages);
+    XMLUtils::GetBoolean(pElement, "limitbackgroundfades", m_guiLimitBackgroundFades);
+    XMLUtils::GetBoolean(pElement, "singlepasscrossfade", m_guiSinglePassCrossfade);
     XMLUtils::GetBoolean(pElement, "transparentvideolayout", m_guiVideoLayoutTransparent);
     XMLUtils::GetUInt(pElement, "avchangeflagtimeout", m_guiAVChangeFlagTimeout);
   }

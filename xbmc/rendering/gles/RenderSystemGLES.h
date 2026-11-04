@@ -39,6 +39,7 @@ enum class ShaderMethodGLES
   SM_TEXTURE_RGBA_BOB,
   SM_TEXTURE_RGBA_BOB_OES,
   SM_TEXTURE_NOALPHA,
+  SM_CROSSFADE,
   SM_MAX
 };
 
@@ -73,6 +74,7 @@ private:
       {ShaderMethodGLES::SM_TEXTURE_RGBA_BOB, "texture rgba bob"},
       {ShaderMethodGLES::SM_TEXTURE_RGBA_BOB_OES, "texture rgba bob OES"},
       {ShaderMethodGLES::SM_TEXTURE_NOALPHA, "texture no alpha"},
+      {ShaderMethodGLES::SM_CROSSFADE, "crossfade"},
   });
 
   static_assert(static_cast<size_t>(ShaderMethodGLES::SM_MAX) == ShaderMethodGLESMap.size(),
@@ -130,6 +132,7 @@ public:
   void InitialiseShaders();
   void ReleaseShaders(bool abandon = false);
   void EnableGUIShader(ShaderMethodGLES method);
+  bool HasGUIShader(ShaderMethodGLES method) const;
   void DisableGUIShader();
 
   GLint GUIShaderGetPos();

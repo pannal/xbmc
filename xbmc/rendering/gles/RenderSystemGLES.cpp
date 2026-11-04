@@ -719,6 +719,15 @@ void CRenderSystemGLES::InitialiseShaders()
     m_pShader[ShaderMethodGLES::SM_TEXTURE_NOALPHA].reset();
     CLog::Log(LOGERROR, "GUI Shader gles_shader_texture_noalpha.frag - compile and link failed");
   }
+
+  m_pShader[ShaderMethodGLES::SM_CROSSFADE] =
+      std::make_unique<CGLESShader>("gles_shader_crossfade.frag", defines);
+  if (!m_pShader[ShaderMethodGLES::SM_CROSSFADE]->CompileAndLink())
+  {
+    m_pShader[ShaderMethodGLES::SM_CROSSFADE]->Free();
+    m_pShader[ShaderMethodGLES::SM_CROSSFADE].reset();
+    CLog::Log(LOGERROR, "GUI Shader gles_shader_crossfade.frag - compile and link failed");
+  }
 }
 
 void CRenderSystemGLES::ReleaseShaderSet(ShaderSet& shaders, bool abandon)
@@ -739,6 +748,12 @@ void CRenderSystemGLES::ReleaseShaders(bool abandon)
   ReleaseShaderSet(m_pShader, abandon);
   for (auto& shaders : m_shaderVariants)
     ReleaseShaderSet(shaders, abandon);
+}
+
+bool CRenderSystemGLES::HasGUIShader(ShaderMethodGLES method) const
+{
+  const auto shader = m_pShader.find(method);
+  return shader != m_pShader.end() && shader->second;
 }
 
 void CRenderSystemGLES::EnableGUIShader(ShaderMethodGLES method)

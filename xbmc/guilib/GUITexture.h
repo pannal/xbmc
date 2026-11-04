@@ -96,6 +96,14 @@ public:
 
   bool Process(unsigned int currentTime);
   void Render(int32_t depthOffset = 0, int32_t overrideDepth = -1);
+  /*!
+   * @brief Draw this image over an outgoing crossfade copy in a single pass.
+   * @param dissolve the outgoing copy began its fade at full strength and
+   * alone; only then may an opaque pair keep it opaque under this image.
+   * @return false without drawing when the two cannot share one quad. The
+   * caller then renders the outgoing copy and this image separately.
+   */
+  bool RenderCrossfade(CGUITexture& outgoing, bool dissolve);
 
   void DynamicResourceAlloc(bool bOnOff);
   bool AllocResources();
@@ -140,6 +148,12 @@ public:
   }
   bool ReadyToRender() const;
   bool IsBackgroundRequest() const;
+  /*!
+   * @brief A loaded single-frame image without alpha whose diffuse colour is
+   * opaque: drawn at full strength, and without a fading parent, it hides
+   * everything behind it. Fades of the image and its parents are ignored.
+   */
+  bool IsOpaque() const;
   void SetFollowsSelection(bool follows) { m_followsSelection = follows; }
 
 protected:
@@ -161,6 +175,11 @@ protected:
               float u3,
               float v3);
   static void OrientateTexture(CRect &rect, float width, float height, int orientation);
+  static void ScaleQuad(const CRect& vertex, float* x, float* y, float* z);
+  // The color to draw with; without the fade, the alpha a crossfade does not set.
+  UTILS::COLOR::Color GetRenderColor(bool fade = true) const;
+  // The same before the parents' colour and opacity are merged in.
+  UTILS::COLOR::Color GetOwnColor(bool fade = true) const;
   void ResetAnimState();
 
   // functions that our implementation classes handle
@@ -174,6 +193,22 @@ protected:
                     const CRect& diffuse,
                     int orientation) = 0;
   virtual void End() = 0;
+  // Implementations that sample both crossfade images in one draw override these.
+  virtual bool CanDrawCrossfade() const { return false; }
+  virtual void DrawCrossfade(const float* /*x*/,
+                             const float* /*y*/,
+                             const float* /*z*/,
+                             CTexture* /*texture*/,
+                             const CRect& /*coords*/,
+                             int /*orientation*/,
+                             UTILS::COLOR::Color /*color*/,
+                             CTexture* /*outgoing*/,
+                             const CRect& /*outgoingCoords*/,
+                             int /*outgoingOrientation*/,
+                             UTILS::COLOR::Color /*outgoingColor*/,
+                             unsigned char /*groupAlpha*/)
+  {
+  }
 
   bool m_visible;
   UTILS::COLOR::Color m_diffuseColor;

@@ -246,6 +246,127 @@ void CGUITextureGLES::Draw(float *x, float *y, float *z, const CRect &texture, c
   }
 }
 
+bool CGUITextureGLES::CanDrawCrossfade() const
+{
+  return m_renderSystem->HasGUIShader(ShaderMethodGLES::SM_CROSSFADE);
+}
+
+void CGUITextureGLES::DrawCrossfade(const float* x,
+                                    const float* y,
+                                    const float* z,
+                                    CTexture* texture,
+                                    const CRect& coords,
+                                    int orientation,
+                                    UTILS::COLOR::Color color,
+                                    CTexture* outgoing,
+                                    const CRect& outgoingCoords,
+                                    int outgoingOrientation,
+                                    UTILS::COLOR::Color outgoingColor,
+                                    unsigned char groupAlpha)
+{
+  texture->LoadToGPU();
+  outgoing->LoadToGPU();
+  texture->BindToUnit(0);
+  outgoing->BindToUnit(1);
+
+  const bool limited = CServiceBroker::GetWinSystem()->UseLimitedColor();
+  const auto channels = [limited](UTILS::COLOR::Color argb)
+  {
+    using namespace KODI::UTILS::GL;
+    std::array<GLfloat, 4> rgba;
+    const ColorChannel order[]{ColorChannel::R, ColorChannel::G, ColorChannel::B, ColorChannel::A};
+    for (size_t i = 0; i < rgba.size(); ++i)
+    {
+      unsigned int channel = GetChannelFromARGB(order[i], argb);
+      if (limited && i < 3)
+        channel = (235 - 16) * channel / 255 + 16;
+      rgba[i] = channel / 255.0f;
+    }
+    return rgba;
+  };
+  const auto incomingColor = channels(color);
+  const auto outgoingRGBA = channels(outgoingColor);
+
+  // Same corner order and orientation handling as Draw.
+  const auto corners = [](const CRect& rect, int orientation, float* u, float* v)
+  {
+    const bool swap = orientation & 4;
+    u[0] = rect.x1;
+    v[0] = rect.y1;
+    u[1] = swap ? rect.x1 : rect.x2;
+    v[1] = swap ? rect.y2 : rect.y1;
+    u[2] = rect.x2;
+    v[2] = rect.y2;
+    u[3] = swap ? rect.x2 : rect.x1;
+    v[3] = swap ? rect.y1 : rect.y2;
+  };
+  float u1[4], v1[4], u2[4], v2[4];
+  corners(coords, orientation, u1, v1);
+  corners(outgoingCoords, outgoingOrientation, u2, v2);
+  PackedVertex vertices[4];
+  for (int i = 0; i < 4; ++i)
+  {
+    vertices[i].x = x[i];
+    vertices[i].y = y[i];
+    vertices[i].z = z[i];
+    vertices[i].u1 = u1[i];
+    vertices[i].v1 = v1[i];
+    vertices[i].u2 = u2[i];
+    vertices[i].v2 = v2[i];
+  }
+
+  m_renderSystem->EnableGUIShader(ShaderMethodGLES::SM_CROSSFADE);
+  const GLint posLoc = m_renderSystem->GUIShaderGetPos();
+  const GLint tex0Loc = m_renderSystem->GUIShaderGetCoord0();
+  const GLint tex1Loc = m_renderSystem->GUIShaderGetCoord1();
+  const GLint colLoc = m_renderSystem->GUIShaderGetCol();
+  glUniform4f(m_renderSystem->GUIShaderGetUniCol(), incomingColor[0], incomingColor[1],
+              incomingColor[2], incomingColor[3]);
+  glUniform1f(m_renderSystem->GUIShaderGetDepth(), m_depth);
+  // A constant attribute carries the outgoing color; GUI shaders have one color uniform.
+  glVertexAttrib4f(colLoc, outgoingRGBA[0], outgoingRGBA[1], outgoingRGBA[2], outgoingRGBA[3]);
+
+  // The shader outputs premultiplied color. Destination alpha accumulates as
+  // for two separate SRC_ALPHA, ONE_MINUS_SRC_ALPHA draws. An opaque outgoing
+  // image under an opaque incoming one covers every pixel: draw without blending,
+  // or, below a fading parent, mix the opaque pair with what is behind it by the
+  // parent's opacity, as one SRC_ALPHA draw of that opacity would.
+  if (groupAlpha != 0xFF)
+  {
+    glBlendColor(0.0f, 0.0f, 0.0f, groupAlpha / 255.0f);
+    glBlendFuncSeparate(GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA, GL_CONSTANT_ALPHA,
+                        GL_ONE_MINUS_CONSTANT_ALPHA);
+    glEnable(GL_BLEND);
+  }
+  else if (outgoingRGBA[3] >= 1.0f && !texture->HasAlpha() && !outgoing->HasAlpha())
+    glDisable(GL_BLEND);
+  else
+  {
+    glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE_MINUS_DST_ALPHA, GL_ONE);
+    glEnable(GL_BLEND);
+  }
+
+  glVertexAttribPointer(posLoc, 3, GL_FLOAT, 0, sizeof(PackedVertex),
+                        reinterpret_cast<char*>(vertices) + offsetof(PackedVertex, x));
+  glEnableVertexAttribArray(posLoc);
+  glVertexAttribPointer(tex0Loc, 2, GL_FLOAT, 0, sizeof(PackedVertex),
+                        reinterpret_cast<char*>(vertices) + offsetof(PackedVertex, u1));
+  glEnableVertexAttribArray(tex0Loc);
+  glVertexAttribPointer(tex1Loc, 2, GL_FLOAT, 0, sizeof(PackedVertex),
+                        reinterpret_cast<char*>(vertices) + offsetof(PackedVertex, u2));
+  glEnableVertexAttribArray(tex1Loc);
+
+  static const GLushort indices[]{0, 1, 2, 2, 3, 0};
+  glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, indices);
+
+  glDisableVertexAttribArray(posLoc);
+  glDisableVertexAttribArray(tex0Loc);
+  glDisableVertexAttribArray(tex1Loc);
+  glActiveTexture(GL_TEXTURE0);
+  glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE_MINUS_DST_ALPHA, GL_ONE);
+  m_renderSystem->DisableGUIShader();
+}
+
 void CGUITextureGLES::DrawQuad(const CRect& rect,
                                UTILS::COLOR::Color color,
                                CTexture* texture,
