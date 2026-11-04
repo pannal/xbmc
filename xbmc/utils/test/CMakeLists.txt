@@ -15,6 +15,7 @@ set(SOURCES TestAlarmClock.cpp
             TestFileUtils.cpp
             TestGlobalsHandling.cpp
             TestGPUInfo.cpp
+            TestHDR10PlusConvert.cpp
             TestHevcSei.cpp
             TestHTMLUtil.cpp
             TestHttpHeader.cpp

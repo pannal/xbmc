@@ -36,10 +36,14 @@ constexpr double ST2084_C1 = 3424.0 / 4096.0;
 constexpr double ST2084_C2 = (2413.0 / 4096.0) * 32.0;
 constexpr double ST2084_C3 = (2392.0 / 4096.0) * 32.0;
 
-// Clamp Values
+// L1 limits for CM v4.0 metadata, the same ones libdovi applies in
+// ExtMetadataBlockLevel1::clamp_values_cm_version(V40). dovi_generate_from_json
+// does not clamp, so they must be applied here. 819 is the CM v2.9 avg floor
+// and is out of range in CM v4.0 metadata.
+constexpr std::uint16_t L1_MIN_PQ_MAX_VALUE = 12;
 constexpr std::uint16_t L1_MAX_PQ_MIN_VALUE = 2081;
 constexpr std::uint16_t L1_MAX_PQ_MAX_VALUE = 4095;
-constexpr std::uint16_t L1_AVG_PQ_MIN_VALUE = 819;
+constexpr std::uint16_t L1_AVG_PQ_MIN_VALUE = 1229;
 
 int max_pq_to_nits(int pq) {
   if (pq < 2055) return 96;
@@ -227,7 +231,8 @@ std::vector<uint8_t> create_rpu_nalu_for_hdr10plus(
   Hdr10PlusPqValues pq = {};
   pq.source_min_pq = source_min_pq;
   pq.source_max_pq = source_max_pq;
-  pq.min_pq = min_pq;
+  // source_min_pq keeps the mastering black; L1 min may only carry up to 12.
+  pq.min_pq = std::min(min_pq, L1_MIN_PQ_MAX_VALUE);
   // HDR10+ maxscl/histogram may legally exceed the mastering display luminance.
   // An RPU with L1 max_pq above source_max_pq breaks a TV's DV tone mapping (red
   // screen on TV-led), so the caller caps it there. Player-led tone mapping
