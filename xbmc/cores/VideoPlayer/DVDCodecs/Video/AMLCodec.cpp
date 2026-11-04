@@ -1933,6 +1933,11 @@ std::string CAMLCodec::GetDoViCodecFourCC(unsigned int codec_tag)
 
 void CAMLCodec::SetProcessInfoVideoDetails() 
 {
+  // Only a player's decoder may publish its stream details: a thumbnail job
+  // decoding another file at the same time would overwrite the playing ones.
+  if (!m_processInfo.HasDataCache())
+    return;
+
   m_dataCacheCore.SetVideoHdrType(m_hints.hdrType);
   m_dataCacheCore.SetVideoColorSpace(m_hints.colorSpace);
   m_dataCacheCore.SetVideoColorRange(m_hints.colorRange);
