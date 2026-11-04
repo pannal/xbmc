@@ -345,11 +345,12 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
                 enableLavFull ? "FULL" : 
                 (enableLavSeamlessBranch ? "SEAMLESS BRANCH ONLY" : "disabled"));
 
-      // If we're already in sync (codec recreation during playback, e.g., display reset),
-      // sync the new codec to the master clock immediately. This prevents the codec from
-      // syncing to demuxer PTS which may be offset from where video actually is.
-      // NOTE: Only for LAV Full which uses internal clock
-      if (enableLavFull && m_syncState == IDVDStreamPlayer::SYNC_INSYNC && m_pClock)
+      // A recreated Full LAV codec normally follows the running master clock.
+      // DTS must acquire its content timestamp from the next parsed frame:
+      // a clock/delay estimate can leave a persistent difference below its
+      // jitter tolerance in every subsequent audio label.
+      if (enableLavFull && hints.codec != AV_CODEC_ID_DTS &&
+          m_syncState == IDVDStreamPlayer::SYNC_INSYNC && m_pClock)
       {
         double masterClock = m_pClock->GetClock();
         double audioDelay = m_audioSink.GetDelay();
@@ -658,15 +659,17 @@ void CVideoPlayerAudio::Process()
       m_syncState = IDVDStreamPlayer::SYNC_INSYNC;
       m_syncTimer.Set(3000ms);
 
-      // LAV passthrough: Reset and sync codec's internal clock to RESYNC pts
-      // This is THE critical sync point - RESYNC contains the coordinated A/V clock
-      // IMPORTANT: Must call ResetLavSyncState() BEFORE SyncToResyncPts() to clear
-      // any stale jitter values that could contaminate the new sync baseline
+      // DTS keeps its content clock: RESYNC coordinates playback without
+      // replacing the buffered audio. Relabelling its next frame with pts+delay
+      // can leave a permanent offset below the 100ms jitter threshold. A codec
+      // reset clears the clock for the next source PTS.
+      // Other LAV formats retain their coordinated reset, clearing jitter first.
       if (m_pAudioCodec && m_pAudioCodec->NeedPassthrough())
       {
         CDVDAudioCodecPassthrough* passthroughCodec =
             dynamic_cast<CDVDAudioCodecPassthrough*>(m_pAudioCodec.get());
-        if (passthroughCodec && passthroughCodec->IsLavStyleSyncEnabled())
+        if (passthroughCodec && m_streaminfo.codec != AV_CODEC_ID_DTS &&
+            passthroughCodec->IsLavStyleSyncEnabled())
         {
           passthroughCodec->ResetLavSyncState();  // Clear jitter tracker FIRST
           passthroughCodec->SyncToResyncPts(pts + delay);

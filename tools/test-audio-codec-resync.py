@@ -36,6 +36,7 @@ harness = r'''
 #include <limits>
 #include <mutex>
 constexpr int LOGDEBUG = 0;
+constexpr int AV_CODEC_ID_DTS = 1;
 struct CLog {
   static inline double loggedDelay = -1;
   template<typename... T> static void Log(int, const char*, T...) {}
@@ -62,6 +63,7 @@ struct Clock { double value = 150000; double GetClock() { return value; } };
 struct IDVDStreamPlayer { enum { SYNC_STARTING, SYNC_INSYNC }; };
 void recreate(bool enableLavFull, int m_syncState, Clock* m_pClock,
               CAudioSinkAE& m_audioSink, CDVDAudioCodecPassthrough* passthroughCodec) {
+  struct { int codec = 2; } hints; // Exercise the retained non-DTS path.
 @RECREATE@
 }
 void near(double actual, double expected) {
@@ -123,7 +125,7 @@ harness = harness.replace("@LIMIT@", re.search(
 harness = harness.replace("@RESYNC@", block(
     codec, "void CDVDAudioCodecPassthrough::SyncToResyncPts(double pts)"))
 harness = harness.replace("@RECREATE@", block(
-    audio, "if (enableLavFull && m_syncState == IDVDStreamPlayer::SYNC_INSYNC && m_pClock)"))
+    audio, "if (enableLavFull &&"))
 with tempfile.TemporaryDirectory(prefix="audio-codec-resync-") as temp:
     source = Path(temp) / "test.cpp"
     binary = Path(temp) / "test"
