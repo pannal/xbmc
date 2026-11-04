@@ -852,6 +852,11 @@ void CDVDSubtitlesLibass::ApplyStyle(const std::shared_ptr<const style>& subStyl
     ConfigureAssOverride(subStyle, style);
     m_currentDefaultStyleId = m_track->default_style;
   }
+
+  // libass copies the override style and keeps an own copy of the font name, so
+  // the strings of the local style end here. libass never reads the copied name.
+  free(defaultStyle.Name);
+  free(defaultStyle.FontName);
 }
 
 int CDVDSubtitlesLibass::GetPlayResY()

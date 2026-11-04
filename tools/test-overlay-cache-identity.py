@@ -103,6 +103,7 @@ struct CDVDSubtitlesLibass {
   std::shared_ptr<const CLibassRenderResult> result;
   SUBTITLES::STYLE::renderOpts opts{};double lastPts=0;
   int GetPlayResY(){return 720;}
+  bool IsAdapted()const{return false;}
   std::shared_ptr<const CLibassRenderResult> RenderImage(double pts,SUBTITLES::STYLE::renderOpts o,bool update,
                         std::shared_ptr<const SUBTITLES::STYLE::style>){
     assert(std::this_thread::get_id()==ownerThread);++calls;lastPts=pts;opts=o;sawStyle=update;

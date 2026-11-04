@@ -59,7 +59,8 @@ def generate(baseline=None):
         declaration=source('xbmc/utils/AMLUtils.h').split('bool aml_subtitle_active_area_configure(',1)[1].split(';',1)[0]
         code += '\nbool aml_subtitle_active_area_configure('+declaration+';\n'
     code += '\n' + aml[aml.index('static CAMLNativeWorker s_detectWorker;'):aml.index('/* Mid-read cache guard.')]
-    for sig in ['static void detect_publish(', 'void aml_dv_detect_set_file(', 'static void detect_clear_injection(',
+    for sig in ['static void detect_publish(', 'void aml_dv_detect_set_file(', 'static void detect_clear_injection_locked(bool nativeSource)\n{',
+                'static void detect_clear_injection(', 'static bool detect_schedule_binding()\n{',
                 'void aml_dv_detect_active_area_start()', 'void aml_dv_detect_active_area_stop()']:
         code += '\n' + FUNCTION(aml, sig)
         if sig == 'static void detect_publish(' and 'static void detect_publish_subtitle(' in aml:
@@ -133,6 +134,7 @@ PREFIX = r'''
 #include "utils/AMLNativeWorker.h"
 #include "utils/PM4KStartup.h"
 #include "utils/ActiveAreaCache.h"
+#include "utils/DetectorAdmission.h"
 #include "utils/Geometry.h"
 #include "cores/VideoPlayer/DVDSubtitles/DVDSubtitlesLibassRenderResult.h"
 #include "cores/VideoPlayer/DVDSubtitles/SubtitlesStyle.h"
@@ -217,7 +219,8 @@ struct CServiceBroker {
  static RenderSystem*GetRenderSystem(){return &renderSystem;}
 };
 constexpr int RENDER_STEREO_MODE_OFF=0,DV_DETECT_FAILED=0,DV_DETECT_RUNNING=6,DV_DETECT_SKIPPED=4,
- DV_DETECT_OK=3,DV_DETECT_SKIP_NON16X9=1,DV_DETECT_SKIP_IMAX=2,DV_DETECT_INACTIVE=5;
+ DV_DETECT_OK=3,DV_DETECT_SKIP_NON16X9=1,DV_DETECT_SKIP_IMAX=2,DV_DETECT_INACTIVE=5,DV_DETECT_TIMED_OUT=7;
+constexpr unsigned DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL=1;unsigned s_dvModeCached=0;
 std::atomic<bool> s_detectStable{false},s_detectThrottleActive{false},s_detectCacheStarved{false};
 std::atomic<int> s_detectState{DV_DETECT_FAILED},writes{0},scans{0};
 std::atomic<uint16_t> s_detectedTop{0},s_detectedBottom{0},s_detectedLeft{0},s_detectedRight{0};
@@ -531,6 +534,9 @@ void nativeExemption(const char* font){
  auto st=makeStyle();auto ordinary=draw(manager,c,st,false,true);auto restricted=draw(manager,c,st);
  assert(restricted.canvas==ordinary.canvas&&restricted.bounds.bottom>948.5f);
  assert(c->handler->m_lastImageYOffset==0);
+ // Overridden native styles use a local ASS_Style whose strdup'd strings ApplyStyle must free (LeakSanitizer enabled).
+ style overridden=*st;overridden.assOverrideStyles=OverrideStyles::STYLES;
+ draw(manager,c,std::make_shared<const style>(overridden),false,true);
  std::cout<<"PASS: native authored ASS retains unrestricted pixels and is excluded from adapted text translation\n";
 }
 void native(){
@@ -696,7 +702,7 @@ def run(code, args, negative=False):
         subprocess.run(flags + [str(out / 'test.cpp'), str(utility), args.ass_library,
                                *[('-l:' + ctypes.util.find_library(name)) for name in ('freetype', 'harfbuzz', 'fribidi', 'fontconfig')], '-lm', '-o', str(out / 'test')], check=True)
         result = subprocess.run([str(out / 'test'), str(args.font)], capture_output=True, text=True,
-                                env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'}, timeout=30)
+                                env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=1'}, timeout=30)
         if negative:
             assert result.returncode == -signal.SIGABRT and 'Assertion' in result.stderr, result.stdout + result.stderr
             assert 'ERROR: AddressSanitizer' not in result.stderr and 'runtime error:' not in result.stderr, result.stderr
@@ -708,12 +714,17 @@ def run(code, args, negative=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--ass-include', type=Path, default=Path('/usr/include'))
-    parser.add_argument('--ass-library', default='-lass')
+    parser.add_argument('--ass-include', type=Path, help='default: libass staged in the firmware install_pkg tree (CE_BUILD_DIR/../install_pkg)')
+    parser.add_argument('--ass-library', help='linker argument; default: the host libass runtime, which must have exactly the header version (CE libass 0.17.4)')
     parser.add_argument('--font', type=Path, default=Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'))
     parser.add_argument('--negative-controls', action='store_true')
     parser.add_argument('--baseline', help='Original production Git revision; requires assertion failure after strict compilation')
     args = parser.parse_args()
+    build = Path(os.environ.get('CE_BUILD_DIR', Path.home() / 'p3i/build.CoreELEC-Amlogic-ng.arm-21/build'))
+    args.ass_include = args.ass_include or next((build.parent / 'install_pkg').glob('libass-*/usr/include'), Path('/usr/include'))
+    host = ctypes.util.find_library('ass')
+    args.ass_library = args.ass_library or (host and '-Wl,-l:' + host)
+    assert args.ass_library, 'Host libass runtime missing: pass --ass-library'
     assert args.font.is_file() and (args.ass_include / 'ass/ass.h').is_file()
     code = generate(args.baseline)
     result = run(code, args, negative=bool(args.baseline))
