@@ -86,6 +86,9 @@ void CGUIImage::UpdateInfo(const CGUIListItem *item)
   if (HasProcessed() && IsAnimating(ANIM_TYPE_HIDDEN) && !IsVisibleFromSkin())
     return;
 
+  // A list row shows its own item. A window image follows the window's
+  // selection only if its texture uses list item info, not playback art.
+  m_texture->SetFollowsSelection(!item && m_info.IsListItemDependent());
   if (item)
     SetFileName(m_info.GetItemLabel(item, true, &m_currentFallback));
   else

@@ -34,6 +34,7 @@ public:
   std::string GetValue(int contextWindow,
                        bool preferImage = false,
                        const CGUIListItem* item = nullptr) const;
+  bool IsListItemDependent() const;
 
 private:
   CSkinVariableString();

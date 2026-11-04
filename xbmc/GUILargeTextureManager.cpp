@@ -213,7 +213,8 @@ bool CGUILargeTextureManager::GetImage(const std::string& path,
                                       CTextureArray& texture,
                                       bool firstRequest,
                                       const bool useCache,
-                                      bool background)
+                                      bool background,
+                                      bool direct)
 {
   const bool defer = firstRequest && background && DeferBackgrounds();
   std::unique_lock<CCriticalSection> lock(m_listSection);
@@ -226,6 +227,8 @@ bool CGUILargeTextureManager::GetImage(const std::string& path,
     if (firstRequest)
     {
       image->AddRef();
+      if (direct)
+        image->m_directRefs++;
       if (defer)
       {
         // The image may still be loaded after a recent release, or because
@@ -248,9 +251,19 @@ bool CGUILargeTextureManager::GetImage(const std::string& path,
   }
 
   if (firstRequest)
-    QueueImage(path, useCache, defer);
+    QueueImage(path, useCache, defer, direct);
 
   return true;
+}
+
+bool CGUILargeTextureManager::HasDirectConsumer(const std::string& path)
+{
+  std::unique_lock<CCriticalSection> lock(m_listSection);
+  auto allocated = m_allocatedLookup.find(path);
+  if (allocated != m_allocatedLookup.end())
+    return allocated->second->m_directRefs > 0;
+  auto queued = m_queuedLookup.find(path);
+  return queued != m_queuedLookup.end() && queued->second->m_directRefs > 0;
 }
 
 void CGUILargeTextureManager::RequestImageUpload(const std::string& path, bool background)
@@ -299,7 +312,7 @@ void CGUILargeTextureManager::CancelUpload(unsigned int jobID)
   }
 }
 
-void CGUILargeTextureManager::ReleaseImage(const std::string &path, bool immediately)
+void CGUILargeTextureManager::ReleaseImage(const std::string& path, bool immediately, bool direct)
 {
   std::unique_lock<CCriticalSection> lock(m_listSection);
 
@@ -309,6 +322,8 @@ void CGUILargeTextureManager::ReleaseImage(const std::string &path, bool immedia
   {
     CLargeTexture *image = allocIt->second;
     const unsigned int uploadJobID = image->m_uploadJobID;
+    if (direct && image->m_directRefs)
+      image->m_directRefs--;
     if (image->DecrRef(immediately) && immediately)
     {
       CancelUpload(uploadJobID);
@@ -331,6 +346,8 @@ void CGUILargeTextureManager::ReleaseImage(const std::string &path, bool immedia
   if (queueIt != m_queuedLookup.end())
   {
     CLargeTexture *image = queueIt->second;
+    if (direct && image->m_directRefs)
+      image->m_directRefs--;
     if (image->DecrRef(true))
     {
       // Find and cancel the job, remove from queue vector
@@ -350,7 +367,10 @@ void CGUILargeTextureManager::ReleaseImage(const std::string &path, bool immedia
 }
 
 // queue the image, and start the background loader if necessary
-void CGUILargeTextureManager::QueueImage(const std::string& path, bool useCache, bool defer)
+void CGUILargeTextureManager::QueueImage(const std::string& path,
+                                         bool useCache,
+                                         bool defer,
+                                         bool direct)
 {
   if (path.empty())
     return;
@@ -362,6 +382,8 @@ void CGUILargeTextureManager::QueueImage(const std::string& path, bool useCache,
   if (it != m_queuedLookup.end())
   {
     it->second->AddRef();
+    if (direct)
+      it->second->m_directRefs++;
     if (defer && !it->second->m_background)
     {
       // Joining a foreground decode. The completion hold applies to this
@@ -392,6 +414,7 @@ void CGUILargeTextureManager::QueueImage(const std::string& path, bool useCache,
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAsyncTextureUpload;
   image->m_useCache = useCache;
   image->m_background = defer;
+  image->m_directRefs = direct ? 1 : 0;
   image->m_deferredSince = CTimeUtils::GetFrameTime();
   // Register before admission; a callback cannot enter until this lock releases.
   m_queued.emplace_back(0, image);
@@ -467,6 +490,13 @@ void CGUILargeTextureManager::ProcessDeferred()
 bool CGUILargeTextureManager::IsBackgroundMotion() const
 {
   return (m_scrolling || m_moved) && DeferBackgrounds();
+}
+
+bool CGUILargeTextureManager::DelaysSelectionImages()
+{
+  return DeferBackgrounds() &&
+         CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+             CSettings::SETTING_LOOKANDFEEL_DELAYSELECTIONIMAGES);
 }
 
 bool CGUILargeTextureManager::DeferBackgrounds()

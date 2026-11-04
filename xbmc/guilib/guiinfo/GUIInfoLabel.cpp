@@ -19,6 +19,8 @@
 #include "utils/StringUtils.h"
 #include "utils/log.h"
 
+#include <algorithm>
+
 using namespace KODI::GUILIB::GUIINFO;
 
 CGUIInfoLabel::CGUIInfoLabel(const std::string &label, const std::string &fallback /*= ""*/, int context /*= 0*/)
@@ -40,6 +42,23 @@ void CGUIInfoLabel::SetLabel(const std::string &label, const std::string &fallba
   Parse(label, m_infoLabel, context);
   Parse(fallback, m_infoFallback, context);
   m_fallback = fallback;
+  m_listItemDependent.reset();
+}
+
+bool CGUIInfoLabel::IsListItemDependent() const
+{
+  if (!m_listItemDependent)
+  {
+    const CGUIInfoManager& infoMgr = CServiceBroker::GetGUI()->GetInfoManager();
+    const auto dependent = [&infoMgr](const CInfoPortion& portion)
+    {
+      return portion.m_listItemDependent ||
+             (portion.m_info && infoMgr.IsListItemDependentInfo(portion.m_info));
+    };
+    m_listItemDependent = std::any_of(m_infoLabel.begin(), m_infoLabel.end(), dependent) ||
+                          std::any_of(m_infoFallback.begin(), m_infoFallback.end(), dependent);
+  }
+  return *m_listItemDependent;
 }
 
 bool CGUIInfoLabel::LabelNeedsUpdate(int context,
@@ -326,6 +345,7 @@ void CGUIInfoLabel::Parse(const std::string& label,
           CGUIInfoManager& infoMgr = CServiceBroker::GetGUI()->GetInfoManager();
 
           int info;
+          bool listItemDependent = false;
           if (format == FORMATVAR || format == FORMATESCVAR)
           {
             info = infoMgr.TranslateSkinVariableString(params[0], context);
@@ -335,14 +355,15 @@ void CGUIInfoLabel::Parse(const std::string& label,
               CLog::Log(LOGWARNING, "Label Formatting: $VAR[{}] is not defined", params[0]);
           }
           else
-            info = infoMgr.TranslateString(params[0]);
+            info = infoMgr.TranslateString(params[0], listItemDependent);
           std::string prefix, postfix;
           if (params.size() > 1)
             prefix = params[1];
           if (params.size() > 2)
             postfix = params[2];
           infoPortion.emplace_back(info, prefix, postfix,
-                                   format == FORMATESCINFO || format == FORMATESCVAR);
+                                   format == FORMATESCINFO || format == FORMATESCVAR,
+                                   listItemDependent);
         }
         // and delete it from our work string
         work.erase(0, pos2 + 1);
@@ -360,11 +381,16 @@ void CGUIInfoLabel::Parse(const std::string& label,
     infoPortion.emplace_back(0, work, "");
 }
 
-CGUIInfoLabel::CInfoPortion::CInfoPortion(int info, const std::string &prefix, const std::string &postfix, bool escaped /*= false */):
-  m_prefix(prefix),
-  m_postfix(postfix)
+CGUIInfoLabel::CInfoPortion::CInfoPortion(int info,
+                                          const std::string& prefix,
+                                          const std::string& postfix,
+                                          bool escaped /*= false */,
+                                          bool listItemDependent /*= false */)
+  : m_prefix(prefix),
+    m_postfix(postfix)
 {
   m_info = info;
+  m_listItemDependent = listItemDependent;
   m_escaped = escaped;
   // filter our prefix and postfix for comma's
   StringUtils::Replace(m_prefix, "$COMMA", ",");

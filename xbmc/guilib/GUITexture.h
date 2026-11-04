@@ -140,6 +140,7 @@ public:
   }
   bool ReadyToRender() const;
   bool IsBackgroundRequest() const;
+  void SetFollowsSelection(bool follows) { m_followsSelection = follows; }
 
 protected:
   CGUITexture(float posX, float posY, float width, float height, const CTextureInfo& texture);
@@ -204,6 +205,8 @@ protected:
   enum ALLOCATE_TYPE { NO = 0, NORMAL, LARGE, NORMAL_FAILED, LARGE_FAILED };
   ALLOCATE_TYPE m_isAllocated;
   bool m_continuation{false}; // copied from an allocated texture showing this file
+  bool m_followsSelection{false}; // a window image showing the selected item, not a list row
+  bool m_directConsumer{false}; // the large image reference is a direct consumer's, see GetImage
 
   CTextureInfo m_info;
   CAspectRatio m_aspect;

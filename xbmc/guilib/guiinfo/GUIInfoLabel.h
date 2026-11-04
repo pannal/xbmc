@@ -16,6 +16,7 @@
 #include "interfaces/info/Info.h"
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -70,6 +71,12 @@ public:
 
   bool IsConstant() const;
   bool IsEmpty() const;
+
+  /*!
+   \brief Whether the label shows info of a list item, directly or through a
+   skin variable, so that outside a list it follows the selected item.
+   */
+  bool IsListItemDependent() const;
 
   const std::string& GetFallback() const { return m_fallback; }
 
@@ -127,10 +134,15 @@ private:
   class CInfoPortion
   {
   public:
-    CInfoPortion(int info, const std::string &prefix, const std::string &postfix, bool escaped = false);
+    CInfoPortion(int info,
+                 const std::string& prefix,
+                 const std::string& postfix,
+                 bool escaped = false,
+                 bool listItemDependent = false);
     bool NeedsUpdate(const std::string &label) const;
     std::string Get() const;
     int m_info;
+    bool m_listItemDependent; // the info or one of its arguments shows list item info
   private:
     bool m_escaped;
     mutable std::string m_label;
@@ -189,6 +201,7 @@ private:
   mutable std::string m_fallback;
   std::vector<CInfoPortion> m_infoLabel;
   std::vector<CInfoPortion> m_infoFallback;
+  mutable std::optional<bool> m_listItemDependent;
 };
 
 } // namespace GUIINFO

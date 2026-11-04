@@ -62,6 +62,28 @@ previous frame: the incoming image is shown at once if it is ready; otherwise,
 also when there is no incoming image, the last outgoing image that shows
 anything is kept at full strength, and fades as usual once the GUI is still.
 
+Its child setting "Also delay images of the selected item"
+(`lookandfeel.delayselectionimages`, off by default, available only while the
+parent is on) treats a window image that follows the selection as a background
+image too, from a tenth of the screen, such as the poster in a list view's info
+panel. A window image is one that is not part of a list row: list rows show
+their own items and are never delayed this way. It follows the selection when
+its texture uses list item info, directly, as an argument of another info or
+through a skin variable's labels or conditions, so playback artwork such as
+the now-playing cover is not delayed. Smaller images such as logos and flags
+still change at once, and images with a constant texture are unaffected.
+A selection image is not delayed while a direct consumer holds the same file:
+an image that is neither a background request nor a selection image, such as a
+list row. The big poster of a poster view, such as the Poster view of P3i
+Estuary, shows the file of a poster in the scrolling list. Delaying it would
+show the previous poster twice, so it changes and crossfades as usual during
+motion. A panel showing other artwork of the selected item, or a poster whose
+row is not loaded yet, is still delayed. Any direct consumer of the file, even
+one in a hidden view or a row of another item with the same icon, exempts the
+image too. The manager
+counts the references direct consumers acquired; each texture remembers the
+kind of its reference for its release.
+
 The previous crossfade image stays until the new one is ready. Cache grace and
 fade durations are unchanged. These are conservative admission rules, not exact
 visibility or decoded-size tests: transformed/auto-sized images may bypass the
@@ -155,10 +177,14 @@ does not exercise real driver scheduling.
 manager and jobs, including private publication, shared consumers, cancellation,
 cache grace, stale callbacks and admission failures. `tools/test-gui-upload-demand.py`
 executes the frontend allocation, clipping, polling, idle redraw and fade paths,
-including background fades ended or held by motion and empty incoming images.
+including background fades ended or held by motion and empty incoming images,
+which window images count as selection images, and selection images shown by
+a list row, which are neither delayed nor have their crossfade ended.
+`tools/test-gui-selection-labels.py` checks which labels follow the selection,
+through container infos and nested skin variables.
 `tools/test-gui-background-defer.py` checks deferred decoding, foreground promotion,
-per-request expiry, held reuse and completion, the setting on and off, motion
-reports, composition
+per-request expiry, held reuse and completion, the setting on and off, its child
+setting, motion reports, direct consumer counting, composition
 with draw-demand uploads, the actual control and animation Animate methods'
 motion reports and the group list's report call. The list and panel scroll tests
 verify that containers report their scroller's active frames.
