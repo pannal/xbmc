@@ -17,7 +17,6 @@
 #include "settings/lib/Setting.h"
 #include "cores/AudioEngine/Utils/PackerMAT.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
-#include "utils/Crc32.h"
 #include "utils/log.h"
 
 #include <algorithm>
@@ -434,14 +433,6 @@ bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
         m_trueHDBuffer = m_packerMAT->GetOutputFrame();
         m_dataSize = TRUEHD_BUF_SIZE;
 
-        if (CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG))
-        {
-          // The first eight bytes are reserved for the later IEC header.
-          CLog::Log(LOGDEBUG, "TrueHD delivery codec: mat={} bytes={} payload_crc={:08x}",
-                    m_packerMAT->GetOutputFrameNumber(), m_trueHDBuffer.size(),
-                    Crc32::Compute(m_trueHDBuffer.data() + 8, m_trueHDBuffer.size() - 8));
-        }
-
         if (m_lavStyleSyncEnabled)
         {
           // Consume discontinuity flag from MAT packer (seamless branch detection)
@@ -634,16 +625,6 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
     {
       // No valid PTS available anywhere
       frame.pts = DVD_NOPTS_VALUE;
-    }
-
-    if (isTrueHD && m_packerMAT && m_packerMAT->HasOutputDiagnostics())
-    {
-      CLog::Log(LOGDEBUG,
-                "TrueHD MAT timing: mat={} bytes={} pts={:.6f}s duration={:.6f}s "
-                "reference_pts={:.6f}s sample_offset={} correction={:.6f}s",
-                m_packerMAT->GetOutputFrameNumber(), frame.nb_frames, frame.pts / DVD_TIME_BASE,
-                frame.duration / DVD_TIME_BASE, demuxerPts / DVD_TIME_BASE,
-                m_packerMAT->GetSamplesOffset(), frame.discontinuityCorrection / DVD_TIME_BASE);
     }
 
     // Clear current PTS after use
