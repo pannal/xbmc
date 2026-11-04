@@ -2,8 +2,9 @@
 """Run actual sink methods with controlled ALSA/clock boundaries.
 
 Compares baseline/work complete calls, bytes, offsets, returns and recoveries.
-Checks diagnostic CRCs against an independent bitwise CRC over the bytes the
-fake ALSA API actually accepts. Does not establish real ALSA or HDMI delivery.
+Checks mandatory --diagnostic-ref CRCs against an independent bitwise CRC over
+the bytes the fake ALSA API actually accepts, even after working-source tracing
+is removed. Does not establish real ALSA or HDMI delivery.
 """
 import argparse
 from pathlib import Path
@@ -14,6 +15,7 @@ import hashlib
 import json
 import tempfile
 
+DIAGNOSTIC_BASE = '9a90ccab8904ef1cf98b18bc7d1348cf469f33f2'
 
 def block(source, marker):
     start = source.index(marker)
@@ -112,13 +114,17 @@ def source(root,path,ref):
     return subprocess.check_output(['git','show',f'{ref}:{path}'],cwd=root,text=True) if ref else (root/path).read_text()
 
 
-def build(root,directory,ref=None,mutation=None,sanitize=False):
+def build(root,directory,ref=None,mutation=None,sanitize=False,require_diagnostics=False):
     directory.mkdir(parents=True,exist_ok=True)
     read=lambda p:source(root,p,ref)
     ae='xbmc/cores/AudioEngine/'
     output=block(read(ae+'Engines/ActiveAE/ActiveAESink.cpp'),'unsigned int CActiveAESink::OutputSamples(')
     alsa=block(read(ae+'Sinks/AESinkALSA.cpp'),'unsigned int CAESinkALSA::AddPackets(')
     codec=block(read('xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp'),'if (m_packerMAT->PackTrueHD(')
+    if require_diagnostics:
+        assert 'TrueHD delivery sink:' in output and 'TrueHD delivery other:' in output, 'sink traces missing'
+        assert 'TrueHD delivery ALSA:' in alsa, 'ALSA trace missing'
+        assert 'TrueHD delivery codec:' in codec, 'codec trace missing'
     if mutation=='wrong-offset':
         old='buffer = data[0]+offset*m_format.m_frameSize + frames_written*m_format.m_frameSize;'
         assert old in alsa
@@ -213,7 +219,10 @@ int main(int argc,char**argv){assert(argc==3);std::ifstream f(argv[1],std::ios::
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument('--baseline-ref', default='HEAD')
+    parser.add_argument('--baseline-ref', default=DIAGNOSTIC_BASE,
+                        help='full-output baseline Git revision (default: pinned pre-cleanup source)')
+    parser.add_argument('--diagnostic-ref', default=DIAGNOSTIC_BASE,
+                        help='instrumented Git revision for mandatory diagnostic assertions/controls')
     parser.add_argument('--output', type=Path, help='retain generated fixtures in this directory')
     parser.add_argument('--sanitize', action='store_true')
     parser.add_argument('--media', type=Path, help='optional complete raw TrueHD for a source catalog')
@@ -232,15 +241,22 @@ def main():
 
 
 def run(a):
-    baseline=subprocess.check_output(['git','rev-parse',a.baseline_ref],cwd=a.root,text=True).strip()
+    resolve=lambda ref:subprocess.check_output(['git','rev-parse','--verify',ref+'^{commit}'],cwd=a.root,text=True).strip()
+    baseline,diagnostic=resolve(a.baseline_ref),resolve(a.diagnostic_ref)
     for name,ref in [('baseline',baseline),('actual',None)]:
         r,artifact=build(a.root,a.output/name,ref=ref,sanitize=a.sanitize)
         if r.returncode:raise RuntimeError(f'{name}: {r.stderr}')
         print(name,r.stdout.strip())
     first=(a.output/'baseline/behavior.bin').read_bytes();second=(a.output/'actual/behavior.bin').read_bytes();assert first==second,'complete bytes/calls/offsets/returns/recovery changed'
     print(f'Baseline {baseline}: {len(first)} behavior bytes identical')
+    r,artifact=build(a.root,a.output/'diagnostic',ref=diagnostic,sanitize=a.sanitize,require_diagnostics=True)
+    if r.returncode:raise RuntimeError(f'diagnostic: {r.stderr}')
+    assert artifact.read_bytes()==first,'diagnostic source differs in complete behavior'
+    print('diagnostic',diagnostic,r.stdout.strip())
     for mutant in ['wrong-offset','missing-fragment','pre-swap-crc','codec-header']:
-        r,artifact=build(a.root,a.output/mutant,mutation=mutant,sanitize=a.sanitize)
+        diagnostic_mutant=mutant!='wrong-offset'
+        r,artifact=build(a.root,a.output/mutant,ref=diagnostic if diagnostic_mutant else None,
+                         mutation=mutant,sanitize=a.sanitize,require_diagnostics=diagnostic_mutant)
         if mutant == 'wrong-offset':
             assert r.returncode == 0 and artifact.read_bytes() != first, (mutant,r.stdout,r.stderr)
             print('Rejected',mutant,'complete byte/call/offset baseline mismatch')

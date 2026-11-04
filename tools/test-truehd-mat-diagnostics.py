@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Exercise the production MAT packer and codec GetData timing on synthetic AUs.
 
-Compare --baseline-ref to prove diagnostics preserve complete bytes and timing.
+Compare cleaned production to a pinned pre-cleanup baseline. Diagnostic assertions
+and their negative controls run separately against --diagnostic-ref; they remain
+required even when the working source has no tracing.
 Synthetic major-sync headers exercise packing, not lossless audio decoding or
 the real parser, demux timestamp association, ALSA delivery or receiver lock.
 """
@@ -14,6 +16,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 PACKER = "xbmc/cores/AudioEngine/Utils/PackerMAT"
 CODEC = "xbmc/cores/VideoPlayer/DVDCodecs/Audio/DVDAudioCodecPassthrough.cpp"
+DIAGNOSTIC_BASE = "9a90ccab8904ef1cf98b18bc7d1348cf469f33f2"
 
 
 def block(source, marker):
@@ -176,7 +179,7 @@ int main(int argc, char** argv) {
 '''
 
 
-def run(directory, ref=None, mutation=None, sanitize=False):
+def run(directory, ref=None, mutation=None, sanitize=False, require_diagnostics=False):
     directory.mkdir()
     for path in ("utils", "libavutil"):
         (directory / path).mkdir()
@@ -202,7 +205,13 @@ struct CLog {
         "#define AV_RB32(p) (((unsigned)AV_RB16(p)<<16)|AV_RB16((p)+2))\n")
     header = source(PACKER + ".h", ref)
     packer = source(PACKER + ".cpp", ref)
+    codec = source(CODEC, ref)
     diagnostics = "HasOutputDiagnostics" in header
+    if require_diagnostics:
+        assert diagnostics and "GetOutputFrameNumber" in header, "diagnostic accessors missing"
+        assert all(marker in packer for marker in (
+            "CPackerMAT branch:", "CPackerMAT emit:", "CPackerMAT dequeue:")), "MAT traces missing"
+        assert "TrueHD MAT timing:" in codec, "codec timing trace missing"
     if mutation == "unbounded":
         assert "m_matFrames + 8" in packer
         packer = packer.replace("m_matFrames + 8", "m_matFrames + 8000")
@@ -215,7 +224,7 @@ struct CLog {
         packer = packer.replace(carry, "0")
     (directory / "PackerMAT.h").write_text(header)
     (directory / "PackerMAT.cpp").write_text(packer)
-    harness = HARNESS.replace("@GET_DATA@", block(source(CODEC, ref),
+    harness = HARNESS.replace("@GET_DATA@", block(codec,
         "void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)"))
     harness = harness.replace("@DURATION@", block(source(
         "xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp", ref),
@@ -252,18 +261,37 @@ struct CLog {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline-ref", help="compare full output against a Git revision")
+    parser.add_argument("--baseline-ref", default=DIAGNOSTIC_BASE,
+                        help="full-output baseline Git revision (default: pinned pre-cleanup source)")
+    parser.add_argument("--diagnostic-ref", default=DIAGNOSTIC_BASE,
+                        help="instrumented Git revision for mandatory diagnostic assertions/controls")
+    parser.add_argument("--output", type=Path, help="retain generated fixtures in a new directory")
     parser.add_argument("--sanitize", action="store_true")
     args = parser.parse_args()
+    if args.output:
+        args.output.mkdir(parents=True)
+        verify(args, args.output)
+        return
     with tempfile.TemporaryDirectory(prefix="truehd-mat-") as temporary:
-        directory = Path(temporary)
-        actual = run(directory / "actual", sanitize=args.sanitize)
-        if args.baseline_ref:
-            previous = run(directory / "baseline", args.baseline_ref, sanitize=args.sanitize)
-            assert actual == previous, "MAT bytes, metadata or codec timing changed"
-            print(f"Baseline equivalence: {len(actual)} bytes identical")
-        for mutation in ("unbounded", "wrong-sequence", "discard-carry"):
-            run(directory / mutation, mutation=mutation)
+        verify(args, Path(temporary))
+
+
+def verify(args, directory):
+    resolve = lambda ref: subprocess.check_output(
+        ["git", "rev-parse", "--verify", ref + "^{commit}"], cwd=ROOT, text=True).strip()
+    baseline, diagnostic = resolve(args.baseline_ref), resolve(args.diagnostic_ref)
+    actual = run(directory / "actual", sanitize=args.sanitize)
+    previous = run(directory / "baseline", baseline, sanitize=args.sanitize)
+    assert actual == previous, "MAT bytes, metadata or codec timing changed"
+    print(f"Baseline {baseline}: {len(actual)} bytes identical")
+    traced = run(directory / "diagnostic", diagnostic, sanitize=args.sanitize,
+                 require_diagnostics=True)
+    assert actual == traced, "diagnostic source differs in MAT bytes, metadata or codec timing"
+    print(f"Diagnostic assertions: {diagnostic}")
+    run(directory / "discard-carry", mutation="discard-carry", sanitize=args.sanitize)
+    for mutation in ("unbounded", "wrong-sequence"):
+        run(directory / mutation, diagnostic, mutation=mutation, sanitize=args.sanitize,
+            require_diagnostics=True)
 
 
 if __name__ == "__main__":
