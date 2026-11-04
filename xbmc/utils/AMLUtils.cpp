@@ -250,6 +250,7 @@ thread_local int CDVCoreGuard::s_lockDepth = 0;
 // aml_dv_off (above) too. Round-trips display/mode through sysfs but recovers
 // to last-known-good if the read returned "null".
 static void aml_display_mode_round_trip(const char* fn);
+static void aml_dv_trigger_update_resolution(StreamHdrType hdrType);
 
 // Diagnostic: dump full DV/HDMI kernel state and our cached state to debug log.
 // Forward-declared so it's callable from set_vs10_mode (defined before the
@@ -391,8 +392,15 @@ void aml_dv_set_vs10_mode(unsigned int mode, StreamHdrType hdrType, bool hardwar
 
     aml_dv_on(mode);
   }
-  else if (aml_is_dv_enable()) // DV BYPASS, and it is on - then switch it off.
-    aml_dv_off();
+  else
+  {
+    if (aml_is_dv_enable())
+      aml_dv_off();
+    vs10_conversion = false;
+    // The IPT action publishes a DV renderer target. Returning to the source
+    // must publish its HDR type as well, after native DV teardown completes.
+    aml_dv_trigger_update_resolution(hdrType);
+  }
 
   aml_reset_audio_from_vs10_change();
   aml_dv_dump_state("vs10_change/post");
@@ -1783,9 +1791,16 @@ void aml_dv_off(bool skip_hdmi_update)
   CSysfsPath amdolby_vision_debug{"/sys/class/amdolby_vision/debug"};
   if (amdolby_vision_debug.Exists()) CSysfsPath("/sys/class/amdolby_vision/debug", "enable_fel 0");
 
-  // First allow system to reset to follow source, then turn off DV.
-  CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_policy", DOLBY_VISION_FOLLOW_SOURCE);
-  if (modeChange) aml_dv_toggle_frame(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+  // Retire the cores while the kernel's DV processing loop can still run.
+  // FOLLOW_SOURCE is not an off request: a live HDR10 source can select VS10
+  // HDR10, acknowledge the toggle and leave core1 on. Disabling processing
+  // then freezes dv_video_on and blocks ordinary HDR/SDR output restoration.
+  CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_policy", DOLBY_VISION_FORCE_OUTPUT_MODE);
+  if (modeChange)
+  {
+    dolby_vision_mode.Set(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+    aml_dv_toggle_frame(DOLBY_VISION_OUTPUT_MODE_BYPASS);
+  }
   CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_enable", "N");
 
   // Finally reset back to bypass for consistency.
