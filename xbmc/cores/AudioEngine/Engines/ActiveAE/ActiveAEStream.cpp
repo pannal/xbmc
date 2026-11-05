@@ -9,6 +9,7 @@
 #include "ActiveAEStream.h"
 
 #include "ActiveAE.h"
+#include "ServiceBroker.h"
 #include "cores/AudioEngine/AEResampleFactory.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
 #include "utils/log.h"
@@ -280,6 +281,17 @@ unsigned int CActiveAEStream::AddData(const uint8_t* const *data, unsigned int o
       {
         memcpy(m_currentBuffer->pkt->data[i]+start, buf[i]+bufOffset, minFrames*m_format.m_frameSize/planes);
       }
+      if (m_format.m_dataFormat == AE_FMT_RAW &&
+          m_format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD && extData)
+      {
+        m_currentBuffer->trueHDRestartTrace =
+            extData->trueHDRestartTrace.Slice(offset + copied, minFrames);
+        const auto& trace = m_currentBuffer->trueHDRestartTrace;
+        if (trace && CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG))
+          CLog::Log(LOGDEBUG,
+                    "TrueHD restart: stage=enqueue epoch={} packet={} offset={} bytes={} packet_bytes={}",
+                    trace.epoch, trace.packet, trace.offset, trace.bytes, trace.packetBytes);
+      }
       copied += minFrames;
 
       if (extData && extData->hasDownmix)
@@ -324,6 +336,7 @@ unsigned int CActiveAEStream::AddData(const uint8_t* const *data, unsigned int o
         m_currentBuffer->timestamp = 0;
         m_currentBuffer->pkt->nb_samples = 0;
         m_currentBuffer->pkt->pause_burst_ms = 0;
+        m_currentBuffer->trueHDRestartTrace = {};
         msg->Release();
         DecFreeBuffers();
         continue;

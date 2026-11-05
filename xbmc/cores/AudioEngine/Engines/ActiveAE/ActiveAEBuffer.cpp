@@ -77,6 +77,7 @@ CSampleBuffer* CActiveAEBufferPool::GetFreeBuffer()
   {
     buf = m_freeSamples.front();
     m_freeSamples.pop_front();
+    buf->trueHDRestartTrace = {};
     buf->refCount = 1;
     buf->centerMixLevel = M_SQRT1_2;
     buf->surroundMixLevel = M_SQRT1_2;
@@ -88,6 +89,7 @@ void CActiveAEBufferPool::ReturnBuffer(CSampleBuffer *buffer)
 {
   buffer->pkt->nb_samples = 0;
   buffer->pkt->pause_burst_ms = 0;
+  buffer->trueHDRestartTrace = {};
   m_freeSamples.push_back(buffer);
 }
 

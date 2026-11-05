@@ -47,6 +47,7 @@ HARNESS = r'''
 #include <vector>
 #include "utils/log.h"
 #include "PackerMAT.h"
+#include "cores/AudioEngine/Utils/TrueHDRestartTrace.h"
 #include "cores/VideoPlayer/DVDCodecs/Audio/FloatingAverage.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 constexpr double LOCAL_NOPTS = -1.0;
@@ -61,12 +62,17 @@ struct CAEStreamInfo {
 };
 @DURATION@
 struct Format { CAEStreamInfo m_streamInfo; int m_sampleRate = 48000; };
+struct CServiceBroker {
+  struct Logging {bool IsLogLevelLogged(int) const {return false;}};
+  static Logging& GetLogging() {static Logging log; return log;}
+};
 struct DVDAudioFrame {
   uint8_t* data[1]{};
   int nb_frames = 0, framesOut = 0, planes = 0, bits_per_sample = 0;
   bool passthrough = false, hasDiscontinuity = false;
   double discontinuityCorrection = 0, duration = 0, pts = 0;
   Format format;
+  AE::TrueHDRestartTrace trueHDRestartTrace;
 };
 struct CDVDAudioCodecPassthrough {
   std::unique_ptr<CPackerMAT> m_packerMAT = std::make_unique<CPackerMAT>();
@@ -76,6 +82,7 @@ struct CDVDAudioCodecPassthrough {
   double m_currentPts = 0, m_internalClock = 10000000, m_lastOutputPts = LOCAL_NOPTS;
   double m_jitterThreshold = 100000;
   AudioSync::CFloatingAverage<double, 256> m_jitterTracker;
+  AE::CTrueHDRestartTrace m_restartTrace;
   struct { void SetAudioPts(double) {} } m_dataCacheCore;
   int GetData(uint8_t** dst) { *dst = pending.data(); return pending.size(); }
   void GetData(DVDAudioFrame& frame);

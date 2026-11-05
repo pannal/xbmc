@@ -9,6 +9,7 @@
 #pragma once
 
 #include "cores/AudioEngine/Utils/AEAudioFormat.h"
+#include "cores/AudioEngine/Utils/TrueHDRestartTrace.h"
 #include <stdint.h>
 
 extern "C" {
@@ -63,6 +64,7 @@ public:
     bool hasDownmix = false;
     double centerMixLevel = 1;
     double surroundMixLevel = 1;
+    AE::TrueHDRestartTrace trueHDRestartTrace;
   };
 
 public:

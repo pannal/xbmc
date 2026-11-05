@@ -137,6 +137,7 @@ void CDVDAudioCodecPassthrough::OnSettingChanged(const std::shared_ptr<const CSe
 
 bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 {
+  m_restartTrace.Reset(false);
   UpdateDialNormSettings();
   UpdateLavModeSettings();
 
@@ -270,6 +271,7 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
 
 void CDVDAudioCodecPassthrough::Dispose()
 {
+  m_restartTrace.Reset(false);
   if (m_buffer)
   {
     delete[] m_buffer;
@@ -488,6 +490,7 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   frame.framesOut = 0;
   frame.hasDiscontinuity = false;
   frame.discontinuityCorrection = 0.0;
+  frame.trueHDRestartTrace = {};
   
   if (frame.nb_frames == 0)
     return;
@@ -497,6 +500,15 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   frame.planes = 1;
   frame.bits_per_sample = 8;
   frame.duration = DVD_MSEC_TO_TIME(frame.format.m_streamInfo.GetDuration());
+
+  frame.trueHDRestartTrace = m_restartTrace.Next(frame.data[0], frame.nb_frames);
+  if (frame.trueHDRestartTrace && CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG))
+  {
+    const auto& trace = frame.trueHDRestartTrace;
+    CLog::Log(LOGDEBUG,
+              "TrueHD restart: stage=produce epoch={} packet={} bytes={} major_head={}",
+              trace.epoch, trace.packet, trace.packetBytes, trace.majorAtStart);
+  }
 
   if (m_lavStyleSyncEnabled)
   {
@@ -657,6 +669,12 @@ int CDVDAudioCodecPassthrough::GetData(uint8_t** dst)
 
 void CDVDAudioCodecPassthrough::Reset()
 {
+  m_restartTrace.Reset(m_lavStyleSyncEnabled && !m_deviceIsRAW && m_packerMAT &&
+                      m_format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD &&
+                      CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG));
+  if (m_restartTrace.Epoch())
+    CLog::Log(LOGDEBUG, "TrueHD restart: stage=reset epoch={} policy=full packet_limit={}",
+              m_restartTrace.Epoch(), AE::CTrueHDRestartTrace::PACKET_LIMIT);
   m_trueHDoffset = 0;
   m_dataSize = 0;
   m_bufferSize = 0;

@@ -10,6 +10,7 @@
 
 #include "cores/AudioEngine/Utils/AEAudioFormat.h"
 #include "cores/AudioEngine/Interfaces/AE.h"
+#include "cores/AudioEngine/Utils/TrueHDRestartTrace.h"
 #include <cmath>
 #include <deque>
 #include <memory>
@@ -56,6 +57,7 @@ public:
   int refCount = 0;
   double centerMixLevel;
   double surroundMixLevel;
+  AE::TrueHDRestartTrace trueHDRestartTrace;
 };
 
 class CActiveAEBufferPool

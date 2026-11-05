@@ -139,6 +139,9 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
   do
   {
     IAEStream::ExtData ext;
+    if (audioframe.passthrough &&
+        audioframe.format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
+      ext.trueHDRestartTrace = audioframe.trueHDRestartTrace;
     if (offset == 0)
     {
       ext.pts = audioframe.pts / DVD_TIME_BASE * 1000;
