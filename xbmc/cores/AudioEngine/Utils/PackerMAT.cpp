@@ -49,6 +49,7 @@ CPackerMAT::CPackerMAT()
 
 void CPackerMAT::Reset()
 {
+  m_restartTrace.Reset(0);
   m_state = {};
   m_buffer.clear();
   m_bufferCount = 0;
@@ -173,6 +174,7 @@ bool CPackerMAT::PackTrueHD(const uint8_t* data, int size)
                 "CPackerMAT::PackTrueHD: excessive padding, re-initializing MAT packer state");
       m_state = {};
       m_state.init = true;
+      StopRestartTrace();
       m_buffer.clear();
       m_bufferCount = 0;
       return false;
@@ -198,6 +200,7 @@ bool CPackerMAT::PackTrueHD(const uint8_t* data, int size)
       CLog::Log(LOGDEBUG, "CPackerMAT::PackTrueHD: seek detected, re-initializing MAT packer state");
       m_state = {};
       m_state.init = true;
+      StopRestartTrace();
       m_buffer.clear();
       m_bufferCount = 0;
       return false;
@@ -242,6 +245,7 @@ bool CPackerMAT::PackTrueHD(const uint8_t* data, int size)
   m_state.samples += frameSamples;
 
   // write actual audio data to the buffer
+  m_restartTrace.Begin(data, size);
   int remaining = FillDataBuffer(data, size, Type::DATA);
 
   // not all data could be written, or the buffer is full
@@ -277,6 +281,14 @@ std::vector<uint8_t> CPackerMAT::GetOutputFrame()
 
   std::vector<uint8_t> buffer = std::move(m_outputQueue.front());
   m_outputQueue.pop_front();
+
+  if (m_restartTrace.Epoch())
+  {
+    const unsigned int packet = m_restartTrace.Dequeue();
+    if (packet <= AE::CTrueHDRestartTrace::PACKET_LIMIT)
+      CLog::Log(LOGDEBUG, "TrueHD restart: stage=mat_dequeue epoch={} packet={} bytes={}",
+                m_restartTrace.Epoch(), packet, buffer.size());
+  }
 
   // LAV: Store the samples offset and discontinuity flag for this frame
   // (caller can retrieve via GetSamplesOffset() and HadDiscontinuity())
@@ -404,6 +416,8 @@ int CPackerMAT::FillDataBuffer(const uint8_t* data, int size, Type type)
   {
     // write as much data before the middle code as we can
     int nBytesBefore = MAT_POS_MIDDLE - GetCount();
+    if (type == Type::DATA)
+      TraceAudioData(nBytesBefore);
     AppendData(data, nBytesBefore, type);
     remaining -= nBytesBefore;
 
@@ -429,6 +443,8 @@ int CPackerMAT::FillDataBuffer(const uint8_t* data, int size, Type type)
   {
     // write as much data before the middle code as we can
     int nBytesBefore = MAT_BUFFER_LIMIT - GetCount();
+    if (type == Type::DATA)
+      TraceAudioData(nBytesBefore);
     AppendData(data, nBytesBefore, type);
     remaining -= nBytesBefore;
 
@@ -445,6 +461,8 @@ int CPackerMAT::FillDataBuffer(const uint8_t* data, int size, Type type)
     return remaining;
   }
 
+  if (type == Type::DATA)
+    TraceAudioData(size);
   AppendData(data, size, type);
 
   return 0;
@@ -463,6 +481,7 @@ void CPackerMAT::FlushPacket()
 
   // push MAT packet to output queue
   m_outputQueue.emplace_back(std::move(m_buffer));
+  m_restartTrace.Flush();
   
   // LAV: also queue samples offset and discontinuity flag
   // (like LAV Filters, the offset is captured BEFORE updating, so it applies to this frame)
@@ -483,6 +502,32 @@ void CPackerMAT::FlushPacket()
 
   m_buffer.clear();
   m_bufferCount = 0;
+}
+
+void CPackerMAT::StopRestartTrace()
+{
+  if (m_restartTrace.Epoch())
+    CLog::Log(LOGDEBUG,
+              "TrueHD restart: stage=major_gap epoch={} packet={} reason=padding_reset coverage=stopped",
+              m_restartTrace.Epoch(), m_restartTrace.Packet());
+  m_restartTrace.Reset(0);
+}
+
+void CPackerMAT::TraceAudioData(unsigned int bytes)
+{
+  if (!m_restartTrace.Append(m_bufferCount, bytes))
+    return;
+  const auto& spans = m_restartTrace.Spans();
+  CLog::Log(LOGDEBUG,
+            "TrueHD restart: stage=major epoch={} au={} au_bytes={} header_bytes={} "
+            "structure_valid={} crc_valid={} mapping_complete={} within_window={} "
+            "p1={} o1={} n1={} p2={} o2={} n2={}",
+            m_restartTrace.Epoch(), m_restartTrace.AU(), m_restartTrace.AUBytes(),
+            m_restartTrace.HeaderBytes(), m_restartTrace.StructureValid(),
+            m_restartTrace.CRCValid(), m_restartTrace.Complete(),
+            spans[1].packet <= AE::CTrueHDRestartTrace::PACKET_LIMIT,
+            spans[0].packet, spans[0].offset, spans[0].bytes,
+            spans[1].packet, spans[1].offset, spans[1].bytes);
 }
 
 TrueHDMajorSyncInfo CPackerMAT::ParseTrueHDMajorSyncHeaders(const uint8_t* p, int buffsize) const

@@ -10,14 +10,15 @@ Neither trace is a fix for reported dropouts or Evolution dialnorm behavior.
 
 Enable normal Kodi debug logging **before** the seek and keep it enabled for the
 capture. No component-specific logging or new setting is required. A Full-sync,
-TrueHD IEC codec reset arms the first 32 produced MAT packets. Opening a codec,
+TrueHD IEC codec reset arms the first 256 produced MAT packets. Opening a codec,
 unpausing it, non-Full sync and other codecs do not arm a window. The trace does
 not change audio data, reset policy, mute/drop decisions or sink configuration.
 
 Every record begins `TrueHD restart:`. Match `epoch` and `packet`, not just wall
 time or the latest reset. Old in-flight buffers retain their original epoch.
 
-- `stage=reset` allocates an epoch for a codec reset.
+- `stage=reset` allocates an epoch for a codec reset. `major_trace=source_au_v1`
+  identifies the complete source-AU mapping extension.
 - `stage=player_reset` relates it to `GENERAL_FLUSH` or `GENERAL_RESET` and the
   player's `sync_epoch`. A flush can have causes other than a user seek; correlate
   the surrounding normal seek logs rather than treating every reset as a seek.
@@ -40,6 +41,49 @@ time or the latest reset. Old in-flight buffers retain their original epoch.
   attempted output, so a completed pause/discard is not submission of the original
   MAT. API acceptance is not physical HDMI delivery or receiver decoding.
 
+The extension observes complete audio units (AUs) at their known input boundaries
+in the MAT packer. It does not search compressed payload for sync-like patterns.
+For each major-sync AU, it checks the declared AU length, variable major-header
+length, rate and the same major-header CRC as `CAEStreamParser::SyncTrueHD`.
+These checks do not validate substream/restart bodies, Evolution protection or
+lossless decode. The existing `major_head` remains a structural shortcut only.
+
+- `stage=major` identifies the source `epoch` and `au`. `au_bytes` is the complete
+  AU size; `header_bytes` includes the four-byte AU prefix and variable major
+  header. Require `structure_valid=true`, `crc_valid=true` and
+  `mapping_complete=true` before treating its mapping as validated.
+- `p1/o1/n1` and `p2/o2/n2` are exact MAT packet/byte-offset/byte-count spans of
+  the **whole AU**, excluding MAT markers and padding. A zero second count means
+  one span. They cover splits across the middle marker or a MAT boundary, even
+  when the sync word or CRC itself is split. `au` counts all packed source AUs,
+  including minors; gaps in major AU numbers are expected.
+- `stage=mat_dequeue` confirms the packer's output packet number. Match it with
+  `stage=produce` using epoch/packet and size before joining AU spans to downstream
+  source ranges. Major events may precede dequeue/produce: they describe copies
+  into a MAT that may still be incomplete or subsequently discarded.
+- `stage=major_gap reason=padding_reset coverage=stopped` means the packer's
+  existing recovery discarded its current unflushed MAT. Invalidate earlier AU
+  mappings touching that packet; major coverage stops for the rest of that epoch.
+  Existing recovery, payload and codec reset policy are unchanged.
+
+To check header delivery, take the first `header_bytes` source bytes across the
+one or two AU spans; to check whole-AU delivery, use both complete spans. Join
+each required range to the matching `stage=ae` decision and `stage=sink_api`
+result. A muted/dropped first span plus a payload second span is **not** a complete
+header or AU delivery. Check actual range coverage and API frame acceptance;
+`complete=true` on a replacement pause still submits no original payload. Do not
+count missing dequeue/produce/sink records as successful delivery or a proven
+drop. Partial sink writes require carrier/source-range accounting, not just a
+positive accepted frame count.
+
+`within_window=false` explicitly marks an AU crossing packet 256 into packet 257.
+The second packet has no downstream tag, so delivery remains partial/unknown.
+Headers and AUs beyond the window are unobserved. At 48 kHz, 256 MAT packets
+represent about 5.12 seconds of source audio; queueing, pauses and correction mean
+this is not a guaranteed wall-clock interval. A following reset starts a new
+epoch. Missing/bad-CRC/gap records must not be converted into a claim that the TV
+received a complete usable restart.
+
 For example, `produce packet=1 major_head=true`, followed by the same identity's
 `decision=mute` and `kind=replacement_pause payload_api_frames=0`, establishes
 that software replaced that initial major-bearing packet. A matching `drop` also
@@ -48,9 +92,10 @@ major or that the loss causes recurring crackling/DV notifications. Missing
 records alone do not prove a drop: data can be retired before enqueue, a later
 flush can purge a queue, or logging may have been disabled.
 
-Logs are bounded by the 32 source packets per reset; fragments have explicit
-ranges and inserted pauses are aggregated. There is no steady-state payload scan,
-CRC or fingerprint registry. Additional records and small side-data copies can
+Logs are bounded by the 256 source packets per reset; fragments have explicit
+ranges and inserted pauses are aggregated. The observer validates major-header
+CRCs only within that window; there is no steady-state payload scan or fingerprint
+registry. Additional records and small side-data copies can
 still perturb target timing; source/host checks do not establish neutrality on a
 real device. Inspect the actual built artifact before attributing these records
 to a running image. Normal release wrappers may reset the separate Kodi build
@@ -66,6 +111,7 @@ python3 tools/test-truehd-delivery.py
 python3 tools/check-truehd-delivery.py --self-test
 python3 tools/test-activeae-truehd-sync.py --negative-control
 python3 tools/test-truehd-restart.py
+python3 tools/test-truehd-major-coverage.py
 python3 tools/test-truehd-evolution-dialnorm.py --baseline-ref 6218b2ecb9144eada9384f052223df1f4e5c02b8
 ```
 
