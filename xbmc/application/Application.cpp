@@ -1929,6 +1929,11 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
 
     HandlePortEvents();
     CServiceBroker::GetInputManager().Process(CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindowOrDialog(), frameTime);
+    // Input can move focus. Focus and unfocus actions are queued as thread
+    // messages; deliver them before this frame processes controls, so that it
+    // already shows their effect, such as a list restoring its column, rather
+    // than the list's previous selection for one frame.
+    CServiceBroker::GetGUI()->GetWindowManager().DispatchThreadMessages();
 
     if (processGUI && renderGUI)
     {
