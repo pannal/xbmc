@@ -6843,8 +6843,8 @@ msgid "Disable GUI scaling"
 msgstr "GUI-Skalierung deaktivieren"
 
 msgctxt "#14291"
-msgid "For optimal performance across all devices, the GUI is rendered at 1080P and scaled to 4K by default, this option disables that scaling and renders the GUI at 4K. This can make thumbnails and other textures sharper, however some devices may have issues with this option being set. Requires reboot."
-msgstr "Für optimale Leistung auf allen Geräten wird die GUI standardmäßig in 1080p gerendert und auf 4K skaliert. Diese Option deaktiviert diese Skalierung und rendert die GUI direkt in 4K. Dadurch können Vorschaubilder und andere Texturen schärfer wirken, jedoch können bei einigen Geräten Probleme auftreten. Neustart erforderlich."
+msgid "Uses a native 4K interface when a 4K display resolution is selected. Enabled by default for sharper artwork and text. Disable to render at up to 1080p and scale to the output resolution. During demanding video playback, the interface may temporarily use 1080p. Requires reboot."
+msgstr "Verwendet eine native 4K-Oberfläche, wenn eine 4K-Bildauflösung ausgewählt ist. Für schärfere Grafiken und Texte standardmäßig aktiviert. Deaktivieren, um die Oberfläche mit maximal 1080p zu rendern und auf die Ausgabeauflösung zu skalieren. Während anspruchsvoller Videowiedergabe kann die Oberfläche vorübergehend 1080p verwenden. Neustart erforderlich."
 
 msgctxt "#14292"
 msgid "RGB"
