@@ -56,8 +56,7 @@ set(HEADERS AEResampleFactory.h
             Utils/AEStreamData.h
             Utils/AEStreamInfo.h
             Utils/AEUtil.h
-            Utils/PackerMAT.h
-            Utils/TrueHDRestartTrace.h)
+            Utils/PackerMAT.h)
 
 if(TARGET ALSA::ALSA)
   list(APPEND SOURCES Sinks/AESinkALSA.cpp

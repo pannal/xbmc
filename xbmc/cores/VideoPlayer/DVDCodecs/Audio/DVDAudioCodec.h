@@ -9,7 +9,6 @@
 #pragma once
 
 #include "cores/AudioEngine/Utils/AEAudioFormat.h"
-#include "cores/AudioEngine/Utils/TrueHDRestartTrace.h"
 #include "cores/VideoPlayer/Interface/DemuxPacket.h"
 #include "cores/VideoPlayer/Process/ProcessInfo.h"
 
@@ -49,7 +48,6 @@ typedef struct stDVDAudioFrame
   // LAV discontinuity signaling (used when LAV sync is enabled)
   bool hasDiscontinuity{false};
   double discontinuityCorrection{0.0};
-  AE::TrueHDRestartTrace trueHDRestartTrace;
 } DVDAudioFrame;
 
 class CDVDAudioCodec

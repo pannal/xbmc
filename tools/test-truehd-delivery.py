@@ -46,7 +46,6 @@ HARNESS = r'''
 #include "AEBitstreamPacker.h"
 #include "Crc32.h"
 #include "utils/log.h"
-#include "cores/AudioEngine/Utils/TrueHDRestartTrace.h"
 #include "EndianSwap.h"
 using namespace std::chrono_literals;
 std::ofstream result;
@@ -84,7 +83,7 @@ unsigned checkedAdd(CAESinkALSA&alsa,uint8_t**data,unsigned frames,unsigned offs
 struct FakeSink {CAESinkALSA alsa;unsigned AddPackets(uint8_t**data,unsigned frames,unsigned offset){if(alsa.m_pcm){alsa.m_pcm->root=data[0];alsa.m_pcm->size=65536;}recordText("add");record(frames);record(offset);auto r=checkedAdd(alsa,data,frames,offset);recordText("add-return");record(r);return r;}void GetDelay(AEDelayStatus&s){recordText("delay");s.delay=.125;}void AddPause(int ms){recordText("pause");record(ms);}};
 struct Stats {void UpdateSinkDelay(const AEDelayStatus&s,int packets){recordText("stats");record(s.delay);record(packets);}};
 struct Packet {uint8_t*data[1]{};unsigned nb_samples=61440;int pause_burst_ms=0;};
-struct CSampleBuffer {Packet*pkt=nullptr;void*pool=nullptr;AE::TrueHDRestartTrace trueHDRestartTrace;};
+struct CSampleBuffer {Packet*pkt=nullptr;void*pool=nullptr;};
 struct CAEUtil {static bool S16NeedsByteSwap(int,int output){return output==AE_FMT_S16BE;}};
 struct CActiveAESink {enum SwapState{SKIP_SWAP,NEED_BYTESWAP,CHECK_SWAP};Format m_requestedFormat,m_sinkFormat;bool m_needIecPack=true,m_extStreaming=false,m_extError=false;SwapState m_swapState=SKIP_SWAP;CAEBitstreamPacker*m_packer=nullptr;FakeSink*m_sink=nullptr;Stats*m_stats=nullptr;unsigned OutputSamples(CSampleBuffer*);void SwapInit(CSampleBuffer*);};
 @OUTPUT@
@@ -173,7 +172,7 @@ struct CLog {inline static std::vector<LogRecord>records;template<class T>static
 #pragma once
 struct CAEStreamInfo{enum Type {STREAM_TYPE_TRUEHD,STREAM_TYPE_AC3,STREAM_TYPE_EAC3,STREAM_TYPE_DTSHD,STREAM_TYPE_DTSHD_MA,STREAM_TYPE_DTSHD_CORE,STREAM_TYPE_DTS_512,STREAM_TYPE_DTS_1024,STREAM_TYPE_DTS_2048};Type m_type=STREAM_TYPE_TRUEHD;unsigned m_sampleRate=48000,m_repeat=1,m_dtsPeriod=512;bool m_dataIsLE=false;};
 ''')
-    cmd=['g++','-std=c++17','-O1','-g','-DTARGET_POSIX','-I'+str(directory),'-I'+str(root/'xbmc'),str(directory/'main.cpp'),str(directory/'AEBitstreamPacker.cpp'),str(directory/'AEPackIEC61937.cpp'),str(directory/'Crc32.cpp'),str(directory/'EndianSwap.cpp'),'-o',str(directory/'run')]
+    cmd=['g++','-std=c++17','-O1','-g','-DTARGET_POSIX','-I'+str(directory),str(directory/'main.cpp'),str(directory/'AEBitstreamPacker.cpp'),str(directory/'AEPackIEC61937.cpp'),str(directory/'Crc32.cpp'),str(directory/'EndianSwap.cpp'),'-o',str(directory/'run')]
     if sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
     subprocess.run(cmd,check=True,capture_output=True,text=True)
     result=directory/'behavior.bin'

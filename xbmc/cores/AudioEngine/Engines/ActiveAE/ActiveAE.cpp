@@ -2424,40 +2424,7 @@ bool CActiveAE::RunStages()
         if (!(*it)->m_processingBuffers->m_outputSamples.empty() && !(*it)->m_paused)
         {
           (*it)->m_started = true;
-          auto* restartInput = (*it)->m_processingBuffers->m_outputSamples.front();
-          const auto restartSyncBefore = (*it)->m_syncState;
           buffer = SyncStream(*it);
-          // RAW forwards this same buffer. Observe its identity even when the
-          // sync gate replaces its bytes with pause output or drops it.
-          auto& trace = restartInput->trueHDRestartTrace;
-          if (trace && m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD &&
-              CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG))
-          {
-            if (buffer)
-            {
-              // Inserted silence is a separate, untagged buffer; this source
-              // packet remains queued. Bound logs even for a long correction.
-              ++trace.insertedPauses;
-              trace.insertedPauseMs += buffer->pkt->pause_burst_ms;
-              if (trace.insertedPauses == 1)
-                CLog::Log(LOGDEBUG,
-                          "TrueHD restart: stage=ae_insert_pause epoch={} packet={} pause_ms={} source_waits=true",
-                          trace.epoch, trace.packet, buffer->pkt->pause_burst_ms);
-            }
-            else
-            {
-              const char* decision = restartInput->pkt->nb_samples > 0 ? "payload" :
-                  restartInput->pkt->pause_burst_ms > 0 ? "mute" : "drop";
-              CLog::Log(LOGDEBUG,
-                        "TrueHD restart: stage=ae epoch={} packet={} offset={} bytes={} decision={} "
-                        "source_major_head={} sync_before={} sync_after={} pause_ms={} "
-                        "inserted_pauses={} inserted_ms={}",
-                        trace.epoch, trace.packet, trace.offset, trace.bytes, decision,
-                        trace.majorAtStart, static_cast<int>(restartSyncBefore),
-                        static_cast<int>((*it)->m_syncState), restartInput->pkt->pause_burst_ms,
-                        trace.insertedPauses, trace.insertedPauseMs);
-            }
-          }
           m_stats.UpdateStream(*it);
           if (!buffer)
           {

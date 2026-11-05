@@ -40,7 +40,6 @@ public:
   bool AddData(const DemuxPacket &packet) override;
   void GetData(DVDAudioFrame &frame) override;
   void Reset() override;
-  uint64_t GetRestartTraceEpoch() const { return m_restartTrace.Epoch(); }
   AEAudioFormat GetFormat() override { return m_format; }
   bool NeedPassthrough() override { return true; }
   std::string GetName() override { return m_codecName; }
@@ -153,5 +152,4 @@ private:
   //============================================================================
   double m_internalClock{LOCAL_NOPTS};  // Running output timestamp (like LAV's m_rtStart)
   bool m_needsResync{true};             // When true, sync to next valid demuxer PTS
-  AE::CTrueHDRestartTrace m_restartTrace;
 };

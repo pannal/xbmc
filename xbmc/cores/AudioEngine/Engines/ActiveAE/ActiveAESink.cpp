@@ -9,7 +9,6 @@
 #include "ActiveAESink.h"
 
 #include "ActiveAE.h"
-#include "ServiceBroker.h"
 #include "cores/AudioEngine/AEResampleFactory.h"
 #include "cores/AudioEngine/Utils/AEBitstreamPacker.h"
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
@@ -1029,25 +1028,6 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   unsigned int written = 0;
   AEDelayStatus status;
 
-  const auto restartTrace = samples->trueHDRestartTrace;
-  const char* restartKind = frames > 0 ? "payload" :
-      samples->pkt->pause_burst_ms > 0 ? "replacement_pause" : "discard";
-  const auto traceResult = [&] {
-    if (restartTrace && m_requestedFormat.m_dataFormat == AE_FMT_RAW && m_needIecPack &&
-        m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD &&
-        CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG))
-    {
-      const unsigned int accepted = totalFrames - frames;
-      CLog::Log(LOGDEBUG,
-                "TrueHD restart: stage=sink_api epoch={} packet={} offset={} bytes={} kind={} "
-                "source_major_head={} packed_frames={} accepted_frames={} payload_api_frames={} "
-                "complete={} error={}",
-                restartTrace.epoch, restartTrace.packet, restartTrace.offset, restartTrace.bytes,
-                restartKind, restartTrace.majorAtStart, totalFrames, accepted,
-                samples->pkt->nb_samples > 0 ? accepted : 0U, frames == 0 && !m_extError, m_extError);
-    }
-  };
-
   if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
   {
     bool skipSwap = false;
@@ -1123,7 +1103,6 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
         if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
           framesOrPackets = 1;
         m_stats->UpdateSinkDelay(status, samples->pool ? framesOrPackets : 0);
-        traceResult();
         return 0;
       }
       else
@@ -1138,7 +1117,6 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
       if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
         framesOrPackets = 1;
       m_stats->UpdateSinkDelay(status, samples->pool ? framesOrPackets : 0);
-      traceResult();
       return 0;
     }
     frames -= written;
@@ -1152,7 +1130,6 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
     m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0);
 
-  traceResult();
   return status.delay * 1000;
 }
 

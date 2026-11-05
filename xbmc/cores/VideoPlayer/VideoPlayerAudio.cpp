@@ -693,13 +693,7 @@ void CVideoPlayerAudio::Process()
     {
       m_dataCacheCore.SetAudioDialNorm();
       if (m_pAudioCodec)
-      {
         m_pAudioCodec->Reset();
-        auto* passthrough = dynamic_cast<CDVDAudioCodecPassthrough*>(m_pAudioCodec.get());
-        if (passthrough && passthrough->GetRestartTraceEpoch())
-          CLog::Log(LOGDEBUG, "TrueHD restart: stage=player_reset epoch={} message=GENERAL_RESET sync_epoch={}",
-                    passthrough->GetRestartTraceEpoch(), m_syncEpoch);
-      }
       m_audioSink.Flush();
       m_stalled = true;
       m_audioClock = 0;
@@ -731,14 +725,7 @@ void CVideoPlayerAudio::Process()
       }
 
       if (m_pAudioCodec)
-      {
         m_pAudioCodec->Reset();
-        auto* passthrough = dynamic_cast<CDVDAudioCodecPassthrough*>(m_pAudioCodec.get());
-        if (passthrough && passthrough->GetRestartTraceEpoch())
-          CLog::Log(LOGDEBUG,
-                    "TrueHD restart: stage=player_reset epoch={} message=GENERAL_FLUSH sync_epoch={} sync={}",
-                    passthrough->GetRestartTraceEpoch(), m_syncEpoch, sync);
-      }
       // Nothing is left to drain, and an end of stream sent after the flush
       // must not be taken for this one - see Flush.
       m_eofDraining = false;
