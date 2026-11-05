@@ -124,6 +124,7 @@ public:
   void* stream; // pointer or integer, identifying stream playing. if it changes stream changed
   int changes; // remembered counter from stream to track codec changes
   bool inited;
+  bool demuxDisabled; // disabled in the demuxer since it was opened
   unsigned int packets;
   IDVDStreamPlayer::ESyncState syncState;
   double starttime;
@@ -161,6 +162,7 @@ public:
     stream = NULL;
     changes = 0;
     inited = false;
+    demuxDisabled = false;
     packets = 0;
     syncState = IDVDStreamPlayer::SYNC_STARTING;
     starttime = DVD_NOPTS_VALUE;
@@ -206,6 +208,11 @@ struct SelectionStream
   std::string stereo_mode;
   float aspect_ratio = 0.0f;
   StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+
+  bool IsCurrent(const CCurrentStream& current) const
+  {
+    return demuxerId == current.demuxerId && id == current.id && source == current.source;
+  }
 };
 
 class CSelectionStreams

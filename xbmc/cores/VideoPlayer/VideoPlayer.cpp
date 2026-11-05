@@ -4301,7 +4301,7 @@ void CVideoPlayer::HandleMessages()
             m_audioRecoveryPending = true;
           }
         }
-        else
+        else if (!st.IsCurrent(m_CurrentAudio))
         {
 #if defined(HAVE_LIBBLURAY)
           if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) && m_pDemuxer)
@@ -4346,7 +4346,7 @@ void CVideoPlayer::HandleMessages()
             m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
           }
         }
-        else
+        else if (!st.IsCurrent(m_CurrentVideo))
         {
           CloseStream(m_CurrentVideo, false);
           OpenStream(m_CurrentVideo, st.demuxerId, st.id, st.source);
@@ -4376,7 +4376,7 @@ void CVideoPlayer::HandleMessages()
             CloseStream(m_CurrentSubtitle, false);
           }
         }
-        else
+        else if (!st.IsCurrent(m_CurrentSubtitle) || m_CurrentSubtitle.demuxDisabled)
         {
 #if defined(HAVE_LIBBLURAY)
           if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) && m_pDemuxer)
@@ -4390,6 +4390,7 @@ void CVideoPlayer::HandleMessages()
           }
 #endif
 
+          // a stream disabled in the demuxer is only enabled again by a reopen
           CloseStream(m_CurrentSubtitle, false);
           OpenStream(m_CurrentSubtitle, st.demuxerId, st.id, st.source);
           if (st.source == STREAM_SOURCE_DEMUX)
@@ -5146,7 +5147,10 @@ void CVideoPlayer::SetSubtitleVisible(bool bVisible)
 void CVideoPlayer::SetEnableStream(CCurrentStream& current, bool isEnabled)
 {
   if (m_pDemuxer && STREAM_SOURCE_MASK(current.source) == STREAM_SOURCE_DEMUX)
+  {
     m_pDemuxer->EnableStream(current.demuxerId, current.id, isEnabled);
+    current.demuxDisabled = !isEnabled;
+  }
 }
 
 void CVideoPlayer::SetSubtitleVisibleInternal(bool bVisible)
@@ -5438,6 +5442,7 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
     current.id = iStream;
     current.demuxerId = demuxerId;
     current.source = source;
+    current.demuxDisabled = false;
     current.hint = hint;
     current.stream = (void*)stream;
     current.lastdts = DVD_NOPTS_VALUE;
