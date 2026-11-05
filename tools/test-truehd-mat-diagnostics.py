@@ -230,13 +230,8 @@ struct CLog {
         assert carry in packer
         packer = packer.replace(carry, "0")
     (directory / "PackerMAT.h").write_text(header)
-    (directory / "TrueHDRestartTrace.h").write_text(source(
-        "xbmc/cores/AudioEngine/Utils/TrueHDRestartTrace.h", None))
     (directory / "PackerMAT.cpp").write_text(packer)
-    harness = HARNESS.replace(
-        '#include "cores/AudioEngine/Utils/TrueHDRestartTrace.h"',
-        '#include "TrueHDRestartTrace.h"')
-    harness = harness.replace("@GET_DATA@", block(codec,
+    harness = HARNESS.replace("@GET_DATA@", block(codec,
         "void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)"))
     harness = harness.replace("@DURATION@", block(source(
         "xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp", ref),

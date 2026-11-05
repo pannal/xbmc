@@ -138,8 +138,6 @@ void CDVDAudioCodecPassthrough::OnSettingChanged(const std::shared_ptr<const CSe
 bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 {
   m_restartTrace.Reset(false);
-  if (m_packerMAT)
-    m_packerMAT->SetRestartTrace(0);
   UpdateDialNormSettings();
   UpdateLavModeSettings();
 
@@ -274,8 +272,6 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
 void CDVDAudioCodecPassthrough::Dispose()
 {
   m_restartTrace.Reset(false);
-  if (m_packerMAT)
-    m_packerMAT->SetRestartTrace(0);
   if (m_buffer)
   {
     delete[] m_buffer;
@@ -677,7 +673,7 @@ void CDVDAudioCodecPassthrough::Reset()
                       m_format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD &&
                       CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG));
   if (m_restartTrace.Epoch())
-    CLog::Log(LOGDEBUG, "TrueHD restart: stage=reset epoch={} policy=full packet_limit={} major_trace=source_au_v1",
+    CLog::Log(LOGDEBUG, "TrueHD restart: stage=reset epoch={} policy=full packet_limit={}",
               m_restartTrace.Epoch(), AE::CTrueHDRestartTrace::PACKET_LIMIT);
   m_trueHDoffset = 0;
   m_dataSize = 0;
@@ -720,8 +716,6 @@ void CDVDAudioCodecPassthrough::Reset()
     // correctly and provides a natural ~500ms settling time before first MAT
     // output, which TrueHD HBR receivers need after an HDMI audio interruption.
   }
-  if (m_packerMAT)
-    m_packerMAT->SetRestartTrace(m_restartTrace.Epoch());
 }
 
 void CDVDAudioCodecPassthrough::SetLavStyleSyncEnabled(bool enabled)

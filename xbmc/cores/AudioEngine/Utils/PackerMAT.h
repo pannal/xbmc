@@ -8,8 +8,6 @@
 
 #pragma once
 
-#include "TrueHDRestartTrace.h"
-
 #include <deque>
 #include <stdint.h>
 #include <vector>
@@ -45,7 +43,6 @@ public:
   int GetSamplesOffset() const { return m_lavStyleEnabled ? m_lastOutputSamplesOffset : 0; }
   bool HadDiscontinuity() const { return m_lavStyleEnabled ? m_lastOutputHadDiscontinuity : false; }
   void Reset();
-  void SetRestartTrace(uint64_t epoch) { m_restartTrace.Reset(epoch); }
 
   // Toggle LAV seamless branching support
   void SetLavStyleEnabled(bool enabled) { m_lavStyleEnabled = enabled; }
@@ -90,12 +87,9 @@ private:
   uint32_t GetCount() const { return m_bufferCount; }
   int FillDataBuffer(const uint8_t* data, int size, Type type);
   void FlushPacket();
-  void TraceAudioData(unsigned int bytes);
-  void StopRestartTrace();
   TrueHDMajorSyncInfo ParseTrueHDMajorSyncHeaders(const uint8_t* p, int buffsize) const;
 
   MATState m_state{};
-  AE::CTrueHDMajorTrace m_restartTrace;
   bool m_lavStyleEnabled{false}; // Toggle LAV seamless branching support (OFF by default)
   int m_lastOutputSamplesOffset{0}; // samples offset returned by last GetOutputFrame() call (LAV only)
   bool m_lastOutputHadDiscontinuity{false}; // discontinuity flag for last GetOutputFrame() (LAV only)

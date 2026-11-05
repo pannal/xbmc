@@ -76,8 +76,7 @@ int main(int argc, char** argv) {
   assert(!window.Next(mat.data(), mat.size()));
   window.Reset(true); auto epoch = window.Epoch(); assert(epoch);
   AE::TrueHDRestartTrace old;
-  assert(AE::CTrueHDRestartTrace::PACKET_LIMIT == 256);
-  for (unsigned n=1; n<=256; ++n) {
+  for (unsigned n=1; n<=32; ++n) {
     auto tag=window.Next(mat.data(), mat.size());
     assert(tag && tag.epoch==epoch && tag.packet==n && tag.packetBytes==61440 && tag.bytes==61440 && tag.majorAtStart);
     if(n==1)old=tag;
@@ -95,7 +94,7 @@ int main(int argc, char** argv) {
   window.Reset(true);assert(!window.Next(nullptr,61440));
   window.Reset(true);mat[35]^=1;assert(!window.Next(mat.data(),mat.size()).majorAtStart);
   window.Reset(false);assert(window.Epoch()==0 && !window.Next(mat.data(),mat.size()));
-  out.put('1');std::cout<<"window: debug gating, exact256 bound, epochs, slices and short-input guards PASS\n";
+  out.put('1');std::cout<<"window: debug gating, exact32 bound, epochs, slices and short-input guards PASS\n";
 }
 '''
 
@@ -339,10 +338,10 @@ int main(int argc,char**argv){assert(argc==2);std::ofstream result(argv[1],std::
   auto epoch=codec.m_restartTrace.Epoch();const bool expected=debug&&lav&&!raw&&truehd;
   if constexpr(traced)assert(bool(epoch)==expected);
   codec.pending.resize(61440,0x11);codec.pending[32]=0xf8;codec.pending[33]=0x72;codec.pending[34]=0x6f;codec.pending[35]=0xba;
-  for(unsigned n=1;n<=(expected?264u:40u);++n){codec.m_currentPts=12000000+(n-1)*20000;DVDAudioFrame frame;codec.GetData(frame);write(result,frame.nb_frames);write(result,frame.pts);write(result,frame.duration);write(result,frame.hasDiscontinuity);write(result,frame.discontinuityCorrection);result.write(reinterpret_cast<const char*>(frame.data[0]),frame.nb_frames);
-   if constexpr(traced){assert(bool(frame.trueHDRestartTrace)==(expected&&n<=256));if(frame.trueHDRestartTrace){assert(frame.trueHDRestartTrace.epoch==epoch&&frame.trueHDRestartTrace.packet==n&&frame.trueHDRestartTrace.packetBytes==61440&&frame.trueHDRestartTrace.majorAtStart);}}
+  for(unsigned n=1;n<=40;++n){codec.m_currentPts=12000000+(n-1)*20000;DVDAudioFrame frame;codec.GetData(frame);write(result,frame.nb_frames);write(result,frame.pts);write(result,frame.duration);write(result,frame.hasDiscontinuity);write(result,frame.discontinuityCorrection);result.write(reinterpret_cast<const char*>(frame.data[0]),frame.nb_frames);
+   if constexpr(traced){assert(bool(frame.trueHDRestartTrace)==(expected&&n<=32));if(frame.trueHDRestartTrace){assert(frame.trueHDRestartTrace.epoch==epoch&&frame.trueHDRestartTrace.packet==n&&frame.trueHDRestartTrace.packetBytes==61440&&frame.trueHDRestartTrace.majorAtStart);}}
   }
-  if constexpr(traced){assert(countLogs("TrueHD restart: stage=produce ")==size_t(expected?256:0));assert(countLogs("TrueHD restart: stage=reset ")==size_t(expected));}
+  if constexpr(traced){assert(countLogs("TrueHD restart: stage=produce ")==size_t(expected?32:0));assert(countLogs("TrueHD restart: stage=reset ")==size_t(expected));}
   codec.pending.clear();DVDAudioFrame empty;empty.trueHDRestartTrace.epoch=999;codec.GetData(empty);if constexpr(traced)assert(!empty.trueHDRestartTrace);
   ++cases;
  }
@@ -416,7 +415,7 @@ def verify(args, directory):
             rejected.append(mutation);print('Rejected '+mutation,flush=True)
         else:
             raise AssertionError(mutation+' unexpectedly passed')
-    for mutation,old,new in [('unbounded-window','PACKET_LIMIT = 256','PACKET_LIMIT = 512'),('wrong-slice-offset','result.offset = sourceOffset;','result.offset = 0;')]:
+    for mutation,old,new in [('unbounded-window','PACKET_LIMIT = 32','PACKET_LIMIT = 64'),('wrong-slice-offset','result.offset = sourceOffset;','result.offset = 0;')]:
         child=directory/mutation;child.mkdir();header=source(HEADER);assert old in header;(child/'TrueHDRestartTrace.h').write_text(header.replace(old,new,1))
         try:
             execute(child,'window',WINDOW,sanitize=args.sanitize)
