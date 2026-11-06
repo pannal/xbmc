@@ -373,3 +373,27 @@ struct CTimeUtils
 {
   static unsigned GetFrameTime() { return frameTime; }
 };
+
+// Recording placement: the production CDecodePlacement is exercised in
+// tools/test-decode-placement.py.
+namespace PERFORMANCE_CORES
+{
+struct CDecodePlacement
+{
+  bool neededNow = false;
+  int scopes = 0;
+  bool neededAtScope = false;
+  void NeededNow() { neededNow = true; }
+  struct Scope
+  {
+    explicit Scope(const std::shared_ptr<CDecodePlacement>& placement)
+    {
+      if (placement)
+      {
+        ++placement->scopes;
+        placement->neededAtScope = placement->neededNow;
+      }
+    }
+  };
+};
+} // namespace PERFORMANCE_CORES

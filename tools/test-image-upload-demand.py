@@ -36,6 +36,7 @@ PRELUDE=r'''
 #include <unordered_map>
 #include <utility>
 #include <vector>
+namespace PERFORMANCE_CORES{struct CDecodePlacement{void NeededNow(){}struct Scope{explicit Scope(const std::shared_ptr<CDecodePlacement>&){}};};}
 using namespace std::chrono_literals;
 static thread_local int heldLocks=0;
 static unsigned checks=0,cases=0;

@@ -30,8 +30,12 @@
 
 CImageLoader::CImageLoader(const std::string& path,
                          bool useCache,
-                         std::shared_ptr<std::atomic_bool> cancelled)
-  : m_path(path), m_texture(nullptr), m_cancelled(std::move(cancelled))
+                         std::shared_ptr<std::atomic_bool> cancelled,
+                         std::shared_ptr<PERFORMANCE_CORES::CDecodePlacement> placement)
+  : m_path(path),
+    m_texture(nullptr),
+    m_cancelled(std::move(cancelled)),
+    m_placement(std::move(placement))
 {
   m_use_cache = useCache;
 }
@@ -69,6 +73,9 @@ bool CImageLoader::DoWork()
 {
   if (ShouldCancel(0, 0))
     return false;
+  // Until a foreground control draws this image, decode it off the render
+  // thread's CPUs. The worker's CPUs are restored when the decode returns.
+  PERFORMANCE_CORES::CDecodePlacement::Scope placement(m_placement);
 
   bool needsChecking = false;
   std::string loadPath;
@@ -285,6 +292,10 @@ void CGUILargeTextureManager::RequestImageUpload(const std::string& path,
   }
   if (!image || !image->m_refCount)
     return;
+  // A foreground control is drawing it now: a running decode must not wait on
+  // the slow cluster. Background (fanart) and look-ahead requests can.
+  if (!background && !prefetch)
+    image->m_decodePlacement->NeededNow();
 
   if (requestFrame)
     m_uploadFrame = *requestFrame;
@@ -518,8 +529,9 @@ CGUILargeTextureManager::queueIterator CGUILargeTextureManager::StartQueuedImage
 {
   CLargeTexture* image = it->second;
   it->first = CServiceBroker::GetJobManager()->AddJob(
-      new CImageLoader(image->GetPath(), image->m_useCache, image->GetCancellationToken()), this,
-      CJob::PRIORITY_NORMAL);
+      new CImageLoader(image->GetPath(), image->m_useCache, image->GetCancellationToken(),
+                       image->m_decodePlacement),
+      this, CJob::PRIORITY_NORMAL);
   if (it->first == 0)
   {
     // A stopped job manager cannot complete this request. Expose a load failure

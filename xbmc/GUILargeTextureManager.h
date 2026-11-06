@@ -10,6 +10,7 @@
 
 #include "guilib/TextureManager.h"
 #include "threads/CriticalSection.h"
+#include "threads/PerformanceCores.h"
 #include "utils/Job.h"
 
 #include <atomic>
@@ -35,7 +36,8 @@ class CImageLoader : public CJob
 public:
   CImageLoader(const std::string& path,
                bool useCache,
-               std::shared_ptr<std::atomic_bool> cancelled = {});
+               std::shared_ptr<std::atomic_bool> cancelled = {},
+               std::shared_ptr<PERFORMANCE_CORES::CDecodePlacement> placement = {});
   ~CImageLoader() override;
 
   /*!
@@ -49,6 +51,7 @@ public:
 
 private:
   std::shared_ptr<std::atomic_bool> m_cancelled;
+  std::shared_ptr<PERFORMANCE_CORES::CDecodePlacement> m_placement;
 };
 
 /*!
@@ -173,6 +176,9 @@ private:
     CTextureArray m_texture;
     unsigned int m_timeToDelete;
     std::shared_ptr<std::atomic_bool> m_cancelled{std::make_shared<std::atomic_bool>(false)};
+    // Decodes nothing draws yet run on the slow cluster; see CDecodePlacement.
+    std::shared_ptr<PERFORMANCE_CORES::CDecodePlacement> m_decodePlacement{
+        std::make_shared<PERFORMANCE_CORES::CDecodePlacement>()};
     // Keep decoded data private until the upload job has released its context.
     std::shared_ptr<CTexture> m_pendingTexture;
     bool m_asyncUpload{false};

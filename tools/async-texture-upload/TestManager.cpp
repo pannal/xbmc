@@ -280,6 +280,57 @@ static void DemandDuringDecode()
   ++cases;
 }
 
+static void DecodePlacement()
+{
+  State s;
+  Harness h(s);
+  const auto placementOf = [&](const std::string& path)
+  {
+    for (const auto& q : h.images.m_queued)
+      if (q.second->GetPath() == path)
+        return q.second->m_decodePlacement;
+    for (auto* image : h.images.m_allocated)
+      if (image->GetPath() == path)
+        return image->m_decodePlacement;
+    throw std::runtime_error("missing image");
+  };
+  // The decode job holds the image's own placement while it decodes; nothing
+  // draws it yet, so the decode may start on the slow cluster.
+  const auto a = h.New("a");
+  const auto pa = placementOf("a");
+  Check(pa && pa->scopes == 0, "a queued decode has not started yet");
+  h.Work(h.jobs.Start(a));
+  Check(pa->scopes == 1 && !pa->neededAtScope, "the decode runs with the image's placement");
+  // Fanart and look-ahead requests do not need it now; a foreground draw does.
+  const auto b = h.New("b", true);
+  h.Request("b", true);
+  Check(!placementOf("b")->neededNow, "a background request can wait");
+  const auto c = h.New("c");
+  h.Request("c", false, true);
+  Check(!placementOf("c")->neededNow, "a look-ahead request can wait");
+  h.Request("c");
+  Check(placementOf("c")->neededNow, "a foreground draw needs it now");
+  h.Work(h.jobs.Start(c));
+  Check(placementOf("c")->neededAtScope, "a decode started after the draw is never restricted");
+  // Demand during a running decode reaches the same object the worker holds.
+  const auto d = h.New("d");
+  const auto pd = placementOf("d");
+  CJob* job = h.jobs.Start(d);
+  h.Request("d");
+  Check(pd->neededNow && pd->scopes == 0, "demand before the decode body runs");
+  h.Work(job);
+  Check(pd->scopes == 1 && pd->neededAtScope, "the running decode sees the demand");
+  // Each image has its own placement; the unknown-geometry fallback counts as a draw.
+  Check(placementOf("a") != placementOf("c"), "placements are per image");
+  const auto e = h.New("e");
+  h.images.RequestImageUpload("e");
+  Check(placementOf("e")->neededNow, "default request counts as a foreground draw");
+  if (b) // a deferred background decode has no job yet
+    h.Work(h.jobs.Start(b));
+  h.Work(h.jobs.Start(e));
+  ++cases;
+}
+
 static void BackgroundHold()
 {
   State s;
@@ -431,6 +482,7 @@ int main()
     RunningCancellation();
     Fallbacks();
     DemandDuringDecode();
+    DecodePlacement();
     BackgroundHold();
     FreshVisibleFirst();
     std::printf(

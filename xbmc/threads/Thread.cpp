@@ -13,6 +13,7 @@
 #include "IRunnable.h"
 #include "commons/Exception.h"
 #include "threads/IThreadImpl.h"
+#include "threads/PerformanceCores.h"
 #include "threads/SingleLock.h"
 #include "utils/log.h"
 
@@ -111,9 +112,13 @@ void CThread::Create(bool bAutoDelete)
     m_future = prom.get_future().share();
     std::promise<void> startup;
     startupFuture = startup.get_future();
+    // A thread inherits its creator's mask. The pinned GUI render thread and a
+    // worker restricted for a decode hold a mask meant only for themselves.
+    const std::set<int> childAffinity = PERFORMANCE_CORES::ChildAffinity();
 
     m_thread = std::make_shared<std::thread>(
-        [](CThread* pThread, std::promise<bool> promise, std::promise<void> startup)
+        [childAffinity](CThread* pThread, std::promise<bool> promise,
+                          std::promise<void> startup)
         {
           try
           {
@@ -141,6 +146,8 @@ void CThread::Create(bool bAutoDelete)
 
             pThread->m_impl = IThreadImpl::CreateThreadImpl(pThread->m_thread->native_handle());
             pThread->m_impl->SetThreadInfo(pThread->m_ThreadName);
+            if (!childAffinity.empty())
+              PERFORMANCE_CORES::RestoreChildAffinity(childAffinity);
 
             CLog::Log(LOGDEBUG, "Thread {} start, auto delete: {}", pThread->m_ThreadName,
                       (pThread->m_bAutoDelete ? "true" : "false"));
