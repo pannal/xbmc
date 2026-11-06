@@ -32,6 +32,8 @@ public:
   static void RegisterProcessControl(const std::string& id, CreateProcessControl createFunc);
   virtual ~CProcessInfo() = default;
   void SetDataCache(CDataCacheCore *cache);
+  // false for a decoder created outside a player (e.g. thumbnail extraction)
+  bool HasDataCache() const { return m_dataCache != nullptr; }
 
   // player video
   void ResetVideoCodecInfo();
