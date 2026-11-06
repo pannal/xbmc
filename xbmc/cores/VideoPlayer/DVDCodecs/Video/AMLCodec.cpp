@@ -2792,10 +2792,18 @@ void CAMLCodec::Abort()
 
 // The decoder keeps its last pictures (the H.264 and HEVC reorder buffers)
 // for the next input. At the end of the input it outputs them after the
-// stream buffer is empty.
+// stream buffer is empty. If the session denies the decoder, the end of the
+// input stays pending: each drain step sends the drain control again.
 void CAMLCodec::SetInputEnded()
 {
-  if (!m_opened || m_inputEnded)
+  if (m_inputEnded)
+    return;
+  if (LifecyclePending() && !ContinueLifecycle())
+    return;
+  auto operation = m_session.AcquireDecoder();
+  if (!operation)
+    return;
+  if (!m_opened)
     return;
   CLog::Log(LOGDEBUG, "CAMLCodec::SetInputEnded");
   m_dll->codec_set_eos(&am_private->vcodec, 1);
