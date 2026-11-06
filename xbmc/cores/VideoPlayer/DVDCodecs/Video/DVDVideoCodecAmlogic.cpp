@@ -914,6 +914,18 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   if (!ContinueLifecycle())
     return false;
 
+  // More input after the end of the input (a growing file). The decoder ended
+  // the stream and decodes again only after a reset, from the next key frame.
+  // The shown picture stays until the next picture.
+  if (m_Codec && m_Codec->InputEnded())
+  {
+    CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: input after the end of the input, reset the decoder",
+              __FUNCTION__);
+    ResetDecoder(false);
+    if (!ContinueLifecycle())
+      return false;
+  }
+
   // Handle Input, add demuxer packet to input queue. Returning false requeues
   // the packet in VideoPlayerVideo (SendMessageBack) for a later retry;
   // returning true reports it consumed and it will not be seen again.
@@ -1065,13 +1077,18 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
 void CDVDVideoCodecAmlogic::Reset(void)
 {
+  ResetDecoder(true);
+}
+
+void CDVDVideoCodecAmlogic::ResetDecoder(bool holdVideo)
+{
   if ((aml_get_cpufamily_id() != AML_G12B) && (m_hints.dovi_el_type == DOVIELType::TYPE_FEL) && (m_dataCacheCore.GetSpeed() == 1.0f))
   {
     m_Codec->ReopenDecoder();
   }
   else
   {
-    m_Codec->Reset();
+    m_Codec->Reset(holdVideo);
   }
 
   m_resetCleanupPending = true;
@@ -1233,7 +1250,11 @@ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
       m_videobuffer.iFlags &= ~DVP_FLAG_DROPPED;
 
     if (m_Codec)
+    {
       m_Codec->SetDrain((flags & DVD_CODEC_CTRL_DRAIN) != 0);
+      if ((flags & DVD_CODEC_CTRL_DRAIN) && (flags & DVD_CODEC_CTRL_END_OF_INPUT))
+        m_Codec->SetInputEnded();
+    }
   }
 }
 

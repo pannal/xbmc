@@ -31,7 +31,7 @@ def harness():
     wrapper = (ROOT / 'xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp').read_text()
     methods = '\n'.join(function(codec, signature) for signature in [
         'bool CAMLCodec::OpenDecoder()', 'bool CAMLCodec::CloseDecoder(',
-        'bool CAMLCodec::Reset()', 'bool CAMLCodec::ReopenDecoder()',
+        'bool CAMLCodec::Reset(', 'bool CAMLCodec::ReopenDecoder()',
         'bool CAMLCodec::BeginLifecycle(', 'bool CAMLCodec::ContinueLifecycle()',
         'void CAMLCodec::WaitForLifecycle()', 'bool CAMLCodec::AddData(',
         'int CAMLCodec::PollFrame(', 'void CAMLCodec::SetPollDevice(',
@@ -40,7 +40,8 @@ def harness():
         'void CDVDVideoCodecAmlogic::Close(', 'void CDVDVideoCodecAmlogic::Reset(',
         'bool CDVDVideoCodecAmlogic::LifecyclePending()',
         'bool CDVDVideoCodecAmlogic::LifecycleFailed()',
-        'bool CDVDVideoCodecAmlogic::ContinueLifecycle()', 'void CDVDVideoCodecAmlogic::FinishReset()'])
+        'bool CDVDVideoCodecAmlogic::ContinueLifecycle()', 'void CDVDVideoCodecAmlogic::FinishReset()',
+        'void CDVDVideoCodecAmlogic::ResetDecoder('])
     prelude = PRELUDE.replace('@FAILED_METHOD@', function(header, 'bool          LifecycleFailed()'))
     opened = function(codec, 'bool CAMLCodec::OpenDecoderInternal()')
     setup = opened[opened.index('  aml_video_fps_reset();'):opened.index('  m_drain = false;')]
@@ -232,7 +233,7 @@ public:
   void CheckVideoHold() {} // Restart receipts exercised by test-aml-restart-hold.py.
   int PollFrame(const CAMLSession::Permit&);
   void SetPollDevice(int);
-  bool OpenDecoder(); bool CloseDecoder(std::function<void()> beforeClose = {}); bool Reset(); bool ReopenDecoder();
+  bool OpenDecoder(); bool CloseDecoder(std::function<void()> beforeClose = {}); bool Reset(bool holdVideo = true); bool ReopenDecoder();
   bool BeginLifecycle(Lifecycle, std::function<void()> beforeClose = {}); bool ContinueLifecycle(); void WaitForLifecycle();
   bool LifecyclePending() const {return m_lifecycle!=Lifecycle::NONE;}
   void MutationOnly() {
@@ -273,7 +274,7 @@ public:
   bool m_buffer_level_ready{false},m_decoder_bypass_buffer_ready{false};
   float m_decoder_stream_buffer{0.0f},m_decoder_buffer{0.0f};
   float m_minimum_buffer_level{},m_decoder_minimum_stream_buffer{},m_decoder_minimum_buffer{};
-  bool m_no_data_since_reset{true},m_abort{false};
+  bool m_no_data_since_reset{true},m_abort{false},m_resetHoldsVideo{true};
   struct {bool ptsinvalid{false};} m_hints;
   int m_state{0}; double m_cur_pts{DVD_NOPTS_VALUE};
   bool m_wrFailActive{false};
@@ -303,7 +304,7 @@ public:
   int m_el_starvation_count{3},m_mpeg2_sequence_pts{100};
   bool m_has_keyframe{true};
   std::unique_ptr<Bitstream> m_bitstream{std::make_unique<Bitstream>()};
-  void Close(); void Reset(); bool LifecyclePending() const; bool LifecycleFailed() const;
+  void Close(); void Reset(); void ResetDecoder(bool holdVideo); bool LifecyclePending() const; bool LifecycleFailed() const;
   bool ContinueLifecycle(); void FinishReset();
 };
 '''

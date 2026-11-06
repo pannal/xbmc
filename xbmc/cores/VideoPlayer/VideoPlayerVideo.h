@@ -123,6 +123,23 @@ protected:
   void Process() override;
 
   bool ProcessDecoderOutput(double &frametime, double &pts);
+  bool CanOutputPicture() const;
+
+  // A drain squeezes the last pictures out of the decoder. One step goes per loop,
+  // so that the messages that pause, resume, flush or sync the playback come
+  // between the steps.
+  enum class DrainKind
+  {
+    NONE,
+    STILL, // no input for a while: the stream shows a still picture
+    INPUT, // VIDEO_DRAIN: the end of the input, or a Blu-ray clip boundary
+    STREAM_CHANGE, // the held GENERAL_STREAMCHANGE opens the next stream after the drain
+  };
+  void StartDrain(DrainKind kind, int control, std::shared_ptr<CDVDMsg> streamChange = {});
+  void ContinueDrain(double& frametime, double& pts);
+  void EndDrain(double& frametime, double& pts);
+  void AbortDrain();
+  void OpenStreamChange(const std::shared_ptr<CDVDMsg>& msg);
   void UpdatePlayerInfo();
   void SendMessageBack(const std::shared_ptr<CDVDMsg>& pMsg, int priority = 0);
   MsgQueueReturnCode GetMessage(std::shared_ptr<CDVDMsg>& pMsg,
@@ -204,6 +221,16 @@ protected:
   int m_iSubtitlePlane{0}; ///< 3D MVC subtitle depth plane (ss_offset_sequence_id)
   std::unique_ptr<CDVDVideoCodec> m_pVideoCodec;
   std::shared_ptr<CDVDMsg> m_pendingResetMessage;
+  struct SDrain
+  {
+    DrainKind kind{DrainKind::NONE};
+    int control{0}; // DVD_CODEC_CTRL_DRAIN and DVD_CODEC_CTRL_END_OF_INPUT
+    bool started{false};
+    std::shared_ptr<CDVDMsg> streamChange;
+  };
+  SDrain m_drain;
+  // The parent reads HasData() while the video thread drains
+  std::atomic_bool m_draining{false};
   bool m_pendingRecoveryDiscard{false};
   std::shared_ptr<CVideoFlushRequest> m_flushRequest;
   CPtsTracker m_ptsTracker;

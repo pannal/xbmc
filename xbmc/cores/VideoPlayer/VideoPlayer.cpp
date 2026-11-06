@@ -2103,7 +2103,7 @@ void CVideoPlayer::Process()
       m_videoRecoveryGate.CancelPending();
       if (m_CurrentVideo.inited)
       {
-        m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN));
+        m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::VIDEO_DRAIN, true));
       }
 
       // The audio counterpart. A decoder that answers later than it is asked
@@ -6091,7 +6091,8 @@ void CVideoPlayer::DrainStreamsAtBoundary()
   CLog::Log(LOGDEBUG, "CVideoPlayer::DrainStreamsAtBoundary - draining (video {}{:.1f}s, audio {}{:.1f}s)",
             videoActive ? "" : "inactive ", videoSecs, audioActive ? "" : "inactive ", audioSecs);
   if (videoActive)
-    m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN), 0);
+    // The next clip continues in the same decoder
+    m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::VIDEO_DRAIN, false), 0);
 
   const auto ceiling = std::chrono::milliseconds(
       std::clamp(static_cast<int>(std::max(videoSecs, audioSecs) * 1000.0) + 3000, 8000, 30000));

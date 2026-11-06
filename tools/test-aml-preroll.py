@@ -117,6 +117,7 @@ public:
   struct { bool pictureEmitted = false; } m_stillFrameDrain;
   bool m_opened = true, m_dvBackendPaused = false, m_stream_eof = false;
   bool m_drain = false, m_no_data_since_reset = false, m_buffer_level_ready = true;
+  bool m_abort = false, m_inputEnded = false;
   bool m_keepMPEG2Progressive = false, m_repairTimestamps = false;
   float m_minimum_buffer_level = 10.0f, m_dataLevel = 0.0f;
   int m_speed = DVD_PLAYSPEED_NORMAL, m_decoder_drain_timeout = 5, m_decoder_timeout = 5;
@@ -132,6 +133,7 @@ public:
   double m_prerollTarget = DVD_NOPTS_VALUE;
   std::chrono::system_clock::time_point m_tp_last_frame = std::chrono::system_clock::now();
   std::chrono::system_clock::time_point m_tp_drain_start = m_tp_last_frame;
+  std::chrono::system_clock::time_point m_tp_input_ended = m_tp_last_frame;
   std::vector<uint64_t> holdDecodedPts;
   int holdPolls = 0, dequeues = 0;
   bool LifecyclePending() { return false; }

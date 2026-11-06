@@ -36,6 +36,7 @@ PREFIX = r'''
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <utility>
 #include <vector>
 struct CLog {template<class... T> static void Log(T&&...) {}};
 constexpr int LOGDEBUG=0, DVD_PLAYSPEED_NORMAL=1000, TRICKMODE_NONE=0;
@@ -55,6 +56,8 @@ struct Dll {
   void codec_set_cntl_mode(VCodec*,int) {}
   void codec_pause(VCodec*) {}
   void codec_reset(VCodec*) {++resets; FakeClock::Advance(std::chrono::milliseconds(400));}
+  std::vector<int> eos;
+  void codec_set_eos(VCodec*,int value) {eos.push_back(value);}
   void codec_set_video_delay_limited_ms(VCodec*,int) {}
 };
 static std::chrono::milliseconds probeRetireDelay{0};
@@ -66,7 +69,7 @@ void am_packet_init(Packet*) {}
 void pre_header_feeding(Private*,Packet*) {}
 void aml_dv_backend_invalidate(void*) {}
 uint64_t aml_dv_backend_epoch() {return 1;}
-bool aml_subtitle_active_area_configure(int,int,bool,bool,int) {return true;}
+bool aml_subtitle_active_area_configure(int,int,bool,bool,int,double) {return true;}
 // Stops and joins the previous probe worker before starting the next one.
 void aml_dv_detect_active_area_start() {++probeStarts; FakeClock::Advance(probeRetireDelay);}
 struct CAMLCodec {
@@ -78,8 +81,10 @@ struct CAMLCodec {
   std::vector<int> m_reorderQueue{1};
   int m_repairExcursionRun=1, m_outPtsRingPos=1, m_outPtsRingCount=1, m_state=1;
   bool m_stream_eof=true, m_buffer_level_ready=true, m_no_data_since_reset=false;
+  bool m_resetHoldsVideo=true, m_inputEnded=false;
   struct {int frames=1;} m_stillFrameDrain;
-  struct {StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE; int width=3840, height=2160;
+  float m_dataLevel=1;
+  struct {StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE; int width=3840, height=2160; double aspect=16.0/9;
           struct {int dv_profile=0;} dovi; int subtitleProbeSource=0;} m_hints;
   StreamHdrType m_originalSourceHdrType=StreamHdrType::HDR_TYPE_NONE;
   std::chrono::system_clock::time_point m_tp_last_frame{};
@@ -117,6 +122,12 @@ int main() {
   closed.m_tp_last_frame = FakeClock::now() - std::chrono::seconds(9);
   closed.ResetInternal();
   assert(closed.TimedOut() && closed.dll.resets == 0);
+  // A reset after the end of the input lets the decoder accept input again.
+  CAMLCodec ended; ended.m_inputEnded = true;
+  ended.ResetInternal();
+  assert(ended.dll.eos == std::vector<int>{0} && !ended.m_inputEnded);
+  ended.ResetInternal();
+  assert(ended.dll.eos.size() == 1);
   std::puts("PASS: aml-reset-watchdog");
 }
 '''

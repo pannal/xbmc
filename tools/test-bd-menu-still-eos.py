@@ -14,6 +14,11 @@ root=ROOT
 source=(root/'xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp').read_text()
 header=(root/'xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h').read_text()
 method=source[source.index('bool CAMLCodec::DrainHevcStill('):source.index('CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(')]
+# A flush (m_abort, cleared with the still state by ResetInternal) returns from
+# GetPicture before the still drain can write or wait.
+picture=source[source.index('CDVDVideoCodec::VCReturn CAMLCodec::GetPicture('):]
+abort=picture.index('    if (m_abort)\n      return CDVDVideoCodec::VC_BUFFER;')
+assert abort < picture.index('if (DrainHevcStill(buffer_level))')
 state=header[header.index('  struct StillFrameDrain'):header.index('  // Green-flash mask state')]
 preamble=r'''
 #include <algorithm>
@@ -69,7 +74,6 @@ int main() {
   { CAMLCodec c;c.m_hints.codec=2;assert(!c.DrainHevcStill(0));assert(c.m_dll->calls==0); }
   { CAMLCodec c;c.m_stillFrameDrain.pictureEmitted=true;assert(!c.DrainHevcStill(0));assert(c.m_dll->calls==0); }
   { CAMLCodec c;assert(!c.DrainHevcStill(1));assert(c.m_dll->calls==0); }
-  { CAMLCodec c;c.m_abort=true;assert(!c.DrainHevcStill(0));assert(c.m_dll->calls==0); }
   { CAMLCodec c;c.m_dll->results={{2,0},{0,0},{-1,EAGAIN},{-1,EINTR},{4,0}};
     for(int i=0;i<5;++i){assert(c.DrainHevcStill(0));assert(!(fcntl(c.fd[1],F_GETFL)&O_NONBLOCK));}
     assert(c.m_dll->bytes==std::vector<uint8_t>({0,0,0,1,0x48,1}));
@@ -87,10 +91,9 @@ int main() {
     assert(!c.DrainHevcStill(0));assert(c.m_dll->calls==1);
   }
   { CAMLCodec c;c.m_dll->results={{-1,EIO}};assert(!c.DrainHevcStill(0));assert(!c.DrainHevcStill(0));assert(c.m_dll->calls==1); }
-  { CAMLCodec c;c.m_dll->results={{2,0}};assert(c.DrainHevcStill(0));c.m_abort=true;assert(!c.DrainHevcStill(0));assert(c.m_dll->calls==1); }
   { CAMLCodec c;c.am_private->vcodec.handle=-1;assert(!c.DrainHevcStill(0));assert(c.m_dll->calls==0); }
   { CAMLCodec c;assert(fcntl(c.fd[1],F_SETFL,O_NONBLOCK)==0);assert(c.DrainHevcStill(0));assert(fcntl(c.fd[1],F_GETFL)&O_NONBLOCK); }
-  std::puts("PASS: 14 HEVC still EOS scenarios (actual extracted production method)");
+  std::puts("PASS: 12 HEVC still EOS scenarios (actual extracted production method); a flush returns before the still drain");
 }
 '''
 with tempfile.TemporaryDirectory(prefix="bd-still-eos-") as tmp:

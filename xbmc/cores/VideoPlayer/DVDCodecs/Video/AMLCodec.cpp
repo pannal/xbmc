@@ -143,6 +143,7 @@ public:
   virtual int codec_init_cntl(codec_para_t *pcodec)=0;
   virtual int codec_poll_cntl(codec_para_t *pcodec)=0;
   virtual int codec_set_cntl_mode(codec_para_t *pcodec, unsigned int mode)=0;
+  virtual int codec_set_eos(codec_para_t *pcodec, int is_eos)=0;
   virtual int codec_set_cntl_avthresh(codec_para_t *pcodec, unsigned int avthresh)=0;
   virtual int codec_set_cntl_syncthresh(codec_para_t *pcodec, unsigned int syncthresh)=0;
 
@@ -171,6 +172,7 @@ class DllLibAmCodec : public DllDynamic, DllLibamCodecInterface
   DEFINE_METHOD1(int, codec_init_cntl,          (codec_para_t *p1))
   DEFINE_METHOD1(int, codec_poll_cntl,          (codec_para_t *p1))
   DEFINE_METHOD2(int, codec_set_cntl_mode,      (codec_para_t *p1, unsigned int p2))
+  DEFINE_METHOD2(int, codec_set_eos,            (codec_para_t *p1, int p2))
   DEFINE_METHOD2(int, codec_set_cntl_avthresh,  (codec_para_t *p1, unsigned int p2))
   DEFINE_METHOD2(int, codec_set_cntl_syncthresh,(codec_para_t *p1, unsigned int p2))
 
@@ -194,6 +196,7 @@ class DllLibAmCodec : public DllDynamic, DllLibamCodecInterface
     RESOLVE_METHOD(codec_init_cntl)
     RESOLVE_METHOD(codec_poll_cntl)
     RESOLVE_METHOD(codec_set_cntl_mode)
+    RESOLVE_METHOD(codec_set_eos)
     RESOLVE_METHOD(codec_set_cntl_avthresh)
     RESOLVE_METHOD(codec_set_cntl_syncthresh)
 
@@ -1983,8 +1986,9 @@ bool CAMLCodec::CloseDecoder(std::function<void()> beforeClose)
   return BeginLifecycle(Lifecycle::CLOSE, std::move(beforeClose));
 }
 
-bool CAMLCodec::Reset()
+bool CAMLCodec::Reset(bool holdVideo)
 {
+  m_resetHoldsVideo = holdVideo;
   return BeginLifecycle(Lifecycle::RESET);
 }
 
@@ -2170,6 +2174,7 @@ bool CAMLCodec::OpenDecoderInternal()
   // opens this decoder. Keep that speed through open and reopen.
   m_drain = false;
   m_stream_eof = false;
+  m_inputEnded = false;
   m_no_data_since_reset = true;
   m_stillFrameDrain = {};
   m_cur_pts = DVD_NOPTS_VALUE;
@@ -2782,6 +2787,29 @@ void CAMLCodec::Abort()
   m_abort = true;
 }
 
+// The decoder keeps its last pictures (the H.264 and HEVC reorder buffers)
+// for the next input. At the end of the input it outputs them after the
+// stream buffer is empty. If the session denies the decoder, the end of the
+// input stays pending: each drain step sends the drain control again.
+void CAMLCodec::SetInputEnded()
+{
+  if (m_inputEnded)
+    return;
+  if (LifecyclePending() && !ContinueLifecycle())
+    return;
+  auto operation = m_session.AcquireDecoder();
+  if (!operation)
+    return;
+  if (!m_opened)
+    return;
+  CLog::Log(LOGDEBUG, "CAMLCodec::SetInputEnded");
+  m_dll->codec_set_eos(&am_private->vcodec, 1);
+  m_inputEnded = true;
+  // The wait for the last pictures starts now, also in a drain that started
+  // without the end of the input
+  m_tp_input_ended = m_tp_drain_start = std::chrono::system_clock::now();
+}
+
 void CAMLCodec::ResetInternal()
 {
   m_abort = false;
@@ -2794,7 +2822,8 @@ void CAMLCodec::ResetInternal()
   // brief window where the decoder reallocs over the keeper-pinned frame isn't
   // shown. Read live so the settings take effect on the next seek; released on
   // an applied replacement frame (with a bounded fail-safe).
-  HoldVideo(VideoRestartHoldWanted());
+  if (std::exchange(m_resetHoldsVideo, true))
+    HoldVideo(VideoRestartHoldWanted());
 
   SetPollDevice(-1);
 
@@ -2811,6 +2840,11 @@ void CAMLCodec::ResetInternal()
   m_dvBackendSampleTime = 0;
   // reset the decoder
   m_dll->codec_reset(&am_private->vcodec);
+  if (m_inputEnded)
+  {
+    m_dll->codec_set_eos(&am_private->vcodec, 0);
+    m_inputEnded = false;
+  }
   m_dll->codec_set_video_delay_limited_ms(&am_private->vcodec, 1000);
 
   dumpfile_close(am_private);
@@ -3220,11 +3254,6 @@ bool CAMLCodec::DrainHevcStill(float bufferLevel)
   auto& still = m_stillFrameDrain;
   if (!m_hints.stills || m_hints.codec != AV_CODEC_ID_HEVC || still.pictureEmitted)
     return false;
-  if (m_abort)
-  {
-    still.state = State::DONE;
-    return false;
-  }
 
   const auto now = std::chrono::steady_clock::now();
   if (still.state == State::IDLE)
@@ -3583,6 +3612,11 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
       return CDVDVideoCodec::VC_EOF;
     }
 
+    // A flush discards the remaining pictures. A wait for them up to the drain
+    // timeout held the flush of a seek.
+    if (m_abort)
+      return CDVDVideoCodec::VC_BUFFER;
+
     if (DrainHevcStill(buffer_level))
       return CDVDVideoCodec::VC_NONE;
 
@@ -3591,9 +3625,20 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     const int64_t poll_ms =
         (static_cast<int64_t>(am_private->video_rate.load(std::memory_order_relaxed)) * 10000 +
          UNIT_FREQ - 1) / UNIT_FREQ;
-    bool frames_flowing = elapsed_since_last_frame < std::chrono::milliseconds(poll_ms);
+    // At the end of the input, the decoder outputs the kept pictures some time
+    // after the end of stream, also after a pause or a gap in the input
+    auto idle = elapsed_since_last_frame;
+    if (m_inputEnded)
+      idle = std::min(idle, std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now() - m_tp_input_ended));
+    bool frames_flowing = idle < std::chrono::milliseconds(poll_ms);
     if (buffer_level > 0.0f &&
         (drain_elapsed < std::chrono::seconds(m_decoder_drain_timeout) || frames_flowing))
+      return CDVDVideoCodec::VC_NONE;
+    // At the end of the input, the decoder outputs its last pictures after it
+    // read the stream buffer
+    if (m_inputEnded && frames_flowing &&
+        drain_elapsed < std::chrono::seconds(m_decoder_drain_timeout))
       return CDVDVideoCodec::VC_NONE;
     return CDVDVideoCodec::VC_EOF;
   }
