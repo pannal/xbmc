@@ -748,6 +748,8 @@ CScroller::CScroller(unsigned int duration /* = 200 */,
   m_scrollValue = 0;
   m_delta = 0;
   m_startTime = 0;
+  m_lastTime = 0;
+  m_continues = false;
   m_startPosition = 0;
   m_hasResumePoint = false;
   m_duration = duration > 0 ? duration : 1;
@@ -766,6 +768,8 @@ CScroller& CScroller::operator=(const CScroller &right)
   m_scrollValue = right.m_scrollValue;
   m_delta = right.m_delta;
   m_startTime = right.m_startTime;
+  m_lastTime = right.m_lastTime;
+  m_continues = right.m_continues;
   m_startPosition = right.m_startPosition;
   m_hasResumePoint = right.m_hasResumePoint;
   m_duration = right.m_duration;
@@ -781,6 +785,7 @@ void CScroller::ScrollTo(float endPos)
     // if there is scrolling running in same direction - set resume point
   m_hasResumePoint = m_delta != 0 && delta * m_delta > 0 && m_pTweener ? m_pTweener->HasResumePoint() : false;
 
+  m_continues = m_delta != 0;
   m_delta = delta;
   m_startPosition = m_scrollValue;
   m_startTime = 0;
@@ -816,7 +821,18 @@ float CScroller::Tween(float progress)
 bool CScroller::Update(unsigned int time)
 {
   if (!m_startTime)
-    m_startTime = time;
+  {
+    // A retarget of a running scroll starts from the previous update, so its
+    // first frame already moves. Starting at this frame's time showed the same
+    // position twice at every step of a held key. After a longer gap, as when
+    // the container was not processed, the scroll starts now.
+    constexpr unsigned int MAX_CONTINUE_GAP_MS = 50;
+    m_startTime = m_continues && m_lastTime && time - m_lastTime <= MAX_CONTINUE_GAP_MS
+                      ? m_lastTime
+                      : time;
+    m_continues = false;
+  }
+  m_lastTime = time;
   if (m_delta != 0)
   {
     if (time - m_startTime >= m_duration) // we are finished

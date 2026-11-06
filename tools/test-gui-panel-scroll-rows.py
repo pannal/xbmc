@@ -119,6 +119,8 @@ private:
   float m_startPosition;
   bool m_hasResumePoint;
   unsigned int m_startTime;
+  unsigned int m_lastTime;
+  bool m_continues;
   unsigned int m_duration;
   std::shared_ptr<Tweener> m_pTweener;
 };
@@ -651,9 +653,9 @@ int main(int argc, char** argv)
     Check(!second.scrolling && second.after==11*kRow,
           "zero duration completes on next frame");
   }
-  // Retarget/reversal preserve CScroller's own first-Update zero-progress rule;
-  // neither is an additional panel deferral. Repeated requests before first
-  // Process retain the one pending build frame.
+  // A retarget or reversal continues from CScroller's previous update, so its
+  // first frame already moves; neither is an additional panel deferral.
+  // Repeated requests before first Process retain the one pending build frame.
   {
     Panel panel{false};panel.Rest(20);panel.Request(21);panel.Request(22);
     Check(!panel.Process().updated,"batched initial requests retain build frame");
@@ -662,7 +664,7 @@ int main(int argc, char** argv)
     {
       panel.Request(target);const Frame frame=panel.Process();
       Check(frame.updated,"active retarget has no extra panel deferral");
-      Check(frame.before==frame.after,"retarget preserves inherited zero-progress anchor");
+      Check(frame.before!=frame.after,"retarget moves in its first frame");
       panel.Process();
     }
   }

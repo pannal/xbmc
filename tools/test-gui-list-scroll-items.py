@@ -16,7 +16,9 @@ new layouts in the frame the step is requested, before its scroll clock
 starts; nothing may be built or freed while the scroll moves, and the first
 moving frame may not jump. Processed and rendered items must equal an
 independent item enumeration in every frame, held scrolling must not gain an
-extra deferral at retargets and must keep a bounded number of layouts, and
+extra deferral at retargets, must move in the first frame of each retarget
+instead of showing the same position twice, and must keep a bounded number of
+layouts, and
 items at rest must equal the historical items. A wrap list keeps all of a list
 its kept range covers. A zero duration keeps its existing first frame, and a
 request after a stop between frames still defers; scrolling is reported to the
@@ -118,6 +120,8 @@ private:
   float m_startPosition;
   bool m_hasResumePoint;
   unsigned int m_startTime;
+  unsigned int m_lastTime;
+  bool m_continues;
   unsigned int m_duration;
   std::shared_ptr<Tweener> m_pTweener;
 };
@@ -567,11 +571,14 @@ int main(int argc, char** argv)
     bool firstFrame = true;
     for (int i = 0; i < 180; ++i)
     {
-      if (i % 6 == 0 && offset < 120)
+      const bool retarget = i % 6 == 0 && offset < 120;
+      if (retarget)
         list.Request(++offset);
       const Frame f = list.Process();
       if (!firstFrame && !f.updated)
         Check(false, "held scroll paused at a retarget, frame " + std::to_string(i));
+      if (retarget && i >= 6 && f.after == f.before)
+        Check(false, "held scroll stands still at a retarget, frame " + std::to_string(i));
       firstFrame = false;
       maxKept = std::max(maxKept, f.kept);
     }
@@ -580,6 +587,20 @@ int main(int argc, char** argv)
     list.Settle(40);
     Check(list.Kept() <= static_cast<int>(ExpectedItems(list.c).size()) + 1,
           "rest after held scroll keeps the drawn items");
+  }
+
+  // a retarget after a gap longer than a few frames, as when the container was
+  // not processed, starts in its own frame instead of jumping ahead
+  {
+    List<CGUIBaseContainer> list{false};
+    list.Rest(20);
+    list.Request(21);
+    for (int i = 0; i < 4; ++i)
+      list.Process();
+    list.now += 200;
+    list.Request(22);
+    const Frame f = list.Process();
+    Check(f.updated && f.before == f.after, "retarget after a gap starts in its own frame");
   }
 
   // items at rest equal the historical items
@@ -720,6 +741,18 @@ def run(exe, *args):
                           env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'})
 
 
+# CScroller mutations, confined to the named method of VisibleEffect.cpp
+SCROLLER_MUTATIONS = {
+    # a retarget's clock starts in its own frame again, as before
+    'restart-retarget': ('bool CScroller::Update(unsigned int time)', r'm_continues && m_lastTime && ',
+                         'false && m_continues && m_lastTime && ', 'held scroll stands still at a retarget'),
+    'continue-after-gap': ('bool CScroller::Update(unsigned int time)', r'time - m_lastTime <= MAX_CONTINUE_GAP_MS',
+                           'time - m_lastTime <= 1000 * MAX_CONTINUE_GAP_MS',
+                           'retarget after a gap starts in its own frame'),
+    'retarget-not-marked': ('void CScroller::ScrollTo(float endPos)', r'm_continues = m_delta != 0;',
+                            'm_continues = false;', 'held scroll stands still at a retarget'),
+}
+
 # name: (function the mutation is confined to, pattern, replacement, required failure)
 MUTATIONS = {
     'omit-offscreen-focus-size': (RANGE, r'if \(GetOffset\(\) \+ GetCursor\(\) < firstItem\)',
@@ -793,8 +826,18 @@ def main():
                     'destructive mutation survived or failed for another reason: ' + name, bad.returncode,
                     bad.stderr[:2000])
         print('Rejected mutation: ' + name, flush=True)
+    for name, (scope, pattern, replacement, witness) in SCROLLER_MUTATIONS.items():
+        mutated, count = mutate(scroller, scope, pattern, replacement)
+        assert count == 1, 'mutation did not apply: ' + name
+        bad = run(build(args.output, 'mutant-' + name, base, wrap, mutated))
+        sanitized = any(x in bad.stderr for x in ('AddressSanitizer', 'runtime error:'))
+        assert (bad.returncode == 1 and witness in bad.stderr and
+                not sanitized), (
+                    'destructive mutation survived or failed for another reason: ' + name, bad.returncode,
+                    bad.stderr[:2000])
+        print('Rejected mutation: ' + name, flush=True)
     print('GUI list scroll items: PASS; historical rule reproduced, %d mutations rejected; '
-          'host fixtures, not skin/GPU/device verification' % len(MUTATIONS))
+          'host fixtures, not skin/GPU/device verification' % (len(MUTATIONS) + len(SCROLLER_MUTATIONS)))
 
 
 if __name__ == '__main__':
