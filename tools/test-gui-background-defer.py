@@ -104,6 +104,13 @@ static void DirectConsumers(){State s;Harness h(s);CTextureArray a;
  h.images.ReleaseImage("A",true);++cases;
  Publish(h,"B");Check(!h.images.HasDirectConsumer("B"),"background consumer is not direct");
  Check(h.images.GetImage("B",a,true,true,false,true)&&a.size()==1&&h.images.HasDirectConsumer("B"),"loaded direct consumer is reported");a.Free();
+ h.images.ProcessDeferred();Check(h.images.HasDirectConsumer("B"),"stamp from the previous frame counts");
+ h.images.ProcessDeferred();Check(!h.images.HasDirectConsumer("B"),"unprocessed direct consumer is ignored");
+ h.images.DirectConsumerActive("B");Check(h.images.HasDirectConsumer("B"),"processed direct consumer is reported again");
+ Check(h.images.GetImage("Q",a,true,true,false,true)&&h.images.m_queuedLookup.count("Q"),"second direct image is queued");
+ h.images.ProcessDeferred();h.images.ProcessDeferred();Check(!h.images.HasDirectConsumer("Q"),"unprocessed queued direct consumer is ignored");
+ h.images.DirectConsumerActive("Q");Check(h.images.HasDirectConsumer("Q"),"processed queued direct consumer is reported again");
+ h.images.ReleaseImage("Q",true,true);h.images.DirectConsumerActive("B");
  h.images.ReleaseImage("B",false);Check(h.images.HasDirectConsumer("B"),"other release keeps loaded direct consumer");
  h.images.ReleaseImage("B",false,true);Check(!h.images.HasDirectConsumer("B")&&h.images.m_allocatedLookup.count("B"),"released loaded direct consumer is no longer reported");++cases;}
 static void BackgroundTextureHint(){for(int mode=0;mode<3;++mode){State s;s.async=false;s.delayBackgrounds=false;Harness h(s);
@@ -234,14 +241,19 @@ def mutations(files):
       ('rejected-decode-stranded',LARGE,'CGUILargeTextureManager::queueIterator CGUILargeTextureManager::StartQueuedImage(','if (it->first == 0)','if (false)','rejected immediate/deferred/promoted decoder becomes load failure, not stranded'),
       ('cancel-job-zero',LARGE,'void CGUILargeTextureManager::ReleaseImage(','          if (it->first != 0)\n','', 'released deferred request never calls CancelJob zero'),
       ('queued-direct-not-counted',LARGE,'void CGUILargeTextureManager::QueueImage(','  image->m_directRefs = direct ? 1 : 0;\n','','queued direct consumer is reported'),
-      ('joined-direct-not-counted',LARGE,'void CGUILargeTextureManager::QueueImage(','    if (direct)\n      it->second->m_directRefs++;\n','','joining direct consumer is counted'),
-      ('loaded-direct-not-counted',LARGE,'bool CGUILargeTextureManager::GetImage(','      if (direct)\n        image->m_directRefs++;\n','','loaded direct consumer is reported'),
+      ('joined-direct-not-counted',LARGE,'void CGUILargeTextureManager::QueueImage(','      it->second->m_directRefs++;\n','','joining direct consumer is counted'),
+      ('loaded-direct-not-counted',LARGE,'bool CGUILargeTextureManager::GetImage(','        image->m_directRefs++;\n','','loaded direct consumer is reported'),
       ('poll-counts-direct',LARGE,'bool CGUILargeTextureManager::GetImage(','  if (firstRequest)\n    QueueImage(path, useCache, defer, background, direct);','  if (firstRequest || direct)\n    QueueImage(path, useCache, defer, background, direct);','direct poll adds no reference'),
       ('queued-release-ignores-kind',LARGE,'void CGUILargeTextureManager::ReleaseImage(','    CLargeTexture *image = queueIt->second;\n    if (direct && image->m_directRefs)\n      image->m_directRefs--;\n','    CLargeTexture *image = queueIt->second;\n','released direct consumers are no longer reported'),
       ('queued-release-drops-direct',LARGE,'void CGUILargeTextureManager::ReleaseImage(','    CLargeTexture *image = queueIt->second;\n    if (direct && image->m_directRefs)','    CLargeTexture *image = queueIt->second;\n    if (image->m_directRefs)','other release keeps direct consumers'),
       ('loaded-release-ignores-kind',LARGE,'void CGUILargeTextureManager::ReleaseImage(','    CLargeTexture *image = allocIt->second;\n    if (direct && image->m_directRefs)\n      image->m_directRefs--;\n','    CLargeTexture *image = allocIt->second;\n','released loaded direct consumer is no longer reported'),
       ('loaded-release-drops-direct',LARGE,'void CGUILargeTextureManager::ReleaseImage(','    CLargeTexture *image = allocIt->second;\n    if (direct && image->m_directRefs)','    CLargeTexture *image = allocIt->second;\n    if (image->m_directRefs)','other release keeps loaded direct consumer'),
-      ('direct-query-ignores-queue',LARGE,'bool CGUILargeTextureManager::HasDirectConsumer(','  return queued != m_queuedLookup.end() && queued->second->m_directRefs > 0;','  return (void)queued, false;','queued direct consumer is reported'),
+      ('direct-query-ignores-queue',LARGE,'bool CGUILargeTextureManager::HasDirectConsumer(','  else if (auto queued = m_queuedLookup.find(path); queued != m_queuedLookup.end())\n    image = queued->second;\n','','queued direct consumer is reported'),
+      ('stale-direct-counted',LARGE,'bool CGUILargeTextureManager::HasDirectConsumer(',' && m_processFrame - image->m_directFrame <= 1;',';','unprocessed direct consumer is ignored'),
+      ('previous-frame-ignored',LARGE,'bool CGUILargeTextureManager::HasDirectConsumer(','m_processFrame - image->m_directFrame <= 1','m_processFrame - image->m_directFrame == 0','stamp from the previous frame counts'),
+      ('active-not-stamped',LARGE,'void CGUILargeTextureManager::DirectConsumerActive(','    allocated->second->m_directFrame = m_processFrame;','    (void)allocated;','processed direct consumer is reported again'),
+      ('queued-active-not-stamped',LARGE,'void CGUILargeTextureManager::DirectConsumerActive(','    queued->second->m_directFrame = m_processFrame;','    (void)queued;','processed queued direct consumer is reported again'),
+      ('frames-not-counted',LARGE,'void CGUILargeTextureManager::ProcessDeferred(','  ++m_processFrame;\n','','unprocessed direct consumer is ignored'),
       ('quarter-screen',TEXTURE,'bool IsBackgroundSized(','float share = 0.5f','float share = 0.25f','image short of half screen is not background'),
       ('full-screen-only',TEXTURE,'bool IsBackgroundSized(','float share = 0.5f','float share = 1.0f','half-screen image is a background')]
     for name,path,signature,old,new,witness in definitions:yield name,edit(files,path,signature,old,new),witness,path
