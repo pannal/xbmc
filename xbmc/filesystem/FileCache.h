@@ -80,6 +80,7 @@ namespace XFILE
     unsigned int m_flags;
     CCriticalSection m_sync;
     std::function<void()> m_readWaitCallback;
+    std::function<bool()> m_readInterrupt;
     std::chrono::milliseconds m_processWait{100ms};
   };
 

@@ -534,8 +534,11 @@ retry:
     XbmcThreads::EndTime<> deadline{10s};
     do
     {
-      const auto wait = m_readWaitCallback ? std::min(deadline.GetTimeLeft(), 100ms)
-                                          : deadline.GetTimeLeft();
+      if (m_readInterrupt && m_readInterrupt())
+        return -1;
+      const auto wait = m_readWaitCallback || m_readInterrupt
+                            ? std::min(deadline.GetTimeLeft(), 100ms)
+                            : deadline.GetTimeLeft();
       if (wait == 0ms)
       {
         iRc = CACHE_RC_TIMEOUT;
@@ -684,6 +687,13 @@ int CFileCache::IoControl(EIoControl request, void* param)
   {
     std::unique_lock<CCriticalSection> lock(m_sync);
     m_readWaitCallback = *static_cast<std::function<void()>*>(param);
+    return 0;
+  }
+
+  if (request == IOCTRL_READ_INTERRUPT)
+  {
+    std::unique_lock<CCriticalSection> lock(m_sync);
+    m_readInterrupt = param ? *static_cast<std::function<bool()>*>(param) : std::function<bool()>{};
     return 0;
   }
 
