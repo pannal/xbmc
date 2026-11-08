@@ -300,8 +300,10 @@ public:
   bool m_AppFocused{true};
 
 private:
+  // Reports teardown completion. The launcher can retry a failed power request.
+  bool StopWithPowerAction(int exitCode);
   std::optional<int> m_pendingStop;
-  bool m_shutdownWatchdogStarted{false};
+  std::shared_ptr<std::atomic<int>> m_shutdownWatchdogExitCode;
   RenderAttemptResult m_lastRenderAttempt;
 #ifdef HAS_LIBAMCODEC
   uint64_t m_lastRenderDisplay{0};

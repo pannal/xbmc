@@ -74,13 +74,12 @@ CLogindUPowerSyscall::CLogindUPowerSyscall()
 CLogindUPowerSyscall::~CLogindUPowerSyscall()
 {
   ReleaseDelayLockSleep();
-  ReleaseDelayLockShutdown();
 }
 
 bool CLogindUPowerSyscall::Powerdown()
 {
-  // delay shutdown so that the app can close properly
-  InhibitDelayLockShutdown();
+  // The application has already stopped playback and waited for CEC standby.
+  // Let the service manager supervise the remaining process cleanup.
   return LogindSetPowerState("PowerOff");
 }
 
@@ -283,11 +282,6 @@ void CLogindUPowerSyscall::InhibitDelayLockSleep()
   m_delayLockSleepFd = InhibitDelayLock("sleep");
 }
 
-void CLogindUPowerSyscall::InhibitDelayLockShutdown()
-{
-  m_delayLockShutdownFd = InhibitDelayLock("shutdown");
-}
-
 int CLogindUPowerSyscall::InhibitDelayLock(const char *what)
 {
 #ifdef DBUS_TYPE_UNIX_FD
@@ -324,12 +318,6 @@ void CLogindUPowerSyscall::ReleaseDelayLockSleep()
 {
   ReleaseDelayLock(m_delayLockSleepFd, "sleep");
   m_delayLockSleepFd = -1;
-}
-
-void CLogindUPowerSyscall::ReleaseDelayLockShutdown()
-{
-  ReleaseDelayLock(m_delayLockShutdownFd, "shutdown");
-  m_delayLockShutdownFd = -1;
 }
 
 void CLogindUPowerSyscall::ReleaseDelayLock(int lockFd, const char *what)

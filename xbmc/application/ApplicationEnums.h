@@ -22,4 +22,7 @@ enum
   EXITCODE_POWERDOWN = 64,
   EXITCODE_RESTARTAPP = 65,
   EXITCODE_REBOOT = 66,
+  // The CoreELEC launcher retries these actions when Kodi cannot hand them off.
+  EXITCODE_FALLBACK_POWERDOWN = 67,
+  EXITCODE_FALLBACK_REBOOT = 68,
 };

@@ -138,6 +138,7 @@
 #include "threads/SystemClock.h"
 
 #include <cstdlib>
+#include <string_view>
 #include <thread>
 #include "utils/AlarmClock.h"
 #include "utils/CPUInfo.h"
@@ -1557,8 +1558,7 @@ void CApplication::OnApplicationMessage(ThreadMessage* pMsg)
   switch (msg)
   {
   case TMSG_POWERDOWN:
-    if (Stop(EXITCODE_POWERDOWN))
-      CServiceBroker::GetPowerManager().Powerdown();
+    StopWithPowerAction(EXITCODE_POWERDOWN);
     break;
 
   case TMSG_QUIT:
@@ -1583,8 +1583,7 @@ void CApplication::OnApplicationMessage(ThreadMessage* pMsg)
 
   case TMSG_RESTART:
   case TMSG_RESET:
-    if (Stop(EXITCODE_REBOOT))
-      CServiceBroker::GetPowerManager().Reboot();
+    StopWithPowerAction(EXITCODE_REBOOT);
     break;
 
   case TMSG_RESTARTAPP:
@@ -2005,14 +2004,7 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
   {
     const int exitCode = *m_pendingStop;
     m_pendingStop.reset();
-    if (Stop(exitCode))
-    {
-      if (exitCode == EXITCODE_POWERDOWN)
-        CServiceBroker::GetPowerManager().Powerdown();
-      else if (exitCode == EXITCODE_REBOOT)
-        CServiceBroker::GetPowerManager().Reboot();
-    }
-    else
+    if (!StopWithPowerAction(exitCode))
       m_pendingStop = exitCode;
   }
 }
@@ -2310,6 +2302,36 @@ bool CApplication::IsStopPending() const
   return CServiceBroker::GetAppMessenger()->IsProcessThread() && m_pendingStop.has_value();
 }
 
+bool CApplication::StopWithPowerAction(int exitCode)
+{
+  if (!Stop(exitCode))
+    return false;
+
+  bool accepted;
+  switch (exitCode)
+  {
+    case EXITCODE_POWERDOWN:
+      accepted = CServiceBroker::GetPowerManager().Powerdown();
+      if (!accepted)
+        CLog::Log(LOGERROR, "Failed to request system power-off from Kodi");
+      break;
+    case EXITCODE_REBOOT:
+      accepted = CServiceBroker::GetPowerManager().Reboot();
+      if (!accepted)
+        CLog::Log(LOGERROR, "Failed to request system reboot from Kodi");
+      break;
+    default:
+      return true;
+  }
+
+  if (accepted)
+  {
+    m_shutdownWatchdogExitCode->store(EXITCODE_QUIT);
+    m_ExitCode = exitCode;
+  }
+  return true;
+}
+
 bool CApplication::Stop(int exitCode)
 {
 #if defined(TARGET_ANDROID)
@@ -2324,21 +2346,32 @@ bool CApplication::Stop(int exitCode)
 
   CLog::Log(LOGINFO, "Stopping the application...");
 
-  // Watchdog: if the shutdown sequence takes longer than the configured
-  // timeout, force-exit so systemd can proceed with the reboot/shutdown.
-  // Addons (or core subsystems) that deadlock during teardown would
-  // otherwise block forever since kodi never tells systemd to reboot.
+  int watchdogExitCode = EXITCODE_QUIT;
+#ifdef TARGET_LINUX
+  // Only a launcher that understands the fallback exit codes can retry.
+  if (const char* fallback = std::getenv("KODI_POWER_ACTION_FALLBACK");
+      fallback && std::string_view{fallback} == "1")
+  {
+    if (exitCode == EXITCODE_POWERDOWN)
+      watchdogExitCode = EXITCODE_FALLBACK_POWERDOWN;
+    else if (exitCode == EXITCODE_REBOOT)
+      watchdogExitCode = EXITCODE_FALLBACK_REBOOT;
+  }
+#endif
+
+  // Preserve a pending power request even if teardown stalls. The launcher
+  // only needs to retry until the operating system accepts the request.
   const int shutdownTimeout =
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_addonScriptStopTimeout;
-  if (!m_shutdownWatchdogStarted)
+  if (!m_shutdownWatchdogExitCode)
   {
-    m_shutdownWatchdogStarted = true;
-    std::thread shutdownWatchdog([shutdownTimeout]() {
+    m_shutdownWatchdogExitCode = std::make_shared<std::atomic<int>>(watchdogExitCode);
+    std::thread shutdownWatchdog([shutdownTimeout, exitCode = m_shutdownWatchdogExitCode]() {
       std::this_thread::sleep_for(std::chrono::seconds(shutdownTimeout));
       CLog::Log(LOGERROR,
                 "CApplication::Stop - shutdown watchdog triggered after {}s, forcing exit",
                 shutdownTimeout);
-      _exit(0);
+      _exit(exitCode->load());
     });
     shutdownWatchdog.detach();
   }
@@ -2439,7 +2472,7 @@ bool CApplication::Stop(int exitCode)
     // Needs cleaning up
     CServiceBroker::GetAppMessenger()->Stop();
     m_AppFocused = false;
-    m_ExitCode = exitCode;
+    m_ExitCode = watchdogExitCode == EXITCODE_QUIT ? exitCode : watchdogExitCode;
     CLog::Log(LOGINFO, "Stopping all");
 
     // Stop the repository timer before cancelling its jobs.
