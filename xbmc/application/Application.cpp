@@ -2442,7 +2442,8 @@ bool CApplication::Stop(int exitCode)
     m_ExitCode = exitCode;
     CLog::Log(LOGINFO, "Stopping all");
 
-    // cancel any jobs from the jobmanager
+    // Stop the repository timer before cancelling its jobs.
+    CServiceBroker::GetRepositoryUpdater().Stop();
     CServiceBroker::GetJobManager()->CancelJobs();
 
     // stop scanning before we kill the network and so on

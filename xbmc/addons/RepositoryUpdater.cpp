@@ -126,7 +126,7 @@ bool CRepositoryUpdateJob::DoWork()
 
 CRepositoryUpdater::CRepositoryUpdater(CAddonMgr& addonMgr) :
   m_timer(this),
-  m_doneEvent(true),
+  m_doneEvent(true, true),
   m_addonMgr(addonMgr)
 {
   // Register settings
@@ -141,8 +141,24 @@ void CRepositoryUpdater::Start()
   ScheduleUpdate(UpdateScheduleType::First);
 }
 
+void CRepositoryUpdater::Stop()
+{
+  {
+    std::unique_lock lock(m_criticalSection);
+    m_stopping = true;
+    m_jobs.clear();
+    m_doneEvent.Set();
+  }
+
+  // The timer callback may still be entering CheckForUpdates.
+  std::unique_lock lock(m_timerMutex);
+  m_timer.Stop(true);
+}
+
 CRepositoryUpdater::~CRepositoryUpdater()
 {
+  Stop();
+
   // Unregister settings
   CServiceBroker::GetSettingsComponent()->GetSettings()->UnregisterCallback(this);
 
@@ -161,6 +177,9 @@ void CRepositoryUpdater::OnEvent(const ADDON::AddonEvent& event)
 void CRepositoryUpdater::OnJobComplete(unsigned int jobID, bool success, CJob* job)
 {
   std::unique_lock<CCriticalSection> lock(m_criticalSection);
+  if (m_stopping)
+    return;
+
   m_jobs.erase(std::find(m_jobs.begin(), m_jobs.end(), job));
   if (m_jobs.empty())
   {
@@ -196,9 +215,13 @@ void CRepositoryUpdater::OnJobComplete(unsigned int jobID, bool success, CJob* j
       m_addonMgr.CheckAndInstallAddonUpdates(false);
     }
 
+    // Rescheduling can join a timer callback that needs the job-state lock.
+    lock.unlock();
     ScheduleUpdate(UpdateScheduleType::Regular);
 
-    m_events.Publish(RepositoryUpdated{});
+    lock.lock();
+    if (!m_stopping)
+      m_events.Publish(RepositoryUpdated{});
   }
 }
 
@@ -208,6 +231,9 @@ bool CRepositoryUpdater::CheckForUpdates(bool showProgress)
   if (m_addonMgr.GetAddons(addons, AddonType::REPOSITORY) && !addons.empty())
   {
     std::unique_lock<CCriticalSection> lock(m_criticalSection);
+    if (m_stopping)
+      return false;
+
     for (const auto& addon : addons)
       CheckForUpdates(std::static_pointer_cast<ADDON::CRepository>(addon), showProgress);
 
@@ -227,17 +253,25 @@ static void SetProgressIndicator(CRepositoryUpdateJob* job)
 void CRepositoryUpdater::CheckForUpdates(const ADDON::RepositoryPtr& repo, bool showProgress)
 {
   std::unique_lock<CCriticalSection> lock(m_criticalSection);
+  if (m_stopping)
+    return;
+
   auto job = std::find_if(m_jobs.begin(), m_jobs.end(),
       [&](CRepositoryUpdateJob* job){ return job->GetAddon()->ID() == repo->ID(); });
 
   if (job == m_jobs.end())
   {
-    auto* job = new CRepositoryUpdateJob(repo);
-    m_jobs.push_back(job);
-    m_doneEvent.Reset();
+    auto updateJob = std::make_unique<CRepositoryUpdateJob>(repo);
     if (showProgress)
-      SetProgressIndicator(job);
-    CServiceBroker::GetJobManager()->AddJob(job, this, CJob::PRIORITY_LOW);
+      SetProgressIndicator(updateJob.get());
+
+    m_jobs.push_back(updateJob.get());
+    if (CServiceBroker::GetJobManager()->AddJob(updateJob.release(), this, CJob::PRIORITY_LOW) == 0)
+    {
+      m_jobs.pop_back();
+      return;
+    }
+    m_doneEvent.Reset();
   }
   else
   {
@@ -253,6 +287,9 @@ void CRepositoryUpdater::Await()
 
 void CRepositoryUpdater::OnTimeout()
 {
+  if (m_stopping)
+    return;
+
   //workaround
   if (CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_VIDEO ||
       CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindow() == WINDOW_FULLSCREEN_GAME ||
@@ -317,7 +354,10 @@ void CRepositoryUpdater::ScheduleUpdate(UpdateScheduleType scheduleType)
 {
   using namespace std::chrono;
 
-  std::unique_lock<CCriticalSection> lock(m_criticalSection);
+  std::unique_lock lock(m_timerMutex);
+  if (m_stopping)
+    return;
+
   m_timer.Stop(true);
 
   if (CAddonSystemSettings::GetInstance().GetAddonAutoUpdateMode() == AUTO_UPDATES_NEVER)

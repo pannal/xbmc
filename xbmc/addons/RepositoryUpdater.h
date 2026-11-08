@@ -14,7 +14,9 @@
 #include "utils/EventStream.h"
 #include "utils/Job.h"
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 class CDateTime;
@@ -38,6 +40,11 @@ public:
   ~CRepositoryUpdater() override;
 
   void Start();
+
+  /**
+   * Stop scheduling updates and release waiters before the job manager shuts down.
+   */
+  void Stop();
 
   /**
    * Check a single repository for updates.
@@ -95,7 +102,9 @@ private:
 
   CDateTime ClosestNextCheck() const;
 
+  std::atomic<bool> m_stopping{false};
   CCriticalSection m_criticalSection;
+  std::mutex m_timerMutex;
   CTimer m_timer;
   CEvent m_doneEvent;
   std::vector<CRepositoryUpdateJob*> m_jobs;
