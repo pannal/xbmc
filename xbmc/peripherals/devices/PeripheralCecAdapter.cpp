@@ -201,19 +201,16 @@ void CPeripheralCecAdapter::Announce(ANNOUNCEMENT::AnnouncementFlag flag,
   if (flag == ANNOUNCEMENT::System && sender == CAnnouncementManager::ANNOUNCEMENT_SENDER &&
       message == "OnQuit" && m_bIsReady)
   {
-    {
-      std::unique_lock<CCriticalSection> lock(m_critSection);
-      m_iExitCode = static_cast<int>(data["exitcode"].asInteger(EXITCODE_QUIT));
-      CServiceBroker::GetAnnouncementManager()->RemoveAnnouncer(this);
-    }
-
-    if (m_iExitCode == EXITCODE_POWERDOWN)
-    {
-      CLog::Log(LOGDEBUG, "{} - Synchronously joining CEC thread to ensure StandbyDevices is sent before system powerdown", __FUNCTION__);
-      StopThread(true);
-    }
+    const int exitCode = static_cast<int>(data["exitcode"].asInteger(EXITCODE_QUIT));
+    CServiceBroker::GetAnnouncementManager()->RemoveAnnouncer(this);
+    if (exitCode == EXITCODE_POWERDOWN)
+      RequestPowerdown();
     else
     {
+      {
+        std::unique_lock<CCriticalSection> lock(m_critSection);
+        m_iExitCode = exitCode;
+      }
       StopThread(false);
     }
   }
@@ -2260,13 +2257,14 @@ bool CPeripheralCecAdapter::ReopenConnection(bool bAsync /* = false */, uint64_t
   }
 
   std::unique_lock<CCriticalSection> lifecycleLock(m_lifecycleSection);
-  if (m_retired.load(std::memory_order_acquire) ||
-      m_sourceEventGeneration.load(std::memory_order_relaxed) != generation)
-    return false;
 
   // stop running thread
   {
     std::unique_lock<CCriticalSection> lock(m_critSection);
+    if (m_retired.load(std::memory_order_acquire) ||
+        m_sourceEventGeneration.load(std::memory_order_relaxed) != generation)
+      return false;
+
     m_iExitCode = EXITCODE_RESTARTAPP;
     StopThread(false);
   }
@@ -2340,12 +2338,36 @@ void CPeripheralCecAdapter::ProcessInactiveView(void)
   }
 }
 
+void CPeripheralCecAdapter::RequestPowerdown()
+{
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  // Native alerts can request a reopen while the worker is sending standby.
+  // Serialize the shutdown request with the reopen admission check.
+  if (m_retired.exchange(true, std::memory_order_acq_rel) || !m_bIsReady || !m_bIsRunning || m_bStop)
+    return;
+
+  m_iExitCode = EXITCODE_POWERDOWN;
+  StopThread(false);
+}
+
+bool CPeripheralCecAdapter::WaitForPowerdown(std::chrono::milliseconds timeout)
+{
+  {
+    std::unique_lock<CCriticalSection> lock(m_critSection);
+    if (!m_bIsRunning || !m_bStop || m_iExitCode != EXITCODE_POWERDOWN)
+      return true;
+  }
+
+  return Join(timeout) || !CThread::IsRunning();
+}
+
 void CPeripheralCecAdapter::UnregisterDevice(void)
 {
-  if ( m_iExitCode == EXITCODE_RESTARTAPP
-    || m_iExitCode == EXITCODE_REBOOT
-    || m_bDeviceRemoved)
+  {
+    std::unique_lock<CCriticalSection> lock(m_critSection);
+    if (m_iExitCode == EXITCODE_RESTARTAPP || m_iExitCode == EXITCODE_REBOOT || m_bDeviceRemoved)
       return;
+  }
 
   bool bActiveSource = m_cecAdapter->IsLibCECActiveSource();
 

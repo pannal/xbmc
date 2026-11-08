@@ -2498,6 +2498,9 @@ bool CApplication::Stop(int exitCode)
     m_pActiveAE->Shutdown();
     m_pActiveAE.reset();
 
+    if (exitCode == EXITCODE_POWERDOWN)
+      CServiceBroker::GetPeripherals().WaitForCecPowerdown();
+
     CLog::Log(LOGINFO, "Application stopped");
   }
   catch (...)

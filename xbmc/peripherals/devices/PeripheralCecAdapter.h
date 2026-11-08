@@ -142,6 +142,8 @@ public:
   void UnregisterDevice(void);
   void StandbyDevices(bool bBypassTimer = false);
   bool ToggleDeviceState(CecStateChange mode = STATE_SWITCH_TOGGLE, bool forceType = false);
+  void RequestPowerdown();
+  bool WaitForPowerdown(std::chrono::milliseconds timeout);
 
 private:
   bool InitialiseFeature(const PeripheralFeature feature) override;
@@ -207,7 +209,7 @@ private:
   CEC::ICECAdapter* m_cecAdapter;
   bool m_bStarted;
   bool m_bHasButton;
-  bool m_bIsReady;
+  std::atomic<bool> m_bIsReady{false};
   std::string m_strMenuLanguage;
   CDateTime m_standbySent;
   std::vector<CecButtonPress> m_buttonQueue;

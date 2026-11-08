@@ -58,6 +58,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "settings/lib/Setting.h"
+#include "threads/SystemClock.h"
 #include "utils/StringUtils.h"
 #include "utils/XBMCTinyXML2.h"
 #include "utils/XMLUtils.h"
@@ -819,6 +820,27 @@ bool CPeripherals::ToggleDeviceState(CecStateChange mode /*= STATE_SWITCH_TOGGLE
   }
 
   return ret;
+}
+
+void CPeripherals::WaitForCecPowerdown()
+{
+#if defined(HAVE_LIBCEC)
+  PeripheralVector peripherals;
+  GetPeripheralsWithFeature(peripherals, FEATURE_CEC);
+
+  // OnQuit normally signals the adapters early. Ensure they receive the request
+  // even if its dispatch is delayed, and give all adapters one shared deadline.
+  for (const auto& peripheral : peripherals)
+    std::static_pointer_cast<CPeripheralCecAdapter>(peripheral)->RequestPowerdown();
+
+  XbmcThreads::EndTime<> deadline(std::chrono::seconds{5});
+  for (const auto& peripheral : peripherals)
+  {
+    const auto adapter = std::static_pointer_cast<CPeripheralCecAdapter>(peripheral);
+    if (!adapter->WaitForPowerdown(deadline.GetTimeLeft()))
+      CLog::Log(LOGWARNING, "CEC adapter {} did not finish before power-off", adapter->Location());
+  }
+#endif
 }
 
 bool CPeripherals::GetNextKeypress(float frameTime, CKey& key)

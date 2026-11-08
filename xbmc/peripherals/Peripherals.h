@@ -272,6 +272,8 @@ public:
    */
   void PowerOffDevices();
 
+  void WaitForCecPowerdown();
+
   bool SupportsCEC() const
   {
 #if defined(HAVE_LIBCEC)
