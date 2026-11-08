@@ -12,6 +12,7 @@
 #include "threads/CriticalSection.h"
 #include "threads/Thread.h"
 
+#include <mutex>
 #include <queue>
 #include <string>
 #include <vector>
@@ -70,7 +71,6 @@ class CJobQueue: public IJobCallback
       m_job = job;
       m_id = 0;
     };
-    void CancelJob();
     void FreeJob()
     {
       delete m_job;
@@ -177,8 +177,9 @@ protected:
   bool QueueEmpty() const;
 
 private:
+  static std::unique_lock<CCriticalSection> LockManager(const CJobManager* manager);
   void OnJobNotify(CJob* job);
-  void QueueNextJob();
+  void QueueNextJob(CJobManager& manager);
 
   typedef std::deque<CJobPointer> Queue;
   typedef std::vector<CJobPointer> Processing;

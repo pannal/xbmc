@@ -62,10 +62,13 @@ void CJobWorker::Process()
   }
 }
 
-void CJobQueue::CJobPointer::CancelJob()
+std::unique_lock<CCriticalSection> CJobQueue::LockManager(const CJobManager* manager)
 {
-  CServiceBroker::GetJobManager()->CancelJob(m_id);
-  m_id = 0;
+  // Global cancellation invokes OnJobAbort with the manager locked. Queue
+  // operations that also use the manager must acquire the locks in that order.
+  if (manager)
+    return std::unique_lock(manager->m_section);
+  return {};
 }
 
 CJobQueue::CJobQueue(bool lifo, unsigned int jobsAtOnce, CJob::PRIORITY priority)
@@ -90,11 +93,14 @@ void CJobQueue::OnJobAbort(unsigned int jobID, CJob* job)
 
 void CJobQueue::CancelJob(const CJob *job)
 {
+  const auto manager = CServiceBroker::GetJobManager();
+  auto managerLock = LockManager(manager.get());
   std::unique_lock<CCriticalSection> lock(m_section);
   Processing::iterator i = find(m_processing.begin(), m_processing.end(), job);
   if (i != m_processing.end())
   {
-    i->CancelJob();
+    if (manager)
+      manager->CancelJob(i->m_id);
     m_processing.erase(i);
     return;
   }
@@ -108,6 +114,13 @@ void CJobQueue::CancelJob(const CJob *job)
 
 bool CJobQueue::AddJob(CJob *job)
 {
+  const auto manager = CServiceBroker::GetJobManager();
+  if (!manager)
+  {
+    delete job;
+    return false;
+  }
+  auto managerLock = LockManager(manager.get());
   std::unique_lock<CCriticalSection> lock(m_section);
   // check if we have this job already.  If so, we're done.
   if (find(m_jobQueue.begin(), m_jobQueue.end(), job) != m_jobQueue.end() ||
@@ -121,30 +134,34 @@ bool CJobQueue::AddJob(CJob *job)
     m_jobQueue.emplace_back(job);
   else
     m_jobQueue.emplace_front(job);
-  QueueNextJob();
+  QueueNextJob(*manager);
 
   return true;
 }
 
 void CJobQueue::OnJobNotify(CJob* job)
 {
+  const auto manager = CServiceBroker::GetJobManager();
+  auto managerLock = LockManager(manager.get());
   std::unique_lock<CCriticalSection> lock(m_section);
 
-  // check if this job is in our processing list
-  const auto it = std::find(m_processing.begin(), m_processing.end(), job);
+  // Notifications identify the submitted instance, even for jobs that opt
+  // out of the equality comparison used for queue deduplication.
+  const auto it = std::find_if(m_processing.begin(), m_processing.end(),
+                               [job](const CJobPointer& pending) { return pending.m_job == job; });
   if (it != m_processing.end())
     m_processing.erase(it);
   // request a new job be queued
-  QueueNextJob();
+  if (manager)
+    QueueNextJob(*manager);
 }
 
-void CJobQueue::QueueNextJob()
+void CJobQueue::QueueNextJob(CJobManager& manager)
 {
-  std::unique_lock<CCriticalSection> lock(m_section);
   while (m_jobQueue.size() && m_processing.size() < m_jobsAtOnce)
   {
     CJobPointer &job = m_jobQueue.back();
-    job.m_id = CServiceBroker::GetJobManager()->AddJob(job.m_job, this, m_priority);
+    job.m_id = manager.AddJob(job.m_job, this, m_priority);
     if (job.m_id > 0)
     {
       m_processing.emplace_back(job);
@@ -157,8 +174,14 @@ void CJobQueue::QueueNextJob()
 
 void CJobQueue::CancelJobs()
 {
+  const auto manager = CServiceBroker::GetJobManager();
+  auto managerLock = LockManager(manager.get());
   std::unique_lock<CCriticalSection> lock(m_section);
-  for_each(m_processing.begin(), m_processing.end(), [](CJobPointer& jp) { jp.CancelJob(); });
+  if (manager)
+  {
+    for (const auto& job : m_processing)
+      manager->CancelJob(job.m_id);
+  }
   for_each(m_jobQueue.begin(), m_jobQueue.end(), [](CJobPointer& jp) { jp.FreeJob(); });
   m_jobQueue.clear();
   m_processing.clear();
@@ -166,8 +189,10 @@ void CJobQueue::CancelJobs()
 
 bool CJobQueue::IsProcessing() const
 {
-  return CServiceBroker::GetJobManager()->m_running &&
-         (!m_processing.empty() || !m_jobQueue.empty());
+  const auto manager = CServiceBroker::GetJobManager();
+  auto managerLock = LockManager(manager.get());
+  std::unique_lock<CCriticalSection> lock(m_section);
+  return manager && manager->m_running && (!m_processing.empty() || !m_jobQueue.empty());
 }
 
 bool CJobQueue::QueueEmpty() const
@@ -403,6 +428,8 @@ void CJobManager::OnJobComplete(bool success, CJob *job)
   {
     // tell any listeners we're done with the job, then delete it
     CWorkItem item(*i);
+    // Completion owns this notification once it drops the manager lock.
+    i->Cancel();
     lock.unlock();
     try
     {
