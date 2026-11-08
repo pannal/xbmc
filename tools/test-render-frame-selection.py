@@ -52,7 +52,7 @@ def main():
     source += function(ov, 'bool IsPqMenuImage(')
     for name in ['SetOverlays', 'Release(int', 'Release(std::vector', 'ReleaseUnused',
                  'Render(const OverlayBatch&', 'RenderPqMenu', 'HasPqMenuOverlay',
-                 'HasOverlay', 'HasDiscMenuOverlay', 'HasTextOverlay', 'HasImageOverlay']:
+                 'HasOverlay', 'HasDiscMenuOverlay', 'HasImageOverlay']:
         prefix = 'bool' if name.startswith('Has') else 'void'
         source += '\n' + function(ov, prefix + ' CRenderer::' + name)
     source += '\n' + function(ov, 'CRenderer::OverlayBatch CRenderer::GetOverlays(')
@@ -151,7 +151,7 @@ public:
   void SetOverlays(OverlayBatch,int);OverlayBatch GetOverlays(int);
   void Release(int);void Release(std::vector<SElement>&);void ReleaseUnused(const OverlayBatch& selected={});
   bool HasOverlay(const OverlayBatch&);bool HasPqMenuOverlay(const OverlayBatch&);
-  bool HasDiscMenuOverlay(const OverlayBatch&);bool HasTextOverlay(const OverlayBatch&);bool HasImageOverlay(const OverlayBatch&);
+  bool HasDiscMenuOverlay(const OverlayBatch&);bool HasImageOverlay(const OverlayBatch&);
   void Render(const OverlayBatch&);void RenderPqMenu(const OverlayBatch&);
   std::shared_ptr<COverlay> Convert(const CDVDOverlay& o,double pts) {
     evaluated.push_back(pts);auto r=std::make_shared<COverlay>();r->value=&o;return r;

@@ -30,7 +30,6 @@
 #include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
-#include "settings/SubtitlesSettings.h"
 #include "threads/SingleLock.h"
 #include "utils/AMLUtils.h"
 #include "utils/AMLVideoMute.h"
@@ -48,25 +47,6 @@
 #include <utility>
 
 using namespace std::chrono_literals;
-
-namespace
-{
-bool TextSubtitleNeedsSignal(bool restricted, const CRect& placement, const CRect& active,
-                             const CRect& view, float baseline)
-{
-  // Restriction to an estimated picture is not proof of native mask clearance.
-  // Keep protection while visible text uses geometry the strict path cannot prove.
-  if (placement != active)
-    return true;
-  if (restricted)
-    return false; // existing libass restriction policy
-  // A baseline only proves vertical clearance. Preserve visible-text signaling
-  // for a full-frame picture or horizontal-only bars.
-  const bool verticalBars = !active.IsEmpty() &&
-                            (active.y1 > view.y1 || active.y2 < view.y2);
-  return !verticalBars || baseline <= active.y1 || baseline >= active.y2;
-}
-} // namespace
 
 CRenderManager::BufferReservation::~BufferReservation()
 {
@@ -1374,8 +1354,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     m_pRenderer->GetVideoRect(src, dst, view);
 
     m_overlays.SetVideoRect(src, dst, view);
-    const CRect active = CalcOverlayActiveArea(src, dst, view, restrictSubsToActiveArea,
-                                               frame->present.pts);
+    CalcOverlayActiveArea(src, dst, view, restrictSubsToActiveArea, frame->present.pts);
     // Disc menu composite: report PQ-authored menu graphics, and while the
     // composite is active draw them raw into its own layer (redrawn, or
     // emptied, every frame). m_overlays.Render then skips them.
@@ -1396,27 +1375,15 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     // including Original and oversized dialogue; restriction is not proof of fit.
     const auto prepared = m_overlays.PrepareRenderItems(frame->overlays);
     const int subsSignalMode = aml_dv_l5_subs_signal_mode();
-    bool signalSubtitles = false;
     if (subsSignalMode == 2)
     {
-      // A placement estimate is not proof of clearance from native L5 bars.
-      // Keep masking protection on the conservative source/override geometry.
+      // Placement can use subtitle-only estimates. Compare the final draw against L5 geometry.
       const CRect signalActive = CalcPictureActiveArea(src, dst, view, frame->present.pts, false);
-      signalSubtitles = m_overlays.HasTextOverlay(frame->overlays);
-      if (signalSubtitles)
-      {
-        const auto resInfo = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
-        const float margin = CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->GetVerticalMarginPerc();
-        const float baseline = static_cast<float>(resInfo.iSubtitles) -
-                               margin * static_cast<float>(resInfo.iHeight) / 100.0f;
-        signalSubtitles = TextSubtitleNeedsSignal(restrictSubsToActiveArea, active, signalActive,
-                                                  view, baseline);
-      }
+      bool signalSubtitles = m_overlays.HasTextSubOutsideActiveArea(prepared, signalActive, view);
       if (m_picture.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION && aml_subtitle_native_dv())
         signalSubtitles |= m_overlays.HasImageSubOutsideActiveArea(prepared, signalActive);
-    }
-    if (subsSignalMode == 2)
       aml_dv_set_subtitles(signalSubtitles);
+    }
 
     m_overlays.RenderPrepared(prepared, frame->overlays);
 

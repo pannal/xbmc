@@ -386,6 +386,23 @@ std::shared_ptr<COverlay> COverlay::Create(ASS_Image* images, float width, float
   return overlay->IsValid() ? overlay : nullptr;
 }
 
+static CRect GetVisibleGlyphBounds(const SQuads& atlas, const SQuad& glyph)
+{
+  CRect bounds;
+  for (int y = 0; y < glyph.h; ++y)
+  {
+    const auto* row = atlas.texture.data() + static_cast<size_t>(glyph.v + y) * atlas.size_x + glyph.u;
+    const auto* end = row + glyph.w;
+    const auto* left = std::find_if(row, end, [](uint8_t alpha) { return alpha != 0; });
+    if (left == end)
+      continue;
+    while (end[-1] == 0)
+      --end;
+    bounds.Union(CRect(glyph.x + (left - row), glyph.y + y, glyph.x + (end - row), glyph.y + y + 1));
+  }
+  return bounds;
+}
+
 COverlayGlyphGLES::COverlayGlyphGLES(ASS_Image* images, float width, float height)
 {
   auto* renderSystem = dynamic_cast<CRenderSystemGLES*>(CServiceBroker::GetRenderSystem());
@@ -452,6 +469,13 @@ COverlayGlyphGLES::COverlayGlyphGLES(ASS_Image* images, float width, float heigh
 
     for (size_t i = 0; i < quads.quad.size(); i++)
     {
+      const CRectGen<double> bounds(GetVisibleGlyphBounds(quads, *vs));
+      if (!bounds.IsEmpty())
+        m_glyphBounds.emplace_back(bounds.x1 / static_cast<double>(width),
+                                   bounds.y1 / static_cast<double>(height),
+                                   bounds.x2 / static_cast<double>(width),
+                                   bounds.y2 / static_cast<double>(height));
+
       for (int s = 0; s < 4; s++)
       {
         vt[s].a = vs->a;

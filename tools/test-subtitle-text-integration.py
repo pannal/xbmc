@@ -77,6 +77,8 @@ def generate(baseline=None):
     code += '\nCLibassRenderResult::~CLibassRenderResult() = default;\n'
     util = source(VIDEO + 'VideoRenderers/OverlayRendererUtil.cpp', baseline)
     code += '\nnamespace OVERLAY {\n' + FUNCTION(util, 'bool convert_quads(') + '\n}\n'
+    if 'GetVisibleGlyphBounds(' in gles:
+        code += '\n' + FUNCTION(gles, 'static CRect GetVisibleGlyphBounds(')
     for sig in ['COverlayGlyphGLES::COverlayGlyphGLES(', 'COverlayGlyphGLES::~COverlayGlyphGLES()',
                 'bool COverlayGlyphGLES::IsValid() const', 'std::shared_ptr<COverlay> COverlay::Create(ASS_Image*']:
         code += '\n' + FUNCTION(gles, sig)
@@ -85,6 +87,8 @@ def generate(baseline=None):
                 'CRenderer::SRenderGeometry CRenderer::PrepareRenderGeometry(',
                 'SRenderState CRenderer::CalculateRenderState(', 'std::shared_ptr<COverlay> CRenderer::ConvertLibass(']:
         code += '\n' + FUNCTION(renderer, sig)
+    if not baseline:
+        code += '\n' + FUNCTION(renderer, 'bool CRenderer::HasTextSubOutsideActiveArea(')
     manager = source(VIDEO + 'VideoRenderers/RenderManager.cpp', baseline)
     if 'CRect CRenderManager::CalcPictureActiveArea(' in manager:
         code += '\n' + FUNCTION(manager, 'CRect CRenderManager::CalcPictureActiveArea(')
@@ -285,6 +289,9 @@ public:
 };
 struct CRenderer {
 @GEOMETRY@
+ struct RenderItem {std::shared_ptr<COverlay> overlay;SRenderState state;};
+ using PreparedOverlays=std::vector<RenderItem>;
+ static bool HasTextSubOutsideActiveArea(const PreparedOverlays&,const CRect&,const CRect&);
  CCriticalSection m_section;CRect m_rs{0,0,3840,2160},m_rd{0,0,1920,1080},m_rv{0,0,1920,1080},m_activePicture;
  bool m_restrictToActivePicture=false,m_isSettingsChanged=false,m_activeAreaApplyUserPos=false;
  int m_activeAreaTopOffset=0,m_activeAreaBottomOffset=0,m_subtitlePosition=1080,m_subtitlePosResInfo=1080,m_subtitleVerticalMargin=0;
@@ -381,6 +388,12 @@ Draw draw(CRenderManager& manager,const std::shared_ptr<CDVDOverlayLibass>& cue,
  auto owned=cue->handler->m_lastResult;assert(owned);auto pixels=submit(*glyph,state);
  return {overlay,owned,pixelBounds(pixels,1920,1080),std::move(pixels)};
 }
+#ifdef FIXTURE_CURRENT
+bool renderedTextOverlaps(const Draw& draw,const CRect& active,const CRect& view){
+ const SRenderState state{view.x1,view.y1,view.Width(),view.Height()};
+ return CRenderer::HasTextSubOutsideActiveArea({{draw.overlay,state}},active,view);
+}
+#endif
 void awaitPublication(){
  auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
  for(;;){{std::lock_guard<std::mutex> lock(s_detectSourceMutex);if(s_detectSource->result&&!s_detectSource->superseded->load())return;}
@@ -534,12 +547,15 @@ void nativeExemption(const char* font){
  auto st=makeStyle();auto ordinary=draw(manager,c,st,false,true);auto restricted=draw(manager,c,st);
  assert(restricted.canvas==ordinary.canvas&&restricted.bounds.bottom>948.5f);
  assert(c->handler->m_lastImageYOffset==0);
+#ifdef FIXTURE_CURRENT
+ assert(renderedTextOverlaps(restricted,manager.m_overlays.m_activePicture,manager.m_overlays.m_rv));
+#endif
  // Overridden native styles use a local ASS_Style whose strdup'd strings ApplyStyle must free (LeakSanitizer enabled).
  style overridden=*st;overridden.assOverrideStyles=OverrideStyles::STYLES;
  draw(manager,c,std::make_shared<const style>(overridden),false,true);
  std::cout<<"PASS: native authored ASS retains unrestricted pixels and is excluded from adapted text translation\n";
 }
-void native(){
+void native(const char* font){
  select(true);cache.meta={};publish();assert(get());auto nativeWrites=writes.load();assert(nativeWrites>=4);
  CRenderManager manager;manager.m_picture.hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;auto& r=manager.m_overlays;
  cache.pts=500000;cache.meta.has_level5_metadata=true;cache.meta.level5_active_area_top_offset=cache.meta.level5_active_area_bottom_offset=300;
@@ -549,8 +565,13 @@ void native(){
  // adapted text uses its independent detected confinement. Native writes do
  // not change. Detection can protect text while native injection is disabled.
  cache.meta.level5_active_area_top_offset=cache.meta.level5_active_area_bottom_offset=20;
- rect(manager.CalcPictureActiveArea(r.m_rs,r.m_rd,r.m_rv,500000,false,false),10,1070);
+ const auto signalArea=manager.CalcPictureActiveArea(r.m_rs,r.m_rd,r.m_rv,500000,false,false);
+ rect(signalArea,10,1070);
  rect(manager.CalcOverlayActiveArea(r.m_rs,r.m_rd,r.m_rv,true,500000),131.5f,948.5f);
+ auto text=cue(font,"Adapted gypq");auto confined=draw(manager,text,makeStyle());
+ inside(confined.bounds,r.m_activePicture);
+ assert(!renderedTextOverlaps(confined,signalArea,r.m_rv));
+ std::cout<<"PASS: confined text clears native L5 with different placement bounds, and authored ASS in a bar requests suppression\n";
  dvDetection=false;uint16_t dt,db,dl,dr;
  assert(!aml_subtitle_detect_active_area_get(3840,2160,dt,db,dl,dr,false));
  assert(aml_subtitle_detect_active_area_get(3840,2160,dt,db,dl,dr,true)&&dt==263);
@@ -571,6 +592,8 @@ void native(){
  assert(scans==textOnlyScans+1&&writes==textOnlyWrites+NativeClearWrites&&!s_detectInjected.load()); // startup clears old driver state; no native injection
  uint16_t st,sb,sl,sr;assert(aml_subtitle_detect_active_area_get(3840,2160,st,sb,sl,sr,true)&&st==263);
  assert(!aml_subtitle_detect_active_area_get(3840,2160,st,sb,sl,sr,false));
+#else
+ (void)font;
 #endif
  dvDetection=true;
  select(false);publish();auto genericWrites=writes.load();Invalidate(true);current=aml_subtitle_active_area_source();assert(aml_subtitle_active_area_configure(3840,2160,false,true,current));aml_dv_detect_active_area_start();awaitPublication();s_detectWorker.Stop();assert(writes==genericWrites&&get());
@@ -679,7 +702,7 @@ int main(int argc,char** argv){assert(argc==2);assert(ass_library_version()==LIB
  #ifdef FIXTURE_CURRENT
  nativeConfidenceAuthority();
 #endif
- discovery(argv[1]);lifecycle(argv[1]);nativeExemption(argv[1]);native();s_detectWorker.Stop();
+ discovery(argv[1]);lifecycle(argv[1]);nativeExemption(argv[1]);native(argv[1]);s_detectWorker.Stop();
  std::cout<<"PASS: connected production detector→geometry→text conversion→CE libass→owned glyph atlas/vertices→host alpha canvas\n";
 }
 '''

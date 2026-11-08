@@ -113,6 +113,8 @@ namespace OVERLAY {
     static bool PlainPremultiplyDiscMenu(const CDVDOverlayImage& o);
     // Per-conversion identity, never the handler's most recent changes flag.
     std::weak_ptr<const CLibassRenderResult> m_libassResult;
+    // Normalized GLES glyph bounds. Keep precision when mapping an edge back to pixels.
+    std::vector<CRectGen<double>> m_glyphBounds;
 
   protected:
     /*!
@@ -170,7 +172,6 @@ namespace OVERLAY {
 
     void Release(int idx);
     bool HasOverlay(const OverlayBatch& overlays);
-    bool HasTextOverlay(const OverlayBatch& overlays);
     bool HasImageOverlay(const OverlayBatch& overlays);
     bool HasDiscMenuOverlay(const OverlayBatch& overlays);
     // PQ-authored disc menu graphics (IG, BD-J) in this buffer.
@@ -186,6 +187,9 @@ namespace OVERLAY {
     using PreparedOverlays = std::vector<SRenderItem>;
     PreparedOverlays PrepareRenderItems(const OverlayBatch& overlays);
     void RenderPrepared(const PreparedOverlays& items, const OverlayBatch& overlays);
+    static bool HasTextSubOutsideActiveArea(const PreparedOverlays& items,
+                                            const CRect& active,
+                                            const CRect& view);
     static bool HasImageSubOutsideActiveArea(const PreparedOverlays& items, const CRect& active);
     void SetActivePicture(const CRect& area, bool restrictToArea, bool applyUserPos);
     void SetVideoRect(CRect &source, CRect &dest, CRect &view);

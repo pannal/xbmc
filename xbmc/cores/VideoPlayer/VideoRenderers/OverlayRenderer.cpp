@@ -557,20 +557,6 @@ bool CRenderer::HasOverlay(const OverlayBatch& overlays)
   return hasOverlay;
 }
 
-bool CRenderer::HasTextOverlay(const OverlayBatch& overlays)
-{
-  std::unique_lock<CCriticalSection> lock(m_section);
-
-  for (const auto& e : overlays)
-  {
-    if (e.overlay_dvd &&
-        (e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_TEXT) ||
-         e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_SSA)))
-      return true;
-  }
-  return false;
-}
-
 bool CRenderer::HasImageOverlay(const OverlayBatch& overlays)
 {
   std::unique_lock<CCriticalSection> lock(m_section);
@@ -592,6 +578,33 @@ bool CRenderer::HasDiscMenuOverlay(const OverlayBatch& overlays)
     if (e.overlay_dvd && e.overlay_dvd->IsDiscMenuOverlay() &&
         e.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
       return true;
+  }
+  return false;
+}
+
+bool CRenderer::HasTextSubOutsideActiveArea(const PreparedOverlays& items,
+                                            const CRect& active,
+                                            const CRect& view)
+{
+  if (active.IsEmpty() || active == view)
+    return false;
+  for (const auto& item : items)
+  {
+    if (item.overlay->m_discMenuOverlay)
+      continue;
+    const double x = item.state.x;
+    const double y = item.state.y;
+    const double width = item.state.width;
+    const double height = item.state.height;
+    for (const auto& glyph : item.overlay->m_glyphBounds)
+    {
+      CRect visible(x + glyph.x1 * width, y + glyph.y1 * height, x + glyph.x2 * width,
+                    y + glyph.y2 * height);
+      visible.Intersect(view);
+      if (!visible.IsEmpty() && (visible.x1 < active.x1 || visible.x2 > active.x2 ||
+                                 visible.y1 < active.y1 || visible.y2 > active.y2))
+        return true;
+    }
   }
   return false;
 }

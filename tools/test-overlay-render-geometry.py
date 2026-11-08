@@ -35,6 +35,7 @@ def harness():
                       'void CRenderer::Render(const OverlayBatch&',
                       'CRenderer::PreparedOverlays CRenderer::PrepareRenderItems(',
                       'void CRenderer::RenderPrepared(',
+                      'bool CRenderer::HasTextSubOutsideActiveArea(',
                       'bool CRenderer::HasImageSubOutsideActiveArea(',
                       'void CRenderer::RenderPqMenu(']:
         source += '\n' + function(renderer, signature)
@@ -137,6 +138,7 @@ struct CRenderer {
   void RenderPqMenu(const OverlayBatch&);
   PreparedOverlays PrepareRenderItems(const OverlayBatch&);
   void RenderPrepared(const PreparedOverlays&,const OverlayBatch&);
+  static bool HasTextSubOutsideActiveArea(const PreparedOverlays&,const CRect&,const CRect&);
   static bool HasImageSubOutsideActiveArea(const PreparedOverlays&,const CRect&);
 };
 void expect(SRenderState s,float x,float y,float w,float h){

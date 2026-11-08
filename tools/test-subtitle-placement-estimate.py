@@ -146,10 +146,11 @@ void isolation(const char* font,const DetectResult& result){
   const auto signal=renderSignalArea(manager,overlay.m_rs,overlay.m_rd,overlay.m_rv,500000);
   rect(signal,0,1080);
   const auto placementArea=manager.CalcPictureActiveArea(overlay.m_rs,overlay.m_rd,overlay.m_rv,500000,false,true);
-  for(bool restricted:{false,true})assert(TextSubtitleNeedsSignal(restricted,placementArea,signal,overlay.m_rv,1050));
+  assert(placementArea!=signal);
   auto c=cue(font,"Dark picture placement gypq\\NSecond line descenders");auto st=makeStyle();
   auto raw=draw(manager,c,st,false,true);auto placed=draw(manager,c,st);
   rect(overlay.m_activePicture,20,1060);inside(placed.bounds,overlay.m_activePicture);assert(placed.bounds.bottom<=1060);
+  assert(!renderedTextOverlaps(placed,signal,overlay.m_rv));
   assert(placed.bounds.bottom<=raw.bounds.bottom);auto paused=draw(manager,c,st);assert(paused.canvas==placed.canvas);
   if(native){
    cache.pts=500000;cache.meta.has_level5_metadata=true;cache.meta.level5_active_area_top_offset=cache.meta.level5_active_area_bottom_offset=100;
@@ -216,9 +217,8 @@ def main():
     manager = (ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp').read_text()
     render = TEXT['FUNCTION'](manager, 'void CRenderManager::Render(')
     signal = render[render.index('      const CRect signalActive ='):].split(';', 1)[0] + ';'
-    assert 'TextSubtitleNeedsSignal(restrictSubsToActiveArea, active, signalActive,' in render
+    assert 'HasTextSubOutsideActiveArea(prepared, signalActive, view)' in render
     assert 'HasImageSubOutsideActiveArea(prepared, signalActive)' in render
-    code += '\n' + TEXT['FUNCTION'](manager, 'bool TextSubtitleNeedsSignal(')
     code += '\nCRect renderSignalArea(CRenderManager& manager,const CRect& src,const CRect& dst,const CRect& view,double pts){' + signal.replace('CalcPictureActiveArea(', 'manager.CalcPictureActiveArea(').replace('frame->present.pts', 'pts') + 'return signalActive;}\n'
     code += TESTS
     result = TEXT['run'](code, args, negative=bool(revision))
@@ -230,7 +230,6 @@ def main():
             ('estimate promoted to strict result', 'source->subtitleResult = std::make_shared<const DetectResult>(result);', 'source->result = std::make_shared<const DetectResult>(result);'),
             ('public snapshot opts into estimate', 'right, allowSubtitleEstimate);', 'right, true || allowSubtitleEstimate);'),
             ('masking signal trusts estimate', 'manager.CalcPictureActiveArea(src, dst, view, pts, false);', 'manager.CalcPictureActiveArea(src, dst, view, pts, false, true);'),
-            ('restriction mistaken for native clearance', 'if (placement != active)', 'if (false && placement != active)'),
             ('strict zero erased by estimate', 'if (!accepted && allowSubtitleEstimate)', 'if (allowSubtitleEstimate)'),
             ('warm cache promoted to native', 'detect_publish_subtitle(run, source, *retainedSubtitle);', 'detect_publish(run, source, retainedSubtitle->top, retainedSubtitle->bottom, retainedSubtitle->left, retainedSubtitle->right);'),
             ('destructive subtitle cache survives', 's_detectSource->retainedSubtitle.reset();', '(void)preserveGeometry;'),

@@ -40,8 +40,9 @@ def main():
     policy = frame[frame.index("  const int subsSignalMode ="):
                    frame.index("  m_playerPort->UpdateGuiRender", frame.index("  const int subsSignalMode ="))]
     # The GUI render pass must not overwrite the continuous policy with false.
-    assert re.search(r"if \(subsSignalMode == 2\)\s+aml_dv_set_subtitles\(signalSubtitles\);",
-                     function(render, "void CRenderManager::Render("))
+    draw = function(render, "void CRenderManager::Render(")
+    assert draw.count("aml_dv_set_subtitles(") == 1
+    assert "aml_dv_set_subtitles(signalSubtitles);" in function(draw, "if (subsSignalMode == 2)")
     uninit = function(render, "void CRenderManager::UnInitOnMain()")
     reset = uninit[uninit.index("  m_subtitleEnabled.store(false);"):
                    uninit.index("  m_debugRenderer.Dispose();")]

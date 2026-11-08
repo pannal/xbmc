@@ -38,6 +38,7 @@ def harness():
                  'COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage&',
                  'COverlayTextureGLES::~COverlayTextureGLES()',
                  'bool COverlayTextureGLES::IsValid()',
+                 'static CRect GetVisibleGlyphBounds(',
                  'COverlayGlyphGLES::COverlayGlyphGLES(',
                  'COverlayGlyphGLES::~COverlayGlyphGLES()',
                  'bool COverlayGlyphGLES::IsValid()']:
@@ -114,6 +115,7 @@ struct COverlay {
  enum{POSITION_RELATIVE,POSITION_ABSOLUTE,ALIGN_VIDEO,ALIGN_SCREEN_AR,ALIGN_SCREEN};
  int m_pos=0,m_align=0;float m_x=0,m_y=0,m_width=0,m_height=0,m_source_width=0,m_source_height=0;
  bool m_rawPqMenu=false,m_plainPmaMenu=false,m_isBitmapOverlay=false;
+ std::vector<CRectGen<double>> m_glyphBounds;
  bool IsSquareResolution(float r){return r>1.22f&&r<1.34f;}
 };
 struct COverlayTextureGLES:COverlay {
@@ -129,6 +131,7 @@ struct COverlayGlyphGLES:COverlay {
  COverlayGlyphGLES(ASS_Image*,float,float);~COverlayGlyphGLES();bool IsValid()const;
  std::shared_ptr<CGLESTextureResources> m_textureResources;
  std::vector<Page> m_pages;bool m_uploadFailed=false;
+ float m_rasterWidth=0.0f,m_rasterHeight=0.0f;
 };
 }
 using namespace OVERLAY;
@@ -184,12 +187,14 @@ int main(){
  // Actual glyph upload/retirement consumes controlled packer output. Atlas
  // packing is a stub boundary; this fixture checks upload and retirement.
  {COverlayGlyphGLES empty(nullptr,1920,1080);assert(empty.IsValid()&&empty.m_pages.empty());}
- SQuads page;page.size_x=page.size_y=2;page.texture={1,2,3,4};
+ SQuads page;page.size_x=page.size_y=2;page.texture={0,0,0,4};
  SQuad quad{};quad.w=quad.h=2;quad.a=255;page.quad.push_back(quad);
  packedPages={page,page};before=generated;
  {COverlayGlyphGLES glyph(nullptr,1920,1080);assert(glyph.IsValid()&&glyph.m_pages.size()==2);
   assert(glyph.m_pages[0].vertex.size()==4&&glyph.m_pages[0].vertex[3].a==255);
   assert(glyph.m_pages[0].vertex[3].x==2/1920.0f);
+  assert(glyph.m_glyphBounds.size()==2);
+  assert(glyph.m_glyphBounds[0]==CRectGen<double>(1/1920.0,1/1080.0,2/1920.0,2/1080.0));
   renderSystem.InvalidateRenderTarget();assert(glyph.IsValid());}
  assert(renderSystem.resources->TakeRetired()==std::vector<uint32_t>({uint32_t(before+1),uint32_t(before+2)}));
  before=generated;failNameAfter=1;

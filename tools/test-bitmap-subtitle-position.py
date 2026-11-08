@@ -57,7 +57,6 @@ struct CRenderManager {
 };
 '''
     manager = (ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp').read_text()
-    code += function(manager, 'bool TextSubtitleNeedsSignal(') + '\n'
     code += function(manager, 'CRect CRenderManager::CalcPictureActiveArea(') + '\n'
     code += function(manager, 'CRect CRenderManager::CalcOverlayActiveArea(')
     return code + TESTS
@@ -79,13 +78,24 @@ int main(){
   rect(GetBitmapSubtitleArea(screen,screen,active,1.78f),0,140,1920,940);
   rect(GetBitmapSubtitleArea(screen,screen,screen,2.4f),0,140,1920,940);
 
-  // Native visible-text policy cannot infer horizontal clearance from a baseline.
-  assert(TextSubtitleNeedsSignal(false,screen,screen,screen,900));
-  assert(TextSubtitleNeedsSignal(false,{240,0,1680,1080},{240,0,1680,1080},screen,900));
-  assert(!TextSubtitleNeedsSignal(false,active,active,screen,900));
-  assert(TextSubtitleNeedsSignal(false,active,active,screen,950));
-  assert(!TextSubtitleNeedsSignal(true,screen,screen,screen,900));
-  assert(TextSubtitleNeedsSignal(true,active,screen,screen,900));
+  // The final GLES transform maps normalized glyph bounds into the current view.
+  auto glyph=std::make_shared<COverlay>();
+  CRenderer::PreparedOverlays text{{glyph,{16,20,1600,800},screen}};
+  const CRect textView{16,20,1616,820},l5{216,120,1416,720};
+  auto overlaps=[&]{return CRenderer::HasTextSubOutsideActiveArea(text,l5,textView);};
+  assert(!overlaps()); // A prepared overlay may have no visible glyphs.
+  glyph->m_glyphBounds={{0.25f,0.75f,0.5f,0.875f}};
+  assert(!overlaps()); // Touching the bottom edge does not enter the bar.
+  glyph->m_glyphBounds[0].y2=0.9f;
+  assert(overlaps()); // A glyph or its outline extends beyond the bottom edge.
+  assert(!CRenderer::HasTextSubOutsideActiveArea(text,textView,textView));
+  glyph->m_glyphBounds={{0.0625f,0.25f,0.25f,0.5f}};
+  assert(overlaps()); // A side bar counts too.
+  glyph->m_glyphBounds={{0.25f,0.25f,0.5f,0.5f},{0.25f,1.125f,0.5f,1.25f}};
+  assert(!overlaps()); // Separate, offscreen glyphs do not extend the visible cue.
+  text[0].state={0,0,1920,1080};
+  glyph->m_glyphBounds={{0.25,56.0/1080,0.5,0.125}};
+  assert(!CRenderer::HasTextSubOutsideActiveArea(text,{0,56,1920,1024},screen));
 
   // Shared metadata/detection policy executes the actual manager resolver.
   CRenderManager manager;CRect src=screen,dst=screen,view=screen;
