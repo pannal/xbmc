@@ -80,6 +80,7 @@ using PLAYER_FIXTURE::IDVDStreamPlayer;using PLAYER_FIXTURE::DVD_PLAYSPEED_NORMA
 using PLAYER_FIXTURE::DVD_PLAYSPEED_PAUSE;
 void frame(Parent& p,CVideoPlayerVideo& v,double pts=1000000){
  SStartMsg m{};m.player=VideoPlayer_VIDEO;m.epoch=v.GetSyncEpoch();m.timestamp=pts;
+ m.subtitleProbeSource=p.m_CurrentVideo.hint.subtitleProbeSource;
  p.queue.Put(std::make_shared<CDVDMsgType<SStartMsg>>(CDVDMsg::PLAYER_STARTED,m));p.HandleMessages();
  p.m_CurrentVideo.packets=1;p.m_CurrentAudio.id=-1;
  assert(!p.WaitForActiveAreaDetection());p.SynchronizeStreams(false);p.HoldStep();
