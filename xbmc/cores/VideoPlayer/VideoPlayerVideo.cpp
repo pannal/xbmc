@@ -1100,6 +1100,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
       SStartMsg msg;
       msg.epoch = m_syncEpoch;
       msg.player = VideoPlayer_VIDEO;
+      msg.subtitleProbeSource = m_hints.subtitleProbeSource;
       msg.cachetime = DVD_MSEC_TO_TIME(50);
       msg.cachetotal = DVD_MSEC_TO_TIME(100);
       msg.timestamp = DVD_NOPTS_VALUE;
@@ -1273,6 +1274,7 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
       SStartMsg msg;
       msg.epoch = m_syncEpoch;
       msg.player = VideoPlayer_VIDEO;
+      msg.subtitleProbeSource = m_hints.subtitleProbeSource;
       msg.cachetime = DVD_MSEC_TO_TIME(50); //! @todo implement
       msg.cachetotal = DVD_MSEC_TO_TIME(100); //! @todo implement
 

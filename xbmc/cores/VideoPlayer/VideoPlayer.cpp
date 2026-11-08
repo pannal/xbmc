@@ -4561,7 +4561,10 @@ void CVideoPlayer::HandleMessages()
       }
       if (msg.player == VideoPlayer_VIDEO)
       {
-        m_activeAreaVideoReady = true;
+        // Stream changes queue in the video thread. A start of an older stream
+        // cannot release or hold the startup of the stream selected last.
+        if (msg.subtitleProbeSource == m_CurrentVideo.hint.subtitleProbeSource)
+          m_activeAreaVideoReady = true;
         m_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_WAITSYNC;
         m_CurrentVideo.cachetime = msg.cachetime;
         m_CurrentVideo.cachetotal = msg.cachetotal;

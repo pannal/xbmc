@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -76,6 +77,8 @@ struct SStartMsg
   int player;
   double cachetime;
   double cachetotal;
+  // Video: the active-area selection of the stream whose picture started.
+  std::shared_ptr<const void> subtitleProbeSource;
 };
 
 struct SStateMsg
