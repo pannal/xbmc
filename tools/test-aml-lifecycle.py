@@ -78,8 +78,15 @@ def main():
     source = harness()
     if args.negative_controls:
         controls = [
-            ('wrapper restore before blackout', '      HoldVideo(VideoRestartHoldWanted());', '      (void)0;'),
-            ('exception strands blackout', '    HoldVideo(false);', '    (void)0;'),
+            ('stop applies restart blackout', '    if (operation == Lifecycle::CLOSE)\n      HoldVideo(false);',
+             '    if (operation == Lifecycle::CLOSE)\n      HoldVideo(VideoRestartHoldWanted());'),
+            ('stop inherits restart blackout', '    if (operation == Lifecycle::CLOSE)\n      HoldVideo(false);',
+             '    if (operation == Lifecycle::CLOSE)\n      (void)0;'),
+            ('stop publishes a GUI handoff', '  if (!success)\n    HandoffVideoHold();',
+             '  if (operation == Lifecycle::CLOSE || !success)\n    HandoffVideoHold();'),
+            ('reopen drops blackout', '      HoldVideo(VideoRestartHoldWanted());', '      (void)0;'),
+            ('exception strands blackout', '    m_nativeLifecycleRequest.reset();\n    HoldVideo(false);',
+             '    m_nativeLifecycleRequest.reset();'),
 
             ('open loses preselected pause', '  bool OpenDecoderInternal() {',
              '  bool OpenDecoderInternal() { m_speed=DVD_PLAYSPEED_NORMAL;'),
@@ -224,7 +231,8 @@ public:
   void SetSpeed(int); void SetSpeedInternal(int);
   @FAILED_METHOD@
   bool m_opened{false},openSucceeds{true},m_decoderNeedsClose{false};
-  bool acquireDevice{true},deviceAcquired{false},holdActive{false},m_dvOpened{false};
+  bool acquireDevice{true},deviceAcquired{false},holdWanted{true},holdActive{false},m_dvOpened{false};
+  unsigned handoffCalls{0};
   uint64_t generation{0};
   std::vector<std::string> trace;
   std::function<void()> onClose;
@@ -244,23 +252,28 @@ public:
     MutationOnly(); trace.push_back("open");
     if(!acquireDevice) return false;
     m_decoderNeedsClose=true;
-    deviceAcquired=holdActive=m_dvOpened=true;
+    deviceAcquired=m_dvOpened=true;
+    HoldVideo(VideoRestartHoldWanted());
     assert(!storage.vcodec.config);
     storage.vcodec.config=malloc(16); storage.vcodec.config_len=16;
     m_opened=openSucceeds;
     if(m_opened) {++generation;SetPollDevice(nextDescriptor);}
     return m_opened;
   }
-  bool VideoRestartHoldWanted()const{return true;}
+  bool VideoRestartHoldWanted()const{return holdWanted;}
   void HoldVideo(bool hold){holdActive=hold;}
-  void HandoffVideoHold(){assert(!m_nativeLifecycleRequest && "handoff after native completion");holdActive=false;}
+  void HandoffVideoHold(){
+    assert(!m_nativeLifecycleRequest && "handoff after native completion");
+    ++handoffCalls;
+    holdActive=false;
+  }
   void CloseDecoderInternal() {
     MutationOnly(); trace.push_back("close");
     if(onClose) onClose();
     SetPollDevice(-1);
     m_opened=false;
     @CONFIG_FREE@
-    deviceAcquired=holdActive=m_dvOpened=false;
+    deviceAcquired=m_dvOpened=false;
     m_decoderNeedsClose=false;
   }
   void ResetInternal() {
@@ -504,6 +517,7 @@ void CloseSupersedes() {
 void FailedOpen() {
   CAMLCodec codec; codec.openSucceeds=false;
   assert(!codec.OpenDecoder());
+  assert(codec.handoffCalls==1);
   assert(!codec.LifecyclePending() && !codec.m_opened && codec.generation==0);
   assert(codec.LifecycleFailed());
   for(int i=0;i<3;++i) assert(!codec.ContinueLifecycle());
@@ -515,6 +529,7 @@ void FailedOpen() {
   assert(!codec.LifecycleFailed());
   codec.openSucceeds=false; codec.trace.clear();
   assert(!codec.ReopenDecoder());
+  assert(codec.handoffCalls==2);
   assert(!codec.m_opened && !codec.LifecyclePending() && codec.generation==1);
   assert(codec.LifecycleFailed());
   for(int i=0;i<3;++i) assert(!codec.ContinueLifecycle());
@@ -685,18 +700,38 @@ void InternalRecovery() {
   assert(!codec.LifecyclePending() && codec.trace.size()==before);
 }
 void CloseMaskOrder() {
+  for (bool enabled : {false, true}) {
+    for (bool alreadyHeld : {false, true}) {
+      CAMLCodec codec;
+      codec.holdWanted=enabled;
+      assert(codec.OpenDecoder());
+      codec.holdActive=alreadyHeld;
+      codec.onClose=[&]{assert(!codec.holdActive && "stop does not mask decoder teardown");};
+      assert(codec.CloseDecoder([&]{assert(!codec.holdActive && "stop restores the display unmasked");}));
+      assert(!codec.holdActive && codec.handoffCalls==0);
+      assert(codec.storage.vcodec.config==nullptr);
+    }
+  }
+}
+void ReopenMaskOrder() {
+  for (bool enabled : {false, true}) {
+    CAMLCodec codec;
+    codec.holdWanted=enabled;
+    assert(codec.OpenDecoder());
+    codec.holdActive=false;
+    codec.onClose=[&]{assert(codec.holdActive==enabled && "reopen obeys the restart mask");};
+    assert(codec.ReopenDecoder());
+    assert(codec.holdActive==enabled && codec.handoffCalls==0);
+  }
+
   CAMLCodec codec;assert(codec.OpenDecoder());codec.holdActive=false;
-  codec.onClose=[&]{assert(codec.holdActive && "teardown retains blackout");};
-  assert(codec.CloseDecoder([&]{assert(codec.holdActive && "wrapper restoration starts masked");}));
-  assert(!codec.holdActive);
-  assert(codec.OpenDecoder());codec.holdActive=false;
-  assert(codec.ReopenDecoder());assert(codec.holdActive);
-  codec.holdActive=false;codec.onClose=[&]{assert(codec.holdActive);throw 1;};
-  try{codec.CloseDecoder();assert(false);}catch(int){}
+  codec.onClose=[&]{assert(codec.holdActive);throw 1;};
+  try{codec.ReopenDecoder();assert(false);}catch(int){}
   assert(!codec.holdActive && "exception releases owned mute");
 }
 int main() {
   CloseMaskOrder();
+  ReopenMaskOrder();
   SpeedDuringDisplay(); DecoderDisplayAdmission();
   PollSessionAndDescriptor();
   PollPacingResults(); PendingThroughActualPoll();

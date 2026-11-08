@@ -2066,9 +2066,11 @@ bool CAMLCodec::ContinueLifecycle()
   bool success = true;
   try
   {
-    // Wrapper restoration can change DV/HDMI before codec_close. Mask it too.
-    if ((operation == Lifecycle::CLOSE || operation == Lifecycle::REOPEN) &&
-        (m_decoderNeedsClose || m_beforeClose))
+    // A terminal close releases its startup/seek mask before display restoration.
+    // Reopening still restarts decode, so keep the mask through that transition.
+    if (operation == Lifecycle::CLOSE)
+      HoldVideo(false);
+    else if (operation == Lifecycle::REOPEN && m_decoderNeedsClose)
       HoldVideo(VideoRestartHoldWanted());
     if (operation == Lifecycle::CLOSE && m_beforeClose)
     {
@@ -2112,7 +2114,7 @@ bool CAMLCodec::ContinueLifecycle()
   m_lifecycle = Lifecycle::NONE;
   CAMLSession::EndNative(m_nativeLifecycleRequest);
   m_nativeLifecycleRequest.reset();
-  if (operation == Lifecycle::CLOSE || !success)
+  if (!success)
     HandoffVideoHold();
   const auto completed = m_session.Diagnostics();
   CLog::Log(LOGINFO, "p3i-transition t_us={} session={} epoch={} request={} codec_op={} stage=completed "
@@ -2717,9 +2719,6 @@ void CAMLCodec::CloseDecoderInternal()
     std::lock_guard<std::mutex> lock(m_presentationMutex);
     m_presentationActive = false;
   }
-
-  // Keep the restart hold through decoder/DV teardown. ContinueLifecycle
-  // transfers it only after native mutation ends; REOPEN retains its owner.
 
   SetPollDevice(-1);
 
@@ -3844,8 +3843,8 @@ void CAMLCodec::HandoffVideoHold()
   std::lock_guard<std::mutex> lock(m_videoHoldMutex);
   if (!m_videoHoldActive)
     return;
-  // Allow the existing delayed display reset plus one normal hold budget. The
-  // GUI render loop expires this lease even when it cannot present a frame.
+  // A failed startup or reopen can still leave the display resetting. Allow
+  // that reset plus one normal hold budget for the GUI to take over.
   aml_video_mute_controller().Handoff(m_videoMuteOwner,
       std::chrono::steady_clock::now() + std::chrono::milliseconds(m_videoHoldTimeoutMs + 3000));
   m_videoMuteOwner.reset();

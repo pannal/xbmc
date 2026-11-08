@@ -213,7 +213,7 @@ int main(int argc,char** argv){
  c.HoldVideo(false);
  routeCases(c);
  dvCases(c);
- // Actual codec release/handoff bodies must not pulse unmute between episodes.
+ // A failed restart's handoff must not pulse unmute before a replacement.
  c.HoldVideo(true);const unsigned before=unmutes;
  c.HandoffVideoHold();assert(muted&&!c.m_videoHoldActive&&unmutes==before);
  const auto lease=aml_video_mute_controller().HandoffGeneration();assert(lease);
@@ -223,7 +223,7 @@ int main(int argc,char** argv){
  next.HoldVideo(false);assert(!muted&&unmutes==before+1);
  c.HoldVideo(true);c.HandoffVideoHold();
  aml_video_mute_controller().Expire(std::chrono::steady_clock::now()+std::chrono::seconds(7));
- assert(!muted && "abandoned close handoff expires");
+ assert(!muted && "abandoned restart handoff expires");
  c.HoldVideo(true);c.HandoffVideoHold();settings.master=false;
  next.StartupHold();assert(!muted&&!aml_video_mute_controller().HandoffGeneration());
  settings.master=true;
