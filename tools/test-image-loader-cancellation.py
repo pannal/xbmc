@@ -128,6 +128,7 @@ struct CWorkItem {
  bool operator==(unsigned int id)const{return id==m_id;}
  bool operator==(const CJob* job)const{return job==m_job;}
  void FreeJob(){delete m_job;}
+ void Cancel(){m_callback=nullptr;}
 };
 class CJobManager {
 public:

@@ -236,7 +236,10 @@ bool CGUILargeTextureManager::GetImage(const std::string& path,
     {
       image->AddRef();
       if (direct)
+      {
         image->m_directRefs++;
+        image->m_directFrame = m_processFrame;
+      }
       if (defer)
       {
         // The image may still be loaded after a recent release, or because
@@ -267,11 +270,23 @@ bool CGUILargeTextureManager::GetImage(const std::string& path,
 bool CGUILargeTextureManager::HasDirectConsumer(const std::string& path)
 {
   std::unique_lock<CCriticalSection> lock(m_listSection);
-  auto allocated = m_allocatedLookup.find(path);
-  if (allocated != m_allocatedLookup.end())
-    return allocated->second->m_directRefs > 0;
-  auto queued = m_queuedLookup.find(path);
-  return queued != m_queuedLookup.end() && queued->second->m_directRefs > 0;
+  CLargeTexture* image = nullptr;
+  if (auto allocated = m_allocatedLookup.find(path); allocated != m_allocatedLookup.end())
+    image = allocated->second;
+  else if (auto queued = m_queuedLookup.find(path); queued != m_queuedLookup.end())
+    image = queued->second;
+  // A consumer processed before or after the asking control in the same frame
+  // has stamped this frame or the previous one.
+  return image && image->m_directRefs > 0 && m_processFrame - image->m_directFrame <= 1;
+}
+
+void CGUILargeTextureManager::DirectConsumerActive(const std::string& path)
+{
+  std::unique_lock<CCriticalSection> lock(m_listSection);
+  if (auto allocated = m_allocatedLookup.find(path); allocated != m_allocatedLookup.end())
+    allocated->second->m_directFrame = m_processFrame;
+  else if (auto queued = m_queuedLookup.find(path); queued != m_queuedLookup.end())
+    queued->second->m_directFrame = m_processFrame;
 }
 
 void CGUILargeTextureManager::RequestImageUpload(const std::string& path,
@@ -482,7 +497,10 @@ void CGUILargeTextureManager::QueueImage(const std::string& path,
     it->second->m_backgroundTexture |= backgroundTexture;
     it->second->AddRef();
     if (direct)
+    {
       it->second->m_directRefs++;
+      it->second->m_directFrame = m_processFrame;
+    }
     if (defer && !it->second->m_background)
     {
       // Joining a foreground decode. The completion hold applies to this
@@ -515,6 +533,7 @@ void CGUILargeTextureManager::QueueImage(const std::string& path,
   image->m_backgroundTexture = backgroundTexture;
   image->m_background = defer;
   image->m_directRefs = direct ? 1 : 0;
+  image->m_directFrame = m_processFrame;
   image->m_deferredSince = CTimeUtils::GetFrameTime();
   // Register before admission; a callback cannot enter until this lock releases.
   m_queued.emplace_back(0, image);
@@ -554,6 +573,7 @@ void CGUILargeTextureManager::ProcessDeferred()
   const bool scrolling = m_scrolling.exchange(false);
   m_moved = scrolling;
   std::unique_lock<CCriticalSection> lock(m_listSection);
+  ++m_processFrame;
   m_uploadFrame = CTimeUtils::GetFrameTime();
   if (!m_hasDeferred)
   {

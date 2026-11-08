@@ -102,8 +102,13 @@ public:
                 bool background = false,
                 bool direct = false);
 
-  // True if a direct consumer, such as a list row, holds a reference to this image.
+  // True if a direct consumer, such as a list row, holds a reference to this
+  // image and was processed in this or the previous frame. A consumer in a
+  // window that is not processed, such as the home screen kept in memory behind
+  // the active window, does not count.
   bool HasDirectConsumer(const std::string& path);
+  // A direct consumer of this image is processed in this frame.
+  void DirectConsumerActive(const std::string& path);
 
   // Containers and group lists report each frame in which their scroller runs,
   // and controls each frame in which a non-repeating animation runs.
@@ -202,6 +207,8 @@ private:
     bool m_foregroundDemand{false};
     // References held by direct consumers, such as list rows.
     unsigned int m_directRefs{0};
+    // The frame in which a direct consumer last requested or processed it.
+    unsigned int m_directFrame{0};
   };
 
   static bool DeferBackgrounds();
@@ -233,6 +240,8 @@ private:
   // also covers held images, and may remain true after release/promotion until
   // the next ProcessDeferred scan.
   bool m_hasDeferred{false};
+  // Frames completed by ProcessDeferred, under m_listSection.
+  unsigned int m_processFrame{0};
   std::atomic_bool m_scrolling{false};
   std::atomic_bool m_moved{false}; // the previous frame reported motion
 

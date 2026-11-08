@@ -211,6 +211,11 @@ bool CGUITexture::Process(unsigned int currentTime)
 
   RequestUploadAhead(currentTime);
 
+  // A selection image showing the same file waits only for direct consumers
+  // that are processed, not for ones in windows kept in memory behind this one.
+  if (m_isAllocated == LARGE && m_directConsumer)
+    CServiceBroker::GetGUI()->GetLargeTextureManager().DirectConsumerActive(m_info.filename);
+
   if (m_isAllocated)
   {
     // Only report change on ready state transition, not every frame while loading

@@ -71,6 +71,7 @@ struct LargeManager {struct Entry{CTextureArray data;bool failed=false;unsigned 
  bool GetImage(const std::string&p,CTextureArray&t,bool first,bool,bool defer=false,bool direct=false){requests.push_back({p,first,defer});++gets;auto&e=entries[p];if(first){++e.refs;e.direct+=direct;}t=e.data;return !e.failed;}
  bool HasDirectConsumer(const std::string&p){auto e=entries.find(p);return e!=entries.end()&&e->second.direct>0;}
  unsigned Direct(const std::string&p){return entries[p].direct;}
+ std::vector<std::string>active;void DirectConsumerActive(const std::string&p){active.push_back(p);}
  void RequestImageUpload(const std::string&p,bool background=false,bool prefetch=false,std::optional<unsigned> =std::nullopt){demands.push_back(p);backgroundDemands.push_back(background);prefetches.push_back(prefetch);}
  std::vector<bool>prefetches;
  void ReleaseImage(const std::string&p,bool,bool direct=false){auto&e=entries[p];if(e.refs)--e.refs;if(direct&&e.direct)--e.direct;}
@@ -312,6 +313,10 @@ static void PosterExemption(){CGUIListItem row;CDirtyRegionList dirty;
   CGUIImage poster;selection(poster);poster.m_texture->AllocResources();
   Check(!gui.large.requests.back().defer,"selection image shown by a list row is not delayed");
   Check(gui.large.Direct("large")==1,"selection image is not a direct consumer");
+  gui.large.active.clear();list.m_texture->Process(0);
+  Check(gui.large.active==std::vector<std::string>{"large"},"processed list row stamps its image");
+  gui.large.active.clear();poster.m_texture->Process(0);
+  Check(gui.large.active.empty(),"selection image does not stamp");
   CGUIImage fanart;fanart.m_info.listItem=false;selection(fanart,100,50);fanart.m_texture->AllocResources();
   Check(gui.large.requests.back().defer&&gui.large.Direct("large")==1,"background image shown by a list row is still delayed");
   poster.m_texture->FreeResources();fanart.m_texture->FreeResources();list.m_texture->FreeResources();
@@ -523,6 +528,8 @@ def mutations(code):
              ('selection-images-ignored','  if (!m_followsSelection ||\n','  if (true ||\n','selection image waits like a background'),
              ('selection-option-ignored','return images.DelaysSelectionImages() && !images','return !images','selection images are foreground with the option off'),
              ('poster-exemption-dropped',' && !images.HasDirectConsumer(m_info.filename);',';','selection image shown by a list row is not delayed'),
+             ('direct-not-stamped','  if (m_isAllocated == LARGE && m_directConsumer)\n    CServiceBroker::GetGUI()->GetLargeTextureManager().DirectConsumerActive(m_info.filename);\n','','processed list row stamps its image'),
+             ('selection-stamps','  if (m_isAllocated == LARGE && m_directConsumer)\n    CServiceBroker','  if (m_isAllocated == LARGE)\n    CServiceBroker','selection image does not stamp'),
              ('selection-counts-as-direct','m_directConsumer = !background && !m_followsSelection;','m_directConsumer = !background;','selection image is not a direct consumer'),
              ('direct-release-forgotten','immediately || (m_isAllocated == LARGE_FAILED), m_directConsumer);','immediately || (m_isAllocated == LARGE_FAILED));','released list row no longer exempts'),
              ('background-counts-as-direct','m_directConsumer = !background && !m_followsSelection;','m_directConsumer = !m_followsSelection;','background image shown by a list row is still delayed'),

@@ -83,11 +83,14 @@ list row. The big poster of a poster view, such as the Poster view of P3i
 Estuary, shows the file of a poster in the scrolling list. Delaying it would
 show the previous poster twice, so it changes and crossfades as usual during
 motion. A panel showing other artwork of the selected item, or a poster whose
-row is not loaded yet, is still delayed. Any direct consumer of the file, even
-one in a hidden view or a row of another item with the same icon, exempts the
-image too. The manager
-counts the references direct consumers acquired; each texture remembers the
-kind of its reference for its release.
+row is not loaded yet, is still delayed. A direct consumer only exempts the
+image while it is processed: each processed direct texture stamps its image
+every frame, and a stamp from this or the previous frame counts. Widgets of the
+home screen, which stays in memory behind the active window but is not
+processed, therefore no longer exempt their posters. A processed row of
+another item with the same file still does. The manager counts the references
+direct consumers acquired; each texture remembers the kind of its reference for
+its release.
 
 The previous crossfade image stays until the new one is ready. Cache grace and
 fade durations are unchanged. These are conservative admission rules, not exact

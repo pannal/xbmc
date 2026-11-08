@@ -96,7 +96,7 @@ class CJobManager;
 class CJob {friend class CJobManager;CJobManager*m_callback=nullptr;public:
  enum PRIORITY{PRIORITY_LOW_PAUSABLE=0,PRIORITY_LOW,PRIORITY_NORMAL,PRIORITY_HIGH,PRIORITY_DEDICATED};
  virtual~CJob()=default;virtual bool DoWork()=0;virtual const char*GetType()const{return "FixtureJob";}virtual bool ShouldCancel(unsigned,unsigned)const;};
-struct CWorkItem {CJob*m_job;unsigned m_id;IJobCallback*m_callback;bool operator==(unsigned id)const{return m_id==id;}bool operator==(const CJob*j)const{return m_job==j;}void FreeJob(){delete m_job;}};
+struct CWorkItem {CJob*m_job;unsigned m_id;IJobCallback*m_callback;bool operator==(unsigned id)const{return m_id==id;}bool operator==(const CJob*j)const{return m_job==j;}void FreeJob(){delete m_job;}void Cancel(){m_callback=nullptr;}};
 class CJobManager {public:
  using JobQueue=std::vector<CWorkItem>;using Processing=std::vector<CWorkItem>;
  mutable CCriticalSection m_section;JobQueue m_jobQueue[5];Processing m_processing;unsigned next=1;bool reject=false;int added[5]{};
