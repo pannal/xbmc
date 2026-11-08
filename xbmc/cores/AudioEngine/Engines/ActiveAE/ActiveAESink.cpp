@@ -1128,7 +1128,12 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
   }
 
   if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
+  {
+    // A dropped burst skips the write loop, but earlier bursts may still be queued.
+    if (totalFrames == 0)
+      m_sink->GetDelay(status);
     m_stats->UpdateSinkDelay(status, samples->pool ? 1 : 0);
+  }
 
   return status.delay * 1000;
 }

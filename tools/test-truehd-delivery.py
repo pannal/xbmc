@@ -59,7 +59,7 @@ struct Logging {bool enabled=true;bool IsLogLevelLogged(int)const{return enabled
 struct CServiceBroker {inline static Logging log;static Logging&GetLogging(){return log;}};
 struct Format {int m_dataFormat=0;unsigned m_frameSize=16,m_frames=1440,m_sampleRate=192000;CAEStreamInfo m_streamInfo;};
 constexpr int AE_FMT_RAW=0,AE_FMT_S16NE=1,AE_FMT_S16BE=2;
-struct AEDelayStatus {double delay=0.125;void SetDelay(double d){delay=d;}};
+struct AEDelayStatus {double delay=0;void SetDelay(double d){delay=d;}};
 struct PCM {int state=1;std::deque<int>writes,recover,resume;int prepareResult=0;uint8_t* root=nullptr;size_t size=0;unsigned frameSize=16;std::vector<uint8_t>accepted;};
 constexpr int SND_PCM_STATE_PREPARED=1;
 int snd_pcm_writei(PCM*p,void*b,unsigned amount){auto*bytes=static_cast<uint8_t*>(b);assert(bytes>=p->root&&bytes+amount*p->frameSize<=p->root+p->size);int ret=p->writes.empty()?int(amount):p->writes.front();if(!p->writes.empty())p->writes.pop_front();assert(ret<=int(amount));recordText("write");record(size_t(bytes-p->root));record(amount);record(ret);recordBytes(bytes,amount*p->frameSize);if(ret>0)p->accepted.insert(p->accepted.end(),bytes,bytes+ret*p->frameSize);return ret;}
@@ -81,7 +81,17 @@ std::vector<LogRecord> logsSince(size_t at,const char*prefix){std::vector<LogRec
 uint64_t number(const LogRecord&r,size_t at){return std::stoull(r.args.at(at));}
 unsigned checkedAdd(CAESinkALSA&alsa,uint8_t**data,unsigned frames,unsigned offset){auto begin=CLog::records.size();auto accepted=alsa.m_pcm?alsa.m_pcm->accepted.size():0;auto ret=alsa.AddPackets(data,frames,offset);auto logs=logsSince(begin,"TrueHD delivery ALSA:");bool expect=traceAvailable&&CServiceBroker::log.enabled&&alsa.m_pcm&&alsa.m_passthrough&&alsa.m_format.m_streamInfo.m_type==CAEStreamInfo::STREAM_TYPE_TRUEHD;require(logs.size()==size_t(expect),"ALSA trace gating");if(expect){auto&r=logs.front();auto&p=*alsa.m_pcm;require(number(r,0)==offset&&number(r,1)==frames&&number(r,2)==ret&&number(r,3)==alsa.m_format.m_frameSize,"ALSA trace accounting");require(p.accepted.size()-accepted==ret*alsa.m_format.m_frameSize,"API acceptance frame accounting");auto expected=oracle(p.accepted.data()+accepted,p.accepted.size()-accepted);require(number(r,4)==expected,"ALSA CRC differs from accepted fragments");traceRecords++;}return ret;}
 struct FakeSink {CAESinkALSA alsa;unsigned AddPackets(uint8_t**data,unsigned frames,unsigned offset){if(alsa.m_pcm){alsa.m_pcm->root=data[0];alsa.m_pcm->size=65536;}recordText("add");record(frames);record(offset);auto r=checkedAdd(alsa,data,frames,offset);recordText("add-return");record(r);return r;}void GetDelay(AEDelayStatus&s){recordText("delay");s.delay=.125;}void AddPause(int ms){recordText("pause");record(ms);}};
-struct Stats {void UpdateSinkDelay(const AEDelayStatus&s,int packets){recordText("stats");record(s.delay);record(packets);}};
+struct Stats {
+  double delay = 0;
+  int packets = 0;
+  void UpdateSinkDelay(const AEDelayStatus& status, int count) {
+    delay = status.delay;
+    packets += count;
+    recordText("stats");
+    record(status.delay);
+    record(count);
+  }
+};
 struct Packet {uint8_t*data[1]{};unsigned nb_samples=61440;int pause_burst_ms=0;};
 struct CSampleBuffer {Packet*pkt=nullptr;void*pool=nullptr;};
 struct CAEUtil {static bool S16NeedsByteSwap(int,int output){return output==AE_FMT_S16BE;}};
@@ -92,7 +102,35 @@ struct FakeMat {std::vector<uint8_t>v;bool PackTrueHD(const uint8_t*,int){return
 struct Codec {FakeMat*m_packerMAT=nullptr;uint8_t*m_buffer=nullptr;unsigned m_dataSize=0;std::vector<uint8_t>m_trueHDBuffer;bool m_lavStyleSyncEnabled=false,m_truehd_ptsCacheValid=false;double m_currentPts=12,m_truehd_ptsCache=11;void run(){@CODEC_BRANCH@}};
 constexpr unsigned TRUEHD_BUF_SIZE=61440;constexpr double LOCAL_NOPTS=-1;
 void script(PCM&p,int plan){switch(plan){case 1:p.writes={17,281};break;case 2:break;case 3:p.writes={0};break;case 4:p.writes={0,0,0,0,0};break;case 5:p.writes={-EPIPE};p.recover={0};break;case 6:p.writes={-EPIPE};p.recover={-EPIPE};break;case 7:p.writes={-EPIPE,-EPIPE};p.recover={-EPIPE};break;case 8:p.writes={-ESTRPIPE};p.recover={-ESTRPIPE};p.resume={-EAGAIN,0};break;default:break;}}
-int main(int argc,char**argv){assert(argc==2);result.open(argv[1],std::ios::binary);const auto*known=reinterpret_cast<const uint8_t*>("123456789");require(oracle(known,9)==0x0376e6e7&&Crc32::Compute(known,9)==0x0376e6e7,"CRC known answer");
+int CheckDroppedRawPacket() {
+  for (bool iec : {true, false}) {
+    PCM pcm;
+    FakeSink sink;
+    sink.alsa.m_pcm = &pcm;
+    Stats stats;
+    CAEBitstreamPacker packer;
+    CActiveAESink active;
+    active.m_needIecPack = iec;
+    active.m_packer = &packer;
+    active.m_sink = &sink;
+    active.m_stats = &stats;
+    active.m_sinkFormat.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_DTSHD_MA;
+
+    Packet packet;
+    packet.nb_samples = 0; // ActiveAE discarded this DTS burst during startup sync.
+    CSampleBuffer sample{&packet, &packet};
+    unsigned delay = active.OutputSamples(&sample);
+    require(stats.packets == 1 && pcm.accepted.empty(), "discarded burst accounting");
+    if (delay != 125 || stats.delay != 0.125) {
+      std::cerr << "Discarded raw burst erased the sink delay\n";
+      return 1;
+    }
+  }
+  return 0;
+}
+int main(int argc,char**argv){assert(argc==2||argc==3);result.open(argv[1],std::ios::binary);
+ if(argc==3) return CheckDroppedRawPacket();
+ const auto*known=reinterpret_cast<const uint8_t*>("123456789");require(oracle(known,9)==0x0376e6e7&&Crc32::Compute(known,9)==0x0376e6e7,"CRC known answer");
  for(bool debug:{false,true})for(int mode=0;mode<5;mode++)for(int swap=0;swap<4;swap++)for(int plan=0;plan<9;plan++){
  ++cases;CLog::records.clear();CServiceBroker::log.enabled=debug;record(cases);std::vector<uint8_t>input(65536);for(size_t i=0;i<input.size();i++)input[i]=(i*73+(i>>8)*19+(i>>4))&255;
  PCM pcm;script(pcm,plan);CAEBitstreamPacker packer;FakeSink sink;Stats stats;Packet packet;packet.data[0]=input.data();CSampleBuffer sample{&packet,cases%2?&packet:nullptr};CActiveAESink active;active.m_packer=&packer;active.m_sink=&sink;active.m_stats=&stats;active.m_sinkFormat.m_dataFormat=swap==3?AE_FMT_S16BE:AE_FMT_S16NE;active.m_swapState=swap==0?CActiveAESink::SKIP_SWAP:swap==1?CActiveAESink::NEED_BYTESWAP:CActiveAESink::CHECK_SWAP;sink.alsa.m_pcm=&pcm;sink.alsa.m_fragmented=plan==2;pcm.frameSize=16;
@@ -247,6 +285,10 @@ def run(a):
         r,artifact=build(a.root,a.output/name,ref=ref,sanitize=a.sanitize)
         if r.returncode:raise RuntimeError(f'{name}: {r.stderr}')
         print(name,r.stdout.strip())
+    drop_check = subprocess.run([str(a.output/'actual/run'), str(a.output/'drop-check.bin'),
+                                 '--dropped-raw'], capture_output=True, text=True, check=False)
+    assert drop_check.returncode == 0, drop_check.stderr
+    print('Dropped raw bursts retain measured sink delay with and without IEC packing')
     first=(a.output/'baseline/behavior.bin').read_bytes();second=(a.output/'actual/behavior.bin').read_bytes();assert first==second,'complete bytes/calls/offsets/returns/recovery changed'
     print(f'Baseline {baseline}: {len(first)} behavior bytes identical')
     r,artifact=build(a.root,a.output/'diagnostic',ref=diagnostic,sanitize=a.sanitize,require_diagnostics=True)
