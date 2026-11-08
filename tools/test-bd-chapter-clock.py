@@ -169,7 +169,7 @@ struct CDVDDemuxFFmpeg {
 struct CacheCore {std::vector<std::pair<std::string,int64_t>> chapters;void SetChapters(const decltype(chapters)& c){chapters=c;}};
 struct CServiceBroker {static CacheCore& GetDataCacheCore(){static CacheCore c;return c;}};
 namespace XFILE {struct SCacheStatus {int64_t forward=0;};}
-struct CDVDMsg {enum {PLAYER_SEEK_CHAPTER};explicit CDVDMsg(int){} virtual ~CDVDMsg()=default;};
+struct CDVDMsg {enum {PLAYER_SEEK_CHAPTER,PLAYER_SEEK};explicit CDVDMsg(int){} virtual ~CDVDMsg()=default;};
 @MESSAGE@
 struct Messenger {
   bool accept=true;int queued=0;std::vector<int> requests;
@@ -187,6 +187,7 @@ struct CVideoPlayer {
   std::shared_ptr<CDVDInputStream> m_pInputStream;
   ProcessInfo process;ProcessInfo* m_processInfo=&process;Edl m_Edl;
   Messenger m_messenger;std::atomic<int> m_chapterSeekTarget{0};
+  std::shared_ptr<CDVDMsg> m_pendingLargeSkip;
   double m_demuxSeekBasePts=DVD_NOPTS_VALUE;int m_caching=CACHESTATE_DONE,m_messageQueueTimeSize=10;
   struct {int state=0;std::chrono::steady_clock::time_point iDVDStillStartTime;std::chrono::milliseconds iDVDStillTime{0};}m_dvd;
   bool lifecycle=false,playerThread=true;int timedSeeks=0;

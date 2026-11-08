@@ -200,7 +200,9 @@ struct CVideoPlayer{
  int flushes=0,recalls=0,speedChanges=0;bool flushAccurate=false,flushSync=false;
  double flushStart=DVD_NOPTS_VALUE;std::function<void()> complete;
  CacheInfo GetCachingTimes(){return {cacheValid};}bool IsInMenuInternal(){return false;}
+ bool WaitForActiveAreaDetection(){return false;}
  void SetCaching(ECacheState);void FinishSeek(bool);void Handle(Msg msg);
+ void ClearRejectedLargeSkip(const Msg*) {}
  void RecallSubtitlesAfterSeek(double,double){++recalls;}
  void SetPlaySpeed(int s){++speedChanges;m_playSpeed=s;}
  // Downstream flush is a recording deferred adapter; its full lifecycle has its own suite.
@@ -210,7 +212,7 @@ struct CVideoPlayer{
 };
 @SET_CACHING@
 @FINISH_SEEK@
-void CVideoPlayer::Handle(Msg msg){do{@PLAYER_SEEK@}while(false);}
+void CVideoPlayer::Handle(Msg msg){auto pMsg=std::make_shared<Msg>(msg);do{@PLAYER_SEEK@}while(false);}
 '''
 
 TESTS = r'''

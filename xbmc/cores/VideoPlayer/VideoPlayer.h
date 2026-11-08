@@ -514,6 +514,8 @@ protected:
   void CompleteFileReplacement();
   void SynchronizeStreams(bool allowRecovery);
   void FinishSeek(bool trickplay);
+  void QueueTimeSeek(const CDVDMsgPlayerSeek::CMode& mode, bool largeStep = false);
+  void ClearRejectedLargeSkip(const CDVDMsg* request);
   bool m_waitingForVideoFlush{false};
 
   CVideoSeekQueueState GetVideoSeekQueueState();
@@ -630,6 +632,10 @@ protected:
   // also step from this intent while the clock still shows the old chapter.
   // 0 = none pending; cleared by time seeks or when playback catches up.
   std::atomic<int> m_chapterSeekTarget{0};
+
+  // Latest large time skip, protected by m_StateSection. Use its destination
+  // until the player publishes the resynchronized playback position.
+  std::shared_ptr<CDVDMsgPlayerSeek> m_pendingLargeSkip;
 
   CDVDMessageQueue m_messenger;
   std::unique_ptr<CJobQueue> m_outboundEvents;

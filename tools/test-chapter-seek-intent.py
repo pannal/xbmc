@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Production chapter routing, intent retirement and receipt ordering checks.
+"""Production chapter and time skip routing, intent retirement and receipt checks.
 
-Executes the chapter prefix of Seek, whole SeekChapter/GetPreviousChapter, and
+Executes Seek, SeekChapter and GetPreviousChapter, and
 final locked publication fragment of UpdatePlayState. Recording queue, chapter
 clock and lifecycle adapters are explicit. The additional complete chapter
 handler uses extracted production queue/flush/receipt methods from the existing
@@ -21,23 +21,24 @@ function = runpy.run_path(str(ROOT / 'tools/test-render-slot-publication.py'))['
 
 
 def harness(parent):
-    seek = function(parent, 'void CVideoPlayer::Seek(bool bPlus,')
-    prefix = seek[:seek.index('\n  int64_t seekTarget;')]
-    methods = prefix + '\n  ++timedSeeks;\n}\n'
-    methods += '\n'.join(function(parent, signature) for signature in (
-        'int CVideoPlayer::SeekChapter(', 'int CVideoPlayer::GetPreviousChapter('))
+    methods = '\n'.join(function(parent, signature) for signature in (
+        'void CVideoPlayer::Seek(bool bPlus,', 'int CVideoPlayer::SeekChapter(',
+        'int CVideoPlayer::GetPreviousChapter(', 'void CVideoPlayer::QueueTimeSeek(',
+        'void CVideoPlayer::ClearRejectedLargeSkip('))
     update = function(parent, 'void CVideoPlayer::UpdatePlayState(')
     # Keep the actual final state lock and retirement statements, avoiding the
     # unrelated GUI/clock/cache-statistics providers earlier in UpdatePlayState.
     tail = update[update.rindex('  std::unique_lock<CCriticalSection> lock(m_StateSection);'):]
     methods += '\nvoid CVideoPlayer::Publish(State state) {\n' + tail
-    return PRELUDE + methods + TESTS
+    messages = (ROOT / 'xbmc/cores/VideoPlayer/DVDMessage.h').read_text()
+    return PRELUDE.replace('@TIME_MESSAGE@', function(messages, 'class CDVDMsgPlayerSeek :') + ';') + methods + TESTS
 
 
 PRELUDE = r'''
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -46,7 +47,12 @@ PRELUDE = r'''
 #include <vector>
 using CCriticalSection = std::recursive_mutex;
 constexpr int MSGQ_OK=1, MSGQ_NOT_INITIALIZED=-1, CACHESTATE_DONE=0, CACHESTATE_FULL=1;
-struct CDVDMsg {enum {PLAYER_SEEK_CHAPTER=1};};
+struct CDVDMsg {
+  enum {PLAYER_SEEK_CHAPTER=1,PLAYER_SEEK,PLAYER_VIDEO_RECOVERY_SEEK};
+  explicit CDVDMsg(int) {}
+  virtual ~CDVDMsg()=default;
+};
+@TIME_MESSAGE@
 struct CDVDMsgPlayerSeekChapter {int chapter; explicit CDVDMsgPlayerSeekChapter(int c):chapter(c){}};
 struct Messenger {
   bool accept=true; int queued=0; std::vector<int> requests; std::function<void()> beforePut;
@@ -55,9 +61,33 @@ struct Messenger {
     if(!accept) return MSGQ_NOT_INITIALIZED;
     requests.push_back(msg->chapter); ++queued; return MSGQ_OK;
   }
-  int GetPacketCount(int) const {return queued;}
+  int queuedTime=0;
+  std::vector<std::shared_ptr<CDVDMsgPlayerSeek>> timeRequests;
+  int Put(std::shared_ptr<CDVDMsgPlayerSeek> msg) {
+    if(!accept) return MSGQ_NOT_INITIALIZED;
+    timeRequests.push_back(msg); ++queuedTime; return MSGQ_OK;
+  }
+  int GetPacketCount(int type) const {return type==CDVDMsg::PLAYER_SEEK ? queuedTime : queued;}
 };
-struct State {bool canseek=true; int chapter=7;};
+struct State {bool canseek=true; int chapter=7; double time=3638907;};
+struct CAdvancedSettings {
+  bool m_videoUseTimeSeeking=true;
+  int m_videoTimeSeekForwardBig=600,m_videoTimeSeekBackwardBig=-600;
+  int m_videoTimeSeekForward=10,m_videoTimeSeekBackward=-10;
+  int m_videoPercentSeekForwardBig=10,m_videoPercentSeekBackwardBig=-10;
+  int m_videoPercentSeekForward=1,m_videoPercentSeekBackward=-1;
+};
+struct Settings {
+  std::shared_ptr<CAdvancedSettings> advanced=std::make_shared<CAdvancedSettings>();
+  auto GetAdvancedSettings(){return advanced;}
+};
+struct CServiceBroker {static Settings* GetSettingsComponent(){static Settings s;return &s;}};
+static struct {
+  struct Item {bool IsStack(){return false;}} item;
+  Item& CurrentFileItem(){return item;}
+  double GetTime(){return 0;}
+  void SeekTime(double){assert(false);}
+} g_application;
 struct IDVDStreamPlayer {enum {SYNC_STARTING,SYNC_WAITSYNC,SYNC_INSYNC};};
 struct CurrentStream {int id=0,syncState=IDVDStreamPlayer::SYNC_INSYNC;};
 class CVideoPlayer {
@@ -65,7 +95,11 @@ public:
   State m_State; CCriticalSection m_StateSection; Messenger m_messenger;
   CurrentStream m_CurrentVideo,m_CurrentAudio;
   std::atomic<int> m_chapterSeekTarget{0}; int m_caching=CACHESTATE_DONE;
-  bool lifecycle=false, playerThread=true; int64_t time=3636289; int count=12,timedSeeks=0;
+  std::shared_ptr<CDVDMsgPlayerSeek> m_pendingLargeSkip;
+  struct ProcessInfo {int64_t GetMaxTime(){return 6400000;}} processInfo;
+  ProcessInfo* m_processInfo=&processInfo;
+  struct Callback {void OnPlayBackSeek(int64_t,int64_t){}} m_callback;
+  bool lifecycle=false, playerThread=true; int64_t time=3636289; int count=12;
   int GetChapter(){return m_State.chapter;} int GetChapterCount(){return count;}
   int64_t GetTime(){return time;} int64_t GetChapterPos(int c){return c==7 ? 3633 : c*400;}
   bool IsCurrentThread() const{return playerThread;}
@@ -77,6 +111,8 @@ public:
   }
   void SynchronizeDemuxer(){assert(OtherThreadCanLock());}
   void Seek(bool,bool,bool); int SeekChapter(int); int GetPreviousChapter(); void Publish(State);
+  void QueueTimeSeek(const CDVDMsgPlayerSeek::CMode&,bool=false);
+  void ClearRejectedLargeSkip(const CDVDMsg*);
   void Back(){Seek(false,true,true);} void Next(){Seek(true,true,true);}
   void Caught(int chapter){m_messenger.queued=0;m_caching=CACHESTATE_DONE;lifecycle=false;Publish({true,chapter});}
 };
@@ -94,7 +130,7 @@ int main(){
   // pending Back then moves to the previous one, including while paused.
   {CVideoPlayer p;p.time=3640000;p.Back();p.Back();assert((p.m_messenger.requests==std::vector<int>{7,6}));}
   {CVideoPlayer p;p.m_State.chapter=1;p.time=400001;p.Back();p.Back();assert((p.m_messenger.requests==std::vector<int>{0,0}));assert(p.m_chapterSeekTarget==1);}
-  {CVideoPlayer p;p.m_State.chapter=11;p.Next();p.Next();assert((p.m_messenger.requests==std::vector<int>{12}));assert(p.timedSeeks==1);}
+  {CVideoPlayer p;p.m_State.chapter=11;p.Next();p.Next();assert((p.m_messenger.requests==std::vector<int>{12}));assert(p.m_messenger.timeRequests.size()==1);}
   // No retirement during the blocked HTTP source seek, child flush or before
   // the marker. A queued newer request protects even an old state snapshot.
   {CVideoPlayer p;p.Back();p.m_messenger.queued=0;p.m_caching=CACHESTATE_FULL;
@@ -145,6 +181,31 @@ int main(){
   {CVideoPlayer p;p.m_messenger.beforePut=[&]{assert(!p.OtherThreadCanLock());};
    p.Back();p.Publish({true,7});assert(p.m_chapterSeekTarget==6);
    p.Caught(6);assert(p.m_chapterSeekTarget==0);}
+
+  // The report had a second back press while the clock still showed ~60:39.
+  // Start the second skip from the requested ~50:39, even after its flush.
+  {CVideoPlayer p;p.count=0;p.Back();p.m_messenger.queuedTime=0;
+   p.m_CurrentVideo.syncState=IDVDStreamPlayer::SYNC_WAITSYNC;
+   p.Publish({true,0,3638958});p.Back();
+   assert(p.m_messenger.timeRequests[0]->GetTime()==3038907);
+   assert(p.m_messenger.timeRequests[1]->GetTime()==2438907 && "rapid_time_skip_accumulates");
+   auto first=p.m_messenger.timeRequests[0];auto second=p.m_messenger.timeRequests[1];
+   p.ClearRejectedLargeSkip(first.get());assert(p.m_pendingLargeSkip==second);
+   p.m_CurrentVideo.syncState=IDVDStreamPlayer::SYNC_INSYNC;
+   p.Publish({true,0,3038786});assert(p.m_pendingLargeSkip==second);
+   p.m_messenger.queuedTime=0;p.Publish({true,0,2438770});assert(!p.m_pendingLargeSkip);
+   p.Next();assert(p.m_messenger.timeRequests.back()->GetTime()==3038770);}
+  {CVideoPlayer p;p.count=0;p.Next();auto first=p.m_pendingLargeSkip;
+   p.m_messenger.accept=false;p.Back();assert(p.m_pendingLargeSkip==first);
+   p.m_messenger.accept=true;p.Back();assert(p.m_pendingLargeSkip->GetTime()==3638907);
+   p.ClearRejectedLargeSkip(p.m_pendingLargeSkip.get());assert(!p.m_pendingLargeSkip);}
+  {CVideoPlayer p;p.count=0;p.Back();p.QueueTimeSeek({});assert(!p.m_pendingLargeSkip);
+   p.Back();p.count=12;p.Next();assert(!p.m_pendingLargeSkip);}
+  {auto settings=CServiceBroker::GetSettingsComponent()->advanced;settings->m_videoUseTimeSeeking=false;
+   CVideoPlayer p;p.count=0;p.m_State.time=3200000;p.Back();p.Back();
+   assert(p.m_messenger.timeRequests[0]->GetTime()==2560000);
+   assert(p.m_messenger.timeRequests[1]->GetTime()==1920000);
+   settings->m_videoUseTimeSeeking=true;}
 }
 '''
 
@@ -222,6 +283,7 @@ struct CDVDInputStream {
   CDVDMessageQueue queue;
   CDVDMessageQueue& m_messenger=queue;
   CCriticalSection m_StateSection; std::atomic<int> m_chapterSeekTarget{0};
+  std::shared_ptr<CDVDMsg> m_pendingLargeSkip;
   int64_t time=3636289; int count=12,timedSeeks=0,synchronizes=0;
   int GetChapter() {return m_State.chapter;} int GetChapterCount() {return count;}
   int64_t GetTime() {return time;} int64_t GetChapterPos(int c) {return c==7 ? 3633 : c*400;}
@@ -352,12 +414,15 @@ def main():
                 ('retire-from-ui-thread','IsCurrentThread() &&',''),
                 ('publish-rejected-intent','if (m_messenger.Put(std::make_shared<CDVDMsgPlayerSeekChapter>(iChapter)) == MSGQ_OK)',
                  'if ((m_messenger.Put(std::make_shared<CDVDMsgPlayerSeekChapter>(iChapter)), true))'),
-                ('unlocked-request-publication','std::unique_lock<CCriticalSection> lock(m_StateSection);',''),
+                ('unlocked-request-publication',
+                 'std::unique_lock<CCriticalSection> lock(m_StateSection);\n      // The demuxer clamps',
+                 '// The demuxer clamps'),
             ]
             for name,old,new in controls:
                 assert old in source,name
-                # The request lock is first; retain the state retirement lock.
                 run(source.replace(old,new,1),out,name,True)
+            run(source.replace('bLargeStep && m_pendingLargeSkip', 'false', 1),
+                out, 'ignore-pending-time-skip', True, 'rapid_time_skip_accumulates')
             startup_controls=[
                 ('retire-before-video-sync',
                  '(m_CurrentVideo.id < 0 || m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC)',

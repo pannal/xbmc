@@ -37,6 +37,8 @@ source = source.replace('struct ProcessInfo { double', 'struct ProcessInfo { voi
 source = source.replace('  CDVDMessageQueue queue;\n  bool m_bAbortRequest', '''
   CDVDMessageQueue queue;
   CDVDMessageQueue& m_messenger=queue;
+  CCriticalSection m_StateSection;
+  std::shared_ptr<CDVDMsgPlayerSeek> m_pendingLargeSkip;
   bool m_waitingForVideoFlush=false;
   long GetUpdatedTime() {return -76;}
   CVideoSeekQueueState GetVideoSeekQueueState();
@@ -51,7 +53,8 @@ source += f.block(parent, 'CVideoSeekQueueState CVideoPlayer::GetVideoSeekQueueS
 source += f.block(parent, 'void CVideoPlayer::QueueAudioRecoverySeek()').replace('CVideoPlayer::', 'Parent::')
 selection = re.search(r'else if \((pMsg->IsType\(CDVDMsg::PLAYER_SEEK\).*?)\)\n    \{', parent, re.S).group(1)
 chapter_selection = re.search(r'else if \((pMsg->IsType\(CDVDMsg::PLAYER_SEEK_CHAPTER\).*?)\)\n    \{', parent, re.S).group(1)
-superseded = 'const bool seekSuperseded = GetVideoSeekQueueState().HasQueuedUserSeek();\n' + f.block(parent, '      if (seekSuperseded)')
+superseded = parent[parent.index('      bool seekSuperseded;'):parent.index('      if (seekSuperseded)')]
+superseded += f.block(parent, '      if (seekSuperseded)')
 chapter_branch = parent.split('else if (pMsg->IsType(CDVDMsg::PLAYER_SEEK_CHAPTER))')[1]
 chapter_superseded = chapter_branch[chapter_branch.index('      m_videoRecoveryGate.CancelPending();'):chapter_branch.index('      m_processInfo->SeekFinished(0);')]
 guard = f.block(parent, '      if (m_CurrentVideo.id >= 0 &&\n          m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC)')

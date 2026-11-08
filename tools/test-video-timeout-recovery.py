@@ -45,6 +45,8 @@ source = source.replace('struct {bool streamsReady=false; double time_offset=0;}
                         'struct {bool streamsReady=false,canseek=true; double time=0,time_offset=0;} m_State;')
 source = source.replace('  CDVDMessageQueue queue;\n  bool m_bAbortRequest', '''
   CDVDMessageQueue queue; CDVDMessageQueue& m_messenger=queue;
+  CCriticalSection m_StateSection;
+  std::shared_ptr<CDVDMsgPlayerSeek> m_pendingLargeSkip;
   bool m_waitingForVideoFlush=false,m_displayLost=false,inMenu=false;
   int m_streamPlayerSpeed=DVD_PLAYSPEED_NORMAL,m_caching=CACHESTATE_DONE;
   struct {int state=DVDSTATE_NORMAL;} m_dvd;
@@ -73,6 +75,8 @@ source += '\n'.join(f.block(parent, marker).replace('CVideoPlayer::', 'Parent::'
 
 stream = parent[parent.index('    // The codec-change message carries this token'):]
 stream = stream[:stream.index('    player->SendMessage')]
+probe = stream.index('    // Only hints that reach the video thread')
+stream = stream[:probe] + stream[stream.index('    if (!videoPlayer->OpenStream(hint))', probe):]
 source += 'bool Parent::AdmitVideoStream() { auto* player=m_VideoPlayerVideo; int hint=0;\n' + stream + 'return true; }\n'
 
 eof = parent[parent.index('      // End of input: a recovery requested'):]
