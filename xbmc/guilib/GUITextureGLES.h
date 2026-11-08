@@ -49,6 +49,19 @@ protected:
   void Begin(UTILS::COLOR::Color color) override;
   void Draw(float* x, float* y, float* z, const CRect& texture, const CRect& diffuse, int orientation) override;
   void End() override;
+  bool CanDrawCrossfade() const override;
+  void DrawCrossfade(const float* x,
+                     const float* y,
+                     const float* z,
+                     CTexture* texture,
+                     const CRect& coords,
+                     int orientation,
+                     UTILS::COLOR::Color color,
+                     CTexture* outgoing,
+                     const CRect& outgoingCoords,
+                     int outgoingOrientation,
+                     UTILS::COLOR::Color outgoingColor,
+                     unsigned char groupAlpha) override;
 
 private:
   CGUITextureGLES(const CGUITextureGLES& texture) = default;

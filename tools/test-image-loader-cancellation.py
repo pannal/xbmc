@@ -32,6 +32,7 @@ PRELUDE = r'''
 #include <cstdio>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -39,6 +40,7 @@ PRELUDE = r'''
 #include <unordered_map>
 #include <utility>
 #include <vector>
+namespace PERFORMANCE_CORES{struct CDecodePlacement{void NeededNow(){}struct Scope{explicit Scope(const std::shared_ptr<CDecodePlacement>&){}};};}
 using namespace std::chrono_literals;
 static thread_local int heldLocks=0;
 struct CCriticalSection {

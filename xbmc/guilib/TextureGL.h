@@ -29,6 +29,7 @@ public:
 
 protected:
   GLuint m_texture = 0;
+  std::shared_ptr<void> m_externalBacking;
   bool m_isOglVersion3orNewer = false;
 };
 

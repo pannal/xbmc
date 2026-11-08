@@ -144,8 +144,8 @@ def main():
                                        'upload must not inherit automatic renderer HIGH'),
         'discard-upload-attributes': ('const CEGLAttributesVec uploadContextAttribs{contextAttribs};',
                                       'const CEGLAttributesVec uploadContextAttribs;', 'GLES version preserved'),
-        'no-upload-query': ('if (m_eglUploadContext != EGL_NO_CONTEXT &&',
-                            'if (false && m_eglUploadContext != EGL_NO_CONTEXT &&',
+        'no-upload-query': ('if (m_eglUploadContext != EGL_NO_CONTEXT &&\n      CEGLUtils::HasExtension(m_eglDisplay, "EGL_IMG_context_priority"))',
+                            'if (false && m_eglUploadContext != EGL_NO_CONTEXT &&\n      CEGLUtils::HasExtension(m_eglDisplay, "EGL_IMG_context_priority"))',
                             'query actual upload hint once'),
     }
     for name, (before, after, witness) in mutations.items():

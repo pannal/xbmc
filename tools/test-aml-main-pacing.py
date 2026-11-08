@@ -38,6 +38,7 @@ CAMLVideoMute& aml_video_mute_controller(){static CAMLVideoMute c([](bool){});re
 #include "utils/PlaybackEndDiagnostics.h"
 namespace fmt {template<class... T>std::string format(const char*,T...){return {};}}
 inline void aml_end_display_diagnostics_pump(){}
+namespace PERFORMANCE_CORES { inline void ApplyRenderThread() {} inline void MaintainRenderThread() {} }
 struct CEGLContextUtils {struct SwapDiagnostics {bool attempted=false;int error=0;};};
 using namespace std::chrono_literals;
 struct Clock {

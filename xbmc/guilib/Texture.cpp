@@ -316,6 +316,12 @@ void CTexture::LoadToGPUAsync(const std::atomic_bool* cancelled)
   // holding the EGL upload lease. A cancelled waiter must still release it.
   if (!cancelled || !cancelled->load(std::memory_order_acquire))
   {
+    struct WorkerUpload
+    {
+      bool& flag;
+      explicit WorkerUpload(bool& value) : flag(value) { flag = true; }
+      ~WorkerUpload() { flag = false; }
+    } worker(m_uploadingInWorker);
     LoadToGPU();
     SyncGPU();
   }

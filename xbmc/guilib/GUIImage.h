@@ -17,6 +17,8 @@
 #include "GUITexture.h"
 #include "guilib/guiinfo/GUIInfoLabel.h"
 
+#include <optional>
+#include <utility>
 #include <vector>
 
 /*!
@@ -46,6 +48,8 @@ public:
     std::unique_ptr<CGUITexture> m_texture; ///< texture to fade out
     unsigned int m_fadeTime; ///< time to fade out (ms)
     bool         m_fading;   ///< whether we're fading out
+    bool m_dissolve{false}; ///< began its fade at full strength and alone, so it may
+                            ///< stay opaque under the incoming image
 
   private:
     CFadingTexture(const CFadingTexture&) = delete;
@@ -111,6 +115,8 @@ protected:
   std::vector<CFadingTexture *> m_fadingTextures;
   std::string m_currentTexture;
   std::string m_currentFallback;
+  // Finish an active background transition before displaying the latest request.
+  std::optional<std::pair<std::string, bool>> m_pendingBackground;
 
   unsigned int m_crossFadeTime;
   unsigned int m_currentFadeTime;

@@ -244,6 +244,7 @@ template<class...T>std::shared_ptr<std::thread> LaunchSharedThread(T&&...args){
 }
 '''
 PLATFORM = r'''
+namespace PERFORMANCE_CORES{inline std::set<int> ChildAffinity(){return {};}inline void RestoreChildAffinity(const std::set<int>&){}}
 struct IRunnable{virtual ~IRunnable()=default;virtual void Run()=0;};
 struct IThreadImpl{
  static std::unique_ptr<IThreadImpl> CreateThreadImpl(std::thread::native_handle_type){

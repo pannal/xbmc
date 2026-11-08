@@ -134,6 +134,7 @@
 #include "settings/SettingsComponent.h"
 #include "speech/ISpeechRecognition.h"
 #include "storage/MediaManager.h"
+#include "threads/PerformanceCores.h"
 #include "threads/SingleLock.h"
 #include "threads/SystemClock.h"
 
@@ -2020,6 +2021,8 @@ void CApplication::ResetCurrentItem()
 int CApplication::Run()
 {
   CLog::Log(LOGINFO, "Running the application...");
+  // After initialization, so threads created during startup keep Kodi's CPUs.
+  PERFORMANCE_CORES::ApplyRenderThread();
   GUI_FRAME_TIMING::Session guiFrameTiming;
 
   std::chrono::time_point<std::chrono::steady_clock> lastFrameTime;
@@ -2037,6 +2040,7 @@ int CApplication::Run()
   // Run the app
   while (!m_bStop)
   {
+    PERFORMANCE_CORES::MaintainRenderThread();
     GUI_FRAME_TIMING::Frame guiFrame;
     // Animate and render a frame
 

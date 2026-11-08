@@ -106,7 +106,10 @@ static void DirectConsumers(){State s;Harness h(s);CTextureArray a;
  Check(h.images.GetImage("B",a,true,true,false,true)&&a.size()==1&&h.images.HasDirectConsumer("B"),"loaded direct consumer is reported");a.Free();
  h.images.ReleaseImage("B",false);Check(h.images.HasDirectConsumer("B"),"other release keeps loaded direct consumer");
  h.images.ReleaseImage("B",false,true);Check(!h.images.HasDirectConsumer("B")&&h.images.m_allocatedLookup.count("B"),"released loaded direct consumer is no longer reported");++cases;}
-int main(){try{QuietAndScroll();ForegroundAndSharing();MixedUrgency();DeferredRelease();PerRequestTimeout();PollAndDrawDemand();Rejection();HeldReuse();ForegroundReuse();CompletionHold();SharedDecode();SettingToggle();MotionReport();SelectionSetting();DirectConsumers();std::printf("PASS %u cases %u checks; actual deferred manager/demand composition; host fixtures\n",cases,checks);return 0;}catch(const std::exception&e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}}
+static void BackgroundTextureHint(){for(int mode=0;mode<3;++mode){State s;s.async=false;s.delayBackgrounds=false;Harness h(s);
+ Ask(h,"A",mode==0);if(mode==2)Ask(h,"A",true);h.Next();CTextureArray array;Check(h.Get(array)&&array.size()==1,"hint fixture publishes decoded image");
+ Check(array.m_textures[0]->backgroundTexture==(mode!=1),"background hint is independent of motion delay and follows a joined decode");array.Free();++cases;}}
+int main(){try{QuietAndScroll();ForegroundAndSharing();MixedUrgency();DeferredRelease();PerRequestTimeout();PollAndDrawDemand();Rejection();HeldReuse();ForegroundReuse();CompletionHold();SharedDecode();SettingToggle();MotionReport();SelectionSetting();DirectConsumers();BackgroundTextureHint();std::printf("PASS %u cases %u checks; actual deferred manager/demand composition; host fixtures\n",cases,checks);return 0;}catch(const std::exception&e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}}
 '''
 
 def manager_source(files):
@@ -211,10 +214,9 @@ def mutations(files):
       ('join-keeps-foreground-timeout',LARGE,'void CGUILargeTextureManager::QueueImage(','      it->second->m_deferredSince = CTimeUtils::GetFrameTime();\n','','joining background consumer times out from its own request'),
       ('completion-not-held',LARGE,'void CGUILargeTextureManager::OnJobComplete(','if (success && image->m_background)','if (false)','completed background decode waits for the end of its frame'),
       ('foreground-completion-held',LARGE,'void CGUILargeTextureManager::OnJobComplete(','if (success && image->m_background)','if (success)','foreground decode is never held'),
-      ('upload-ignores-hold',LARGE,'void CGUILargeTextureManager::QueueUpload(',' ||\n      (image->m_held && !image->m_foregroundDemand)','','completed background decode waits for the end of its frame'),
       ('hold-blocks-foreground-upload',LARGE,'void CGUILargeTextureManager::QueueUpload(','(image->m_held && !image->m_foregroundDemand)','image->m_held','foreground demand uploads a held image'),
-      ('allocated-demand-unclassified',LARGE,'void CGUILargeTextureManager::RequestImageUpload(','allocated->second->m_foregroundDemand |= !background;','allocated->second->m_foregroundDemand |= true;','held image is not uploaded during motion'),
-      ('queued-demand-unclassified',LARGE,'void CGUILargeTextureManager::RequestImageUpload(','queued->second->m_foregroundDemand |= !background;','queued->second->m_foregroundDemand |= true;','completed background decode waits for the end of its frame'),
+      # Allocated and queued entries share one demand classification.
+      ('demand-unclassified',LARGE,'void CGUILargeTextureManager::RequestImageUpload(','image->m_foregroundDemand |= !background;','image->m_foregroundDemand |= true;','completed background decode waits for the end of its frame'),
       ('hold-never-released',LARGE,'void CGUILargeTextureManager::ProcessDeferred(','      image->m_held = false;\n      QueueUpload(image);','      (void)image;','deferred decode keeps private upload publication barrier'),
       ('setting-ignored-when-off',LARGE,'bool CGUILargeTextureManager::DeferBackgrounds(','  return CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(\n      CSettings::SETTING_LOOKANDFEEL_DELAYBACKGROUNDIMAGES);','  return true;','disabled setting does not delay'),
       ('setting-ignored-when-on',LARGE,'bool CGUILargeTextureManager::DeferBackgrounds(','  return CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(\n      CSettings::SETTING_LOOKANDFEEL_DELAYBACKGROUNDIMAGES);','  return false;','background request waits for end of its frame'),
@@ -234,15 +236,19 @@ def mutations(files):
       ('queued-direct-not-counted',LARGE,'void CGUILargeTextureManager::QueueImage(','  image->m_directRefs = direct ? 1 : 0;\n','','queued direct consumer is reported'),
       ('joined-direct-not-counted',LARGE,'void CGUILargeTextureManager::QueueImage(','    if (direct)\n      it->second->m_directRefs++;\n','','joining direct consumer is counted'),
       ('loaded-direct-not-counted',LARGE,'bool CGUILargeTextureManager::GetImage(','      if (direct)\n        image->m_directRefs++;\n','','loaded direct consumer is reported'),
-      ('poll-counts-direct',LARGE,'bool CGUILargeTextureManager::GetImage(','  if (firstRequest)\n    QueueImage(path, useCache, defer, direct);','  if (firstRequest || direct)\n    QueueImage(path, useCache, defer, direct);','direct poll adds no reference'),
+      ('poll-counts-direct',LARGE,'bool CGUILargeTextureManager::GetImage(','  if (firstRequest)\n    QueueImage(path, useCache, defer, background, direct);','  if (firstRequest || direct)\n    QueueImage(path, useCache, defer, background, direct);','direct poll adds no reference'),
       ('queued-release-ignores-kind',LARGE,'void CGUILargeTextureManager::ReleaseImage(','    CLargeTexture *image = queueIt->second;\n    if (direct && image->m_directRefs)\n      image->m_directRefs--;\n','    CLargeTexture *image = queueIt->second;\n','released direct consumers are no longer reported'),
       ('queued-release-drops-direct',LARGE,'void CGUILargeTextureManager::ReleaseImage(','    CLargeTexture *image = queueIt->second;\n    if (direct && image->m_directRefs)','    CLargeTexture *image = queueIt->second;\n    if (image->m_directRefs)','other release keeps direct consumers'),
-      ('loaded-release-ignores-kind',LARGE,'void CGUILargeTextureManager::ReleaseImage(','    const unsigned int uploadJobID = image->m_uploadJobID;\n    if (direct && image->m_directRefs)\n      image->m_directRefs--;\n','    const unsigned int uploadJobID = image->m_uploadJobID;\n','released loaded direct consumer is no longer reported'),
-      ('loaded-release-drops-direct',LARGE,'void CGUILargeTextureManager::ReleaseImage(','    const unsigned int uploadJobID = image->m_uploadJobID;\n    if (direct && image->m_directRefs)','    const unsigned int uploadJobID = image->m_uploadJobID;\n    if (image->m_directRefs)','other release keeps loaded direct consumer'),
+      ('loaded-release-ignores-kind',LARGE,'void CGUILargeTextureManager::ReleaseImage(','    CLargeTexture *image = allocIt->second;\n    if (direct && image->m_directRefs)\n      image->m_directRefs--;\n','    CLargeTexture *image = allocIt->second;\n','released loaded direct consumer is no longer reported'),
+      ('loaded-release-drops-direct',LARGE,'void CGUILargeTextureManager::ReleaseImage(','    CLargeTexture *image = allocIt->second;\n    if (direct && image->m_directRefs)','    CLargeTexture *image = allocIt->second;\n    if (image->m_directRefs)','other release keeps loaded direct consumer'),
       ('direct-query-ignores-queue',LARGE,'bool CGUILargeTextureManager::HasDirectConsumer(','  return queued != m_queuedLookup.end() && queued->second->m_directRefs > 0;','  return (void)queued, false;','queued direct consumer is reported'),
       ('quarter-screen',TEXTURE,'bool IsBackgroundSized(','float share = 0.5f','float share = 0.25f','image short of half screen is not background'),
       ('full-screen-only',TEXTURE,'bool IsBackgroundSized(','float share = 0.5f','float share = 1.0f','half-screen image is a background')]
     for name,path,signature,old,new,witness in definitions:yield name,edit(files,path,signature,old,new),witness,path
+    # Admission and the single-upload scheduler both honour the hold; ignore it in both.
+    ignored=edit(files,LARGE,'void CGUILargeTextureManager::QueueUpload(',' ||\n      (image->m_held && !image->m_foregroundDemand)','')
+    ignored=edit(ignored,LARGE,'void CGUILargeTextureManager::StartNextUpload(','      if (image->m_held && !image->m_foregroundDemand)\n        continue;\n','')
+    yield 'upload-ignores-hold',ignored,'completed background decode waits for the end of its frame',LARGE
 
 def callsites(files):
     alloc=DEMAND.EXTRACT.function(files[TEXTURE],'bool CGUITexture::AllocResources()')

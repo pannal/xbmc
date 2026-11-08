@@ -351,9 +351,13 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     unsigned int m_guiAVChangeFlagTimeout;
 
     int32_t m_guiAnisotropicFiltering{0};
-    bool m_guiFrontToBackRendering{false};
-    bool m_guiGeometryClear{true};
-    bool m_guiAsyncTextureUpload{false};
+    bool m_guiFrontToBackRendering{true};
+    bool m_guiGeometryClear{false};
+    bool m_guiAsyncTextureUpload{true};
+    bool m_guiAFBCFanart{true};
+    bool m_guiAFBCImages{true};
+    bool m_guiLimitBackgroundFades{true};
+    bool m_guiSinglePassCrossfade{true};
 
     unsigned int m_addonPackageFolderSize;
 

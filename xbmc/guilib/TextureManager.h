@@ -115,12 +115,18 @@ public:
   void RemoveTexturePath(const std::string &texturePath); ///< Remove a path from the paths to check when loading media
 
   void FreeUnusedTextures(unsigned int timeDelay = 0); ///< Free textures (called from app thread only)
-  void ReleaseHwTexture(unsigned int texture);
+  void ReleaseHwTexture(unsigned int texture, std::shared_ptr<void> backing = {});
 protected:
   std::vector<CTextureMap*> m_vecTextures;
   std::list<std::pair<CTextureMap*, std::chrono::time_point<std::chrono::steady_clock>>>
       m_unusedTextures;
-  std::vector<unsigned int> m_unusedHwTextures;
+  struct HardwareTexture
+  {
+    unsigned int name;
+    // EGLImage/DMA-BUF storage must outlive deferred glDeleteTextures.
+    std::shared_ptr<void> backing;
+  };
+  std::vector<HardwareTexture> m_unusedHwTextures;
   typedef std::vector<CTextureMap*>::iterator ivecTextures;
   // we have 2 texture bundles (one for the base textures, one for the theme)
   CTextureBundle m_TexBundle[2];

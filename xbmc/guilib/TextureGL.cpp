@@ -8,6 +8,11 @@
 
 #include "TextureGL.h"
 
+#if defined(TARGET_LINUX) && defined(HAS_GLES) && defined(HAS_LIBAMCODEC)
+#include "AMLAFBCTexture.h"
+#include "AMLAFBCTexturePolicy.h"
+#endif
+
 #include "ServiceBroker.h"
 #include "guilib/TextureManager.h"
 #include "rendering/RenderSystem.h"
@@ -48,7 +53,11 @@ void CGLTexture::CreateTextureObject()
 void CGLTexture::DestroyTextureObject()
 {
   if (m_texture)
-    CServiceBroker::GetGUI()->GetTextureManager().ReleaseHwTexture(m_texture);
+  {
+    CServiceBroker::GetGUI()->GetTextureManager().ReleaseHwTexture(m_texture,
+                                                                std::move(m_externalBacking));
+    m_texture = 0;
+  }
 }
 
 void CGLTexture::LoadToGPU()
@@ -58,6 +67,10 @@ void CGLTexture::LoadToGPU()
     // nothing to load - probably same image (no change)
     return;
   }
+  // Updating an imported texture must allocate fresh storage; keep the old
+  // external allocation with its queued texture deletion.
+  if (m_externalBacking)
+    DestroyTextureObject();
   if (m_texture == 0)
   {
     // Have OpenGL generate a texture object handle for us
@@ -211,6 +224,50 @@ void CGLTexture::LoadToGPU()
   }
   glTexImage2D(GL_TEXTURE_2D, 0, internalformat, m_textureWidth, m_textureHeight, 0,
     pixelformat, GL_UNSIGNED_BYTE, m_pixels);
+
+#if defined(TARGET_LINUX) && defined(HAS_GLES) && defined(HAS_LIBAMCODEC)
+  const auto& settings = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+  const bool rgba = m_format == XB_FMT_A8R8G8B8 || m_format == XB_FMT_RGBA8;
+  const auto imageClass = AML_AFBC::Classify(m_imageWidth, m_imageHeight,
+      m_backgroundTexture, m_hasAlpha, settings->m_guiAFBCFanart, settings->m_guiAFBCImages);
+  if (imageClass != AML_AFBC::ImageClass::None && m_uploadingInWorker && rgba &&
+      !IsMipmapped() && !m_bCacheMemory && m_textureWidth == m_imageWidth &&
+      m_textureHeight == m_imageHeight && GetPitch() == m_textureWidth * 4)
+  {
+    std::string error;
+    auto backing = CAMLAFBCTexture::Create(m_texture, m_textureWidth, m_textureHeight, error);
+    if (backing)
+    {
+      glDeleteTextures(1, &m_texture);
+      m_texture = backing->TakeTexture();
+      m_externalBacking = std::move(backing);
+      glBindTexture(GL_TEXTURE_2D, m_texture);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+#ifdef GL_TEXTURE_MAX_ANISOTROPY_EXT
+      if (settings->m_guiAnisotropicFiltering > 1 &&
+          CServiceBroker::GetRenderSystem()->IsExtSupported("GL_EXT_texture_filter_anisotropic"))
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT,
+                        settings->m_guiAnisotropicFiltering);
+#endif
+      static std::atomic<unsigned int> announced{0};
+      const unsigned int category = imageClass == AML_AFBC::ImageClass::Background ? 1 : 2;
+      if (!(announced.fetch_or(category) & category))
+      {
+        if (!settings->m_guiAFBCImages)
+          CLog::Log(LOGINFO, "AFBC fanart: active; retained {}x{} texture",
+                    m_textureWidth, m_textureHeight);
+        else
+          CLog::Log(LOGINFO, "AFBC images: {} active; retained {}x{} texture",
+                    category == 1 ? "background" : "artwork", m_textureWidth, m_textureHeight);
+      }
+    }
+    else if (!error.empty())
+      CLog::Log(LOGWARNING, "AFBC images: {}x{} {}; retaining ordinary textures; "
+                "further AFBC attempts disabled until Kodi restarts",
+                m_textureWidth, m_textureHeight, error);
+  }
+#endif
 
   if (IsMipmapped())
   {

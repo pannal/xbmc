@@ -97,7 +97,7 @@ struct CGUILargeTextureManager
  {
   std::string path="art";
   std::shared_ptr<CTexture> texture,m_pendingTexture;
-  bool m_asyncUpload=false,m_gpuDemand=false,m_background=false,m_held=false;
+  bool m_asyncUpload=false,m_gpuDemand=false,m_background=false,m_held=false,m_backgroundTexture=false;
   unsigned m_uploadJobID=0;
   void SetTexture(std::shared_ptr<CTexture> value) { texture=std::move(value); }
   const std::string& GetPath() const { return path; }
@@ -111,6 +111,9 @@ struct CGUILargeTextureManager
  // This suite tests the synchronous-publication branch after actual context
  // work. Demand-aware admission executes separately in test-image-upload-demand.
  void QueueUpload(CLargeTexture*) {}
+ // One admitted upload: OnJobComplete retires it and asks for the next.
+ unsigned m_activeUploadJobID=0;
+ void StartNextUpload() {}
  void OnJobComplete(unsigned,bool,CJob*);
 };
 '''
@@ -459,7 +462,7 @@ def main():
         if not args.no_mutations:
             mutations={
                 'exception-cleanup':(donor.TEXTURE_SOURCE,'      if (bound)\n','      if (false && bound)\n'),
-                'failed-publication':(PUBLICATION,'if (success)\n      {\n        if (image->m_asyncUpload)','if (true)\n      {\n        if (image->m_asyncUpload)'),
+                'failed-publication':(PUBLICATION,'if (success)\n      {\n        loader->m_texture->SetBackgroundTexture(','if (true)\n      {\n        loader->m_texture->SetBackgroundTexture('),
                 'destroy-under-callback-lock':(PUBLICATION,'// Failed jobs retain their texture until job deletion outside this lock.','loader->m_texture.reset();\n      // Failed jobs retain their texture until job deletion outside this lock.'),
                 'retry-per-texture':(donor.EGL_SOURCE,'    m_textureUploadDisabled = true;\n    CLog::LogF(LOGWARNING, "Disabling unavailable','    m_textureUploadDisabled = false;\n    CLog::LogF(LOGWARNING, "Disabling unavailable'),
                 'wrong-owner':(donor.EGL_SOURCE,'  if (m_currentUploadContext != this)\n    return false;','  if (false && m_currentUploadContext != this)\n    return false;'),

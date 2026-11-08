@@ -11,6 +11,9 @@
 #include "ServiceBroker.h"
 #include "StringUtils.h"
 #include "guilib/IDirtyRegionSolver.h"
+#if defined(TARGET_LINUX) && defined(HAS_LIBAMCODEC) && HAS_GLES >= 2
+#include "guilib/AMLAFBCTexture.h"
+#endif
 #include "log.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
@@ -614,6 +617,21 @@ void CEGLContextUtils::DestroyContext()
   // waits for an upload in progress on a loader thread
   std::unique_lock<CCriticalSection> lock(m_textureUploadLock);
   m_textureUploadDisabled = true;
+
+#if defined(TARGET_LINUX) && defined(HAS_LIBAMCODEC) && HAS_GLES >= 2
+  if (m_eglUploadContext != EGL_NO_CONTEXT &&
+      CAMLAFBCTexture::HasConversionResources(m_eglUploadContext))
+  {
+    // The lease lock excludes workers. Delete context-local converter objects
+    // before either EGL context is destroyed; a failed bind only drops metadata.
+    const bool bound = !m_textureUploadPoisoned &&
+        eglMakeCurrent(m_eglDisplay, m_eglUploadSurface, m_eglUploadSurface,
+                       m_eglUploadContext) == EGL_TRUE;
+    CAMLAFBCTexture::ReleaseConversionResources(m_eglUploadContext);
+    if (bound)
+      eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  }
+#endif
 
   if (m_eglContext != EGL_NO_CONTEXT)
   {
