@@ -4561,7 +4561,10 @@ void CVideoPlayer::HandleMessages()
       }
       if (msg.player == VideoPlayer_VIDEO)
       {
-        m_activeAreaVideoReady = true;
+        // Stream changes queue in the video thread. A start of an older stream
+        // cannot release or hold the startup of the stream selected last.
+        if (msg.subtitleProbeSource == m_CurrentVideo.hint.subtitleProbeSource)
+          m_activeAreaVideoReady = true;
         m_CurrentVideo.syncState = IDVDStreamPlayer::SYNC_WAITSYNC;
         m_CurrentVideo.cachetime = msg.cachetime;
         m_CurrentVideo.cachetotal = msg.cachetotal;
@@ -5506,8 +5509,6 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
 
 bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
 {
-  hint.subtitleProbeSource = aml_subtitle_active_area_source(
-      dynamic_cast<CDVDDemuxFFmpeg*>(m_pDemuxer.get()) ? hint.uniqueId : -1, hint.codec);
   m_processInfo->SetVideoInterlaced((hint.codecOptions & CODEC_INTERLACED) == CODEC_INTERLACED);
   if (m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
   {
@@ -5621,6 +5622,8 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   if(player == nullptr)
     return false;
 
+  // A stream that keeps the running video thread keeps the selection of that thread.
+  hint.subtitleProbeSource = m_CurrentVideo.hint.subtitleProbeSource;
   const bool reuse =
       m_bdVideoReuse && m_CurrentVideo.id >= 0 &&
       m_CurrentVideo.hint.Equal(hint, CDVDStreamInfo::COMPARE_ALL & ~CDVDStreamInfo::COMPARE_ID);
@@ -5634,6 +5637,10 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     const uint64_t previousGeneration = m_videoRecoveryGeneration++;
     auto* videoPlayer = static_cast<IDVDStreamPlayerVideo*>(player);
     videoPlayer->SetRecoveryGeneration(m_videoRecoveryGeneration);
+    // Only hints that reach the video thread may start a new active-area selection:
+    // the startup wait releases through the selection the video thread holds.
+    hint.subtitleProbeSource = aml_subtitle_active_area_source(
+        dynamic_cast<CDVDDemuxFFmpeg*>(m_pDemuxer.get()) ? hint.uniqueId : -1, hint.codec);
     if (!videoPlayer->OpenStream(hint))
     {
       // Refused before any codec change was queued: the running stream keeps its identity,

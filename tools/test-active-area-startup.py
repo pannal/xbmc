@@ -134,7 +134,7 @@ int main(){
  // Decode must first report a picture and finish initial synchronization.
  assert(!p.WaitForActiveAreaDetection()&&!heldStatus);
  SStartMsg started{};started.player=VideoPlayer_VIDEO;started.epoch=video.GetSyncEpoch();
- started.timestamp=1000000;
+ started.subtitleProbeSource=p.m_CurrentVideo.hint.subtitleProbeSource;started.timestamp=1000000;
  p.queue.Put(std::make_shared<CDVDMsgType<SStartMsg>>(CDVDMsg::PLAYER_STARTED,started));
  p.HandleMessages();assert(p.m_activeAreaVideoReady);
  p.SynchronizeStreams(false);
@@ -356,7 +356,9 @@ int main(){
  settingsValue.detect=true;dvDetection=true;
  for(bool nativeDV:{false,true}){
   aml_dv_detect_set_file(nativeDV?"deferred-DV":"deferred-SDR");aml_subtitle_active_area_startup_begin();
-  const auto selection=aml_subtitle_active_area_source(0,173);
+  // A queued stream change: the video thread still runs the older selection.
+  const auto older=aml_subtitle_active_area_source(1,173);
+  const auto selection=aml_subtitle_active_area_source(0,173);assert(older!=selection);
   PLAYER_FIXTURE::CVideoPlayerVideo video;PLAYER_FIXTURE::Parent p(video);
   p.m_CurrentVideo.id=0;p.m_CurrentVideo.hint.subtitleProbeSource=selection;
   p.m_CurrentVideo.syncState=PLAYER_FIXTURE::IDVDStreamPlayer::SYNC_STARTING;
@@ -382,9 +384,15 @@ int main(){
   assert(firstReady.wait_for(2s)==std::future_status::ready);
   PLAYER_FIXTURE::SStartMsg report{};report.player=PLAYER_FIXTURE::VideoPlayer_VIDEO;
   report.epoch=video.GetSyncEpoch();report.timestamp=1000000;
+  // The older stream reports a picture in the same sync epoch: no hold for the selected stream.
+  report.subtitleProbeSource=older;
+  p.queue.Put(std::make_shared<PLAYER_FIXTURE::CDVDMsgType<PLAYER_FIXTURE::SStartMsg>>(PLAYER_FIXTURE::CDVDMsg::PLAYER_STARTED,report));
+  p.HandleMessages();assert(!p.m_activeAreaVideoReady);
+  p.m_CurrentVideo.packets=1;p.SynchronizeStreams(false);
+  assert(!p.WaitForActiveAreaDetection()&&!aml_subtitle_active_area_startup_held(selection));
+  report.subtitleProbeSource=selection;
   p.queue.Put(std::make_shared<PLAYER_FIXTURE::CDVDMsgType<PLAYER_FIXTURE::SStartMsg>>(PLAYER_FIXTURE::CDVDMsg::PLAYER_STARTED,report));
   p.HandleMessages();assert(p.m_activeAreaVideoReady);
-  p.m_CurrentVideo.packets=1;
   assert(!p.WaitForActiveAreaDetection()); // resync must still reach the video thread
   p.SynchronizeStreams(false);
   assert(p.WaitForActiveAreaDetection()&&aml_subtitle_active_area_startup_held(selection));
@@ -527,6 +535,7 @@ int main(){ready();CAMLSession value;init(value);settingsValue.wait=true;
             (native,'stale selection wait','expectedSource != s_detectSource->selection ||','false ||'),
             (native,'cancelled source wait','if (s_detectSource->superseded->load() || !s_detectSource->pending.load())','if (!s_detectSource->pending.load())'),
             # The old pre-sync guard mutant is redundant after post-sync admission.
+            (connected,'older selection arms startup hold','if (msg.subtitleProbeSource == m_CurrentVideo.hint.subtitleProbeSource)\n          m_activeAreaVideoReady = true;','m_activeAreaVideoReady = true;'),
             (connected,'audio fallback counts as first picture','                          m_activeAreaVideoReady &&',''),
             (player,'buffer timeout resumes during hold','if ((state == CACHESTATE_PLAY || state == CACHESTATE_DONE) && WaitForActiveAreaDetection())','if (false)'),
             (player,'force resume after user pause','m_clock.SetSpeed(m_playSpeed);','m_clock.SetSpeed(DVD_PLAYSPEED_NORMAL);'),
