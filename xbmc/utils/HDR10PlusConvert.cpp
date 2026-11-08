@@ -44,6 +44,8 @@ constexpr std::uint16_t L1_MIN_PQ_MAX_VALUE = 12;
 constexpr std::uint16_t L1_MAX_PQ_MIN_VALUE = 2081;
 constexpr std::uint16_t L1_MAX_PQ_MAX_VALUE = 4095;
 constexpr std::uint16_t L1_AVG_PQ_MIN_VALUE = 1229;
+// libdovi validates each Level 6 luminance field against this limit.
+constexpr std::uint16_t L6_LUMINANCE_MAX_VALUE = 10000;
 
 int max_pq_to_nits(int pq) {
   if (pq < 2055) return 96;
@@ -179,45 +181,51 @@ struct Hdr10PlusPqValues {
   }
 };
 
-static std::vector<uint8_t> last_rpu;
-static Hdr10PlusPqValues last_pq = {};
-
 std::vector<uint8_t> create_rpu_nalu_for_hdr10plus(
   const Hdr10PlusMetadata& meta,
   const PeakBrightnessSource& peak_source,
   const HDRStaticMetadataInfo& hdrStaticMetadataInfo,
   bool capMaxPqAtSource)
 {
+  const uint32_t maxLum = hdrStaticMetadataInfo.max_lum <= L6_LUMINANCE_MAX_VALUE
+                              ? hdrStaticMetadataInfo.max_lum
+                              : 0;
+  // The minimum uses 0.0001 nit units. Without a valid peak, treat the
+  // mastering pair as absent and use the existing source PQ fallback.
+  const uint32_t minLum = maxLum != 0 && hdrStaticMetadataInfo.min_lum <= L6_LUMINANCE_MAX_VALUE
+                              ? hdrStaticMetadataInfo.min_lum
+                              : 0;
+
   uint16_t min_pq = 0;
-  if (hdrStaticMetadataInfo.min_lum == 0)
+  if (minLum == 0)
     min_pq = 0;
-  else if (hdrStaticMetadataInfo.min_lum < 2)
+  else if (minLum < 2)
     min_pq = 7;
-  else if (hdrStaticMetadataInfo.min_lum < 5)
+  else if (minLum < 5)
     min_pq = 10;
-  else if (hdrStaticMetadataInfo.min_lum < 10)
+  else if (minLum < 10)
     min_pq = 17;
-  else if (hdrStaticMetadataInfo.min_lum < 20)
+  else if (minLum < 20)
     min_pq = 26;
-  else if (hdrStaticMetadataInfo.min_lum < 50)
+  else if (minLum < 50)
     min_pq = 38;
   else
     min_pq = 62;
 
   uint16_t source_min_pq = min_pq;
   uint16_t source_max_pq = 3079;
-  switch (hdrStaticMetadataInfo.max_lum) {
+  switch (maxLum) {
       case 0:     { source_max_pq = 3079; break; }
       case 1000:  { source_max_pq = 3079; break; }
       case 2000:  { source_max_pq = 3388; break; }
       case 4000:  { source_max_pq = 3696; break; }
       case 10000: { source_max_pq = 4095; break; }
-      default:    { source_max_pq = cast_pq(hdrStaticMetadataInfo.max_lum); break; }
+      default:    { source_max_pq = cast_pq(maxLum); break; }
   }
 
   uint16_t max_pq = maximum_pq(meta, peak_source);
   if (max_pq == 0) {
-    switch (hdrStaticMetadataInfo.max_lum) {
+    switch (maxLum) {
       case 1000:  { max_pq = 3079; break; }
       case 2000:  { max_pq = 3388; break; }
       case 4000:  { max_pq = 3696; break; }
@@ -240,15 +248,24 @@ std::vector<uint8_t> create_rpu_nalu_for_hdr10plus(
   const uint16_t max_pq_cap = capMaxPqAtSource ? source_max_pq : L1_MAX_PQ_MAX_VALUE;
   pq.max_pq = clamp16(max_pq, L1_MAX_PQ_MIN_VALUE, max_pq_cap);
   pq.avg_pq = clamp16(avg_pq, L1_AVG_PQ_MIN_VALUE, (pq.max_pq - 1));
-  pq.max_display_mastering_luminance = hdrStaticMetadataInfo.max_lum;
-  pq.min_display_mastering_luminance = hdrStaticMetadataInfo.min_lum;
-  pq.max_content_light_level = hdrStaticMetadataInfo.max_cll;
-  pq.max_frame_average_light_level = hdrStaticMetadataInfo.max_fall;
+  pq.max_display_mastering_luminance = static_cast<uint16_t>(maxLum);
+  pq.min_display_mastering_luminance = static_cast<uint16_t>(minLum);
+  pq.max_content_light_level = hdrStaticMetadataInfo.max_cll <= L6_LUMINANCE_MAX_VALUE
+                                   ? hdrStaticMetadataInfo.max_cll
+                                   : 0;
+  pq.max_frame_average_light_level = hdrStaticMetadataInfo.max_fall <= L6_LUMINANCE_MAX_VALUE
+                                         ? hdrStaticMetadataInfo.max_fall
+                                         : 0;
+
+  static thread_local std::vector<uint8_t> last_rpu;
+  static thread_local Hdr10PlusPqValues last_pq = {};
 
   if (pq == last_pq)
     return last_rpu;
 
   last_pq = pq;
+  // Cache an empty result on failure to avoid retrying and logging every frame.
+  last_rpu.clear();
 
 #ifdef HAVE_LIBDOVI
   std::string json = fmt::format(
@@ -264,23 +281,39 @@ std::vector<uint8_t> create_rpu_nalu_for_hdr10plus(
     pq.min_pq, pq.max_pq, pq.avg_pq);
 
   const DoviRpuOpaqueList* list = dovi_generate_from_json(json.c_str());
-  if (list && list->len > 0 && list->list)
+  if (!list || list->len == 0 || !list->list || !list->list[0])
   {
-    DoviRpuOpaque* rpu = list->list[0];
-    const DoviData* data = dovi_write_unspec62_nalu(rpu);
-    if (data)
-    {
-      last_rpu.assign(data->data, data->data + data->len);
-      dovi_data_free(data);
-    }
+    CLog::Log(LOGWARNING, "HDR10PlusConvert: failed to generate DV RPU: {}",
+              list && list->error ? list->error : "libdovi returned no RPU");
+    // libdovi 3.4.0 returns a null backing pointer on error, but its free
+    // function requires a non-null, aligned pointer even for an empty list.
+    DoviRpuOpaque* emptyList = nullptr;
+    if (list && list->len == 0 && !list->list)
+      const_cast<DoviRpuOpaqueList*>(list)->list = &emptyList;
+    dovi_rpu_list_free(list);
+    return {};
   }
-  if (list) dovi_rpu_list_free(list);
-#endif
+
+  DoviRpuOpaque* rpu = list->list[0];
+  const DoviData* data = dovi_write_unspec62_nalu(rpu);
+  if (!data || data->len == 0)
+  {
+    const char* error = dovi_rpu_get_error(rpu);
+    CLog::Log(LOGWARNING, "HDR10PlusConvert: failed to write DV RPU: {}",
+              error ? error : "libdovi returned no NAL data");
+    dovi_data_free(data);
+    dovi_rpu_list_free(list);
+    return {};
+  }
+  last_rpu.assign(data->data, data->data + data->len);
+  dovi_data_free(data);
+  dovi_rpu_list_free(list);
 
   CLog::Log(LOGINFO, "HDR10PlusConvert::create_rpu_nalu_for_hdr10plus min_pq [{}] max_pq [{}] avg_pq [{}] mdml max [{}] mdml min [{}] cll [{}] fall [{}]",
     pq.min_pq, pq.max_pq, pq.avg_pq,
     pq.max_display_mastering_luminance, pq.min_display_mastering_luminance,
     pq.max_content_light_level, pq.max_frame_average_light_level);
+#endif
 
   return last_rpu;
 }

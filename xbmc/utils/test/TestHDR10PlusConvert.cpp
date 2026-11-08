@@ -124,4 +124,36 @@ TEST(TestHDR10PlusConvert, L1MinStaysWithinCmv40Limit)
   EXPECT_EQ(l1.sourceMinPq, 62);
 }
 
+TEST(TestHDR10PlusConvert, InvalidMasteringLuminanceFallsBackBeforeNarrowing)
+{
+  const Hdr10PlusMetadata scene = Scene(500);
+  const auto convert = [&scene](const HDRStaticMetadataInfo& mastering)
+  {
+    return create_rpu_nalu_for_hdr10plus(scene, PeakBrightnessSource::HistogramPlus, mastering,
+                                        true);
+  };
+
+  auto mastering = MasteringDisplay(0);
+  const auto validPeak = convert(mastering);
+  ASSERT_FALSE(validPeak.empty());
+
+  // The reported stream has no mastering peak and a raw minimum of 10,000,000.
+  mastering.max_lum = 0;
+  mastering.min_lum = 10000000;
+  const auto missingMastering = convert(mastering);
+  ASSERT_FALSE(missingMastering.empty());
+  ASSERT_NE(missingMastering, validPeak);
+  mastering.min_lum = 0;
+  EXPECT_EQ(convert(mastering), missingMastering);
+
+  // A value that wraps to a plausible minimum must still be rejected.
+  mastering.max_lum = 1000;
+  mastering.min_lum = 65536 + 50;
+  EXPECT_EQ(convert(mastering), validPeak);
+
+  mastering.max_lum = 65536 + 1000;
+  mastering.min_lum = 50;
+  EXPECT_EQ(convert(mastering), missingMastering);
+}
+
 #endif // HAVE_LIBDOVI
