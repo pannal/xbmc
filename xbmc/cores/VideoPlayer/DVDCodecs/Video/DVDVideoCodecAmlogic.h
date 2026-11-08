@@ -144,6 +144,7 @@ protected:
   CBitstreamParser *m_bitparser;
   std::unique_ptr<CBitstreamConverter> m_bitstream;
 private:
+  void ResetDecoder(bool holdVideo);
   void FinishReset();
   bool m_resetCleanupPending{false};
   void UpdateAppendCMv40SettingCache();

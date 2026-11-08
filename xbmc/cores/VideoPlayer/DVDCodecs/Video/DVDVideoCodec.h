@@ -102,6 +102,7 @@ private:
 #define DVP_FLAG_INTERLACED         0x00000008  //< Set to indicate that this frame is interlaced
 #define DVP_FLAG_DROPPED            0x00000010  //< indicate that this picture has been dropped in decoder stage, will have no data
 
+#define DVD_CODEC_CTRL_END_OF_INPUT 0x00800000  //< with DRAIN: no packet follows until a reset or a Reconfigure
 #define DVD_CODEC_CTRL_SKIPDEINT    0x01000000  //< request to skip a deinterlacing cycle, if possible
 #define DVD_CODEC_CTRL_NO_POSTPROC  0x02000000  //< see GetCodecStats
 #define DVD_CODEC_CTRL_HURRY        0x04000000  //< see GetCodecStats
@@ -252,6 +253,11 @@ public:
    * DVD_CODEC_CTRL_DRAIN :
    *                  instruct decoder to deliver last pictures without requesting
    *                  new packets
+   *
+   * DVD_CODEC_CTRL_END_OF_INPUT :
+   *                  with DRAIN, the input has ended: no packet follows until a
+   *                  reset or a Reconfigure, so the decoder can also deliver the
+   *                  pictures that it keeps for the next packets
    *
    * DVD_CODEC_CTRL_DROP :
    *                  this packet is going to be dropped. decoder is free to use it

@@ -129,6 +129,7 @@ struct CDVDInputStreamBluray : CDVDInputStream {
   bool IsReadInDataPhase() const {return data;}
 };
 struct CDVDMsg { enum Message {VIDEO_DRAIN, PLAYER_AVCHANGE, PLAYER_STARTED, GENERAL_GUI_ACTION}; explicit CDVDMsg(int) {} };
+struct CDVDMsgBool : CDVDMsg { CDVDMsgBool(int message,bool value):CDVDMsg(message),m_value(value) {} bool m_value; };
 struct IDVDStreamPlayer {
   enum { SYNC_STARTING, SYNC_WAITSYNC, SYNC_INSYNC };
   bool stalled=true;
@@ -137,6 +138,7 @@ struct IDVDStreamPlayer {
 struct TestStream : IDVDStreamPlayer {
   double queue=0, limit=16, pts=0, sink=0, outputDelay=0;
   int limitWrites=0, drainMessages=0;
+  bool drainEndsInput=true;
   bool data=false, eos=true, accepts=true, timeBound=false;
   void SetMaxTimeSize(double value, bool bound=false) {limit=value; timeBound=bound; ++limitWrites;}
   double GetQueueTimeSize() const {return queue;}
@@ -146,7 +148,7 @@ struct TestStream : IDVDStreamPlayer {
   bool HasData() const {return data;}
   bool IsEOS() const {return eos;}
   bool AcceptsData() const {return accepts;}
-  void SendMessage(std::shared_ptr<CDVDMsg>,int) {++drainMessages;}
+  void SendMessage(std::shared_ptr<CDVDMsg> msg,int) {++drainMessages; drainEndsInput=std::static_pointer_cast<CDVDMsgBool>(msg)->m_value;}
 };
 struct CCurrentStream {
   int type=STREAM_VIDEO,id=1,source=STREAM_SOURCE_DEMUX,player=0;
@@ -344,7 +346,8 @@ int main() {
       if(elapsed>=200ms)p.m_renderManager.queued=0;
     };
     p.DrainStreamsAtBoundary();onSleep={};
-    assert(p.video.drainMessages==1 && TestClock::now()-start>=275ms);
+    // The next clip continues in the same decoder: the input does not end
+    assert(p.video.drainMessages==1 && !p.video.drainEndsInput && TestClock::now()-start>=275ms);
   }
   { CVideoPlayer p;p.video.eos=false;p.video.stalled=false;auto start=TestClock::now();
     p.DrainStreamsAtBoundary();assert(TestClock::now()-start<=1525ms); // stalled decoder is bounded

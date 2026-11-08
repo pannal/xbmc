@@ -91,7 +91,8 @@ public:
   // The caller retains captured owners until lifecycle completion. The prefix
   // runs once on the admitted close owner, before decoder/native teardown.
   bool          CloseDecoder(std::function<void()> beforeClose = {});
-  bool          Reset();
+  // A reset without the video hold keeps the shown picture until the next one
+  bool          Reset(bool holdVideo = true);
   bool          ReopenDecoder();
   bool          ContinueLifecycle();
   bool IsPresentationPermit(const CAMLSession::Permit& permit, uint64_t epoch) const
@@ -125,8 +126,11 @@ public:
 
   void          SetSpeed(int speed);
   void SetPrerollTarget(double target) { m_prerollTarget = target; }
-  void          SetDrain(bool drain){m_drain = drain; if (drain) m_tp_drain_start = std::chrono::system_clock::now();};
+  // The drain timeout counts from the start of the drain
+  void          SetDrain(bool drain){if (drain && !m_drain) m_tp_drain_start = std::chrono::system_clock::now(); m_drain = drain;};
   void          SetStreamEOF(bool eof){m_stream_eof = eof;};
+  void          SetInputEnded();
+  bool          InputEnded() const { return m_inputEnded; }
   void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect, uint64_t generation, const CAMLSession::Permit& permit);
   void          SetVideoRate(int videoRate);
   void RefreshDecoderRate(const CAMLSession::Permit& permit);
@@ -220,6 +224,10 @@ private:
   uint64_t         m_presentationGeneration = 0;
   bool             m_drain = false;
   bool             m_stream_eof = false;
+  // The decoder knows that no input follows until a reset
+  bool             m_inputEnded = false;
+  // The next reset blanks the video output (see HoldVideo)
+  bool             m_resetHoldsVideo = true;
   // True between a codec_reset and the next AddData: nothing is drainable in
   // that state, see the m_drain branch in GetPicture.
   bool             m_no_data_since_reset = false;
@@ -318,6 +326,7 @@ private:
 
   std::chrono::time_point<std::chrono::system_clock> m_tp_last_frame;
   std::chrono::time_point<std::chrono::system_clock> m_tp_drain_start;
+  std::chrono::time_point<std::chrono::system_clock> m_tp_input_ended;
 
   // Hard (non-EAGAIN) codec-write failure escalation, see AddData: the packet
   // is retried by the player, the decoder reset periodically, and only after a
