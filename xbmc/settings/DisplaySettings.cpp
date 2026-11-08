@@ -259,7 +259,7 @@ bool CDisplaySettings::Save(TiXmlNode *settings) const
 
   ResolutionInfos calibrations = m_calibrations;
 #if defined(HAS_LIBAMCODEC)
-  // A calibration of a native GUI ("Disable GUI scaling", 3840x2160 GUI of a
+  // A calibration of a native GUI ("Native 4K GUI", 3840x2160 GUI of a
   // 2160p mode) is stored in the 1920x1080 GUI units of the upscaled GUI, so
   // a build without the native GUI reads it right. ApplyCalibrations scales
   // it back to the native GUI size on load (half-pixel rounding).
@@ -664,7 +664,7 @@ void CDisplaySettings::ApplyCalibrations()
       if (StringUtils::EqualsNoCase(itCal->strMode, m_resolutions[res].strMode))
       {
 #if defined(HAS_LIBAMCODEC)
-        // "Disable GUI scaling" changes the GUI size of a 2160p mode (1920x1080
+        // "Native 4K GUI" changes the GUI size of a 2160p mode (1920x1080
         // upscaled <-> native 3840x2160) while calibrations stay keyed by mode,
         // so one saved for the other GUI size would clip or shrink the GUI.
         // Rescale it to the current GUI size (Save stores native ones in

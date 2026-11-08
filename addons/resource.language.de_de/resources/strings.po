@@ -6839,12 +6839,12 @@ msgid "Force colour subsampling to set value. Requires resolution change to get 
 msgstr "Farbsampling auf den eingestellten Wert erzwingen. Eine Auflösungsänderung ist zur Aktivierung erforderlich."
 
 msgctxt "#14290"
-msgid "Disable GUI scaling"
-msgstr "GUI-Skalierung deaktivieren"
+msgid "Native 4K GUI"
+msgstr "Native 4K-Oberfläche"
 
 msgctxt "#14291"
-msgid "Uses a native 4K interface when a 4K display resolution is selected. Enabled by default for sharper artwork and text. Disable to render at up to 1080p and scale to the output resolution. During demanding video playback, the interface may temporarily use 1080p. Requires reboot."
-msgstr "Verwendet eine native 4K-Oberfläche, wenn eine 4K-Bildauflösung ausgewählt ist. Für schärfere Grafiken und Texte standardmäßig aktiviert. Deaktivieren, um die Oberfläche mit maximal 1080p zu rendern und auf die Ausgabeauflösung zu skalieren. Während anspruchsvoller Videowiedergabe kann die Oberfläche vorübergehend 1080p verwenden. Neustart erforderlich."
+msgid "On by default. In a 4K display mode, Kodi renders the interface at native 4K for sharper artwork and text. With this setting off, Kodi renders the interface at up to 1080p and scales it to the display resolution. During demanding video playback, the interface may temporarily switch to 1080p. Changing this setting requires a reboot."
+msgstr "Standardmäßig aktiviert. In einem 4K-Anzeigemodus rendert Kodi die Oberfläche in nativer 4K-Auflösung für schärfere Grafiken und Texte. Ist die Einstellung ausgeschaltet, rendert Kodi die Oberfläche mit maximal 1080p und skaliert sie auf die Anzeigeauflösung. Bei anspruchsvoller Videowiedergabe kann die Oberfläche vorübergehend auf 1080p wechseln. Eine Änderung dieser Einstellung erfordert einen Neustart."
 
 msgctxt "#14292"
 msgid "RGB"
