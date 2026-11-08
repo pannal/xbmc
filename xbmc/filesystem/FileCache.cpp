@@ -213,6 +213,11 @@ bool CFileCache::Open(const CURL& url)
   m_seekEvent.Reset();
   m_seekEnded.Reset();
 
+  // A source read that waits for the network ends when the cache thread is told to stop, so
+  // StopThread() does not wait for the network timeout of a stalled source.
+  std::function<bool()> stopRequested = [this] { return m_bStop.load(); };
+  m_source.IoControl(IOCTRL_READ_INTERRUPT, &stopRequested);
+
   CThread::Create(false);
 
   return true;
@@ -367,6 +372,10 @@ void CFileCache::Process()
       iRead = m_source.Read(buffer.get(), maxSourceRead);
     if (iRead <= 0)
     {
+      // A read interrupted by StopThread() is no end of file and no source error.
+      if (m_bStop)
+        break;
+
       // Check for actual EOF and retry as long as we still have data in our cache
       if (m_writePos < m_fileSize && m_pCache->WaitForData(0, 0ms) > 0)
       {
@@ -525,8 +534,11 @@ retry:
     XbmcThreads::EndTime<> deadline{10s};
     do
     {
-      const auto wait = m_readWaitCallback ? std::min(deadline.GetTimeLeft(), 100ms)
-                                          : deadline.GetTimeLeft();
+      if (m_readInterrupt && m_readInterrupt())
+        return -1;
+      const auto wait = m_readWaitCallback || m_readInterrupt
+                            ? std::min(deadline.GetTimeLeft(), 100ms)
+                            : deadline.GetTimeLeft();
       if (wait == 0ms)
       {
         iRc = CACHE_RC_TIMEOUT;
@@ -675,6 +687,13 @@ int CFileCache::IoControl(EIoControl request, void* param)
   {
     std::unique_lock<CCriticalSection> lock(m_sync);
     m_readWaitCallback = *static_cast<std::function<void()>*>(param);
+    return 0;
+  }
+
+  if (request == IOCTRL_READ_INTERRUPT)
+  {
+    std::unique_lock<CCriticalSection> lock(m_sync);
+    m_readInterrupt = param ? *static_cast<std::function<bool()>*>(param) : std::function<bool()>{};
     return 0;
   }
 

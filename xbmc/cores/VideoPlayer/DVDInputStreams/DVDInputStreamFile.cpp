@@ -66,6 +66,11 @@ bool CDVDInputStreamFile::Open()
     return false;
   }
 
+  // A read that waits for data ends when the player closes the stream (Abort).
+  m_aborted = false;
+  std::function<bool()> aborted = [this] { return m_aborted.load(); };
+  m_pFile->IoControl(IOCTRL_READ_INTERRUPT, &aborted);
+
   if (m_pFile->GetImplementation() && (content.empty() || content == "application/octet-stream"))
     m_content = m_pFile->GetImplementation()->GetProperty(XFILE::FILE_PROPERTY_CONTENT_TYPE);
 
@@ -164,6 +169,11 @@ void CDVDInputStreamFile::SetReadRate(uint32_t rate)
     CLog::Log(LOGDEBUG,
               "CDVDInputStreamFile::SetReadRate - set cache base rate to {} B/s (before read factor)",
               maxrate);
+}
+
+void CDVDInputStreamFile::Abort()
+{
+  m_aborted = true;
 }
 
 void CDVDInputStreamFile::SetReadWaitCallback(const std::function<void()>& callback)

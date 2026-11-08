@@ -331,6 +331,8 @@ int CShoutcastFile::IoControl(EIoControl control, void* payload)
     m_cacheReader = static_cast<CFileCache*>(payload);
     Create();
   }
+  else if (control == IOCTRL_READ_INTERRUPT)
+    return m_file.IoControl(control, payload);
 
   return IFile::IoControl(control, payload);
 }
