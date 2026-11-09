@@ -710,6 +710,7 @@ static void set_vsvdb_children_visible(bool show)
 
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_CS, vsvdb_basic);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM, vsvdb_basic);
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_LL_HDR10_DRM_MODE, vsvdb_basic);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MIN_LUM, vsvdb_extended);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_PAYLOAD, vsvdb_extended);
 }
@@ -1027,6 +1028,7 @@ bool CDolbyVisionAML::Setup(CAMLSession::DisplayRequest display)
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_CS);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MIN_LUM);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM);
+  settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_LL_HDR10_DRM_MODE);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_PREFER_CONVERT);
@@ -1381,6 +1383,12 @@ void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& se
   }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM)
   {
+    schedule_vsvdb_payload_apply();
+  }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_LL_HDR10_DRM_MODE)
+  {
+    // The live VSVDB refresh also re-arms the HDR10 DRM (inject_num 0).
+    aml_dv_set_ll_hdr10_drm_mode(std::static_pointer_cast<const CSettingInt>(setting)->GetValue());
     schedule_vsvdb_payload_apply();
   }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_DUAL_PRIORITY)

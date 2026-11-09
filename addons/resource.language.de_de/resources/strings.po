@@ -19300,6 +19300,36 @@ msgctxt "#60666"
 msgid "Experimental. Converts native Dolby Vision to SDR with the newer Dolby library (dovi5, CMv4.0 display management: Level 3 and Level 8 trims) instead of the original one (CMv2.9, Level 2 trims only), and shows the CMv4.0 options for SDR output. Only shown when the kernel provides the xbmc_dv_new_sdr_route parameter; if the newer library rejects a title, playback falls back to the original one. With this route, Smart compares each frame's Level 1 peak with the 100-nit VS10 SDR target. Applies from the next playback."
 msgstr "Experimentell. Konvertiert natives Dolby Vision mit der neueren Dolby-Bibliothek (dovi5, CMv4.0-Display-Management: Level-3- und Level-8-Trims) statt mit der ursprünglichen (CMv2.9, nur Level-2-Trims) nach SDR und zeigt die CMv4.0-Optionen für die SDR-Ausgabe an. Nur sichtbar, wenn der Kernel den Parameter xbmc_dv_new_sdr_route bereitstellt; lehnt die neuere Bibliothek einen Titel ab, wird auf die ursprüngliche zurückgegriffen. Auf diesem Weg vergleicht Smart die Level-1-Spitzenhelligkeit jedes Frames mit dem VS10-SDR-Ziel von 100 Nits. Wirksam ab der nächsten Wiedergabe."
 
+#. "HDR10 metadata for player-led Dolby Vision"
+#: system/settings/settings.xml
+msgctxt "#60669"
+msgid "HDR10 metadata for player-led Dolby Vision"
+msgstr "HDR10-Metadaten für Player-led Dolby Vision"
+
+#. Help text for setting "HDR10 metadata for player-led Dolby Vision" of label #60669
+#: system/settings/settings.xml
+msgctxt "#60670"
+msgid "Player-led Dolby Vision to an HDR10 display is sent as HDR10 with static metadata, and the TV tone-maps on it. Target: mastering peak and MaxCLL equal to the Dolby Vision target, so the picture rises steadily with the target. Steps: the former 600/1000/2000/4000-nit mastering steps, the brightness drops at each step. None: no metadata, the TV uses its own default; brighter on TVs that compress their whole curve to the announced peak (target above the panel peak). Only shown when the kernel provides dv_ll_hdr10_drm_mode. Applies at once."
+msgstr "Player-led Dolby Vision wird an ein HDR10-Display als HDR10 mit statischen Metadaten gesendet, und der Fernseher führt darauf das Tonemapping durch. Ziel: Mastering-Spitze und MaxCLL gleich dem Dolby-Vision-Ziel, sodass das Bild gleichmäßig mit dem Ziel heller wird. Stufen: die bisherigen Mastering-Stufen 600/1000/2000/4000 Nits, an jeder Stufe sinkt die Helligkeit. Keine: keine Metadaten, der Fernseher nutzt seinen eigenen Standardwert; heller auf Fernsehern, die ihre ganze Kurve auf die angekündigte Spitze komprimieren (Ziel über der Spitzenhelligkeit des Panels). Nur sichtbar, wenn der Kernel dv_ll_hdr10_drm_mode bereitstellt. Sofort wirksam."
+
+#. Option of setting #60669
+#: system/settings/settings.xml
+msgctxt "#60671"
+msgid "Steps"
+msgstr "Stufen"
+
+#. Option of setting #60669
+#: system/settings/settings.xml
+msgctxt "#60672"
+msgid "Target"
+msgstr "Ziel"
+
+#. Option of setting #60669
+#: system/settings/settings.xml
+msgctxt "#60673"
+msgid "None"
+msgstr "Keine"
+
 msgctxt "#60637"
 msgid "Lets the Dolby engine use the source's dynamic metadata (per-scene brightness anchors and the colorist's SDR trims) when converting DV to SDR via VS10, so dark and bright scenes each get their own tone curve instead of one static curve for the whole title. Disable to restore the previous static tone mapping if brightness looks wrong. Only affects DV sources."
 msgstr "Lässt die Dolby-Engine die dynamischen Metadaten der Quelle (szenenweise Helligkeitsanker und die SDR-Trims des Koloristen) bei der DV-nach-SDR-Konvertierung über VS10 verwenden, sodass dunkle und helle Szenen jeweils eine eigene Tone-Mapping-Kurve erhalten statt einer statischen Kurve für den ganzen Titel. Deaktivieren, um das bisherige statische Tone Mapping wiederherzustellen, falls die Helligkeit falsch wirkt. Betrifft nur DV-Quellen."

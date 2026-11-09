@@ -147,6 +147,18 @@ bool DVNewSdrRouteAvailable(const std::string&,
 #endif
 }
 
+bool DVLlHdr10DrmModeAvailable(const std::string&,
+                               const std::string&,
+                               const SettingConstPtr&,
+                               void*)
+{
+#if defined(HAS_LIBAMCODEC)
+  return aml_dv_ll_hdr10_drm_mode_available();
+#else
+  return false;
+#endif
+}
+
 bool DVGraphicsStableAvailable(const std::string&,
                               const std::string&,
                               const SettingConstPtr&,
@@ -562,6 +574,7 @@ void CSettingConditions::Initialize()
   m_complexConditions.emplace("supportsdolbyvision", SupportsDolbyVision);
   m_complexConditions.emplace("dvnewbackendavailable", DVNewBackendAvailable);
   m_complexConditions.emplace("dvnewsdrrouteavailable", DVNewSdrRouteAvailable);
+  m_complexConditions.emplace("dvllhdr10drmmodeavailable", DVLlHdr10DrmModeAvailable);
   m_complexConditions.emplace("dvgraphicsstableavailable", DVGraphicsStableAvailable);
   m_complexConditions.emplace("ishdrdisplay", IsHDRDisplay);
   m_complexConditions.emplace("bluetoothconnected", IsBluetoothConnected);
