@@ -30,6 +30,7 @@
 #include "settings/lib/SettingsManager.h"
 #include "settings/lib/Setting.h"
 #include "guilib/LocalizeStrings.h"
+#include "dialogs/GUIDialogKaiToast.h"
 #include "utils/AMLUtils.h"
 #include "utils/log.h"
 #include "interfaces/AnnouncementManager.h"
@@ -483,6 +484,46 @@ void CalculateVSVDBPayload_2(const AMLDVCapability& cap)
 
 static bool force_modes() {
   return settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_FORCE_MODES);
+}
+
+// The DV type is one global setting, not one per display: Display-LED left from a
+// DV TV engages the IPT tunnel at the next boot even when the box now drives a
+// display without standard DV (projector, HDR10 TV) -> full green screen. The
+// type callback only guards a live change, so check once at startup, before DV
+// is engaged, against the sink's own EDID (dv_cap ignores the VSVDB injection).
+// Skipped without a readable sink EDID (box booted with the AVR or display off),
+// so a missing EDID never downgrades a DV TV setup.
+static void guard_display_led_without_dv_sink()
+{
+  if (static_cast<DV_TYPE>(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE)) !=
+          DV_TYPE_DISPLAY_LED ||
+      force_modes() || settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_OVERRIDE_EDID))
+    return;
+
+  auto read = [](const char* path) {
+    std::ifstream stream(path);
+    return std::string{std::istreambuf_iterator<char>(stream), {}};
+  };
+  if (read("/sys/class/amhdmitx/amhdmitx0/hpd_state").compare(0, 1, "1") != 0)
+    return;
+  const std::string edid = read("/sys/class/amhdmitx/amhdmitx0/edid");
+  const std::string key = "Rx Manufacturer Name:";
+  const size_t pos = edid.find(key);
+  if (pos == std::string::npos)
+    return;
+  const size_t end = edid.find('\n', pos);
+  const std::string name = edid.substr(pos + key.size(), end == std::string::npos ? std::string::npos
+                                                                                   : end - pos - key.size());
+  if (name.find_first_not_of(" \t\r") == std::string::npos || aml_display_support_dv_std())
+    return;
+
+  CLog::Log(LOGWARNING,
+            "CDolbyVisionAML::{} - Display-LED set but the sink ({}) has no standard Dolby Vision: "
+            "switching the DV type to Player-LED HDR10 4:2:2 12-bit",
+            __FUNCTION__, name.substr(name.find_first_not_of(" \t\r")));
+  settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_TYPE, DV_TYPE_PLAYER_LED_HDR2);
+  CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Warning, g_localizeStrings.Get(60674),
+                                        g_localizeStrings.Get(60675));
 }
 
 struct AMLDVOptions
@@ -1078,6 +1119,8 @@ bool CDolbyVisionAML::Setup(CAMLSession::DisplayRequest display)
   auto announcer = CServiceBroker::GetAnnouncementManager();
   announcer->AddAnnouncer(this);
   m_registered = true;
+
+  guard_display_led_without_dv_sink();
 
   // Turn on dv - if dv mode is on, limit the menu luminance as menu now can be in DV/HDR.
   aml_dv_start();

@@ -27535,6 +27535,16 @@ msgctxt "#60651"
 msgid "Use only if your TV's scene-dependent dimming of subtitles and the OSD is unwanted. This SDR-only compatibility option overrides dovi5's native graphics tone mapping during native display-led Dolby Vision playback. Leave disabled to preserve native behavior."
 msgstr ""
 
+#. Notification title when the DV type falls back from Display-LED at startup
+msgctxt "#60674"
+msgid "Dolby Vision type changed"
+msgstr ""
+
+#. Notification text when the DV type falls back from Display-LED at startup
+msgctxt "#60675"
+msgid "This display has no Dolby Vision: Player-LED (HDR10) instead of Display-LED"
+msgstr ""
+
 
 #. Title of Dolby Vision RPU conversion setting
 #: system/settings/settings.xml

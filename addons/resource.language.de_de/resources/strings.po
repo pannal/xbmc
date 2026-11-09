@@ -20274,6 +20274,16 @@ msgctxt "#60651"
 msgid "Use only if your TV's scene-dependent dimming of subtitles and the OSD is unwanted. This SDR-only compatibility option overrides dovi5's native graphics tone mapping during native display-led Dolby Vision playback. Leave disabled to preserve native behavior."
 msgstr "Nur verwenden, wenn das szenenabhängige Abdunkeln von Untertiteln und OSD durch den Fernseher unerwünscht ist. Diese auf SDR-Grafiken beschränkte Kompatibilitätsoption übersteuert das native Grafik-Tonemapping von dovi5 bei nativer Dolby-Vision-Wiedergabe im Display-led-Modus. Deaktiviert lassen, um das native Verhalten beizubehalten."
 
+#. Notification title when the DV type falls back from Display-LED at startup
+msgctxt "#60674"
+msgid "Dolby Vision type changed"
+msgstr "Dolby-Vision-Typ geändert"
+
+#. Notification text when the DV type falls back from Display-LED at startup
+msgctxt "#60675"
+msgid "This display has no Dolby Vision: Player-LED (HDR10) instead of Display-LED"
+msgstr "Dieses Display hat kein Dolby Vision: Player-LED (HDR10) statt Display-LED"
+
 
 msgctxt "#69196"
 msgid "Convert DV Profile 7 FEL to MEL or to Profile 8.1"
