@@ -406,7 +406,25 @@ bool CDisplaySettings::OnSettingChanging(const std::shared_ptr<const CSetting>& 
     RESOLUTION newRes = GetResolutionFromString(std::static_pointer_cast<const CSettingString>(setting)->GetValue());
 
     SetCurrentResolution(newRes, false);
+#if defined(HAS_LIBAMCODEC)
+    // Opening the System settings refreshes the resolution options, and the
+    // filler re-sets the screenmode to the GUI resolution it already holds.
+    // Applying it here would silently leave the mode that refresh rate
+    // switching "On start" kept after playback (no prompt, oldRes == newRes),
+    // e.g. 2160p23.98 -> a stale 1080p59.94 GUI mode. A real change of the
+    // GUI resolution always has oldRes != newRes.
+    CGraphicContext& gfxContext = CServiceBroker::GetWinSystem()->GetGfxContext();
+    if (oldRes == newRes && gfxContext.GetVideoResolution() != newRes)
+      CLog::Log(LOGINFO,
+                "CDisplaySettings: screenmode {} = current GUI resolution {}, keeping the "
+                "output mode of resolution {}",
+                std::static_pointer_cast<const CSettingString>(setting)->GetValue(), newRes,
+                gfxContext.GetVideoResolution());
+    else
+      gfxContext.SetVideoResolution(newRes, false);
+#else
     CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(newRes, false);
+#endif
 
     // check if the old or the new resolution was/is windowed
     // in which case we don't show any prompt to the user
@@ -847,6 +865,28 @@ RESOLUTION CDisplaySettings::GetResolutionFromString(const std::string &strResol
   return RES_DESKTOP;
 }
 
+#if defined(HAS_LIBAMCODEC)
+// True when the desktop is also one of the probed modes (RES_CUSTOM and up),
+// so its explicit string resolves back to that same mode at any boot.
+static bool IsProbedDesktopMode(const RESOLUTION_INFO& desktop)
+{
+  if (desktop.iScreenWidth <= 0 || desktop.iScreenHeight <= 0 || desktop.fRefreshRate <= 0.0f)
+    return false;
+
+  for (size_t index = RES_CUSTOM; index < CDisplaySettings::GetInstance().ResolutionInfoSize();
+       index++)
+  {
+    const RESOLUTION_INFO& info = CDisplaySettings::GetInstance().GetResolutionInfo(index);
+    if (info.iScreenWidth == desktop.iScreenWidth && info.iScreenHeight == desktop.iScreenHeight &&
+        (info.dwFlags & D3DPRESENTFLAG_MODEMASK) == (desktop.dwFlags & D3DPRESENTFLAG_MODEMASK) &&
+        fabs(info.fRefreshRate - desktop.fRefreshRate) < FLT_EPSILON)
+      return true;
+  }
+
+  return false;
+}
+#endif
+
 std::string CDisplaySettings::GetStringFromResolution(RESOLUTION resolution, float refreshrate /* = 0.0f */)
 {
   if (resolution == RES_WINDOW)
@@ -856,7 +896,19 @@ std::string CDisplaySettings::GetStringFromResolution(RESOLUTION resolution, flo
   {
     const RESOLUTION_INFO &info = CDisplaySettings::GetInstance().GetResolutionInfo(resolution);
     // also handle RES_DESKTOP resolutions with non-default refresh rates
-    if (resolution != RES_DESKTOP || (refreshrate > 0.0f && refreshrate != info.fRefreshRate))
+    bool explicitMode =
+        resolution != RES_DESKTOP || (refreshrate > 0.0f && refreshrate != info.fRefreshRate);
+#if defined(HAS_LIBAMCODEC)
+    // "DESKTOP" follows the boot mode, and the link-budget default turns a
+    // 2160p50/60 boot into a 1080p desktop. A GUI mode picked or re-applied
+    // while the desktop equalled it (Kodi restarted at the mode the last film
+    // left) was saved as "DESKTOP" and came back as 1080p at the next boot.
+    // Save such a desktop as its explicit mode. A desktop missing from the
+    // probed modes (no EDID at start) still saves as "DESKTOP".
+    if (!explicitMode && resolution == RES_DESKTOP)
+      explicitMode = IsProbedDesktopMode(info);
+#endif
+    if (explicitMode)
     {
       return StringUtils::Format("{:05}{:05}{:09.5f}{}", info.iScreenWidth, info.iScreenHeight,
                                  refreshrate > 0.0f ? refreshrate : info.fRefreshRate,
