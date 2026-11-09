@@ -6613,17 +6613,16 @@ bool aml_get_native_resolution(RESOLUTION_INFO *res)
 bool aml_set_native_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name,
   const int stereo_mode, bool force_mode_switch)
 {
-  bool result = false;
-
   aml_handle_display_stereo_mode(stereo_mode);
-  result = aml_set_display_resolution(res, framebuffer_name, force_mode_switch);
+  if (!aml_set_display_resolution(res, framebuffer_name, force_mode_switch))
+    return false;
+
   if (stereo_mode != RENDER_STEREO_MODE_OFF)
     CSysfsPath("/sys/class/amhdmitx/amhdmitx0/phy", 1);
 
-
   aml_handle_scale(res);
 
-  return result;
+  return true;
 }
 
 bool aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolutions)
@@ -6831,9 +6830,7 @@ bool aml_set_display_resolution(const RESOLUTION_INFO &res, std::string framebuf
     s_lastDisplayMode = mode;
   }
 
-  aml_set_framebuffer_resolution(res, framebuffer_name);
-
-  return true;
+  return aml_set_framebuffer_resolution(res, framebuffer_name);
 }
 
 // Kernel 4.9 OSD driver, non-hwc path: the OSD blend, the OSD scaler input
@@ -6958,7 +6955,14 @@ void aml_handle_scale(const RESOLUTION_INFO &res)
 // (their calibration with it) and the resolution is set again. The display
 // mode stays, so aml_set_display_resolution() writes no display/mode and only
 // the framebuffer and the OSD scaling change: no HDMI handshake.
-static std::atomic<bool> s_heavyVideo{false};
+enum class NativeGuiVideo
+{
+  None,
+  Fel,
+  Above1080p,
+};
+
+static std::atomic<NativeGuiVideo> s_nativeGuiVideo{NativeGuiVideo::None};
 static std::atomic<bool> s_nativeGuiSuspended{false}; // written on the main thread only
 
 struct NativeGuiCalibration
@@ -6971,19 +6975,30 @@ struct NativeGuiCalibration
 };
 static std::vector<NativeGuiCalibration> s_nativeGuiCalibrations;
 
-void aml_native_gui_set_heavy_video(bool playing)
+void aml_native_gui_set_video(bool above1080p, bool fel)
 {
-  s_heavyVideo = playing;
+  NativeGuiVideo video = fel ? NativeGuiVideo::Fel : NativeGuiVideo::None;
+  if (above1080p)
+    video = NativeGuiVideo::Above1080p;
+  s_nativeGuiVideo = video;
 }
 
 static bool aml_native_gui_suspend_wanted(RESOLUTION res)
 {
-  if (((LINUX_VERSION_CODE >> 16) & 0xFF) >= 5 || !s_heavyVideo || res < RES_DESKTOP ||
-      !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-          CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING))
+  const auto video = s_nativeGuiVideo.load();
+  if (((LINUX_VERSION_CODE >> 16) & 0xFF) >= 5 || video == NativeGuiVideo::None ||
+      res < RES_DESKTOP)
     return false;
+
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  if (!settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING))
+    return false;
+
   const RESOLUTION_INFO& info = CDisplaySettings::GetInstance().GetResolutionInfo(res);
-  return info.iScreenWidth > 1920 && info.iScreenHeight > 1080 && info.fRefreshRate > 30.0f;
+  return info.iScreenWidth > 1920 && info.iScreenHeight > 1080 &&
+         (info.fRefreshRate > 30.0f ||
+          (video == NativeGuiVideo::Above1080p &&
+           settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K)));
 }
 
 bool aml_native_gui_needs_update(RESOLUTION res)
@@ -7054,8 +7069,8 @@ static void aml_native_gui_apply(bool suspend)
 
   if (suspend != s_nativeGuiSuspended)
   {
-    CLog::Log(LOGINFO, "AMLUtils::{}: native GUI {} (DV FEL or video above 1080p, above 30 Hz)", __FUNCTION__,
-              suspend ? "suspended, GUI at 1920x1080" : "resumed");
+    CLog::Log(LOGDEBUG, "AMLUtils::{}: requesting native GUI {}", __FUNCTION__,
+              suspend ? "suspension" : "restoration");
     s_nativeGuiBlankPending = suspend != s_nativeGuiSuspendedBefore;
   }
   s_nativeGuiSuspended = suspend;
@@ -7089,9 +7104,14 @@ void aml_native_gui_prepare_failed()
   // window, and the caller retries with the state it still sees as needed
   if (s_nativeGuiSuspended == s_nativeGuiSuspendedBefore)
     return;
+  const bool unblank = !s_nativeGuiBlankPending && s_nativeGuiOsdHold;
   CLog::Log(LOGINFO, "AMLUtils::{}: window not updated, GUI size change undone", __FUNCTION__);
   aml_native_gui_apply(s_nativeGuiSuspendedBefore);
-  // nothing was written to the framebuffer for a refused transition
+  if (unblank)
+  {
+    s_nativeGuiOsdHold = false;
+    aml_native_gui_osd_unblank("/sys/class/graphics/fb0/");
+  }
   s_nativeGuiBlankPending = false;
 }
 
@@ -7118,7 +7138,7 @@ void aml_native_gui_osd_present(bool swapped)
 
 void aml_native_gui_playback_stopped()
 {
-  // Decoder open/close owns s_heavyVideo, including replacement playback.
+  // Decoder open/close owns the playback properties, including replacement playback.
   // EOF cleanup can still change the output mode after this callback. Request
   // a GUI sizing refresh without queuing the old playback resolution.
   if (s_nativeGuiSuspended)
@@ -7181,34 +7201,53 @@ void aml_disable_freeScale()
   CSysfsPath("/sys/class/graphics/fb1/free_scale", 0);
 }
 
-void aml_set_framebuffer_resolution(const RESOLUTION_INFO &res, std::string framebuffer_name)
+bool aml_set_framebuffer_resolution(const RESOLUTION_INFO& res, const std::string& framebuffer_name)
 {
-  aml_set_framebuffer_resolution(res.iWidth, res.iHeight, framebuffer_name);
+  return aml_set_framebuffer_resolution(res.iWidth, res.iHeight, framebuffer_name);
 }
 
-void aml_set_framebuffer_resolution(unsigned int width, unsigned int height, std::string framebuffer_name)
+bool aml_set_framebuffer_resolution(unsigned int width,
+                                    unsigned int height,
+                                    const std::string& framebuffer_name)
 {
-  int fd0;
-  std::string framebuffer = "/dev/" + framebuffer_name;
-
-  if ((fd0 = open(framebuffer.c_str(), O_RDWR)) >= 0)
+  const std::string framebuffer = "/dev/" + framebuffer_name;
+  const int fd = open(framebuffer.c_str(), O_RDWR);
+  if (fd < 0)
   {
-    struct fb_var_screeninfo vinfo;
-    if (ioctl(fd0, FBIOGET_VSCREENINFO, &vinfo) == 0)
-    {
-      if (width != vinfo.xres || height != vinfo.yres)
-      {
-        vinfo.xres = width;
-        vinfo.yres = height;
-        vinfo.xres_virtual = width;
-        vinfo.yres_virtual = height * 2;
-        vinfo.bits_per_pixel = 32;
-        vinfo.activate = FB_ACTIVATE_ALL;
-        ioctl(fd0, FBIOPUT_VSCREENINFO, &vinfo);
-      }
-    }
-    close(fd0);
+    CLog::Log(LOGERROR, "AMLUtils: could not open framebuffer {}", framebuffer);
+    return false;
   }
+
+  fb_var_screeninfo info{};
+  bool verified = ioctl(fd, FBIOGET_VSCREENINFO, &info) == 0;
+  if (verified && (info.xres != width || info.yres != height))
+  {
+    info.xres = width;
+    info.yres = height;
+    info.xres_virtual = width;
+    info.yres_virtual = height * 2;
+    info.bits_per_pixel = 32;
+    info.activate = FB_ACTIVATE_ALL;
+    verified = ioctl(fd, FBIOPUT_VSCREENINFO, &info) == 0 &&
+               ioctl(fd, FBIOGET_VSCREENINFO, &info) == 0;
+  }
+  close(fd);
+
+  if (!verified)
+  {
+    CLog::Log(LOGERROR, "AMLUtils: could not verify framebuffer {} at {}x{}", framebuffer, width,
+              height);
+    return false;
+  }
+  if (info.xres != width || info.yres != height)
+  {
+    CLog::Log(LOGERROR, "AMLUtils: framebuffer {} requested {}x{} but reports {}x{}", framebuffer,
+              width, height, info.xres, info.yres);
+    return false;
+  }
+
+  CLog::Log(LOGDEBUG, "AMLUtils: framebuffer {} verified at {}x{}", framebuffer, width, height);
+  return true;
 }
 
 bool aml_read_reg(const std::string &reg, uint32_t &reg_val)

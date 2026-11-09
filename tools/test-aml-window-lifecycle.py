@@ -165,7 +165,7 @@ void native(const std::string& name){if(nativeScopeCheck)nativeScopeCheck();if(p
 RESOLUTION_INFO currentNative;
 bool nativeRead=true,fracPolicy=false,restoreGui=false,currentBound=true;
 int fracValue=0,dvMode=1;
-bool nativeGuiResize=false,lastNativeForced=false;
+bool nativeGuiResize=false,lastNativeForced=false,rejectNativeResolution=false;
 void aml_native_gui_prepare(RESOLUTION){}
 void aml_native_gui_commit(){}
 void aml_native_gui_prepare_failed(){}
@@ -182,7 +182,7 @@ void aml_dv_display_trigger(){native("dv-trigger");}
 bool aml_display_mode_changing(const RESOLUTION_INFO& info){return info.iScreenWidth!=currentNative.iScreenWidth||info.iScreenHeight!=currentNative.iScreenHeight||info.fRefreshRate!=currentNative.fRefreshRate;}
 void aml_dv_engage_stale_deferred_disc(){event("engage-stale");}
 void aml_dv_engage_deferred_disc(bool mode){event(mode?"engage-mode":"engage-no-mode");if(engageHook)engageHook(mode);}
-void aml_set_native_resolution(const RESOLUTION_INFO& info,const std::string&,RENDER_STEREO_MODE,bool forced){lastNativeForced=forced;native("native-set:"+std::to_string(info.iWidth));currentNative=info;}
+bool aml_set_native_resolution(const RESOLUTION_INFO& info,const std::string&,RENDER_STEREO_MODE,bool forced){lastNativeForced=forced;native("native-set:"+std::to_string(info.iWidth));if(rejectNativeResolution)return false;currentNative=info;return true;}
 void aml_hdr10plus_vsif_hold(bool hold){event(hold?"hdr-hold":"hdr-release");}
 enum class AMLHDMILinkSample {SKIPPED,UNCHANGED,CHANGED};
 AMLHDMILinkSample linkSample=AMLHDMILinkSample::SKIPPED;
@@ -365,7 +365,7 @@ public:
 TESTS = r'''
 struct Fixture{
   CAMLSession session;CGraphicContext gfx;CWinSystemAmlogicGLESContext win;IDispResource resource;
-  Fixture(){auto open=session.Fence();assert(session.BeginMutation(open)&&session.Complete(open,true));probe=&session;window=&win;graphics=&gfx;settings=Settings{};messenger.main=true;currentNative=RESOLUTION_INFO{};currentBound=true;nativeRead=true;restoreGui=false;fracPolicy=false;fracValue=0;dvMode=1;nativeGuiResize=false;lastNativeForced=false;engageHook={};events.clear();win.m_resources.push_back(&resource);}
+  Fixture(){auto open=session.Fence();assert(session.BeginMutation(open)&&session.Complete(open,true));probe=&session;window=&win;graphics=&gfx;settings=Settings{};messenger.main=true;currentNative=RESOLUTION_INFO{};currentBound=true;nativeRead=true;restoreGui=false;fracPolicy=false;fracValue=0;dvMode=1;nativeGuiResize=false;lastNativeForced=false;rejectNativeResolution=false;engageHook={};events.clear();win.m_resources.push_back(&resource);}
   ~Fixture(){probe=nullptr;engageHook={};assert(!session.DisplayBlocked());}
   void Repair(){win.m_pGLContext.bindOk=true;win.m_pGLContext.surfaceOk=true;win.geometryOk=true;win.m_delayDispReset=false;currentBound=true;assert(win.ResetRenderSystem(1920,1080));}
 };

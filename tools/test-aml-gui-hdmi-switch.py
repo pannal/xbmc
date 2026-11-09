@@ -24,7 +24,7 @@ start = window.rindex('  if (', start, end)
 # The outer decision includes one nested log but no nested if.
 force = window[start:end]
 start = base.index('  const bool modeChanging =')
-changing = base[start:base.index('  aml_set_native_resolution(', start)]
+changing = base[start:base.index('  const bool resolutionSet =', start)]
 start = base.index('  if (modeChanging || !aml_native_gui_size_changing())')
 trigger = base[start:base.index('  m_bWindowCreated = true;', start)]
 preamble = r'''

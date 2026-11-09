@@ -6846,6 +6846,16 @@ msgctxt "#14291"
 msgid "On by default. In a 4K display mode, Kodi renders the interface at native 4K for sharper artwork and text. With this setting off, Kodi renders the interface at up to 1080p and scales it to the display resolution. During demanding video playback, the interface may temporarily switch to 1080p. Changing this setting requires a reboot."
 msgstr "Standardmäßig aktiviert. In einem 4K-Anzeigemodus rendert Kodi die Oberfläche in nativer 4K-Auflösung für schärfere Grafiken und Texte. Ist die Einstellung ausgeschaltet, rendert Kodi die Oberfläche mit maximal 1080p und skaliert sie auf die Anzeigeauflösung. Bei anspruchsvoller Videowiedergabe kann die Oberfläche vorübergehend auf 1080p wechseln. Eine Änderung dieser Einstellung erfordert einen Neustart."
 
+#: system/settings/settings.xml
+msgctxt "#60667"
+msgid "Use 1080p GUI during 4K playback"
+msgstr "1080p-Oberfläche bei 4K-Wiedergabe verwenden"
+
+#: system/settings/settings.xml
+msgctxt "#60668"
+msgid "Render the interface at 1080p when playing video above 1080p in a 4K display mode, including at film refresh rates. Kodi keeps the selected HDMI mode and restores the native 4K interface after playback. Applies from the next playback."
+msgstr "Bei der Wiedergabe von Videos mit mehr als 1080p rendert Kodi die Oberfläche in einem 4K-Anzeigemodus mit 1080p, auch bei kinotypischen Bildwiederholraten. Der gewählte HDMI-Modus bleibt aktiv und nach der Wiedergabe wird die native 4K-Oberfläche wiederhergestellt. Gilt ab der nächsten Wiedergabe."
+
 msgctxt "#14292"
 msgid "RGB"
 msgstr "RGB"

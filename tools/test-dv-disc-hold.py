@@ -94,7 +94,7 @@ def main():
     update = function(render, "void CRenderManager::UpdateResolution(bool force)")
     create = function(winsys, "bool CWinSystemAmlogic::CreateNativeWindow(")
     gate = create[create.index("  // A disc session's first DV engage"):
-                  create.index("  aml_set_native_resolution(")]
+                  create.index("  const bool resolutionSet =")]
 
     harness = r'''
 #include "windowing/amlogic/AMLNativeTransaction.h"

@@ -523,12 +523,14 @@ bool CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   }
   else
   {
-    if (retryPending && CServiceBroker::GetWinSystem()->IsDisplayChangePending())
-      m_pendingVideoResolution = ResolutionRequest{res, forceUpdate};
+    bool retry = CServiceBroker::GetWinSystem()->IsDisplayChangePending();
     // Reset provisional state while admission is pending or rebinding failed.
 #if defined(HAS_LIBAMCODEC)
+    retry = retry || aml_native_gui_size_changing();
     aml_native_gui_prepare_failed();
 #endif
+    if (retryPending && retry)
+      m_pendingVideoResolution = ResolutionRequest{res, forceUpdate};
     m_bFullScreenRoot = lastFullScreen;
     CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_fullScreen = lastSettingFullScreen;
     m_iScreenWidth = origScreenWidth;

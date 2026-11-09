@@ -3148,6 +3148,14 @@
           <default>true</default>
           <control type="toggle" />
         </setting>
+        <setting id="coreelec.amlogic.gui1080pfor4k" type="boolean" parent="coreelec.amlogic.disableguiscaling" label="60667" help="60668">
+          <requirement>HAVE_4K_GUI_FALLBACK</requirement>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible" setting="coreelec.amlogic.disableguiscaling" operator="is">true</dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
         <setting id="coreelec.amlogic.limitcd" type="integer" parent="videoscreen.screen" label="14286" help="14287">
           <level>3</level>
           <default>0</default> <!-- Auto -->

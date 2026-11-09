@@ -26,6 +26,8 @@
 #include "utils/FontUtils.h"
 #if defined(HAS_LIBAMCODEC)
 #include "utils/AMLUtils.h"
+
+#include <linux/version.h>
 #endif // defined(HAS_LIBAMCODEC)
 #include "utils/StringUtils.h"
 #include "windowing/WinSystem.h"
@@ -489,7 +491,11 @@ void CSettingConditions::Initialize()
   if (aml_get_cpufamily_id() == AML_G12B)
     m_simpleConditions.insert("have_g12b");
   if (aml_get_cpufamily_id() >= AML_G12A)
+  {
     m_simpleConditions.insert("have_4k_gui");
+    if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0))
+      m_simpleConditions.insert("have_4k_gui_fallback");
+  }
 #endif
 #if defined(TARGET_WINDOWS)
   m_simpleConditions.emplace("has_dx");

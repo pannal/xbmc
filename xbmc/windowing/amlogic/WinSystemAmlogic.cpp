@@ -149,15 +149,6 @@ bool CWinSystemAmlogic::CreateNativeWindow(const std::string& name,
   CAMLNativeTransaction native(display);
   if (!native.TryBegin())
     return false;
-  m_nWidth        = res.iWidth;
-  m_nHeight       = res.iHeight;
-  m_fRefreshRate  = res.fRefreshRate;
-
-  if (m_nativeWindow == NULL)
-    m_nativeWindow = new fbdev_window;
-
-  m_nativeWindow->width = res.iWidth;
-  m_nativeWindow->height = res.iHeight;
 
   // Only honour the user's "delay after refresh change" when the HDMI mode
   // is actually going to change. Otherwise this stalls things like DV-pipeline
@@ -200,9 +191,23 @@ bool CWinSystemAmlogic::CreateNativeWindow(const std::string& name,
   if (modeChanging)
     aml_dv_engage_deferred_disc(true);
 
-  aml_set_native_resolution(res, m_framebuffer_name, m_stereo_mode, m_force_mode_switch);
-  // reset force mode switch
+  const bool resolutionSet =
+      aml_set_native_resolution(res, m_framebuffer_name, m_stereo_mode, m_force_mode_switch);
   m_force_mode_switch = false;
+  if (!resolutionSet)
+  {
+    m_delayDispReset = false;
+    aml_hdr10plus_vsif_hold(false);
+    return false;
+  }
+
+  m_nWidth = res.iWidth;
+  m_nHeight = res.iHeight;
+  m_fRefreshRate = res.fRefreshRate;
+  if (!m_nativeWindow)
+    m_nativeWindow = new fbdev_window;
+  m_nativeWindow->width = res.iWidth;
+  m_nativeWindow->height = res.iHeight;
 
   if (!m_delayDispReset)
   {

@@ -38,13 +38,15 @@ def harness():
                       'bool aml_native_gui_needs_update(RESOLUTION)', 'bool aml_native_gui_size_changing()'):
         replace(function(source, signature), signature + ';')
     replace('SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS=3;',
-            'SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS=3,SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING=4;')
-    replace('bool m_fullScreen=true;', 'bool nativeGui=true;bool m_fullScreen=true;')
+            'SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS=3,SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING=4,'
+            'SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K=5;')
+    replace('bool m_fullScreen=true;', 'bool nativeGui=true,gui1080pFor4k=false;bool m_fullScreen=true;')
     replace('bool GetBool(int){return false;}',
-            'bool GetBool(int key){return key==CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING&&nativeGui;}')
+            'bool GetBool(int key){return key==CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING?nativeGui:'
+            'key==CSettings::SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K&&gui1080pFor4k;}')
     replace('explicit CSysfsPath(const char*){}',
-            'explicit CSysfsPath(const char*){} CSysfsPath(const char* path,int value){'
-            'assert(std::string(path)=="/sys/class/graphics/fb0/blank");event("blank:"+std::to_string(value));}')
+            'explicit CSysfsPath(const char*){} CSysfsPath(const std::string& path,int value){'
+            'assert(path=="/sys/class/graphics/fb0/blank");event("blank:"+std::to_string(value));}')
     replace(function(source, 'struct CDisplaySettings') + ';', r'''
 struct CDisplaySettings {
   std::vector<RESOLUTION_INFO> resolutions;
@@ -53,9 +55,11 @@ struct CDisplaySettings {
   size_t ResolutionInfoSize()const{return resolutions.size();}
 };''')
     utils = (ROOT / 'xbmc/utils/AMLUtils.cpp').read_text()
-    start = utils.index('static std::atomic<bool> s_heavyVideo{false};')
+    start = utils.index('enum class NativeGuiVideo')
     end = utils.index('\nvoid aml_handle_display_stereo_mode(', start)
-    production = 'static bool s_nativeGuiOsdHold=false;\n' + utils[start:end] + '\n'
+    production = 'static bool s_nativeGuiOsdHold=false;\n'
+    production += function(utils, 'static void aml_native_gui_osd_unblank(') + '\n'
+    production += utils[start:end] + '\n'
     marker = 'bool CWinSystemAmlogicGLESContext::CreateNewWindow('
     replace(marker, production + marker)
     replace(function(source, 'int main()'), CASES)
@@ -66,7 +70,7 @@ CASES = r'''
 void NativeSetup(Fixture& f,bool native=true) {
   auto& display=CDisplaySettings::GetInstance();display.resolutions.assign(4,RESOLUTION_INFO{});
   settings.nativeGui=native;
-  s_heavyVideo=false;s_nativeGuiSuspended=false;s_nativeGuiSuspendedBefore=false;
+  s_nativeGuiVideo=NativeGuiVideo::None;s_nativeGuiSuspended=false;s_nativeGuiSuspendedBefore=false;
   s_nativeGuiBlankPending=false;s_nativeGuiOsdHold=false;s_nativeGuiCalibrations.clear();
   for(int res=1;res<=3;res++) {
     auto& info=display.GetResolutionInfo(res);
@@ -101,7 +105,7 @@ void CheckCalibration() {
   }
 }
 void StartHeavy(Fixture& f) {
-  aml_native_gui_set_heavy_video(true);
+  aml_native_gui_set_video(true,false);
   assert(f.gfx.SetVideoResolution(1,false));CheckSize(f,1920,1080,1);
   assert(s_nativeGuiSuspended&&has("blank:1"));
   auto& info=CDisplaySettings::GetInstance().GetResolutionInfo(1);
@@ -111,7 +115,7 @@ void StartHeavy(Fixture& f) {
 }
 void StopKeepsOutputAndRestoresSize() {
   Fixture f;NativeSetup(f);StartHeavy(f);
-  aml_native_gui_set_heavy_video(false);aml_native_gui_playback_stopped();
+  aml_native_gui_set_video(false,false);aml_native_gui_playback_stopped();
   f.gfx.ProcessPendingVideoResolution();CheckSize(f,3840,2160,1);CheckCalibration();
   assert(!s_nativeGuiSuspended&&s_nativeGuiOsdHold&&has("blank:1"));
   assert(!has("engage-mode")); // GUI-only restoration, unchanged UHD50
@@ -120,14 +124,14 @@ void StopKeepsOutputAndRestoresSize() {
 }
 void CleanupWins() {
   Fixture f;NativeSetup(f);StartHeavy(f);
-  aml_native_gui_set_heavy_video(false);aml_native_gui_playback_stopped();
+  aml_native_gui_set_video(false,false);aml_native_gui_playback_stopped();
   assert(f.gfx.SetVideoResolution(2,false));events.clear();
   f.gfx.ProcessPendingVideoResolution();CheckSize(f,3840,2160,2);CheckCalibration();
   assert(!has("native-set:3840")&&!has("engage-mode"));
 }
 void BusyDisplayRestoresOnRetry() {
   Fixture f;NativeSetup(f);StartHeavy(f);
-  aml_native_gui_set_heavy_video(false);aml_native_gui_playback_stopped();
+  aml_native_gui_set_video(false,false);aml_native_gui_playback_stopped();
   {
     auto permit=f.session.AcquireDecoder();assert(permit);
     assert(!f.gfx.SetVideoResolution(2,false));
@@ -141,7 +145,7 @@ void ReplacementKeepsHeavyPolicy() {
   Fixture f;NativeSetup(f);StartHeavy(f);
   aml_native_gui_playback_stopped(); // new heavy decoder already owns the flag
   f.gfx.ProcessPendingVideoResolution();CheckSize(f,1920,1080,1);
-  assert(s_heavyVideo&&s_nativeGuiSuspended&&!has("blank:1"));
+  assert(s_nativeGuiVideo==NativeGuiVideo::Above1080p&&s_nativeGuiSuspended&&!has("blank:1"));
   // A newer 24 Hz selection requires native GUI even with heavy video.
   aml_native_gui_playback_stopped();
   {
@@ -149,21 +153,47 @@ void ReplacementKeepsHeavyPolicy() {
     assert(!f.gfx.SetVideoResolution(3,false));
   }
   f.gfx.ProcessPendingVideoResolution();CheckSize(f,3840,2160,3);CheckCalibration();
-  assert(s_heavyVideo&&!s_nativeGuiSuspended);
+  assert(s_nativeGuiVideo==NativeGuiVideo::Above1080p&&!s_nativeGuiSuspended);
 }
 void NativeDisabledAndLightControls() {
   for(bool native:{false,true}) {
     Fixture f;NativeSetup(f,native);
-    aml_native_gui_set_heavy_video(!native);
+    aml_native_gui_set_video(!native,false);
     assert(f.gfx.SetVideoResolution(1,false));events.clear();
     aml_native_gui_playback_stopped();f.gfx.ProcessPendingVideoResolution();
     CheckSize(f,native?3840:1920,native?2160:1080,1);
     assert(!s_nativeGuiSuspended&&!f.gfx.m_videoResolutionRefreshPending&&events.empty());
   }
 }
+void OptInAtFilmRate() {
+  Fixture f;NativeSetup(f);
+  assert(f.gfx.SetVideoResolution(3,false));CheckSize(f,3840,2160,3);events.clear();
+  aml_native_gui_set_video(true,false);
+  assert(!aml_native_gui_suspend_wanted(3));
+  settings.gui1080pFor4k=true;
+  assert(f.gfx.SetVideoResolution(3,false));CheckSize(f,1920,1080,3);
+  assert(!lastNativeForced&&!has("engage-mode"));
+  aml_native_gui_set_video(false,false);aml_native_gui_playback_stopped();
+  f.gfx.ProcessPendingVideoResolution();CheckSize(f,3840,2160,3);CheckCalibration();
+  aml_native_gui_set_video(false,true);
+  assert(!aml_native_gui_suspend_wanted(3)&&aml_native_gui_suspend_wanted(2));
+}
+void RejectedResizeIsRetried() {
+  Fixture f;NativeSetup(f);StartHeavy(f);
+  aml_native_gui_set_video(false,false);aml_native_gui_playback_stopped();
+  rejectNativeResolution=true;
+  f.gfx.ProcessPendingVideoResolution();
+  assert(s_nativeGuiSuspended&&f.gfx.m_pendingVideoResolution);
+  assert(currentNative.iWidth==1920&&f.win.m_nWidth==1920);
+  assert(has("blank:1")&&has("blank:0")&&!s_nativeGuiOsdHold);
+  rejectNativeResolution=false;
+  f.gfx.ProcessPendingVideoResolution();CheckSize(f,3840,2160,1);CheckCalibration();
+  assert(!s_nativeGuiSuspended&&!f.gfx.m_pendingVideoResolution);
+}
 int main() {
   StopKeepsOutputAndRestoresSize();CleanupWins();BusyDisplayRestoresOnRetry();
-  ReplacementKeepsHeavyPolicy();NativeDisabledAndLightControls();
+  ReplacementKeepsHeavyPolicy();NativeDisabledAndLightControls();OptInAtFilmRate();
+  RejectedResizeIsRetried();
 }
 '''
 
@@ -175,16 +205,19 @@ def main():
     source = harness()
     if not args.negative_controls:
         window['run'](source)
-        print('Native GUI sizing: PASS (six scenarios; production sizing and window methods; ASan/UBSan)')
+        print('Native GUI sizing: PASS (production sizing and window methods; ASan/UBSan)')
         return
     controls = [
         ('no sizing preparation', '  aml_native_gui_prepare(res);', ''),
         ('no rollback', '  aml_native_gui_apply(s_nativeGuiSuspendedBefore);', ''),
         ('no framebuffer hold', '  CSysfsPath("/sys/class/graphics/fb0/blank", 1);', ''),
         ('no exact calibration restore', '      info.Overscan = saved->overscan;', ''),
-        ('clear replacement decoder', '  if (s_nativeGuiSuspended)\n', '  s_heavyVideo = false;\n  if (s_nativeGuiSuspended)\n'),
+        ('clear replacement decoder', '  if (s_nativeGuiSuspended)\n',
+         '  s_nativeGuiVideo = NativeGuiVideo::None;\n  if (s_nativeGuiSuspended)\n'),
         ('ignore newer output', 'm_pendingVideoResolution.value_or(ResolutionRequest{m_Resolution, false})',
          'ResolutionRequest{m_Resolution, false}'),
+        ('ignore opt-in', 'settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K)', 'false'),
+        ('ignore failed framebuffer resize', '  if (!resolutionSet)\n', '  if (false && !resolutionSet)\n'),
     ]
     for name, before, after in controls:
         assert source.count(before) == 1, name

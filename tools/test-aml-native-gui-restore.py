@@ -37,7 +37,9 @@ pre = r'''
 #include <vector>
 using RESOLUTION=int;
 constexpr int TMSG_SETVIDEORESOLUTION=1;
-static std::atomic<bool> s_heavyVideo{false},s_nativeGuiSuspended{true};
+enum class NativeGuiVideo { None, Above1080p };
+static std::atomic<NativeGuiVideo> s_nativeGuiVideo{NativeGuiVideo::None};
+static std::atomic<bool> s_nativeGuiSuspended{true};
 static std::vector<int> queued, applied;
 static bool blocked=false;
 static int failures=0, checks=0;
@@ -72,7 +74,7 @@ struct CServiceBroker {
 '''
 cases = r'''
 static void reset() {
-    graphics=CGraphicContext{};s_heavyVideo=false;s_nativeGuiSuspended=true;
+    graphics=CGraphicContext{};s_nativeGuiVideo=NativeGuiVideo::None;s_nativeGuiSuspended=true;
     queued.clear();applied.clear();blocked=false;
 }
 static void deliver() {
@@ -105,8 +107,8 @@ int main() {
     applied.clear();deliver();CHECK(applied.empty());
 
     reset(); // A replacement decoder owns its heavy-video flag.
-    s_heavyVideo=true;aml_native_gui_playback_stopped();deliver();
-    CHECK(s_heavyVideo);
+    s_nativeGuiVideo=NativeGuiVideo::Above1080p;aml_native_gui_playback_stopped();deliver();
+    CHECK(s_nativeGuiVideo==NativeGuiVideo::Above1080p);
 
     reset();
     aml_native_gui_playback_stopped();aml_native_gui_playback_stopped();deliver();
@@ -118,9 +120,9 @@ int main() {
     blocked=false;deliver();
     CHECK(applied==std::vector<int>{50}&&!graphics.m_pendingVideoResolution);
 
-    reset();s_nativeGuiSuspended=false;s_heavyVideo=true;
+    reset();s_nativeGuiSuspended=false;s_nativeGuiVideo=NativeGuiVideo::Above1080p;
     aml_native_gui_playback_stopped();deliver();
-    CHECK(applied.empty()&&s_heavyVideo);
+    CHECK(applied.empty()&&s_nativeGuiVideo==NativeGuiVideo::Above1080p);
     std::printf("Native GUI restore: %d checks, %d failures\n",checks,failures);
     return failures ? 1:0;
 }
