@@ -1075,6 +1075,18 @@ bool CPlayerGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
         value = aml_dv_backend_label();
 #endif
       return true;
+    case PLAYER_PROCESS_AML_DV_TONEMAP:
+      value.clear();
+#ifdef HAS_LIBAMCODEC
+      if (m_appPlayer->IsPlayingVideo())
+      {
+        auto& dataCache = CServiceBroker::GetDataCacheCore();
+        const StreamHdrType type = dataCache.GetVideoHdrType();
+        const HDRStaticMetadataInfo hdr = dataCache.GetVideoHDRStaticMetadataInfo();
+        value = aml_dv_tonemap_label(type, dataCache.GetVideoSourceHdrType(), hdr.max_lum);
+      }
+#endif
+      return true;
     case PLAYER_PROCESS_AML_DV_BACKEND_AVAILABLE:
       value.clear();
 #ifdef HAS_LIBAMCODEC

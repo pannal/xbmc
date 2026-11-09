@@ -181,6 +181,35 @@ struct Hdr10PlusPqValues {
   }
 };
 
+static uint16_t source_min_pq_of(uint32_t minLum)
+{
+  if (minLum == 0)
+    return 0;
+  else if (minLum < 2)
+    return 7;
+  else if (minLum < 5)
+    return 10;
+  else if (minLum < 10)
+    return 17;
+  else if (minLum < 20)
+    return 26;
+  else if (minLum < 50)
+    return 38;
+  return 62;
+}
+
+static uint16_t source_max_pq_of(uint32_t maxLum)
+{
+  switch (maxLum) {
+      case 0:     { return 3079; }
+      case 1000:  { return 3079; }
+      case 2000:  { return 3388; }
+      case 4000:  { return 3696; }
+      case 10000: { return 4095; }
+      default:    { return cast_pq(maxLum); }
+  }
+}
+
 std::vector<uint8_t> create_rpu_nalu_for_hdr10plus(
   const Hdr10PlusMetadata& meta,
   const PeakBrightnessSource& peak_source,
@@ -196,32 +225,10 @@ std::vector<uint8_t> create_rpu_nalu_for_hdr10plus(
                               ? hdrStaticMetadataInfo.min_lum
                               : 0;
 
-  uint16_t min_pq = 0;
-  if (minLum == 0)
-    min_pq = 0;
-  else if (minLum < 2)
-    min_pq = 7;
-  else if (minLum < 5)
-    min_pq = 10;
-  else if (minLum < 10)
-    min_pq = 17;
-  else if (minLum < 20)
-    min_pq = 26;
-  else if (minLum < 50)
-    min_pq = 38;
-  else
-    min_pq = 62;
+  uint16_t min_pq = source_min_pq_of(minLum);
 
   uint16_t source_min_pq = min_pq;
-  uint16_t source_max_pq = 3079;
-  switch (maxLum) {
-      case 0:     { source_max_pq = 3079; break; }
-      case 1000:  { source_max_pq = 3079; break; }
-      case 2000:  { source_max_pq = 3388; break; }
-      case 4000:  { source_max_pq = 3696; break; }
-      case 10000: { source_max_pq = 4095; break; }
-      default:    { source_max_pq = cast_pq(maxLum); break; }
-  }
+  uint16_t source_max_pq = source_max_pq_of(maxLum);
 
   uint16_t max_pq = maximum_pq(meta, peak_source);
   if (max_pq == 0) {
@@ -316,4 +323,78 @@ std::vector<uint8_t> create_rpu_nalu_for_hdr10plus(
 #endif
 
   return last_rpu;
+}
+
+// One constant RPU for a plain HDR10 stream. HDR10 has no per-scene metadata, and
+// a live measured peak moves the whole curve a few frames after each cut (pumping).
+// The newer library lifts shadows and mid-tones through L1 avg and the 100-nit L2
+// trim instead, so the RPU states the title peak (MaxCLL, else the mastering peak)
+// in L1 max, the lowest legal L1 avg and a fixed 100-nit trim. Validated in a blind
+// A/B against the measured peak on a P8.1 file built with dovi_tool from the same
+// values (core1 curve: 1000 nits rolled off to ~98, shadows lifted ~2x).
+// The RPU carries no L2: the kernel adds the 100-nit trim (median of the graded
+// titles, xbmc_dv_new_static_trim = Y) or leaves it neutral (N), so the trim can
+// be switched live and a neutral trim aligns HDR10 on graded Dolby Vision.
+
+static std::vector<uint8_t> last_static_rpu;
+static Hdr10PlusPqValues last_static_pq = {};
+
+std::vector<uint8_t> create_static_rpu_nalu_for_hdr10(
+  const HDRStaticMetadataInfo& hdrStaticMetadataInfo)
+{
+  Hdr10PlusPqValues pq = {};
+  pq.source_min_pq = source_min_pq_of(hdrStaticMetadataInfo.min_lum);
+  pq.source_max_pq = source_max_pq_of(hdrStaticMetadataInfo.max_lum);
+  pq.min_pq = 0;
+
+  // MaxCLL when it is set; above the mastering peak it is capped by the clamp below.
+  uint16_t max_pq = pq.source_max_pq;
+  if (hdrStaticMetadataInfo.max_cll > 0)
+    max_pq = cast_pq(hdrStaticMetadataInfo.max_cll);
+  pq.max_pq = clamp16(max_pq, L1_MAX_PQ_MIN_VALUE, std::max(pq.source_max_pq, L1_MAX_PQ_MIN_VALUE));
+  pq.avg_pq = L1_AVG_PQ_MIN_VALUE;
+  pq.max_display_mastering_luminance = hdrStaticMetadataInfo.max_lum;
+  pq.min_display_mastering_luminance = hdrStaticMetadataInfo.min_lum;
+  pq.max_content_light_level = hdrStaticMetadataInfo.max_cll;
+  pq.max_frame_average_light_level = hdrStaticMetadataInfo.max_fall;
+
+  if (pq == last_static_pq && !last_static_rpu.empty())
+    return last_static_rpu;
+
+  last_static_pq = pq;
+  last_static_rpu.clear();
+
+#ifdef HAVE_LIBDOVI
+  std::string json = fmt::format(
+    R"({{"profile":"8.1","cm_version":"V29","long_play_mode":true,"length":1,)"
+    R"("source_min_pq":{},"source_max_pq":{},)"
+    R"("level6":{{"max_display_mastering_luminance":{},"min_display_mastering_luminance":{},)"
+    R"("max_content_light_level":{},"max_frame_average_light_level":{}}},)"
+    R"("default_metadata_blocks":[{{"Level1":{{"min_pq":{},"max_pq":{},"avg_pq":{}}}}}],)"
+    R"("shots":[{{"start":0,"duration":1}}]}})",
+    pq.source_min_pq, pq.source_max_pq,
+    pq.max_display_mastering_luminance, pq.min_display_mastering_luminance,
+    pq.max_content_light_level, pq.max_frame_average_light_level,
+    pq.min_pq, pq.max_pq, pq.avg_pq);
+
+  const DoviRpuOpaqueList* list = dovi_generate_from_json(json.c_str());
+  if (list && list->len > 0 && list->list)
+  {
+    DoviRpuOpaque* rpu = list->list[0];
+    const DoviData* data = dovi_write_unspec62_nalu(rpu);
+    if (data)
+    {
+      last_static_rpu.assign(data->data, data->data + data->len);
+      dovi_data_free(data);
+    }
+  }
+  if (list) dovi_rpu_list_free(list);
+#endif
+
+  CLog::Log(LOGINFO, "HDR10PlusConvert::create_static_rpu_nalu_for_hdr10 source pq [{}-{}] L1 [{} {} {}] no L2 mdml max [{}] mdml min [{}] cll [{}] fall [{}] -> {} bytes",
+    pq.source_min_pq, pq.source_max_pq, pq.min_pq, pq.max_pq, pq.avg_pq,
+    pq.max_display_mastering_luminance, pq.min_display_mastering_luminance,
+    pq.max_content_light_level, pq.max_frame_average_light_level, last_static_rpu.size());
+
+  return last_static_rpu;
 }

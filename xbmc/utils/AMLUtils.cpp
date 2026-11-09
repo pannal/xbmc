@@ -770,6 +770,21 @@ bool aml_support_av1()
 // Settings conditions, help and GUI labels only read these CPU caches.
 static std::atomic<bool> s_dvNewBackendAvailable{false};
 static std::atomic<int> s_dvNewBackendAvailability{-1}; // -1: unsupported/unknown
+static std::atomic<bool> s_dvStaticRpu{false};
+// HDR10 scene peak the kernel last received, from the decoder-side sampler.
+static std::atomic<int> s_dvMeasPeak{0};
+
+void aml_dv_set_static_rpu(bool value)
+{
+  s_dvStaticRpu.store(value, std::memory_order_release);
+}
+// HDR10+ -> DV per-scene conversion armed for this playback (not the static RPU).
+static std::atomic<bool> s_dvHdr10PlusConvert{false};
+
+void aml_dv_set_hdr10plus_convert(bool value)
+{
+  s_dvHdr10PlusConvert.store(value, std::memory_order_release);
+}
 // The kernel exposes xbmc_dv_new_sdr_route only when it can route SDR output to dovi5.
 static std::atomic<bool> s_dvNewSdrRouteSupported{false};
 
@@ -786,6 +801,51 @@ std::string aml_dv_backend_available_label()
 {
   const int available = s_dvNewBackendAvailability.load(std::memory_order_acquire);
   return available < 0 ? "" : available == 1 ? "1" : "0";
+}
+
+// Decoder thread, at most every 250 ms: the GUI label only reads these caches.
+void aml_dv_tonemap_sample(int64_t& lastSample)
+{
+  const int64_t now = aml_steady_ms();
+  if (lastSample && now - lastSample < 250)
+    return;
+  lastSample = now;
+  CSysfsPath measPeak{"/sys/module/amdolby_vision/parameters/xbmc_dv_new_hdr10_meas_peak"};
+  s_dvMeasPeak.store(measPeak.Exists() ? measPeak.Get<int>().value_or(0) : 0,
+                     std::memory_order_release);
+}
+
+void aml_dv_tonemap_reset()
+{
+  s_dvMeasPeak.store(0, std::memory_order_release);
+}
+
+std::string aml_dv_tonemap_label(StreamHdrType type, StreamHdrType sourceType, unsigned int masteringPeak)
+{
+  const std::string backend = aml_dv_backend_label();
+  if (backend != "dovi5")
+    return backend;
+  // Kodi's static RPU: the source is HDR10/HDR10+ and the curve is DV. Only set for
+  // such sources and cleared at close; the playing type of an HDR10 source turns
+  // into Dolby Vision once the RPU is added, so it is not checked here.
+  if (s_dvStaticRpu.load(std::memory_order_acquire))
+    return "dovi5, static RPU";
+  // The playing type of a converted HDR10+ source moves between HDR10, HDR10+ and
+  // Dolby Vision during playback: rely on the source type and the armed conversion.
+  if (type == StreamHdrType::HDR_TYPE_DOLBYVISION ||
+      (sourceType == StreamHdrType::HDR_TYPE_HDR10PLUS &&
+       s_dvHdr10PlusConvert.load(std::memory_order_acquire)))
+    return "dovi5, dynamic metadata";
+  if (type != StreamHdrType::HDR_TYPE_HDR10)
+    return backend;
+
+  // Same precedence as the kernel: the measured peak, then the mastering peak.
+  const int measured = s_dvMeasPeak.load(std::memory_order_acquire);
+  if (measured > 0)
+    return StringUtils::Format("dovi5, peak {} nits", measured);
+  if (masteringPeak > 0)
+    return StringUtils::Format("dovi5, mastering {} nits", masteringPeak);
+  return backend;
 }
 
 std::string aml_dv_backend_label()
@@ -1322,8 +1382,10 @@ unsigned int aml_dv_on(unsigned int mode, bool force_hdmi)
   // skipped (e.g. VP enabled while playing HDR10->SDR).
   aml_dv_set_sdr_source_max_nits(aml_dv_sdr_boost_param());
   aml_dv_set_sdr_keep_ext(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_PER_FRAME_METADATA));
-  aml_dv_set_sdr_new_backend(settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND) &&
-                             aml_dv_sdr_new_backend_type_ok(dv_type));
+  aml_dv_set_sdr_new_backend(
+      settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND) &&
+          aml_dv_sdr_new_backend_type_ok(dv_type),
+      aml_dv_static_trim_wanted());
   aml_dv_set_target_min_lum(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_TARGET_MIN_LUM));
 
   if (dv_vp != 0)
@@ -2215,11 +2277,64 @@ int aml_dv_sdr_boost_param()
   return mode;
 }
 
-// Experimental route of the VS10 sources (pure SDR excepted) to SDR through the
-// newer backend; kernels without the parameter keep the legacy library, so a
-// missing node is fine.
-void aml_dv_set_sdr_new_backend(bool enable)
+// "HDR10 curve" list: 0 static RPU, 2 scene peak meter. Every other option
+// of the newer backend is fixed in aml_dv_set_sdr_new_backend().
+int aml_dv_hdr10_curve()
 {
+  const int curve =
+      settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND_HDR10_CURVE);
+  return (curve == DV_HDR10_CURVE_STATIC || curve == DV_HDR10_CURVE_METER)
+             ? curve
+             : DV_HDR10_CURVE_STATIC;
+}
+
+// HDR10 to SDR on the newer backend with the measured scene peak option: the
+// codec then turns on the decoder's double write and runs CAMLPeakMeter.
+bool aml_dv_hdr10_meas_peak_wanted()
+{
+  const int vs10 = settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10);
+  return settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND) &&
+         aml_dv_hdr10_curve() == DV_HDR10_CURVE_METER &&
+         (vs10 == 3 || vs10 == 4) &&
+         CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_new_hdr10_meas_peak").Exists();
+}
+
+// HDR10 to SDR on the newer backend with the static RPU option: the bitstream
+// converter adds one constant Dolby Vision RPU to every frame. The stream then
+// takes the DV route, so DV sources must go to SDR too, or the output would change.
+bool aml_dv_hdr10_static_rpu_wanted()
+{
+  const int vs10 = settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10);
+  const int vs10dv = settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
+  return settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND) &&
+         aml_dv_hdr10_curve() != DV_HDR10_CURVE_METER &&
+         (vs10 == 3 || vs10 == 4) && (vs10dv == 3 || vs10dv == 4) &&
+         (aml_dv_type() != DV_TYPE_DISPLAY_LED);
+}
+
+// Same static RPU for HDR10+: its per-scene metadata is dropped instead of
+// being converted to a per-scene Dolby Vision RPU.
+bool aml_dv_hdr10plus_static_rpu_wanted()
+{
+  return aml_dv_hdr10_static_rpu_wanted() &&
+         settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND_HDR10PLUS_STATIC);
+}
+
+// Dolby Vision to SDR on the newer backend with the static trim option: the kernel
+// adds the 100-nit trim to metadata without one (xbmc_dv_new_static_trim).
+bool aml_dv_static_trim_wanted()
+{
+  const int vs10dv = settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_DV);
+  return settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND) &&
+         aml_dv_hdr10_curve() != DV_HDR10_CURVE_METER &&
+         (vs10dv == 3 || vs10dv == 4) && (aml_dv_type() != DV_TYPE_DISPLAY_LED);
+}
+
+void aml_dv_set_sdr_new_backend(bool enable, bool staticTrim)
+{
+  // Fixed since the "HDR10 curve" list: every VS10 source but pure SDR (which
+  // stays on the original library), mastering peak, 0-nit HDR10/HDR10+ source
+  // black.
   CSysfsPath route{"/sys/module/amdolby_vision/parameters/xbmc_dv_new_sdr_route"};
   if (route.Exists())
     route.Set(enable ? 1u : 0u);
@@ -2229,6 +2344,11 @@ void aml_dv_set_sdr_new_backend(bool enable)
   CSysfsPath black0{"/sys/module/amdolby_vision/parameters/xbmc_dv_new_src_black0"};
   if (black0.Exists())
     black0.Set(enable ? 1u : 0u);
+  // Same 100-nit trim as the HDR10 static RPU, added kernel-side to DV metadata
+  // that has none (converted HDR10+, RPUs made without a trim pass).
+  CSysfsPath trim{"/sys/module/amdolby_vision/parameters/xbmc_dv_new_static_trim"};
+  if (trim.Exists())
+    trim.Set(enable && staticTrim ? 1u : 0u);
 }
 
 void aml_dv_set_sdr_keep_ext(bool keep)

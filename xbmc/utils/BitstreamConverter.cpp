@@ -591,6 +591,23 @@ inline void ConvertDoVi(DOVIMode convertMode,
   vdrDmData = dovi_rpu_get_vdr_dm_data(opaque);
 }
 
+// Same rule as the kernel static trim: a trim for the 100-nit target (L2 at PQ 2081)
+// or any CMv4.0 L8 trim.
+inline bool HasL2Trim100Nits(const DoviVdrDmData* vdrDmData)
+{
+  if (!vdrDmData)
+    return false;
+  if (vdrDmData->dm_data.level8.len > 0)
+    return true;
+  for (size_t i = 0; i < vdrDmData->dm_data.level2.len; i++)
+  {
+    const DoviExtMetadataBlockLevel2* l2 = vdrDmData->dm_data.level2.list[i];
+    if (l2 && l2->target_max_pq == 2081)
+      return true;
+  }
+  return false;
+}
+
 inline bool AppendCMv40(DOVICMv40Mode cmv40Mode,
                         const DoviRpuDataHeader* header,
                         const DoviVdrDmData* vdrDmData,
@@ -1494,6 +1511,31 @@ void CBitstreamConverter::AddDoViRpuNalu(const Hdr10PlusMetadata& meta, uint8_t 
     m_hdrStaticMetadataInfo,
     capMaxPqAtSource);
 
+  AddGeneratedDoViRpuNalu(nalu, poutbuf, poutbuf_size, pts);
+}
+
+void CBitstreamConverter::AddStaticDoViRpuNalu(uint8_t **poutbuf, int *poutbuf_size, double pts) {
+
+  // SEI values first; the container's when the stream carries no such SEI.
+  HDRStaticMetadataInfo info = m_hdrStaticMetadataInfo;
+  if (!info.has_mdcv_metadata && m_hints.masteringMetadata &&
+      m_hints.masteringMetadata->has_luminance)
+  {
+    info.max_lum = static_cast<uint32_t>(std::lrint(av_q2d(m_hints.masteringMetadata->max_luminance)));
+    info.min_lum = static_cast<uint32_t>(std::lrint(av_q2d(m_hints.masteringMetadata->min_luminance) * 10000.0));
+  }
+  if (!info.has_cll_metadata && m_hints.contentLightMetadata)
+  {
+    info.max_cll = static_cast<uint16_t>(m_hints.contentLightMetadata->MaxCLL);
+    info.max_fall = static_cast<uint16_t>(m_hints.contentLightMetadata->MaxFALL);
+  }
+
+  auto nalu = create_static_rpu_nalu_for_hdr10(info);
+  AddGeneratedDoViRpuNalu(nalu, poutbuf, poutbuf_size, pts);
+}
+
+void CBitstreamConverter::AddGeneratedDoViRpuNalu(std::vector<uint8_t>& nalu, uint8_t **poutbuf, int *poutbuf_size, double pts) {
+
   if (!nalu.empty())
   {
     if (m_first_frame) {
@@ -1566,12 +1608,22 @@ void CBitstreamConverter::ProcessSeiPrefix(uint8_t *buf, int32_t nal_size, uint8
 
     bool convert = (considerAsHdr10Plus && m_convert_Hdr10Plus && !m_dual_priority_Hdr10Plus);
 
-    if (convert) {      
+    // HDR10+ alone on the static curve: drop its per-scene metadata and let the
+    // end of the access unit add the HDR10 static RPU instead of a converted one.
+    const bool toStatic = convert && !isDual && m_convert_hdr10_static_rpu && m_hdr10plus_static_rpu;
+    if (toStatic)
+    {
+      convert = false;
+      if (m_first_frame)
+        m_hdr10plus_dropped_for_static = true;
+    }
+
+    if (convert) {
       meta = res.value();
       convert_hdr10plus_meta = true;
     }
 
-    if (convert || m_removeHdr10Plus) {
+    if (convert || m_removeHdr10Plus || toStatic) {
       // Remove and carry forward remaining sei in nalu.
       auto nalu = CHevcSei::RemoveHdr10PlusFromSeiNalu(buf, nal_size);
       if (!nalu.empty())
@@ -1687,6 +1739,17 @@ void CBitstreamConverter::ProcessDoViRpu(uint8_t *nal_buf, int32_t nal_size, uin
         const bool hasData = sourcePq > 0 && sourcePq <= 4095 && threshold > 0;
         const bool bypass = !level2IsEmpty && hasData && max_pq_to_nits(sourcePq) > threshold;
         effectiveMode = bypass ? DOVICMv40Mode::CMV40_NONE : DOVICMv40Mode::CMV40_ALWAYS;
+      }
+      // With the static 100-nit trim the kernel adds an L2 trim to metadata that has
+      // none, and the newer library ignores L2 in CMv4.0: keep such RPUs in CMv2.9.
+      // Authored CMv4.0 is never appended to anyway (AppendCMv40's Level 254 guard).
+      if (effectiveMode != DOVICMv40Mode::CMV40_NONE && m_static_trim_keeps_cmv29 &&
+          vdrDmData && !vdrDmData->dm_data.level254 && !HasL2Trim100Nits(vdrDmData))
+      {
+        if (m_first_frame)
+          CLog::Log(LOGINFO, "CBitstreamConverter::ProcessDoViRpu - no 100-nit L2 trim: CMv4.0 not "
+                             "appended, the static trim is added instead");
+        effectiveMode = DOVICMv40Mode::CMV40_NONE;
       }
       if (effectiveMode != DOVICMv40Mode::CMV40_NONE)
         appended = AppendCMv40(effectiveMode, header, vdrDmData, opaque,
@@ -1894,6 +1957,22 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **
   // frame or the TV drops out of DV, so hold the last converted metadata.
   else if (m_lastHdr10PlusMetaValid && !au_has_rpu)
     AddDoViRpuNalu(m_lastHdr10PlusMeta, poutbuf, poutbuf_size, pts);
+  // Plain HDR10, or HDR10+ whose metadata was dropped for the static curve:
+  // decided on the first frame (no RPU), then the same static RPU on every frame.
+  else if (m_convert_hdr10_static_rpu && !au_has_rpu)
+  {
+    if (m_first_frame)
+    {
+      m_hdr10_static_rpu_active = (m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10) ||
+                                  m_hdr10plus_dropped_for_static;
+      CLog::Log(LOGINFO, "CBitstreamConverter::BitstreamConvert: HDR10 static Dolby Vision RPU {}",
+                !m_hdr10_static_rpu_active       ? "off (not plain HDR10)"
+                : m_hdr10plus_dropped_for_static ? "on (HDR10+ metadata dropped)"
+                                                 : "on");
+    }
+    if (m_hdr10_static_rpu_active)
+      AddStaticDoViRpuNalu(poutbuf, poutbuf_size, pts);
+  }
 
   m_first_frame = false;
 
