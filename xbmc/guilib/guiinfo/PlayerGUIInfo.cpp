@@ -814,24 +814,44 @@ bool CPlayerGUIInfo::GetLabel(std::string& value, const CFileItem *item, int con
     }
 
     case PLAYER_PROCESS_VIDEO_DOVI_L1_MIN_PQ:
-      value = std::to_string(CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata().level1_min_pq);
-      return true;
     case PLAYER_PROCESS_VIDEO_DOVI_L1_MAX_PQ:
-      value = std::to_string(CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata().level1_max_pq);
-      return true;
     case PLAYER_PROCESS_VIDEO_DOVI_L1_AVG_PQ:
-      value = std::to_string(CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata().level1_avg_pq);
-      return true;
-
     case PLAYER_PROCESS_VIDEO_DOVI_L1_MIN_NITS:
-      value = StringUtils::FormatNumber(pq_to_nits(CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata().level1_min_pq), 4);
-      return true;
     case PLAYER_PROCESS_VIDEO_DOVI_L1_MAX_NITS:
-      value = std::to_string(static_cast<int>(pq_to_nits(CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata().level1_max_pq)));
-      return true;
     case PLAYER_PROCESS_VIDEO_DOVI_L1_AVG_NITS:
-      value = std::to_string(static_cast<int>(pq_to_nits(CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata().level1_avg_pq)));
+    {
+      const auto meta = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
+      uint16_t minPq = meta.level1_min_pq;
+      uint16_t maxPq = meta.level1_max_pq;
+      uint16_t avgPq = meta.level1_avg_pq;
+#ifdef HAS_LIBAMCODEC
+      // CB1 rewrites L1 in the kernel after Kodi built the static RPU: show
+      // the per-picture values actually applied.
+      aml_dv_cb1_l1(minPq, maxPq, avgPq);
+#endif
+      switch (info.m_info)
+      {
+        case PLAYER_PROCESS_VIDEO_DOVI_L1_MIN_PQ:
+          value = std::to_string(minPq);
+          break;
+        case PLAYER_PROCESS_VIDEO_DOVI_L1_MAX_PQ:
+          value = std::to_string(maxPq);
+          break;
+        case PLAYER_PROCESS_VIDEO_DOVI_L1_AVG_PQ:
+          value = std::to_string(avgPq);
+          break;
+        case PLAYER_PROCESS_VIDEO_DOVI_L1_MIN_NITS:
+          value = StringUtils::FormatNumber(pq_to_nits(minPq), 4);
+          break;
+        case PLAYER_PROCESS_VIDEO_DOVI_L1_MAX_NITS:
+          value = std::to_string(static_cast<int>(pq_to_nits(maxPq)));
+          break;
+        default:
+          value = std::to_string(static_cast<int>(pq_to_nits(avgPq)));
+          break;
+      }
       return true;
+    }
 
     case PLAYER_PROCESS_VIDEO_ACTIVE_PICTURE:
     {

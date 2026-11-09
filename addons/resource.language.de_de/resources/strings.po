@@ -19296,13 +19296,18 @@ msgstr "HDR10-Kurve"
 
 #: system/settings/settings.xml
 msgctxt "#60679"
-msgid "Static: one fixed curve for the whole title, never pumps.[CR]Peak meter: follows the brightest part of each picture.[CR]Applies from the next playback."
-msgstr "Statisch: eine feste Kurve für den ganzen Titel, pumpt nie.[CR]Spitzenmessung: folgt dem hellsten Bereich jedes Bildes.[CR]Wirksam ab der nächsten Wiedergabe."
+msgid "Static: one fixed curve for the whole title, never pumps.[CR]Static + CB1: follows each shot, measured ahead, no pumping.[CR]Peak meter: follows the brightest part of each picture.[CR]Applies from the next playback."
+msgstr "Statisch: eine feste Kurve für den ganzen Titel, pumpt nie.[CR]Statisch + CB1: folgt jeder Einstellung, vorab gemessen, ohne Pumpen.[CR]Spitzenmessung: folgt dem hellsten Bereich jedes Bildes.[CR]Wirksam ab der nächsten Wiedergabe."
 
 #: system/settings/settings.xml
 msgctxt "#60680"
 msgid "Static"
 msgstr "Statisch"
+
+#: system/settings/settings.xml
+msgctxt "#60681"
+msgid "Static + CB1"
+msgstr "Statisch + CB1"
 
 #: system/settings/settings.xml
 msgctxt "#60682"
@@ -19328,8 +19333,8 @@ msgstr "HDR10+ wie HDR10 behandeln"
 
 #. Help text for setting "Treat HDR10+ like HDR10" of label #60663
 msgctxt "#60664"
-msgid "HDR10+ takes the same path as HDR10 with the chosen \"HDR10 curve\": one constant curve for the whole title instead of the HDR10+ metadata. Off, HDR10+ is converted scene by scene from its own dynamic metadata, which is made for HDR displays: on a 100-nit SDR target it moves the tone curve a lot at each scene change, and follows the metadata even where they do not match the picture. Titles that also carry Dolby Vision keep it. The player process info shows the path in use. Applies from the next playback."
-msgstr "HDR10+ nimmt denselben Weg wie HDR10 mit der gewählten „HDR10-Kurve“: eine konstante Kurve für den ganzen Titel statt der HDR10+-Metadaten. Aus: HDR10+ wird Szene für Szene anhand seiner eigenen dynamischen Metadaten konvertiert, die für HDR-Displays gedacht sind: bei einem SDR-Ziel von 100 Nits verschiebt das die Tonkurve bei jedem Szenenwechsel stark und folgt den Metadaten auch dort, wo sie nicht zum Bild passen. Titel, die zusätzlich Dolby Vision enthalten, behalten es. Die Player-Prozessinfo zeigt den verwendeten Weg. Wirksam ab der nächsten Wiedergabe."
+msgid "HDR10+ takes the same path as HDR10 with the chosen \"HDR10 curve\": one constant curve for the whole title, or with CB1 a peak and average measured on each picture instead of the HDR10+ metadata. Off, HDR10+ is converted scene by scene from its own dynamic metadata, which is made for HDR displays: on a 100-nit SDR target it moves the tone curve a lot at each scene change, and follows the metadata even where they do not match the picture. Titles that also carry Dolby Vision keep it. The player process info shows the path in use. Applies from the next playback."
+msgstr "HDR10+ nimmt denselben Weg wie HDR10 mit der gewählten „HDR10-Kurve“: eine konstante Kurve für den ganzen Titel oder, mit CB1, auf jedem Bild gemessene Spitzen- und Mittelwerte statt der HDR10+-Metadaten. Aus: HDR10+ wird Szene für Szene anhand seiner eigenen dynamischen Metadaten konvertiert, die für HDR-Displays gedacht sind: bei einem SDR-Ziel von 100 Nits verschiebt das die Tonkurve bei jedem Szenenwechsel stark und folgt den Metadaten auch dort, wo sie nicht zum Bild passen. Titel, die zusätzlich Dolby Vision enthalten, behalten es. Die Player-Prozessinfo zeigt den verwendeten Weg. Wirksam ab der nächsten Wiedergabe."
 
 msgctxt "#60637"
 msgid "Lets the Dolby engine use the source's dynamic metadata (per-scene brightness anchors and the colorist's SDR trims) when converting DV to SDR via VS10, so dark and bright scenes each get their own tone curve instead of one static curve for the whole title. Disable to restore the previous static tone mapping if brightness looks wrong. Only affects DV sources."

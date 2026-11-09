@@ -773,6 +773,9 @@ static std::atomic<int> s_dvNewBackendAvailability{-1}; // -1: unsupported/unkno
 static std::atomic<bool> s_dvStaticRpu{false};
 // HDR10 scene peak the kernel last received, from the decoder-side sampler.
 static std::atomic<int> s_dvMeasPeak{0};
+// Per-picture L1 (CB1), same sampler: kernel active flag and last L1 (bit 48 = valid).
+static std::atomic<bool> s_dvCb1Active{false};
+static std::atomic<uint64_t> s_dvCb1L1{0};
 
 void aml_dv_set_static_rpu(bool value)
 {
@@ -813,11 +816,30 @@ void aml_dv_tonemap_sample(int64_t& lastSample)
   CSysfsPath measPeak{"/sys/module/amdolby_vision/parameters/xbmc_dv_new_hdr10_meas_peak"};
   s_dvMeasPeak.store(measPeak.Exists() ? measPeak.Get<int>().value_or(0) : 0,
                      std::memory_order_release);
+
+  // CB1 only drives Kodi's static RPU: nothing to read, and nothing stale to show, otherwise.
+  bool active = false;
+  uint64_t l1 = 0;
+  if (s_dvStaticRpu.load(std::memory_order_acquire))
+  {
+    CSysfsPath flag{"/sys/module/amdolby_vision/parameters/dv_cb1_active"};
+    active = flag.Exists() && flag.Get<char>().value_or('N') == 'Y';
+    CSysfsPath cur{"/sys/module/amdolby_vision/parameters/dv_cb1_l1_cur"};
+    unsigned int mn, mx, av;
+    if (active && cur.Exists() &&
+        sscanf(cur.Get<std::string>().value_or("-").c_str(), "%u %u %u", &mn, &mx, &av) == 3)
+      l1 = (uint64_t{1} << 48) | (uint64_t{mn & 0xffff} << 32) |
+           (uint64_t{mx & 0xffff} << 16) | (av & 0xffff);
+  }
+  s_dvCb1Active.store(active, std::memory_order_release);
+  s_dvCb1L1.store(l1, std::memory_order_release);
 }
 
 void aml_dv_tonemap_reset()
 {
   s_dvMeasPeak.store(0, std::memory_order_release);
+  s_dvCb1Active.store(false, std::memory_order_release);
+  s_dvCb1L1.store(0, std::memory_order_release);
 }
 
 std::string aml_dv_tonemap_label(StreamHdrType type, StreamHdrType sourceType, unsigned int masteringPeak)
@@ -829,7 +851,7 @@ std::string aml_dv_tonemap_label(StreamHdrType type, StreamHdrType sourceType, u
   // such sources and cleared at close; the playing type of an HDR10 source turns
   // into Dolby Vision once the RPU is added, so it is not checked here.
   if (s_dvStaticRpu.load(std::memory_order_acquire))
-    return "dovi5, static RPU";
+    return aml_dv_cb1_active() ? "dovi5, CB1" : "dovi5, static RPU";
   // The playing type of a converted HDR10+ source moves between HDR10, HDR10+ and
   // Dolby Vision during playback: rely on the source type and the armed conversion.
   if (type == StreamHdrType::HDR_TYPE_DOLBYVISION ||
@@ -2277,15 +2299,16 @@ int aml_dv_sdr_boost_param()
   return mode;
 }
 
-// "HDR10 curve" list: 0 static RPU, 2 scene peak meter. Every other option
-// of the newer backend is fixed in aml_dv_set_sdr_new_backend().
+// "HDR10 curve" list: 0 static RPU, 1 static RPU + per-picture L1 (CB1),
+// 2 scene peak meter. Every other option of the newer backend is fixed
+// in aml_dv_set_sdr_new_backend().
 int aml_dv_hdr10_curve()
 {
   const int curve =
       settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND_HDR10_CURVE);
-  return (curve == DV_HDR10_CURVE_STATIC || curve == DV_HDR10_CURVE_METER)
+  return (curve >= DV_HDR10_CURVE_STATIC && curve <= DV_HDR10_CURVE_METER)
              ? curve
-             : DV_HDR10_CURVE_STATIC;
+             : DV_HDR10_CURVE_STATIC_CB1;
 }
 
 // HDR10 to SDR on the newer backend with the measured scene peak option: the
@@ -2310,6 +2333,38 @@ bool aml_dv_hdr10_static_rpu_wanted()
          aml_dv_hdr10_curve() != DV_HDR10_CURVE_METER &&
          (vs10 == 3 || vs10 == 4) && (vs10dv == 3 || vs10dv == 4) &&
          (aml_dv_type() != DV_TYPE_DISPLAY_LED);
+}
+
+// cb1 on top of the HDR10 static RPU: the HEVC decoder measures each picture
+// ahead of display (cb1_meas) and the kernel puts that L1 into the static
+// RPU by pts (xbmc_dv_cb1_l1). Missing nodes = stock modules, nothing to do.
+bool aml_dv_hdr10_cb1_wanted()
+{
+  return aml_dv_hdr10_static_rpu_wanted() &&
+         aml_dv_hdr10_curve() == DV_HDR10_CURVE_STATIC_CB1 &&
+         CSysfsPath("/sys/module/amvdec_h265/parameters/cb1_meas").Exists() &&
+         CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_cb1_l1").Exists();
+}
+
+// The kernel answers Y while per-picture L1 reaches the static RPU (hit or hold).
+// GUI accessor: reads the decoder-sampled cache only.
+bool aml_dv_cb1_active()
+{
+  return s_dvCb1Active.load(std::memory_order_acquire);
+}
+
+// The per-picture L1 the kernel last put into the static RPU (12-bit PQ), for
+// the player process info: Kodi only sees the static L1 it generated itself.
+// False unless CB1 drives the static RPU of the current playback.
+bool aml_dv_cb1_l1(uint16_t& minPq, uint16_t& maxPq, uint16_t& avgPq)
+{
+  const uint64_t l1 = s_dvCb1L1.load(std::memory_order_acquire);
+  if (!(l1 >> 48) || !s_dvStaticRpu.load(std::memory_order_acquire))
+    return false;
+  minPq = static_cast<uint16_t>(l1 >> 32);
+  maxPq = static_cast<uint16_t>(l1 >> 16);
+  avgPq = static_cast<uint16_t>(l1);
+  return true;
 }
 
 // Same static RPU for HDR10+: its per-scene metadata is dropped instead of

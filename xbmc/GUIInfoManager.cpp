@@ -1222,7 +1222,8 @@ const infomap player_times[] =   {{ "seektime",         PLAYER_SEEKTIME },
 ///                  _string_,
 ///     @return The Dolby library that processes the video and, on the newer
 ///     one, what it tone-maps for: `dovi5, static RPU` while Kodi's static
-///     Dolby Vision RPU carries an HDR10 or HDR10+ source, `dovi5, peak <n> nits`
+///     Dolby Vision RPU carries an HDR10 or HDR10+ source, `dovi5, CB1` when
+///     the per-picture L1 (CB1) also drives that RPU, `dovi5, peak <n> nits`
 ///     while the HDR10 scene peak meter feeds it, `dovi5, mastering <n> nits`
 ///     for other HDR10, `dovi5, dynamic metadata` for Dolby Vision and for HDR10+
 ///     converted from its own metadata, `dovi5` alone for any other source.

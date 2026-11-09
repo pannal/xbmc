@@ -2169,6 +2169,44 @@ bool SetMPEG2KeepProgressive(const char* path, bool enabled)
 }
 } // namespace
 
+// cb1 needs the decoder's 1/4 copy (double write 3) to measure, enough ready
+// pictures for its ~1 s lookahead (margin 26) and cb1_meas 17 (measure + publish
+// each L1 to amdolby_vision); the kernel then puts it into the static RPU.
+// The single-instance decoder reads module params at init: set them around it.
+void CAMLCodec::Cb1Apply()
+{
+  static const std::pair<const char*, const char*> params[] = {
+      {"/sys/module/amvdec_h265/parameters/double_write_mode", "3"},
+      {"/sys/module/amvdec_h265/parameters/dynamic_buf_num_margin", "26"},
+      {"/sys/module/amvdec_h265/parameters/cb1_meas", "17"},
+      {"/sys/module/amdolby_vision/parameters/xbmc_dv_cb1_l1", "Y"},
+  };
+  if (!m_cb1Saved.empty())
+    return;
+  for (const auto& [path, value] : params)
+  {
+    CSysfsPath node{path};
+    if (!node.Exists())
+      continue;
+    // Forced only when the current value is known, else it could never be restored.
+    std::string saved = node.Get<std::string>().value_or("");
+    if (saved.empty())
+      continue;
+    m_cb1Saved.emplace_back(path, std::move(saved));
+    node.Set(std::string(value));
+  }
+  CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder - HDR10 static RPU with per-picture L1 (cb1)");
+}
+
+void CAMLCodec::Cb1Restore()
+{
+  // Kernel first, so the static RPU stops looking up L1 before the decoder stops sending it.
+  for (auto it = m_cb1Saved.rbegin(); it != m_cb1Saved.rend(); ++it)
+    if (!it->second.empty())
+      CSysfsPath(it->first, it->second);
+  m_cb1Saved.clear();
+}
+
 bool CAMLCodec::OpenDecoderInternal()
 {
   aml_video_fps_reset();
@@ -2626,6 +2664,8 @@ bool CAMLCodec::OpenDecoderInternal()
         dw.Set(3);
     }
   }
+  if (m_cb1 && am_private->video_format == VFORMAT_HEVC && !measurePeak)
+    Cb1Apply();
   int ret = m_dll->codec_init(&am_private->vcodec);
   if (ret != CODEC_ERROR_NONE)
   {
@@ -2634,6 +2674,7 @@ bool CAMLCodec::OpenDecoderInternal()
       CSysfsPath("/sys/module/amvdec_h265/parameters/double_write_mode", m_savedDoubleWrite);
       m_savedDoubleWrite.clear();
     }
+    Cb1Restore();
     CLog::Log(LOGDEBUG, "CAMLCodec::OpenDecoder codec init failed, ret=0x{:x}", -ret);
     return false;
   }
@@ -2777,6 +2818,7 @@ void CAMLCodec::CloseDecoderInternal()
     CSysfsPath("/sys/module/amvdec_h265/parameters/double_write_mode", m_savedDoubleWrite);
     m_savedDoubleWrite.clear();
   }
+  Cb1Restore();
 
   // Reset VC1 deinterlace workaround
   if (am_private->video_format == VFORMAT_VC1 && aml_get_cpufamily_id() <= AML_SC2)

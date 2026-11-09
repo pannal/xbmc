@@ -26172,12 +26172,17 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#60679"
-msgid "Static: one fixed curve for the whole title, never pumps.[CR]Peak meter: follows the brightest part of each picture.[CR]Applies from the next playback."
+msgid "Static: one fixed curve for the whole title, never pumps.[CR]Static + CB1: follows each shot, measured ahead, no pumping.[CR]Peak meter: follows the brightest part of each picture.[CR]Applies from the next playback."
 msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#60680"
 msgid "Static"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60681"
+msgid "Static + CB1"
 msgstr ""
 
 #: system/settings/settings.xml
@@ -26204,7 +26209,7 @@ msgstr ""
 
 #. Help text for setting "Treat HDR10+ like HDR10" of label #60663
 msgctxt "#60664"
-msgid "HDR10+ takes the same path as HDR10 with the chosen \"HDR10 curve\": one constant curve for the whole title instead of the HDR10+ metadata. Off, HDR10+ is converted scene by scene from its own dynamic metadata, which is made for HDR displays: on a 100-nit SDR target it moves the tone curve a lot at each scene change, and follows the metadata even where they do not match the picture. Titles that also carry Dolby Vision keep it. The player process info shows the path in use. Applies from the next playback."
+msgid "HDR10+ takes the same path as HDR10 with the chosen \"HDR10 curve\": one constant curve for the whole title, or with CB1 a peak and average measured on each picture instead of the HDR10+ metadata. Off, HDR10+ is converted scene by scene from its own dynamic metadata, which is made for HDR displays: on a 100-nit SDR target it moves the tone curve a lot at each scene change, and follows the metadata even where they do not match the picture. Titles that also carry Dolby Vision keep it. The player process info shows the path in use. Applies from the next playback."
 msgstr ""
 
 #. "Dolby Vision VS10 SDR Per-Frame Metadata"

@@ -1066,6 +1066,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       aml_dv_set_static_rpu(m_bitstream && m_bitstream->IsStaticRpu());
       aml_dv_set_hdr10plus_convert(m_bitstream && !m_bitstream->IsStaticRpu() &&
                                    m_bitstream->IsConvertHdr10Plus());
+      if (m_Codec)
+        m_Codec->SetCb1(m_bitstream && m_bitstream->IsStaticRpu() && aml_dv_hdr10_cb1_wanted());
       if (!m_Codec || !m_Codec->OpenDecoder())
       {
         CLog::Log(LOGERROR, "CDVDVideoCodecAmlogic::{}: Failed to open Amlogic Codec", __FUNCTION__);

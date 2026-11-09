@@ -233,11 +233,14 @@ int  aml_dv_sdr_boost_param();
 void aml_dv_set_sdr_source_max_nits(int value);
 void aml_dv_set_sdr_keep_ext(bool keep);
 void aml_dv_set_sdr_new_backend(bool enable, bool staticTrim);
-enum { DV_HDR10_CURVE_STATIC = 0, DV_HDR10_CURVE_METER = 2 };
+enum { DV_HDR10_CURVE_STATIC = 0, DV_HDR10_CURVE_STATIC_CB1 = 1, DV_HDR10_CURVE_METER = 2 };
 int aml_dv_hdr10_curve();
 bool aml_dv_hdr10_meas_peak_wanted();
 bool aml_dv_hdr10_static_rpu_wanted();
 bool aml_dv_hdr10plus_static_rpu_wanted();
+bool aml_dv_hdr10_cb1_wanted();
+bool aml_dv_cb1_active();
+bool aml_dv_cb1_l1(uint16_t& minPq, uint16_t& maxPq, uint16_t& avgPq);
 // The playing stream carries the static DV RPU added by Kodi (HDR10, or HDR10+ dropped to it).
 void aml_dv_set_static_rpu(bool value);
 void aml_dv_set_hdr10plus_convert(bool value);

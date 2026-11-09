@@ -19,6 +19,8 @@
 #include "utils/Geometry.h"
 
 #include <array>
+#include <utility>
+#include <vector>
 #include <memory>
 #include <atomic>
 #include <deque>
@@ -90,6 +92,8 @@ public:
   static void SetCaptureSource(const std::shared_ptr<CAMLCodec>& codec);
 
   bool          OpenDecoder();
+  // Per-picture L1 (cb1) for an HDR10 stream converted to the static DV RPU.
+  void          SetCb1(bool value) { m_cb1 = value; }
   // The caller retains captured owners until lifecycle completion. The prefix
   // runs once on the admitted close owner, before decoder/native teardown.
   bool          CloseDecoder(std::function<void()> beforeClose = {});
@@ -288,6 +292,11 @@ private:
   std::string m_savedDoubleWrite;
   int64_t m_tonemapSampleTime{0};
   std::unique_ptr<CAMLPeakMeter> m_peakMeter;
+  // cb1: decoder/kernel module params saved (path, value) and forced while open.
+  bool m_cb1 = false;
+  std::vector<std::pair<std::string, std::string>> m_cb1Saved;
+  void Cb1Apply();
+  void Cb1Restore();
   // Recently output (display-order) pts, for corrupt-splice detection: a pts
   // that steps backwards onto a value already output is a broken splice
   // (duplicate GOP / out-of-place keyframe), not a legal reorder.
