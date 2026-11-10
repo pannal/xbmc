@@ -5160,9 +5160,7 @@ void CVideoPlayer::ReopenSubtitleStream(const SelectionStream& stream)
   // already been read and discarded. Seek back to the current time so they
   // get re-read, mirroring what audio stream switching does.
   // A seek already queued re-reads them as well and must not be overridden.
-  if (opened && STREAM_SOURCE_MASK(stream.source) == STREAM_SOURCE_DEMUX &&
-      m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK) == 0 &&
-      m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER) == 0)
+  if (opened && STREAM_SOURCE_MASK(stream.source) == STREAM_SOURCE_DEMUX)
   {
     CDVDMsgPlayerSeek::CMode mode;
     // If A/V sync hasn't completed after a seek, the clock hasn't been
@@ -5182,7 +5180,8 @@ void CVideoPlayer::ReopenSubtitleStream(const SelectionStream& stream)
     mode.accurate = true;
     mode.trickplay = true;
     mode.sync = true;
-    m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+    m_messenger.PutIfNoMessages(std::make_shared<CDVDMsgPlayerSeek>(mode),
+                                {CDVDMsg::PLAYER_SEEK, CDVDMsg::PLAYER_SEEK_CHAPTER});
   }
 }
 
