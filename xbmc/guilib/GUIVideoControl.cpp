@@ -71,10 +71,14 @@ void CGUIVideoControl::Render()
       region.Intersect(old);
       CServiceBroker::GetWinSystem()->GetGfxContext().SetScissors(region);
 
-      // with dual pass rendering, we need to "clear" with a quad, as we need to conserve the already rendered layers
+      // Clear at this control's depth so opaque backgrounds do not hide the video,
+      // while controls in front retain their already rendered pixels.
       if (CServiceBroker::GetWinSystem()->GetGfxContext().GetRenderOrder() ==
           RENDER_ORDER_BACK_TO_FRONT)
-        CGUITexture::DrawQuad(region, 0x00000000, nullptr, nullptr, -1.0f, false);
+        CGUITexture::DrawQuad(
+            region, 0x00000000, nullptr, nullptr,
+            CServiceBroker::GetWinSystem()->GetGfxContext().GetNormalizedDepth(m_cachedTransform.depth),
+            false);
       else if (CServiceBroker::GetWinSystem()->GetGfxContext().GetRenderOrder() ==
                RENDER_ORDER_ALL_BACK_TO_FRONT)
         CServiceBroker::GetWinSystem()->GetGfxContext().Clear(0);
