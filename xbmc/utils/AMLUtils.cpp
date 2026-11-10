@@ -395,7 +395,7 @@ void aml_dv_set_vs10_mode(unsigned int mode, StreamHdrType hdrType, bool hardwar
   else
   {
     if (aml_is_dv_enable())
-      aml_dv_off();
+      aml_dv_off(/*skip_hdmi_update=*/false, /*restore_vs10_colour=*/true);
     vs10_conversion = false;
     // The IPT action publishes a DV renderer target. Returning to the source
     // must publish its HDR type as well, after native DV teardown completes.
@@ -1748,7 +1748,25 @@ AMLHDMILinkSample aml_hdmi_link_probe(const char* ctx)
   return AMLHDMILinkSample::CHANGED;
 }
 
-void aml_dv_off(bool skip_hdmi_update)
+static void aml_restore_cd_cs(bool keep_hdr10plus_override)
+{
+  const auto advSettings = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+  if (keep_hdr10plus_override && advSettings->GetLimitCD())
+    return;
+
+  if (advSettings->GetLimitCD() || advSettings->GetForceCS())
+  {
+    settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_LIMIT_CD, advSettings->GetLimitCDPrevVal());
+    settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_FORCE_CS, advSettings->GetForceCSPrevVal());
+
+    advSettings->SetLimitCD(false);
+    advSettings->SetForceCS(false);
+    advSettings->SetLimitCDPrevVal(0);
+    advSettings->SetForceCSPrevVal(0);
+  }
+}
+
+void aml_dv_off(bool skip_hdmi_update, bool restore_vs10_colour)
 {
   CDVCoreGuard dvlock(__FUNCTION__);
   aml_dv_backend_invalidate(std::atomic_load(&s_dvPlaybackSession));
@@ -1842,6 +1860,11 @@ void aml_dv_off(bool skip_hdmi_update)
   // corrupts the HDMI TX color-space state on some displays.
   if (modeChange && !skip_hdmi_update)
   {
+    // Live bypass leaves the decoder open. Release its VS10 colour override
+    // before refreshing HDMI, while retaining any native HDR10+ override.
+    if (restore_vs10_colour)
+      aml_restore_cd_cs(/*keep_hdr10plus_override=*/true);
+
     aml_dv_display_auto_now();
     const RESOLUTION_INFO res_info = CDisplaySettings::GetInstance().GetResolutionInfo(CDisplaySettings::GetInstance().GetCurrentResolution());
     write_resolution_ini(res_info);
@@ -7745,19 +7768,7 @@ void aml_kodi_set_cd_cs(int cd_cs_type)
 
 void aml_kodi_reset_cd_cs()
 {
-  auto advSettings = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
-
-  // Restore previous CD/CS settings if they were changed
-  if (advSettings->GetLimitCD() || advSettings->GetForceCS())
-  {
-    settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_LIMIT_CD, advSettings->GetLimitCDPrevVal());
-    settings()->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_FORCE_CS, advSettings->GetForceCSPrevVal());
-
-    advSettings->SetLimitCD(false);
-    advSettings->SetForceCS(false);
-    advSettings->SetLimitCDPrevVal(0);
-    advSettings->SetForceCSPrevVal(0);
-  }
+  aml_restore_cd_cs(/*keep_hdr10plus_override=*/false);
 
   // Reset kernel-side 422 forcing
   aml_linux_force_422 = false;

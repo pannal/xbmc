@@ -144,7 +144,7 @@ void aml_dv_set_vs10_mode(unsigned int mode, StreamHdrType hdrType, bool hardwar
 void aml_dv_wait_video_off(int timeout);
 int aml_blackout_policy(int new_blackout);
 unsigned int aml_dv_on(unsigned int mode, bool force_hdmi = false);
-void aml_dv_off(bool skip_hdmi_update = false);
+void aml_dv_off(bool skip_hdmi_update = false, bool restore_vs10_colour = false);
 // Push the L5-related sysfs flags from current Kodi settings. Called from
 // aml_dv_on() at playback start, and from CDolbyVisionAML::OnSettingChanged
 // so per-folder override.ini writes that mutate L5 settings take effect mid-

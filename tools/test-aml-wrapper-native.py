@@ -159,7 +159,9 @@ int main(){WrapperClose(true);WrapperClose(false);NoCoreDisplayAndPolicy();Prefi
 def source():
     full=fixture['harness']();assert full.endswith(fixture['TESTS'])
     code=full[:-len(fixture['TESTS'])].replace('void aml_kodi_reset_cd_cs() {}','void aml_kodi_reset_cd_cs();')
-    support=SUPPORT.replace('@RESET@',function((ROOT/'xbmc/utils/AMLUtils.cpp').read_text(),'void aml_kodi_reset_cd_cs()'))
+    aml=(ROOT/'xbmc/utils/AMLUtils.cpp').read_text()
+    support=SUPPORT.replace('@RESET@','\n'.join(
+        function(aml, sig) for sig in ('static void aml_restore_cd_cs(', 'void aml_kodi_reset_cd_cs()')))
     code=code.replace('class CDVDVideoCodecAmlogic {',support+'\nclass CDVDVideoCodecAmlogic: public ISettingCallback {')
     code=code.replace('  void Close(); void Reset();','  bool m_settingsCallbackRegistered=false;\n  void RetireAndClose();\n  void Close(); void Reset();')
     destructor=function((ROOT/'xbmc/cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp').read_text(),

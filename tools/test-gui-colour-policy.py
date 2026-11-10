@@ -113,7 +113,7 @@ def publication_contract(aml):
     assert 'return s_guiDvOutputMode.load(std::memory_order_relaxed);' in getter
     assert 'CSysfsPath' not in getter
     on = function(aml, 'unsigned int aml_dv_on(unsigned int mode, bool force_hdmi)')
-    off = function(aml, 'void aml_dv_off(bool skip_hdmi_update)')
+    off = function(aml, 'void aml_dv_off(')
     on_store = 's_guiDvOutputMode.store(mode, std::memory_order_relaxed);'
     off_store = 's_guiDvOutputMode.store(DOLBY_VISION_OUTPUT_MODE_BYPASS, std::memory_order_relaxed);'
     assert on.count(on_store) == off.count(off_store) == 1

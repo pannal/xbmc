@@ -43,7 +43,7 @@ int aml_dv_output_mode_to_string(unsigned int v){return v;}
 struct CSysfsPath{explicit CSysfsPath(const char*){}template<class T>std::optional<T> Get(){return existingMode;}};
 void aml_dv_on(unsigned int v){modes.push_back(v);existingMode=v;}
 bool aml_is_dv_enable(){return enabled;}
-void aml_dv_off(){modes.push_back(DOLBY_VISION_OUTPUT_MODE_BYPASS);existingMode=DOLBY_VISION_OUTPUT_MODE_BYPASS;}
+void aml_dv_off(bool,bool){modes.push_back(DOLBY_VISION_OUTPUT_MODE_BYPASS);existingMode=DOLBY_VISION_OUTPUT_MODE_BYPASS;}
 void aml_dv_trigger_update_resolution(StreamHdrType){assert(session&&!session->AcquireDecoder());}
 void aml_reset_audio_from_vs10_change(){++resets;}
 @UTILITY@

@@ -5,7 +5,8 @@ Requires --kernel-source pointing at the paired linux-amlogic source. Executes
 production Kodi functions and kernel policy/exit/HDR-admission branches with recording sysfs,
 a controlled clock/vsync pump and hardware/settings adapters. Normal frame
 processing and enable_dolby_vision register effects are modeled; no actual HDMI
-packets, panel behavior or native library are tested. --baseline REF must expose
+packets, panel behavior or native library are tested. HDMI format staging and
+application are modeled separately. --baseline REF must expose
 the stale core and five-second close wait with the old Kodi source.
 """
 import argparse
@@ -31,14 +32,15 @@ PRELUDE = r'''
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 void check(bool ok, const char* text) { if (!ok) throw std::runtime_error(text); }
 constexpr int LOGDEBUG=0, LOGINFO=1, LOGWARNING=2;
 struct CLog { template<class... T> static void Log(T&&...) {} };
 struct CStreamDetails { template<class T> static const char* DynamicRangeToString(T) { return ""; } };
-enum class StreamHdrType { HDR_TYPE_NONE, HDR_TYPE_HDR10, HDR_TYPE_HLG, HDR_TYPE_DOLBYVISION };
+enum class StreamHdrType { HDR_TYPE_NONE, HDR_TYPE_HDR10, HDR_TYPE_HDR10PLUS, HDR_TYPE_HLG, HDR_TYPE_DOLBYVISION };
 enum DV_MODE { DV_MODE_OFF, DV_MODE_ON, DV_MODE_ON_DEMAND };
-enum DV_TYPE { DV_TYPE_DISPLAY_LED, DV_TYPE_VS10_ONLY };
+enum DV_TYPE { DV_TYPE_DISPLAY_LED, DV_TYPE_VS10_ONLY, DV_TYPE_PLAYER_LED_HDR2, DV_TYPE_PLAYER_LED_LLDV };
 constexpr unsigned DOLBY_VISION_OUTPUT_MODE_IPT=0, DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL=1,
  DOLBY_VISION_OUTPUT_MODE_HDR10=2, DOLBY_VISION_OUTPUT_MODE_SDR10=3,
  DOLBY_VISION_OUTPUT_MODE_SDR8=4, DOLBY_VISION_OUTPUT_MODE_BYPASS=5;
@@ -168,9 +170,53 @@ static void aml_dv_trigger_update_resolution(StreamHdrType type){
 }
 struct CDVCoreGuard {explicit CDVCoreGuard(const char*){}};
 DV_MODE guiMode=DV_MODE_ON_DEMAND;DV_TYPE dvType=DV_TYPE_DISPLAY_LED;bool keepSDR=false;
+using ColourFormat = std::pair<int, int>;
+constexpr ColourFormat userColour{4, 3};
+constexpr ColourFormat hdr2Colour{3, 3};
+ColourFormat requestedColour=userColour, stagedColour=userColour, activeColour=userColour;
+std::vector<ColourFormat> hdmiRefreshes;
+struct AdvancedSettings {
+ bool forceCS=false, limitCD=false;
+ int savedCS=0, savedCD=0;
+ bool GetForceCS() const { return forceCS; }
+ bool GetLimitCD() const { return limitCD; }
+ int GetForceCSPrevVal() const { return savedCS; }
+ int GetLimitCDPrevVal() const { return savedCD; }
+ void SetForceCS(bool value) { forceCS=value; }
+ void SetLimitCD(bool value) { limitCD=value; }
+ void SetForceCSPrevVal(int value) { savedCS=value; }
+ void SetLimitCDPrevVal(int value) { savedCD=value; }
+} advanced;
+struct SettingsComponent {
+ auto* GetAdvancedSettings() { return &advanced; }
+};
+struct DataCache {
+ float GetVideoFps() const { return 23.976f; }
+ StreamHdrType GetVideoHdrType() const {
+  return dolby_vision_src_format==FORMAT_HDR10PLUS ? StreamHdrType::HDR_TYPE_HDR10PLUS :
+                                                  StreamHdrType::HDR_TYPE_HDR10;
+ }
+};
+struct CServiceBroker {
+ static auto* GetSettingsComponent() { static SettingsComponent component; return &component; }
+ static auto& GetDataCacheCore() { static DataCache cache; return cache; }
+};
 struct CSettings {
  static constexpr int SETTING_COREELEC_AMLOGIC_DV_TYPE=1,SETTING_COREELEC_AMLOGIC_DV_KEEP_SDR_STATE=2;
- int GetInt(int)const{return dvType;}bool GetBool(int)const{return keepSDR;}
+ static constexpr int SETTING_COREELEC_AMLOGIC_FORCE_CS=3,SETTING_COREELEC_AMLOGIC_LIMIT_CD=4;
+ static constexpr int SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR=5;
+ int GetInt(int key) const {
+  if (key==SETTING_COREELEC_AMLOGIC_DV_TYPE) return dvType;
+  if (key==SETTING_COREELEC_AMLOGIC_FORCE_CS) return requestedColour.first;
+  if (key==SETTING_COREELEC_AMLOGIC_LIMIT_CD) return requestedColour.second;
+  return 0;
+ }
+ bool GetBool(int) const { return keepSDR; }
+ void SetInt(int key, int value) {
+  if (key==SETTING_COREELEC_AMLOGIC_FORCE_CS) requestedColour.first=value;
+  if (key==SETTING_COREELEC_AMLOGIC_LIMIT_CD) requestedColour.second=value;
+  stagedColour=requestedColour; // The display settings callback stages attr.
+ }
 };
 std::shared_ptr<CSettings> settings(){static auto s=std::make_shared<CSettings>();return s;}
 struct CGUIDialogKaiToast {enum {Info};template<class... T>static void QueueNotification(T&&...){}};
@@ -178,7 +224,7 @@ struct {std::string Get(int){return {};}} g_localizeStrings;
 struct RESOLUTION_INFO {};
 struct CDisplaySettings {static CDisplaySettings& GetInstance(){static CDisplaySettings s;return s;}
  RESOLUTION_INFO GetResolutionInfo(int){return {};}int GetCurrentResolution(){return 0;}};
-void write_resolution_ini(const RESOLUTION_INFO&) {}
+void write_resolution_ini(const RESOLUTION_INFO&) { stagedColour=requestedColour; }
 bool vs10_conversion=false,vs10_conversion_reset_hdr10=false,aml_linux_force_422=false;
 bool s_dvPlaybackActive=true,s_dvDiscHold=false,s_dvDiscDeferred=false;
 std::atomic<bool>s_pm4kActive{false};std::atomic<int64_t>s_dvDiscDeferredSinceMs{0};
@@ -190,20 +236,26 @@ void aml_dv_backend_invalidate(const std::shared_ptr<const void>&){}
 void aml_dv_detect_active_area_stop(){}
 void aml_dv_auto_letterbox_watch_stop(){}
 void aml_dv_reset_l5_signals(){}
-void aml_dv_display_auto_now(){}
-void aml_display_mode_round_trip(const char*){}
+void aml_dv_display_auto_now(){
+ activeColour=nodes[base+"xbmc_aml_linux_force_422"]=="1" ? hdr2Colour : stagedColour;
+ hdmiRefreshes.push_back(activeColour);
+}
+void aml_display_mode_round_trip(const char*){aml_dv_display_auto_now();}
 std::string aml_dv_output_mode_to_string(unsigned){return {};}
 void aml_reset_audio_from_vs10_change(){}
 bool aml_is_dv_enable(){return dolby_vision_enable;}
 DV_MODE aml_dv_mode(){return guiMode;}
 int aml_dv_dolby_vision_mode(){return dolby_vision_mode;}
-void aml_dv_off(bool skip_hdmi_update=false);
+@OFF_DECLARATION@
+void aml_kodi_set_cd_cs(int);
 unsigned aml_dv_on(unsigned mode){
  if(mode==DOLBY_VISION_OUTPUT_MODE_IPT)mode=DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL;
  dolby_vision_enable=dolby_vision_on=true;dolby_vision_core1_on=videoPresent;
  dolby_vision_mode=mode;dolby_vision_policy=DOLBY_VISION_FORCE_OUTPUT_MODE;
  dolby_vision_status=1;last_dst_format=mode<=1?FORMAT_DOVI:FORMAT_HDR10;
  if(mode<=1)aml_dv_trigger_update_resolution(StreamHdrType::HDR_TYPE_DOLBYVISION);
+ aml_kodi_set_cd_cs(1);
+ aml_dv_display_auto_now();
  return mode;
 }
 @KODI@
@@ -217,7 +269,11 @@ void Reset(){
  dolby_vision_src_format=FORMAT_HDR10;last_dst_format=FORMAT_SDR;
  guiMode=DV_MODE_ON_DEMAND;dvType=DV_TYPE_DISPLAY_LED;keepSDR=false;
  s_dvPlaybackActive=true;s_dvDiscHold=false;renderer={};vs10_conversion=false;
+ vs10_conversion_reset_hdr10=false;
  lastPublishedHDR=StreamHdrType::HDR_TYPE_NONE;
+ advanced={};
+ requestedColour=stagedColour=activeColour=userColour;
+ hdmiRefreshes.clear();
 }
 int Stop(){
  videoPresent=false;KernelStep();auto start=TestClock::now();
@@ -242,6 +298,38 @@ int main(int argc,char** argv){try{
  check(lastPublishedHDR==StreamHdrType::HDR_TYPE_HDR10,"bypass restores source renderer target");
  check(!vs10_conversion,"bypass clears conversion bookkeeping");
  check(disabledWithLiveCore==0&&exits==1&&packetRequests>0,"kernel exit runs before userspace disable");
+ for (const ColourFormat& original : {userColour, ColourFormat{4, 2}}) {
+  Reset();
+  guiMode=DV_MODE_ON;
+  dvType=DV_TYPE_PLAYER_LED_HDR2;
+  requestedColour=stagedColour=activeColour=original;
+  for (int i=0; i<2; ++i) {
+   aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_HDR10,StreamHdrType::HDR_TYPE_HDR10,true);
+   check(activeColour==hdr2Colour&&advanced.GetForceCS(),"active HDR2 forces 12-bit 422");
+   hdmiRefreshes.clear();
+   aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS,StreamHdrType::HDR_TYPE_HDR10,true);
+   check(hdmiRefreshes==std::vector<ColourFormat>(2,original),
+         "live bypass restores saved 444 and depth on the first existing refresh");
+   check(!dolby_vision_enable&&!advanced.GetForceCS(),"live bypass releases only its colour override");
+  }
+  check(vs10_conversion_reset_hdr10,"always-on idle restoration remains pending for close");
+ }
+ Reset();
+ dvType=DV_TYPE_PLAYER_LED_HDR2;
+ dolby_vision_src_format=FORMAT_HDR10PLUS;
+ aml_kodi_set_cd_cs(2);
+ aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_HDR10,StreamHdrType::HDR_TYPE_HDR10PLUS,true);
+ aml_dv_set_vs10_mode(DOLBY_VISION_OUTPUT_MODE_BYPASS,StreamHdrType::HDR_TYPE_HDR10PLUS,true);
+ check(activeColour==hdr2Colour&&advanced.GetLimitCD(),"native HDR10+ retains its 422 override");
+ Reset();
+ dvType=DV_TYPE_PLAYER_LED_HDR2;
+ aml_dv_on(DOLBY_VISION_OUTPUT_MODE_HDR10);
+ check(activeColour==hdr2Colour,"HDR2 startup applies 422");
+ hdmiRefreshes.clear();
+ aml_kodi_reset_cd_cs(); // Wrapper close runs before the codec's DV close.
+ Stop();
+ check(hdmiRefreshes==std::vector<ColourFormat>(2,userColour),
+       "ordinary stop still restores 444 before refreshing HDMI");
  for(int source:{FORMAT_HDR10,FORMAT_DOVI,FORMAT_SDR,FORMAT_HLG})for(bool hdrActive:{false,true}){
   Reset();dolby_vision_src_format=static_cast<signal_format_enum>(source);
   if(hdrActive){cur_csc_type[0]=1;hdrModule=HDR_MODULE_ON;}
@@ -261,7 +349,7 @@ int main(int argc,char** argv){try{
  Reset();aml_dv_on(0);vsyncRuns=false;
  auto start=TestClock::now();aml_dv_wait_video_off(5);
  check(TestClock::now()-start==std::chrono::seconds(5),"genuine stuck drain keeps configured timeout");
- std::cout<<"PASS: HDR10/DV/bypass/stop, repeated/source policies, GUI target, held routes and bounded drain\n";
+ std::cout<<"PASS: DV teardown, HDR2 422/444 round trip, HDR10+ ownership, ordinary stop and held routes\n";
 }catch(const std::exception&e){std::cerr<<"FAIL: "<<e.what()<<"\n";return 1;}}
 '''
 
@@ -288,13 +376,19 @@ def main():
         'bool is_dolby_vision_enable(void)'])
     kodi = '\n'.join(extract(aml,sig) for sig in [
         'static void aml_dv_toggle_frame(', 'void aml_dv_off(',
-        'void aml_dv_set_vs10_mode(', 'void aml_dv_wait_video_off(', 'void aml_dv_close()'])
+        'void aml_dv_set_vs10_mode(', 'void aml_dv_wait_video_off(', 'void aml_dv_close()',
+        'void aml_kodi_set_cd_cs(', 'void aml_kodi_reset_cd_cs()'])
+    off_declaration = 'void aml_dv_off(bool skip_hdmi_update=false);'
+    if 'static void aml_restore_cd_cs(' in aml:
+        kodi = extract(aml, 'static void aml_restore_cd_cs(') + '\n' + kodi
+        off_declaration = 'void aml_dv_off(bool skip_hdmi_update=false,bool restore_vs10_colour=false);'
     # Time only is controlled: production wait conditions and timeouts are retained.
     kodi = kodi.replace('std::chrono::system_clock','TestClock')
     trigger = extract((ROOT/'xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp').read_text(),
                       'void CRenderManager::TriggerUpdateResolutionHdr(')
     source = (PRELUDE.replace('@KERNEL@',policy).replace('@BYPASS@',bypass)
-              .replace('@HDR_GATE@',hdr_gate).replace('@KODI@',kodi).replace('@TRIGGER@',trigger))
+              .replace('@HDR_GATE@',hdr_gate).replace('@KODI@',kodi).replace('@TRIGGER@',trigger)
+              .replace('@OFF_DECLARATION@',off_declaration))
     def run(source, negative=False):
         with tempfile.TemporaryDirectory(prefix='dv-bypass-stop-') as tmp:
             d=Path(tmp);(d/'test.cpp').write_text(source)
@@ -319,6 +413,9 @@ def main():
              '    CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_enable", "N");\n    dolby_vision_mode.Set(DOLBY_VISION_OUTPUT_MODE_BYPASS);'),
             ('retain conversion bookkeeping','    vs10_conversion = false;\n    // The IPT action',
              '    // The IPT action'),
+            ('retain stale chroma during refresh',
+             'aml_dv_off(/*skip_hdmi_update=*/false, /*restore_vs10_colour=*/true);',
+             'aml_dv_off();'),
         ]:
             assert old in source,name
             run(source.replace(old,new),True)
