@@ -67,6 +67,9 @@ public:
   {
     return intent < m_opensCancelledAt || intent < m_lastAcceptedIntent;
   }
+  // Intents are registered in increasing order. An older resolver still on
+  // the stack cannot hold up cleanup of a playback that superseded it.
+  bool HasCurrentOpen() const { return IsOpening() && m_openIntents.back() >= m_lastAcceptedIntent; }
   // The player plays the video item of the last open. The player can report the
   // video stream later.
   bool IsPlayingOpenedVideo() const;

@@ -2793,7 +2793,7 @@ void CApplication::EndOpen(uint64_t intent)
   const auto appPlayer = GetComponent<CApplicationPlayer>();
   appPlayer->EndOpen(intent);
   // An opened video keeps the screen; the video can report the video stream later
-  if (!appPlayer->IsOpening() && std::exchange(m_playbackCleanupDeferred, false) &&
+  if (!appPlayer->HasCurrentOpen() && std::exchange(m_playbackCleanupDeferred, false) &&
       !appPlayer->IsPlayingOpenedVideo())
     PlaybackCleanup();
 }
@@ -3180,12 +3180,13 @@ void CApplication::PlaybackCleanup()
   // intentionally carry fullscreen=false to preserve the user's current window.
   if (appPlayer->HasPendingOpen())
     return;
-  // An open that has not reached the player yet decides about the cleanup.
-  if (appPlayer->IsOpening())
+  // Let the current open and its dialogs unwind before leaving fullscreen.
+  if (appPlayer->HasCurrentOpen())
   {
     m_playbackCleanupDeferred = true;
     return;
   }
+  m_playbackCleanupDeferred = false;
   const bool cleanup = appPlayer->PreparePlaybackCleanup();
   if (!cleanup && !appPlayer->PlaybackCleanupCompleted())
     return;

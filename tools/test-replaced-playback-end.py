@@ -347,8 +347,8 @@ int main(){
   app.PlayFile(next,"old",false,true);if(outcome==1)app.player.m_pPlayer->hasAudio=true;app.Frame();
   assert(!gfx.fullscreen&&gfx.restores==1&&!app.m_playbackCleanupDeferred);
  }
- // A nested playback that starts and ends during the resolution of a cancelled
- // open, also after a stop of the nested playback: the waiting cleanup runs.
+ // A nested playback that ends or stops returns to the GUI while its
+ // superseded outer open is still resolving.
  for(bool stop:{false,true}){CApplication app;begin(app);reset();auto old=app.player.m_pPlayer;
   app.nested=[&]{CFileItem nested;nested.id=30;assert(app.PlayFile(nested,"old",false,false));
    if(stop)app.StopPlaying();
@@ -356,15 +356,48 @@ int main(){
    old->canClose=true;app.Frame();
    if(!stop){assert(app.player.IsPlaying());auto current=app.player.m_pPlayer;current->playing=false;
     current->canClose=true;app.Ended();CServiceBroker::playlist.Terminal(GUI_MSG_PLAYBACK_ENDED);app.Frame();}
-   assert(!app.player.HasPlayer()&&app.m_playbackCleanupDeferred);app.abandon=true;};
+   assert(!app.player.HasPlayer()&&!app.m_playbackCleanupDeferred);
+   assert(!gfx.fullscreen&&gfx.restores==1);app.abandon=true;};
   CFileItem outer;outer.id=60;assert(!app.PlayFile(outer,"old",false,false));app.Frame();
   assert(!gfx.fullscreen&&gfx.restores==1&&!app.m_playbackCleanupDeferred);
+ }
+ // A superseded resolver can keep pumping frames after the new video stops.
+ // The user should be back at Home before that resolver returns.
+ {CApplication app;begin(app);reset();auto old=app.player.m_pPlayer;
+  const auto resolver=app.player.BeginOpen();
+  CFileItem video;video.id=50;
+  old->playing=true;
+  assert(app.PlayFile(video,"old",false,false));
+  assert(app.player.OpenSuperseded(resolver));
+  app.StopPlaying();app.Stopped();app.Frame();
+  assert(gfx.fullscreen&&app.player.HasPlayer());
+  old->canClose=true;app.Frame();
+  assert(!app.player.HasPlayer()&&app.player.IsOpening());
+  assert(CServiceBroker::gui.wm.active==HOME&&gfx.restores==1);
+  app.EndOpen(resolver);app.Frame();
+  assert(gfx.restores==1&&!app.m_playbackCleanupDeferred);
+ }
+ // A new resolver can defer cleanup. When it fails, a superseded older
+ // resolver still registered on the stack cannot keep the window open.
+ {CApplication app;begin(app);reset();auto old=app.player.m_pPlayer;
+  const auto superseded=app.player.BeginOpen();
+  CFileItem video;video.id=50;
+  old->playing=true;
+  assert(app.PlayFile(video,"old",false,false));
+  app.StopPlaying();
+  const auto resolver=app.player.BeginOpen();
+  old->canClose=true;app.Stopped();app.Frame();
+  assert(!app.player.HasPlayer()&&app.m_playbackCleanupDeferred&&gfx.fullscreen);
+  app.EndOpen(resolver);
+  assert(app.player.IsOpening()&&CServiceBroker::gui.wm.active==HOME&&gfx.restores==1);
+  app.EndOpen(superseded);
+  assert(gfx.restores==1&&!app.m_playbackCleanupDeferred);
  }
  // A nested video that still plays when the outer open is cancelled keeps the screen.
  {CApplication app;begin(app);reset();auto old=app.player.m_pPlayer;old->canClose=true;app.StopPlaying();
   app.nested=[&]{app.Ended();CServiceBroker::playlist.Terminal(GUI_MSG_PLAYBACK_ENDED);app.Frame();
    CFileItem nested;nested.id=30;assert(app.PlayFile(nested,"old",false,false));
-   assert(app.player.IsPlaying()&&app.m_playbackCleanupDeferred);app.abandon=true;};
+   assert(app.player.IsPlaying()&&gfx.fullscreen&&gfx.restores==0);app.abandon=true;};
   CFileItem outer;outer.id=60;assert(!app.PlayFile(outer,"old",false,false));app.Frame();
   assert(app.player.IsPlaying()&&app.player.m_pPlayer->lastItem==30&&gfx.fullscreen&&gfx.restores==0);
  }
