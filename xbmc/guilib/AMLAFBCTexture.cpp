@@ -24,6 +24,7 @@ namespace
 // Preserve the extra capacity used in hardware validation, without a CPU mapping.
 constexpr size_t ALLOCATION_PADDING = 65536;
 constexpr uint32_t AFBC_RGBA8 = 0x360bb688;
+constexpr uint32_t AFBC_RGBA8_WIDE_SPLIT = 0xf60bb688;
 std::atomic_bool failed{false};
 std::atomic_bool reportedUnsupported{false};
 std::atomic_bool reportedKernel{false};
@@ -243,6 +244,59 @@ bool RenderTexture(GLuint source, GLuint destination, unsigned int width, unsign
   return glGetError() == GL_NO_ERROR;
 }
 } // namespace
+
+bool CAMLAFBCImport::Supported()
+{
+  const auto* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+  return Driver().supported && renderer && std::strncmp(renderer, "Mali-G52", 8) == 0;
+}
+
+bool CAMLAFBCImport::Import(int fd, unsigned int width, unsigned int height, Layout layout)
+{
+  static_assert(sizeof(NativePixmap) == 68);
+  static_assert(offsetof(NativePixmap, format) == 0x30);
+  static_assert(offsetof(NativePixmap, fd) == 0x38);
+  Release();
+  const auto& driver = Driver();
+  if (!driver.supported || fd < 0 || !width || !height)
+    return false;
+  m_pixmap = {};
+  m_pixmap.width = width;
+  m_pixmap.height = height;
+  m_pixmap.plane[0].pitch = width * 4;
+  m_pixmap.format = layout == Layout::WIDE_BLOCK ? AFBC_RGBA8_WIDE_SPLIT : AFBC_RGBA8;
+  m_pixmap.fd[0] = fd;
+  m_display = eglGetCurrentDisplay();
+  m_mapping = driver.createMapping(&m_pixmap);
+  if (m_mapping == UINT32_MAX)
+    return false;
+  const EGLint attributes[]{EGL_IMAGE_PRESERVED_KHR, EGL_FALSE, EGL_NONE};
+  m_image = driver.createImage(m_display, EGL_NO_CONTEXT, EGL_NATIVE_PIXMAP_KHR,
+                              reinterpret_cast<EGLClientBuffer>(static_cast<uintptr_t>(m_mapping)), attributes);
+  if (m_image != EGL_NO_IMAGE_KHR)
+    return true;
+  Release();
+  return false;
+}
+
+bool CAMLAFBCImport::BindTexture() const
+{
+  if (m_image == EGL_NO_IMAGE_KHR)
+    return false;
+  Driver().bindImage(GL_TEXTURE_2D, m_image);
+  return glGetError() == GL_NO_ERROR;
+}
+
+void CAMLAFBCImport::Release()
+{
+  const auto& driver = Driver();
+  if (m_image != EGL_NO_IMAGE_KHR)
+    driver.destroyImage(m_display, m_image);
+  if (m_mapping != UINT32_MAX)
+    driver.destroyMapping(m_mapping);
+  m_image = EGL_NO_IMAGE_KHR;
+  m_mapping = UINT32_MAX;
+}
 
 bool CAMLAFBCTexture::HasConversionResources(EGLContext context)
 {

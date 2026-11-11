@@ -1399,6 +1399,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetBoolean(pElement, "asynctextureupload", m_guiAsyncTextureUpload);
     XMLUtils::GetBoolean(pElement, "afbcfanart", m_guiAFBCFanart);
     XMLUtils::GetBoolean(pElement, "afbcimages", m_guiAFBCImages);
+    XMLUtils::GetBoolean(pElement, "afbcscanout", m_guiAFBCScanout);
     XMLUtils::GetBoolean(pElement, "limitbackgroundfades", m_guiLimitBackgroundFades);
     XMLUtils::GetBoolean(pElement, "singlepasscrossfade", m_guiSinglePassCrossfade);
     XMLUtils::GetBoolean(pElement, "transparentvideolayout", m_guiVideoLayoutTransparent);

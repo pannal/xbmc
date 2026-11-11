@@ -9,8 +9,10 @@ set(HEADERS AMLDeferredWork.h
             DolbyVisionAML.h)
 
 if(OPENGLES_FOUND)
-  list(APPEND SOURCES WinSystemAmlogicGLESContext.cpp)
-  list(APPEND HEADERS WinSystemAmlogicGLESContext.h)
+  list(APPEND SOURCES AMLAFBCPresenter.cpp
+                      WinSystemAmlogicGLESContext.cpp)
+  list(APPEND HEADERS AMLAFBCPresenter.h
+                      WinSystemAmlogicGLESContext.h)
 endif()
 
 core_add_library(windowing_Amlogic)

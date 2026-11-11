@@ -9,6 +9,7 @@
 #include "GUIVisualisationControl.h"
 
 #include "GUIComponent.h"
+#include "GUIExternalRendering.h"
 #include "GUIInfoManager.h"
 #include "GUIUserMessages.h"
 #include "GUIWindowManager.h"
@@ -28,6 +29,7 @@
 #include "settings/AdvancedSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/TimeUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/log.h"
 
@@ -190,6 +192,8 @@ void CGUIVisualisationControl::Process(unsigned int currentTime, CDirtyRegionLis
     if (m_instance && m_instance->IsDirty())
       MarkDirtyRegion();
   }
+  if (m_instance && m_alreadyStarted)
+    CGUIExternalRendering::Note(currentTime);
 
   CGUIControl::Process(currentTime, dirtyregions);
 }
@@ -205,6 +209,7 @@ void CGUIVisualisationControl::Render()
      * the addon renders, so the best we can do is attempt to define
      * a viewport??
      */
+    CGUIExternalRendering::Note(CTimeUtils::GetFrameTime());
     context.SetViewPort(m_posX, m_posY, m_width, m_height);
     context.CaptureStateBlock();
     m_instance->Render();

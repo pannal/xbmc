@@ -95,6 +95,7 @@ set(HEADERS DDSImage.h
             GUIControlLookup.h
             GUIDialog.h
             GUIEditControl.h
+            GUIExternalRendering.h
             GUIFadeLabelControl.h
             GUIFixedListContainer.h
             GUIFont.h

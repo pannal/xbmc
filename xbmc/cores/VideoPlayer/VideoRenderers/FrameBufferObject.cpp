@@ -17,6 +17,8 @@
 // CFrameBufferObject
 //////////////////////////////////////////////////////////////////////
 
+GLuint CFrameBufferObject::m_defaultFramebuffer = 0;
+
 CFrameBufferObject::CFrameBufferObject()
 {
   m_valid = false;
@@ -91,7 +93,7 @@ bool CFrameBufferObject::CreateAndBindToTexture(GLenum target, int width, int he
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, m_texid, 0);
   VerifyGLState();
   GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glBindFramebuffer(GL_FRAMEBUFFER, m_defaultFramebuffer);
   if (status != GL_FRAMEBUFFER_COMPLETE)
   {
     VerifyGLState();
@@ -123,5 +125,5 @@ bool CFrameBufferObject::BeginRender()
 void CFrameBufferObject::EndRender() const
 {
   if (IsValid())
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_defaultFramebuffer);
 }
