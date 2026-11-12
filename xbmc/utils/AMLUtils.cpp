@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <fstream>
 #include <string>
 #include <stdexcept>
 #include <regex>
@@ -36,6 +37,7 @@
 #include "DVBackendState.h"
 #include "utils/PlaybackDiagnostics.h"
 #include "utils/PlaybackEndDiagnostics.h"
+#include "AMLActiveAreaVDIN.h"
 #include "AMLNativeWorker.h"
 
 #include "application/Application.h"
@@ -2985,6 +2987,7 @@ struct DetectSource
   const int codecHint;
   const double displayAspect;
   const bool codedCrop;
+  bool usesAMLVideoPlane{false}; // set at configuration before worker admission
   const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
   std::atomic<bool> pending{false};
   bool startupVideoReady{false}; // current epoch, protected by s_detectSourceMutex
@@ -3002,6 +3005,7 @@ struct DetectSource
   // through detect_publish or become strict/native retained geometry.
   std::shared_ptr<const DetectResult> subtitleResult;
   std::shared_ptr<const DetectResult> retainedSubtitle;
+  std::optional<DetectResult> liveResult; // display geometry for the current presentation only
 };
 static std::mutex s_detectSourceMutex;
 static std::shared_ptr<DetectSource> s_detectSource = std::make_shared<DetectSource>("");
@@ -3183,7 +3187,7 @@ std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int
 
 bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bool allowProbe,
                                       const std::shared_ptr<const void>& expectedSource,
-                                      double displayAspect)
+                                      double displayAspect, bool usesAMLVideoPlane)
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   if (!expectedSource || expectedSource != s_detectSource->selection)
@@ -3195,6 +3199,7 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
                                                  previous->streamIndex, previous->codecHint,
                                                  displayAspect);
   s_detectSource->policy = previous->policy;
+  s_detectSource->usesAMLVideoPlane = usesAMLVideoPlane;
   s_detectSource->binding = previous->binding;
   s_detectSource->selectionId = previous->selectionId;
   s_detectSource->startupVideoReady = previous->startupVideoReady;
@@ -3233,6 +3238,7 @@ void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedS
       previous->nativeDV, previous->allowProbe, expectedSource,
       previous->streamIndex, previous->codecHint, previous->displayAspect);
   s_detectSource->policy = previous->policy;
+  s_detectSource->usesAMLVideoPlane = previous->usesAMLVideoPlane;
   s_detectSource->binding = previous->binding;
   s_detectSource->selectionId = previous->selectionId;
   s_detectSource->startupVideoReady = previous->startupVideoReady;
@@ -3447,7 +3453,9 @@ bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
   const bool subtitleDetection = settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA);
   if (source->binding && source->binding->state == DETECTOR_PLAYBACK::State::FAILED)
     return false;
-  const bool enabled = source->boundUsable || (source->nativeDV ? (aml_dv_detect_active_area_enabled() ||
+  const bool live = subtitleDetection && !source->binding && !source->superseded->load() &&
+                    source->liveResult.has_value();
+  const bool enabled = live || source->boundUsable || (source->nativeDV ? (aml_dv_detect_active_area_enabled() ||
       (allowSubtitleEstimate && subtitleDetection)) : subtitleDetection);
   // Retention is only set by an explicit pure seek/reset and remains bound to
   // this selection/dimension/native/probe identity, independent of worker state.
@@ -3464,10 +3472,12 @@ bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
     if (subtitle)
       accepted = subtitle;
   }
-  if (!enabled || !source->allowProbe || (!source->boundUsable && source->policy->Blocked()) || !accepted ||
+  if (!enabled || !source->allowProbe || (!source->boundUsable && source->policy->Blocked()) ||
       source->width != width || source->height != height)
     return false;
-  const auto& result = *accepted;
+  if (!live && !accepted)
+    return false;
+  const auto& result = live ? *source->liveResult : *accepted;
   top = result.top; bottom = result.bottom; left = result.left; right = result.right;
   return true;
 }
@@ -5628,6 +5638,76 @@ static void detect_clear_injection(bool nativeSource)
   detect_clear_injection_locked(nativeSource);
 }
 
+static constexpr char VDIN_ACTIVE_AREA_PATH[] = "/sys/class/vdin/vdin1/active_area";
+
+static bool detect_can_use_vdin(const DetectSource& source)
+{
+  // The test kernel exposes 1:1 capture. A startup scan must still work while
+  // playback is held, and native L5 needs the file-wide evidence contract.
+  return source.usesAMLVideoPlane && !source.startupScan && source.width == 1920 && source.height == 1080 &&
+         (!source.nativeDV || !aml_dv_detect_active_area_enabled()) &&
+         access(VDIN_ACTIVE_AREA_PATH, R_OK) == 0;
+}
+
+static bool detect_vdin_full_frame(int width, int height)
+{
+  int x1, y1, x2, y2, top, left, bottom, right, mode, frameWidth, frameHeight;
+  std::ifstream axis("/sys/class/video/axis");
+  std::ifstream crop("/sys/class/video/crop");
+  std::ifstream screenMode("/sys/class/video/screen_mode");
+  std::ifstream frameWidthFile("/sys/class/video/frame_width");
+  std::ifstream frameHeightFile("/sys/class/video/frame_height");
+  return (axis >> x1 >> y1 >> x2 >> y2) && x1 == 0 && y1 == 0 && x2 == width - 1 &&
+         y2 == height - 1 && (crop >> top >> left >> bottom >> right) &&
+         top == 0 && left == 0 && bottom == 0 && right == 0 &&
+         (screenMode >> mode) && mode == 1 && (frameWidthFile >> frameWidth) &&
+         frameWidth == width && (frameHeightFile >> frameHeight) && frameHeight == height;
+}
+
+static void detect_from_vdin(const std::shared_ptr<DetectSource>& source,
+                             const CAMLNativeWorker::Run& run)
+{
+  if (!detect_wait_for_startup_hold(run))
+    return;
+
+  AML_ACTIVE_AREA_VDIN::Consensus consensus;
+  constexpr auto interval = std::chrono::milliseconds(250);
+  constexpr auto timeout = std::chrono::seconds(3);
+  auto deadline = std::chrono::steady_clock::now() + timeout;
+  std::chrono::steady_clock::time_point confirmed{};
+  while (!run.Cancelled() && std::chrono::steady_clock::now() < deadline &&
+         settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) &&
+         (!source->nativeDV || !aml_dv_detect_active_area_enabled()))
+  {
+    std::ifstream input(VDIN_ACTIVE_AREA_PATH);
+    const auto sample = AML_ACTIVE_AREA_VDIN::Read(input, source->width, source->height);
+    const bool fullFrame = input && detect_vdin_full_frame(source->width, source->height);
+    const auto borders = consensus.Observe(fullFrame ? sample : std::nullopt);
+    const auto now = std::chrono::steady_clock::now();
+    {
+      std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+      if (run.Cancelled() || source != s_detectSource || source->policy->Blocked())
+        return;
+      if (borders)
+      {
+        if (!source->liveResult)
+          CLog::Log(LOGDEBUG, "DetectActiveArea: using live VDIN1 video bounds");
+        source->liveResult = DetectResult{(*borders)[0], (*borders)[1], (*borders)[2], (*borders)[3]};
+        confirmed = now;
+      }
+      else if (!fullFrame || now - confirmed >= std::chrono::seconds(1))
+        source->liveResult.reset();
+    }
+    if (fullFrame && confirmed != std::chrono::steady_clock::time_point{})
+      deadline = now + timeout;
+    if (!run.WaitFor(interval))
+      return;
+  }
+
+  std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+  source->liveResult.reset();
+}
+
 void aml_dv_detect_active_area_start()
 {
   s_detectWorker.Stop(); // cancel/join before shared scanner state is reused
@@ -5659,6 +5739,7 @@ void aml_dv_detect_active_area_start()
     source->startupAdmission->store(false);
     source->result.reset();
     source->subtitleResult.reset();
+    source->liveResult.reset();
     source->completedPositions.store(0);
   }
   if (s_detectWorker.Closed())
@@ -5698,8 +5779,9 @@ void aml_dv_detect_active_area_start()
       source->width < 64 || source->height < 64 ||
       source->width > 65535 || source->height > 65535 || source->path.empty())
     return;
-  const auto reservation = detect_reserve_scanner();
-  if (!reservation)
+  const bool live = detect_can_use_vdin(*source);
+  auto reservation = live ? std::shared_ptr<const void>{} : detect_reserve_scanner();
+  if (!live && !reservation)
   {
     publishState(DV_DETECT_SKIPPED);
     return;
@@ -5708,7 +5790,22 @@ void aml_dv_detect_active_area_start()
   if (!publishState(DV_DETECT_RUNNING))
     return;
   const bool cacheEnabled = settings()->GetBool(CSettings::SETTING_SUBTITLES_CACHEACTIVEAREA);
-  s_detectWorker.Start([source, cacheEnabled, completion, reservation](const CAMLNativeWorker::Run& run) {
+  s_detectWorker.Start([source, cacheEnabled, completion, live, publishState,
+                        reservation = std::move(reservation)](const CAMLNativeWorker::Run& run) mutable {
+    if (live)
+    {
+      detect_from_vdin(source, run);
+      if (run.Cancelled() || source->policy->Blocked() ||
+          (!settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) &&
+           !(source->nativeDV && aml_dv_detect_active_area_enabled())))
+        return;
+      reservation = detect_reserve_scanner();
+      if (!reservation)
+      {
+        publishState(DV_DETECT_SKIPPED);
+        return;
+      }
+    }
     ACTIVE_AREA_CACHE::Identity identity;
     identity.path = source->path;
     identity.streamIndex = source->streamIndex;

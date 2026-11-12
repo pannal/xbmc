@@ -69,7 +69,7 @@ void am_packet_init(Packet*) {}
 void pre_header_feeding(Private*,Packet*) {}
 void aml_dv_backend_invalidate(void*) {}
 uint64_t aml_dv_backend_epoch() {return 1;}
-bool aml_subtitle_active_area_configure(int,int,bool,bool,int,double) {return true;}
+bool aml_subtitle_active_area_configure(int,int,bool,bool,int,double,bool) {return true;}
 // Stops and joins the previous probe worker before starting the next one.
 void aml_dv_detect_active_area_start() {++probeStarts; FakeClock::Advance(probeRetireDelay);}
 struct CAMLCodec {

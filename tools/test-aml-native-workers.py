@@ -13,6 +13,7 @@ fixture=runpy.run_path(str(ROOT/'tools/test-aml-native-continuation.py'))
 function,run=fixture['function'],fixture['run']
 PREFIX=r'''
 #include "utils/AMLNativeWorker.h"
+#include "utils/AMLActiveAreaVDIN.h"
 #include "utils/PM4KStartup.h"
 #include "utils/DetectorAdmission.h"
 void aml_subtitle_active_area_startup_begin(uint64_t pm4kStartupToken = 0);
@@ -22,6 +23,7 @@ void aml_subtitle_active_area_startup_begin(uint64_t pm4kStartupToken = 0);
 #include <cmath>
 #include <future>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 using namespace std::chrono_literals;
@@ -212,7 +214,76 @@ void generic_detector(){
  assert(writes==count+8);
 }
 
-int main(){ready();cancel_before_native_join();active_retirement_exception();detector_replacement();stop_resets_after_join();generic_detector();watcher_identity_and_join();shutdown_drains_before_display();std::cout<<"PASS: native participants, exact runs, real joins and shutdown retirement (ASan/UBSan)\n";}
+void vdin_samples()
+{
+ using namespace AML_ACTIVE_AREA_VDIN;
+ auto read = [](const char* line) {
+  std::istringstream input(line);
+  return Read(input, 1920, 1080);
+ };
+ const auto first = read("1 100 1920 1080 140 939 0 1919 16 180");
+ assert(first && (first->borders == Borders{140, 140, 0, 0}));
+ assert(!read("2 100 1920 1080 140 939 0 1919 16 180"));
+ assert(!read("1 100 3840 2160 140 939 0 1919 16 180"));
+ assert(!read("1 100 1920 1080 140 939 0 1919 16 19"));
+ assert(!read("1 100 1920 1080 0 939 0 1919 16 180"));
+ assert(!read("1 100 1920 1080 940 140 0 1919 16 180"));
+ assert(!read("1 100 1920 1080 0 1079 0 1919 2147483647 180"));
+
+ Consensus consensus;
+ assert(!consensus.Observe(first));
+ assert(!consensus.Observe(first));
+ assert(!consensus.Observe(read("1 101 1920 1080 142 937 0 1919 16 180")));
+ assert(consensus.Observe(read("1 102 1920 1080 140 939 0 1919 16 180")) == first->borders);
+ assert(!consensus.Observe(read("1 103 1920 1080 0 1079 0 1919 16 180")));
+ assert(!consensus.Observe(std::nullopt));
+ assert(!consensus.Observe(read("1 104 1920 1080 0 1079 0 1919 16 180")));
+ assert(!consensus.Observe(read("1 105 1920 1080 0 1079 0 1919 16 180")));
+ assert(consensus.Observe(read("1 106 1920 1080 0 1079 0 1919 16 180")) == Borders{});
+}
+
+void vdin_playback()
+{
+ CAMLSession s;init(s);
+ std::promise<void> entered;
+ auto ready = entered.get_future();
+ liveHook = [&](const auto& source, const auto& run) {
+  {
+   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+   source->liveResult = DetectResult{140, 140, 0, 0};
+  }
+  entered.set_value();
+  assert(!run.WaitFor(2s));
+ };
+ scanHook = [](const auto&, const auto&) { assert(false); };
+ select("live", false);
+ assert(!detect_can_use_vdin(*s_detectSource));
+ auto selection = aml_subtitle_active_area_source();
+ assert(aml_subtitle_active_area_configure(1920, 1080, false, true, selection, 16.0/9.0, true));
+ auto explicitScanner = detect_reserve_scanner();
+ assert(explicitScanner);
+ aml_dv_detect_active_area_start();
+ assert(ready.wait_for(2s) == std::future_status::ready);
+ uint16_t t, b, l, r;
+ assert(aml_subtitle_detect_active_area_get(1920, 1080, t, b, l, r) && t == 140 && b == 140);
+ assert(!s_detectSource->result && !s_detectSource->subtitleResult && writes == 0);
+ aml_subtitle_active_area_invalidate(true);
+ s_detectWorker.Stop();
+ assert(!aml_subtitle_detect_active_area_get(1920, 1080, t, b, l, r));
+ explicitScanner.reset();
+
+ std::promise<void> fallback;
+ auto finished = fallback.get_future();
+ liveHook = [](const auto&, const auto&) {};
+ scanHook = [&](const auto&, const auto&) { fallback.set_value(); };
+ assert(aml_subtitle_active_area_configure(1920, 1080, false, true, selection, 16.0/9.0, true));
+ aml_dv_detect_active_area_start();
+ assert(finished.wait_for(2s) == std::future_status::ready);
+ s_detectWorker.Stop();
+ liveHook = {};
+}
+
+int main(){ready();cancel_before_native_join();active_retirement_exception();detector_replacement();stop_resets_after_join();generic_detector();vdin_samples();vdin_playback();watcher_identity_and_join();shutdown_drains_before_display();std::cout<<"PASS: native participants, exact runs, real joins and shutdown retirement (ASan/UBSan)\n";}
 '''
 
 def source():
@@ -229,7 +300,15 @@ def source():
         detector=detector.replace(function(detector,'static void detect_apply_l5_override_locked()\n{'),'static void detect_apply_l5_override_locked() {}')
         detector=detector.replace(function(detector,'void aml_dv_apply_l5_override_sysfs()'),'')
     detector+=function(aml,'static void detect_publish_subtitle(')
-    methods='\n'.join(function(aml,sig) for sig in (
+    methods='''
+// VDIN sysfs is a boundary of this worker fixture.
+std::function<void(const std::shared_ptr<DetectSource>&,const CAMLNativeWorker::Run&)> liveHook;
+void detect_from_vdin(const std::shared_ptr<DetectSource>& source,const CAMLNativeWorker::Run& run){
+ assert(liveHook);liveHook(source,run);
+}
+''' + function(aml, 'static bool detect_can_use_vdin(').replace(
+        'access(VDIN_ACTIVE_AREA_PATH, R_OK) == 0', 'static_cast<bool>(liveHook)') + '\n'
+    methods+='\n'.join(function(aml,sig) for sig in (
       'void aml_dv_set_active_area_geometry(', 'static void _auto_letterbox_watch_run(',
       'void aml_dv_auto_letterbox_watch_start()', 'void aml_dv_auto_letterbox_watch_stop()',
       'void aml_dv_detect_set_file(', 'static void detect_clear_injection_locked(bool nativeSource)\n{', 'static void detect_clear_injection(', 'void aml_dv_detect_active_area_start()',

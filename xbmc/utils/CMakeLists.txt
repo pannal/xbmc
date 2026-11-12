@@ -264,6 +264,7 @@ if(AML_FOUND)
                       AMLUtils.cpp
                       ScreenshotAML.cpp)
   list(APPEND HEADERS ActiveAreaCache.h
+                      AMLActiveAreaVDIN.h
                       AMLUtils.h
                       AMLVideoMute.h
                       AMLNativeWorker.h
