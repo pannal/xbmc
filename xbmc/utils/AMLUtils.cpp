@@ -103,6 +103,10 @@ static bool s_dvPlaybackActive = false;
 // decoder closes of its segment swaps (aml_dv_set_disc_hold). Guarded by the
 // DV-core lock, like s_dvPlaybackActive.
 static bool s_dvDiscHold = false;
+// The current playback's source is SDR (set in aml_dv_open): pure SDR always
+// stays on the original library (dovi.ko), there is no option for it.
+// Guarded by the DV-core lock.
+static bool s_dvSourceSdr = false;
 // The first DV engage of a disc session or blacked-out native-DV startup, deferred to the
 // mode set that follows (aml_dv_engage_deferred_disc). Guarded by the DV-core
 // lock.
@@ -1922,6 +1926,7 @@ void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries 
   std::atomic_store(&s_dvOutputTransition, std::shared_ptr<AMLDVOutputTransition>{});
   s_dvPlaybackActive = true;
   s_pm4kActive.store(pm4kActive, std::memory_order_relaxed);
+  s_dvSourceSdr = (hdrType == StreamHdrType::HDR_TYPE_NONE);
 
   enum DV_MODE dv_mode(aml_dv_mode());
   CLog::Log(LOGINFO, "AMLUtils::{} - Checking DV for DV mode: [{}], DV type: [{}]", __FUNCTION__, aml_dv_mode_to_string(dv_mode), aml_dv_type_to_string(aml_dv_type()));
@@ -2233,13 +2238,20 @@ int aml_dv_sdr_boost_param()
   return mode;
 }
 
-// Experimental route of native DV to SDR through the newer backend; kernels
-// without the parameter keep the legacy library, so a missing node is fine.
+// Experimental route of the VS10 sources (pure SDR excepted) to SDR through the
+// newer backend; kernels without the parameter keep the legacy library, so a
+// missing node is fine.
 void aml_dv_set_sdr_new_backend(bool enable)
 {
   CSysfsPath route{"/sys/module/amdolby_vision/parameters/xbmc_dv_new_sdr_route"};
   if (route.Exists())
     route.Set(enable ? 1u : 0u);
+  CSysfsPath vs10{"/sys/module/amdolby_vision/parameters/xbmc_dv_new_vs10_route"};
+  if (vs10.Exists())
+    vs10.Set(enable && !s_dvSourceSdr ? 1u : 0u);
+  CSysfsPath black0{"/sys/module/amdolby_vision/parameters/xbmc_dv_new_src_black0"};
+  if (black0.Exists())
+    black0.Set(enable ? 1u : 0u);
 }
 
 void aml_dv_set_sdr_keep_ext(bool keep)
