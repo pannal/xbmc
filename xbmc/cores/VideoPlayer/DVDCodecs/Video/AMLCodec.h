@@ -14,10 +14,12 @@
 #include "cores/IPlayer.h"
 #include "windowing/Resolution.h"
 #include "rendering/RenderSystem.h"
+#include "utils/AMLPeakMeter.h"
 #include "utils/BitstreamConverter.h"
 #include "utils/Geometry.h"
 
 #include <array>
+#include <memory>
 #include <atomic>
 #include <deque>
 #include <functional>
@@ -282,6 +284,10 @@ private:
   // OpenDecoder.
   bool m_repairTimestamps = false;
   bool m_keepMPEG2Progressive = false;
+  // HDR10 measured scene peak: decoder double write saved/forced, its meter.
+  std::string m_savedDoubleWrite;
+  int64_t m_tonemapSampleTime{0};
+  std::unique_ptr<CAMLPeakMeter> m_peakMeter;
   // Recently output (display-order) pts, for corrupt-splice detection: a pts
   // that steps backwards onto a value already output is a broken splice
   // (duplicate GOP / out-of-place keyframe), not a legal reorder.

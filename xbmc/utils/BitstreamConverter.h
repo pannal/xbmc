@@ -195,6 +195,11 @@ public:
   void              SetDualPriorityHdr10Plus(bool value) { m_dual_priority_Hdr10Plus = value; }
   void              SetRemoveDovi(bool value) { m_removeDovi = value; }
   void              SetRemoveHdr10Plus(bool value) { m_removeHdr10Plus = value; }
+  void              SetConvertHdr10StaticRpu(bool value) { m_convert_hdr10_static_rpu = value; }
+  void              SetHdr10PlusStaticRpu(bool value) { m_hdr10plus_static_rpu = value; }
+  bool              IsStaticRpu() const { return m_hdr10_static_rpu_active; }
+  bool              IsConvertHdr10Plus() const { return m_convert_Hdr10Plus && !m_dual_priority_Hdr10Plus; }
+  void              SetStaticTrimKeepsCMv29(bool value) { m_static_trim_keeps_cmv29 = value; }
 
   static bool       mpeg2_sequence_header(const uint8_t *data, const uint32_t size, mpeg2_sequence *sequence);
   static bool       h264_sequence_header(const uint8_t *data, const uint32_t size, h264_sequence *sequence);
@@ -233,6 +238,8 @@ protected:
   
   void AddDoViRpuNaluWrap(const Hdr10PlusMetadata& meta, uint8_t **poutbuf, uint32_t& poutbuf_size, double pts);
   void AddDoViRpuNalu(const Hdr10PlusMetadata& meta, uint8_t **poutbuf, int *poutbuf_size, double pts);
+  void AddStaticDoViRpuNalu(uint8_t **poutbuf, int *poutbuf_size, double pts);
+  void AddGeneratedDoViRpuNalu(std::vector<uint8_t>& nalu, uint8_t **poutbuf, int *poutbuf_size, double pts);
 
   void ProcessSeiPrefixWrap(uint8_t *buf, int32_t nal_size, uint8_t **poutbuf, uint32_t& poutbuf_size, Hdr10PlusMetadata& meta, bool& convert_hdr10plus_meta);
   void ProcessSeiPrefix(uint8_t *buf, int32_t nal_size, uint8_t **poutbuf, int *poutbuf_size, Hdr10PlusMetadata& meta, bool& convert_hdr10plus_meta);
@@ -275,6 +282,11 @@ protected:
   bool              m_dual_priority_Hdr10Plus;
   Hdr10PlusMetadata m_lastHdr10PlusMeta{};
   bool              m_lastHdr10PlusMetaValid{false};
+  bool              m_convert_hdr10_static_rpu{false};
+  bool              m_hdr10_static_rpu_active{false};
+  bool              m_hdr10plus_static_rpu{false};
+  bool              m_hdr10plus_dropped_for_static{false};
+  bool              m_static_trim_keeps_cmv29{false};
   enum PeakBrightnessSource m_convert_Hdr10Plus_peak_brightness_source;
   bool              m_first_frame;
   enum DOVICMv40Mode m_append_cmv40;

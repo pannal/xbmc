@@ -8771,7 +8771,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#60668"
-msgid "Render the interface at 1080p when playing video above 1080p in a 4K display mode, including at film refresh rates. Kodi keeps the selected HDMI mode and restores the native 4K interface after playback. Applies from the next playback."
+msgid "Try this if the picture edges flicker or shimmer when the playback controls are visible in Player Led (DV as HDR10 422 12 Bit) mode. In a 4K display mode, Kodi renders the interface at 1080p during playback of video above 1080p, including at film refresh rates. Kodi keeps the selected HDMI mode and restores the native 4K interface after playback. Applies from the next playback."
 msgstr ""
 
 #. Force colour subsampling
@@ -26164,6 +26164,27 @@ msgctxt "#60636"
 msgid "Use per-frame metadata for SDR conversion"
 msgstr ""
 
+#. "HDR10 curve" list of the newer Dolby library
+#: system/settings/settings.xml
+msgctxt "#60678"
+msgid "HDR10 curve"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60679"
+msgid "Static: one fixed curve for the whole title, never pumps.[CR]Peak meter: follows the brightest part of each picture.[CR]Applies from the next playback."
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60680"
+msgid "Static"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60682"
+msgid "Peak meter"
+msgstr ""
+
 #. "Use the newer Dolby library for SDR conversion"
 #: system/settings/settings.xml
 msgctxt "#60665"
@@ -26173,7 +26194,17 @@ msgstr ""
 #. Help text for setting "Use the newer Dolby library for SDR conversion" of label #60665
 #: system/settings/settings.xml
 msgctxt "#60666"
-msgid "Experimental. Converts native Dolby Vision to SDR with the newer Dolby library (dovi5, CMv4.0 display management: Level 3 and Level 8 trims) instead of the original one (CMv2.9, Level 2 trims only), and shows the CMv4.0 options for SDR output. Only shown when the kernel provides the xbmc_dv_new_sdr_route parameter; if the newer library rejects a title, playback falls back to the original one. With this route, Smart compares each frame's Level 1 peak with the 100-nit VS10 SDR target. Applies from the next playback."
+msgid "Experimental. Converts native Dolby Vision, HDR10, HLG and HDR10+ to SDR with the newer Dolby library (dovi5, CMv4.0 display management: Level 3 and Level 8 trims) instead of the original one (CMv2.9, Level 2 trims only), whenever their VS10 output is SDR, and shows the CMv4.0 options for SDR output. Pure SDR stays on the original library. HDR10 and HDR10+ get a 0-nit source black, as native Dolby Vision does. Only shown when the kernel provides the xbmc_dv_new_sdr_route parameter; output above 60 Hz and titles the newer library rejects stay on the original one. With this route, Smart compares each frame's Level 1 peak with the 100-nit VS10 SDR target. Applies from the next playback."
+msgstr ""
+
+#. Label of setting "Video / Dolby Vision -> Treat HDR10+ like HDR10"
+msgctxt "#60663"
+msgid "Treat HDR10+ like HDR10"
+msgstr ""
+
+#. Help text for setting "Treat HDR10+ like HDR10" of label #60663
+msgctxt "#60664"
+msgid "HDR10+ takes the same path as HDR10 with the chosen \"HDR10 curve\": one constant curve for the whole title instead of the HDR10+ metadata. Off, HDR10+ is converted scene by scene from its own dynamic metadata, which is made for HDR displays: on a 100-nit SDR target it moves the tone curve a lot at each scene change, and follows the metadata even where they do not match the picture. Titles that also carry Dolby Vision keep it. The player process info shows the path in use. Applies from the next playback."
 msgstr ""
 
 #. "Dolby Vision VS10 SDR Per-Frame Metadata"

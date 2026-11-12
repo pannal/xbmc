@@ -1217,6 +1217,18 @@ const infomap player_times[] =   {{ "seektime",         PLAYER_SEEKTIME },
 ///     stop. Rising shim `dvshim_cp_calls`/`dvshim_mp_calls` prove newer callback
 ///     attempts, which may fail and fall back before settings are applied.
 ///   }
+///   \table_row3{   <b>`Player.Process(amlogic.dv.tonemap)`</b>,
+///                  \anchor Player_Process_aml_dv_tonemap
+///                  _string_,
+///     @return The Dolby library that processes the video and, on the newer
+///     one, what it tone-maps for: `dovi5, static RPU` while Kodi's static
+///     Dolby Vision RPU carries an HDR10 or HDR10+ source, `dovi5, peak <n> nits`
+///     while the HDR10 scene peak meter feeds it, `dovi5, mastering <n> nits`
+///     for other HDR10, `dovi5, dynamic metadata` for Dolby Vision and for HDR10+
+///     converted from its own metadata, `dovi5` alone for any other source.
+///     `dovi` on the original library. Empty whenever `amlogic.dv.backend` is
+///     empty.
+///   }
 ///   \table_row3{   <b>`Player.Process(amlogic.dv.target.max.nits)`</b>,
 ///                  \anchor Player_Process_aml_dv_target_max_nits
 ///                  _string_,
@@ -1403,6 +1415,7 @@ const infomap player_process[] = {{"videodecoder", PLAYER_PROCESS_VIDEODECODER},
                                   {"amlogic.dv.target.max.nits", PLAYER_PROCESS_VIDEO_DOVI_VSVDB_MAX_LUM },
                                   {"amlogic.dv.backend", PLAYER_PROCESS_AML_DV_BACKEND },
                                   {"amlogic.dv.backend.available", PLAYER_PROCESS_AML_DV_BACKEND_AVAILABLE },
+                                  {"amlogic.dv.tonemap", PLAYER_PROCESS_AML_DV_TONEMAP },
 
                                   {"video.dovi.l1.min.pq", PLAYER_PROCESS_VIDEO_DOVI_L1_MIN_PQ },
                                   {"video.dovi.l1.max.pq", PLAYER_PROCESS_VIDEO_DOVI_L1_MAX_PQ },

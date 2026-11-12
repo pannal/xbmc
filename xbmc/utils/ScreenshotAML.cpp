@@ -28,6 +28,12 @@
 
 #define CAPTURE_DEVICEPATH "/dev/amvideocap0"
 
+std::mutex& CScreenshotAML::CaptureMutex()
+{
+  static std::mutex mutex;
+  return mutex;
+}
+
 //the buffer format is BGRA (4 byte)
 bool CScreenshotAML::CaptureVideoFrame(unsigned char *buffer, int iWidth, int iHeight, bool bBlendToBuffer)
 {
@@ -40,6 +46,7 @@ bool CScreenshotAML::CaptureVideoFrame(unsigned char *buffer, int iWidth, int iH
   const bool diagnostics = PLAYBACK_DIAGNOSTICS::Enabled();
   const auto captureStart = diagnostics ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
   bool captured = false;
+  std::unique_lock<std::mutex> captureLock(CaptureMutex());
   int captureFd = open(CAPTURE_DEVICEPATH, O_RDWR, 0);
   if (captureFd >= 0)
   {
@@ -57,6 +64,7 @@ bool CScreenshotAML::CaptureVideoFrame(unsigned char *buffer, int iWidth, int iH
     }
 
     close(captureFd);
+    captureLock.unlock();
 
     if (readSize == buffSize)
     {

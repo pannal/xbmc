@@ -737,6 +737,8 @@ static void set_dv_settings_visible(bool show)
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_SRC_MAX_NITS, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_PER_FRAME_METADATA, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND, show);
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND_HDR10_CURVE, show);
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_SDR_NEW_BACKEND_HDR10PLUS_STATIC, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_TARGET_MIN_LUM, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10, show);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10_OSD_BRIGHTNESS, show);

@@ -8,10 +8,14 @@
 
 #pragma once
 
+#include <mutex>
+
 class CScreenshotAML
 {
   public:
     // Captures the current visible video framebuffer and blends it into
     // the passed overlay. The buffer format is BGRA (4 byte)
     static bool CaptureVideoFrame(unsigned char *buffer, int iWidth, int iHeight, bool bBlendToBuffer = true);
+    // Serializes /dev/amvideocap0 users (screenshots, CAMLPeakMeter).
+    static std::mutex& CaptureMutex();
 };
