@@ -130,6 +130,11 @@ void aml_dv_enable_new_backend();
 // CPU-only GUI accessors; bounded sampling belongs to the admitted AML decoder.
 std::string aml_dv_backend_label();
 std::string aml_dv_backend_available_label();
+// PPI: library + what the newer one tone-maps for (empty when the backend is unknown).
+std::string aml_dv_tonemap_label(StreamHdrType type, StreamHdrType sourceType, unsigned int masteringPeak);
+// Decoder-side sampler of the kernel values behind that label (250 ms), cleared at close.
+void aml_dv_tonemap_sample(int64_t& lastSample);
+void aml_dv_tonemap_reset();
 void aml_dv_backend_invalidate(const std::shared_ptr<const void>& session);
 // Explicit speed-zero pause retains a fresh observation; resume requires sampling.
 void aml_dv_backend_pause(const std::shared_ptr<const void>& session, bool paused);
@@ -227,7 +232,19 @@ void aml_dv_set_hdr10_osd_brightness(int nits);
 int  aml_dv_sdr_boost_param();
 void aml_dv_set_sdr_source_max_nits(int value);
 void aml_dv_set_sdr_keep_ext(bool keep);
-void aml_dv_set_sdr_new_backend(bool enable);
+void aml_dv_set_sdr_new_backend(bool enable, bool staticTrim);
+enum { DV_HDR10_CURVE_STATIC = 0, DV_HDR10_CURVE_STATIC_CB1 = 1, DV_HDR10_CURVE_METER = 2 };
+int aml_dv_hdr10_curve();
+bool aml_dv_hdr10_meas_peak_wanted();
+bool aml_dv_hdr10_static_rpu_wanted();
+bool aml_dv_hdr10plus_static_rpu_wanted();
+bool aml_dv_hdr10_cb1_wanted();
+bool aml_dv_cb1_active();
+bool aml_dv_cb1_l1(uint16_t& minPq, uint16_t& maxPq, uint16_t& avgPq);
+// The playing stream carries the static DV RPU added by Kodi (HDR10, or HDR10+ dropped to it).
+void aml_dv_set_static_rpu(bool value);
+void aml_dv_set_hdr10plus_convert(bool value);
+bool aml_dv_static_trim_wanted();
 void aml_dv_set_target_min_lum(int value);
 bool aml_is_dv_enable();
 void aml_dv_display_trigger();

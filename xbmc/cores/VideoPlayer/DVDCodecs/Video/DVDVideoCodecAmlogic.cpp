@@ -741,6 +741,13 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
           }
           m_stripCMv40Applied = stripCMv40;
 
+          if (aml_dv_static_trim_wanted())
+          {
+            CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - static trim: RPUs without a 100-nit trim stay CMv2.9",
+                      __MODULE_NAME__, __FUNCTION__);
+            m_bitstream->SetStaticTrimKeepsCMv29(true);
+          }
+
           if (dualPriorityHdr10Plus)
           {
             CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - if stream also contains HDR10+, native HDR10+ has priority.",
@@ -777,6 +784,20 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
             __MODULE_NAME__, __FUNCTION__, peakBrightnessSource);
           m_bitstream->SetConvertHdr10Plus(true);
           m_bitstream->SetConvertHdr10PlusPeakBrightnessSource(peakBrightnessSource);
+        }
+
+        // Plain HDR10 (no HDR10+ found on the first frame) gets one static Dolby Vision RPU.
+        if ((m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10) && aml_dv_hdr10_static_rpu_wanted())
+        {
+          CLog::Log(LOGINFO, "{}::{} - HDR10 HEVC bitstream - if not HDR10+ then a static Dolby Vision P8.1 RPU will be added",
+            __MODULE_NAME__, __FUNCTION__);
+          m_bitstream->SetConvertHdr10StaticRpu(true);
+          if (aml_dv_hdr10plus_static_rpu_wanted())
+          {
+            CLog::Log(LOGINFO, "{}::{} - HDR10 HEVC bitstream - if HDR10+ then its metadata will be dropped for the same static RPU",
+              __MODULE_NAME__, __FUNCTION__);
+            m_bitstream->SetHdr10PlusStaticRpu(true);
+          }
         }
 
         // If HDR10 or Dual Priority HDR10+ and doing VS10 - remove the HDR10+ and DV if present to avoid conflict with VS10.
@@ -853,6 +874,8 @@ FAIL:
 void CDVDVideoCodecAmlogic::Close(void)
 {
   CLog::Log(LOGINFO, "{}::{}", __MODULE_NAME__, __FUNCTION__);
+  aml_dv_set_static_rpu(false);
+  aml_dv_set_hdr10plus_convert(false);
 
   auto restore = [this] {
     // Keep the original order under admission, including synchronous settings
@@ -1040,6 +1063,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
         m_hints.ptsinvalid = true;
 
       CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: Open decoder: fps:{:d}/{:d}", __FUNCTION__, m_hints.fpsrate, m_hints.fpsscale);
+      aml_dv_set_static_rpu(m_bitstream && m_bitstream->IsStaticRpu());
+      aml_dv_set_hdr10plus_convert(m_bitstream && !m_bitstream->IsStaticRpu() &&
+                                   m_bitstream->IsConvertHdr10Plus());
+      if (m_Codec)
+        m_Codec->SetCb1(m_bitstream && m_bitstream->IsStaticRpu() && aml_dv_hdr10_cb1_wanted());
       if (!m_Codec || !m_Codec->OpenDecoder())
       {
         CLog::Log(LOGERROR, "CDVDVideoCodecAmlogic::{}: Failed to open Amlogic Codec", __FUNCTION__);
