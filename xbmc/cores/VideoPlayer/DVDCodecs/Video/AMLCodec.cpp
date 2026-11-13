@@ -365,6 +365,8 @@ typedef struct am_private_t
   aml_generic_param gcodec;
   codec_para_t      vcodec;
   unsigned int      liveBorderToken;
+  bool              originalP81;
+  bool              liveFrameL5;
 
   pstream_type      stream_type;
   int               check_first_pts;
@@ -1864,6 +1866,9 @@ CAMLCodec::CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints, StreamHdr
   , m_dataCacheCore(CServiceBroker::GetDataCacheCore())
 {
   am_private = new am_private_t();
+  am_private->originalP81 = originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+      hints.dovi.dv_profile == 8 && hints.dovi.dv_bl_signal_compatibility_id == 1 &&
+      !hints.dovi.el_present_flag && !hints.is_dual_track;
   m_dll = new DllLibAmCodec;
   if(!m_dll->Load())
     CLog::Log(LOGWARNING, "CAMLCodec::CAMLCodec libamcodec.so not found");
@@ -2167,16 +2172,16 @@ bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHd
 }
 
 unsigned int RequestLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHdrType,
-                                    bool nativeDV)
+                                    bool nativeDV, bool frameL5)
 {
   if (hints.width < 256 || hints.width > 3840 || hints.height < 256 || hints.height > 2176 ||
       !CanUseLiveHEVCBorders(hints, originalHdrType, nativeDV) ||
       access("/sys/module/amvdec_h265/parameters/p3i_active_area_status", R_OK) != 0)
     return 0;
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  if (!settings->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
-      !settings->GetBool(CSettings::SETTING_SUBTITLES_LIVEACTIVEAREA) ||
-      (nativeDV && aml_dv_detect_active_area_enabled()))
+  if (!frameL5 && (!settings->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
+                  !settings->GetBool(CSettings::SETTING_SUBTITLES_LIVEACTIVEAREA) ||
+                  (nativeDV && aml_dv_detect_active_area_enabled())))
     return 0;
   unsigned int token;
   try
@@ -2188,7 +2193,16 @@ unsigned int RequestLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType o
   {
     return 0;
   }
-  return aml_subtitle_active_area_enable_hevc_live(hints.subtitleProbeSource, token) ? token : 0;
+  return aml_subtitle_active_area_enable_hevc_live(hints.subtitleProbeSource, token, frameL5) ?
+      token : 0;
+}
+
+bool LiveFrameL5Enabled()
+{
+  std::ifstream enabled("/sys/module/amdolby_vision/parameters/xbmc_live_frame_l5");
+  char value = 0;
+  return (enabled >> value) && value == 'Y' &&
+         access("/sys/module/amvdec_h265/parameters/p3i_frame_l5_capable", R_OK) == 0;
 }
 
 bool SetMPEG2KeepProgressive(const char* path, bool enabled)
@@ -2499,11 +2513,17 @@ bool CAMLCodec::OpenDecoderInternal()
   const bool nativeDV = hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
                         m_originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
   am_private->liveBorderToken = 0;
+  am_private->liveFrameL5 = am_private->originalP81 && nativeDV && hints.width == 3840 &&
+      hints.height == 2160 && aml_dv_detect_active_area_enabled() &&
+      CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+          CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_SOURCE_LEVEL_5) &&
+      LiveFrameL5Enabled();
   if (aml_subtitle_active_area_configure(hints.width, hints.height, nativeDV,
                                         !nativeDV || hints.dovi.dv_profile != 9,
                                         hints.subtitleProbeSource, hints.aspect, true))
   {
-    am_private->liveBorderToken = RequestLiveHEVCBorders(hints, m_originalSourceHdrType, nativeDV);
+    am_private->liveBorderToken =
+        RequestLiveHEVCBorders(hints, m_originalSourceHdrType, nativeDV, am_private->liveFrameL5);
     if (!am_private->liveBorderToken)
       aml_dv_detect_active_area_start(); // separately selected DV injection / non-DV geometry
   }
@@ -2636,6 +2656,8 @@ bool CAMLCodec::OpenDecoderInternal()
     if (!config_data.empty() && config_data.back() != ';')
       config_data += ';';
     config_data += "p3i_border_token:" + std::to_string(am_private->liveBorderToken) + ";";
+    if (am_private->liveFrameL5)
+      config_data += "p3i_frame_l5:1;";
   }
   if (!config_data.empty())
   {
@@ -2937,8 +2959,10 @@ void CAMLCodec::ResetInternal()
                                         !nativeDV || m_hints.dovi.dv_profile != 9,
                                         m_hints.subtitleProbeSource, m_hints.aspect, true))
   {
-    if (am_private->liveBorderToken && (!nativeDV || !aml_dv_detect_active_area_enabled()))
-      aml_subtitle_active_area_enable_hevc_live(m_hints.subtitleProbeSource, am_private->liveBorderToken);
+    if (am_private->liveBorderToken &&
+        (am_private->liveFrameL5 || !nativeDV || !aml_dv_detect_active_area_enabled()))
+      aml_subtitle_active_area_enable_hevc_live(m_hints.subtitleProbeSource,
+                                               am_private->liveBorderToken, am_private->liveFrameL5);
     aml_dv_detect_active_area_start();
   }
 

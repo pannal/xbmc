@@ -2989,6 +2989,7 @@ struct DetectSource
   const bool codedCrop;
   bool usesAMLVideoPlane{false}; // set at configuration before worker admission
   unsigned int hevcBorderToken{0};
+  bool hevcFrameL5{false};
   bool subtitleOnly{false}; // live route's file fallback, set by its worker before scanning
   const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
   std::atomic<bool> pending{false};
@@ -3242,6 +3243,7 @@ void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedS
   s_detectSource->policy = previous->policy;
   s_detectSource->usesAMLVideoPlane = previous->usesAMLVideoPlane;
   s_detectSource->hevcBorderToken = previous->hevcBorderToken;
+  s_detectSource->hevcFrameL5 = previous->hevcFrameL5;
   s_detectSource->binding = previous->binding;
   s_detectSource->selectionId = previous->selectionId;
   s_detectSource->startupVideoReady = previous->startupVideoReady;
@@ -5654,7 +5656,7 @@ static constexpr char HEVC_ACTIVE_AREA_PATH[] =
     "/sys/module/amvdec_h265/parameters/p3i_active_area_status";
 
 bool aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>& expectedSource,
-                                             unsigned int token)
+                                             unsigned int token, bool frameL5)
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   if (!token || !expectedSource || expectedSource != s_detectSource->selection ||
@@ -5662,6 +5664,7 @@ bool aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>
       !s_detectSource->allowProbe || s_detectSource->policy->Blocked())
     return false;
   s_detectSource->hevcBorderToken = token;
+  s_detectSource->hevcFrameL5 = frameL5;
   s_detectSource->startupWait->store(false);
   s_detectSource->startupHeld->store(false);
   s_detectSource->startupAdmission->store(false);
@@ -5745,8 +5748,10 @@ static bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,
   const auto ownerDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   auto lastConfirmed = std::chrono::steady_clock::time_point{};
   bool fallback = false;
-  while (!run.Cancelled() && settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) &&
-         (!source->nativeDV || !aml_dv_detect_active_area_enabled()))
+  while (!run.Cancelled() &&
+         (settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
+          (source->hevcFrameL5 && aml_dv_detect_active_area_enabled())) &&
+         (!source->nativeDV || source->hevcFrameL5 || !aml_dv_detect_active_area_enabled()))
   {
     std::ifstream input(HEVC_ACTIVE_AREA_PATH);
     char status = 0;
@@ -5853,9 +5858,10 @@ void aml_dv_detect_active_area_start()
     publishState(source->policy->timedOut ? DV_DETECT_TIMED_OUT : DV_DETECT_SKIPPED);
     return; // playback vetoes and terminal timeouts precede cache identity I/O
   }
+  const bool frameL5 = source->hevcFrameL5 && aml_dv_detect_active_area_enabled();
   const bool hevcLive = source->hevcBorderToken && !source->startupScan &&
-      settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) &&
-      (!source->nativeDV || !aml_dv_detect_active_area_enabled());
+      (frameL5 || (settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) &&
+                  (!source->nativeDV || !aml_dv_detect_active_area_enabled())));
   if (source->codedCrop && !hevcLive)
   {
     publishState(DV_DETECT_SKIP_NON16X9);
@@ -5878,14 +5884,15 @@ void aml_dv_detect_active_area_start()
   if (!publishState(hevcLive ? DV_DETECT_SKIPPED : DV_DETECT_RUNNING))
     return;
   const bool cacheEnabled = settings()->GetBool(CSettings::SETTING_SUBTITLES_CACHEACTIVEAREA);
-  s_detectWorker.Start([source, cacheEnabled, completion, live, hevcLive, publishState,
+  s_detectWorker.Start([source, cacheEnabled, completion, live, hevcLive, frameL5, publishState,
                         reservation = std::move(reservation)](const CAMLNativeWorker::Run& run) mutable {
     if (hevcLive)
     {
-      CLog::Log(LOGINFO, "DetectActiveArea: using live HEVC borders without file scanning");
+      CLog::Log(LOGINFO, "DetectActiveArea: using live HEVC {} without file scanning",
+                frameL5 ? "frame L5" : "borders");
       if (!detect_from_hevc(source, run) || run.Cancelled() || source->policy->Blocked() ||
           !settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
-          (source->nativeDV && aml_dv_detect_active_area_enabled()))
+          (source->nativeDV && !frameL5 && aml_dv_detect_active_area_enabled()))
         return;
       if (source->codedCrop)
       {

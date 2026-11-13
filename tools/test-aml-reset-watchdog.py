@@ -60,7 +60,7 @@ struct FakeClock {
 };
 struct VCodec {int cntl_handle=7;};
 struct Packet {VCodec* codec=nullptr;};
-struct Private {VCodec vcodec; Packet am_pkt; unsigned int liveBorderToken=0;};
+struct Private {VCodec vcodec; Packet am_pkt; unsigned int liveBorderToken=0;bool liveFrameL5=false;};
 struct Dll {
   int resets=0;
   void codec_set_cntl_mode(VCodec*,int) {}
@@ -82,7 +82,7 @@ void aml_dv_backend_invalidate(void*) {}
 uint64_t aml_dv_backend_epoch() {return 1;}
 bool aml_subtitle_active_area_configure(int,int,bool,bool,int,double,bool) {return true;}
 bool aml_dv_detect_active_area_enabled() {return false;}
-void aml_subtitle_active_area_enable_hevc_live(int, unsigned int token) {assert(token); ++liveStarts;}
+void aml_subtitle_active_area_enable_hevc_live(int, unsigned int token, bool) {assert(token); ++liveStarts;}
 // Stops and joins the previous probe worker before starting the next one.
 void aml_dv_detect_active_area_start() {++probeStarts; FakeClock::Advance(probeRetireDelay);}
 struct CAMLCodec {

@@ -376,13 +376,36 @@ void hevc_live_only()
  s_detectWorker.Stop();
  assert(s_detectSource->subtitleResult && !s_detectSource->result && !s_detectStable);
 
+ settingsValue.detect = false;
+ dvDetection = true;
+ select("hevc-frame-l5", true, 3840, 2160);
+ assert(aml_subtitle_active_area_enable_hevc_live(s_detectSource->selection, 4, true));
+ std::promise<void> frameL5Entered;
+ auto frameL5Started = frameL5Entered.get_future();
+ hevcHook = [&](const auto& source, const auto&) {
+  assert(source->hevcFrameL5 && !source->startupScan);
+  frameL5Entered.set_value();
+  return false;
+ };
+ scanHook = [](const auto&, const auto&) { assert(false && "native live L5 reached FFmpeg"); };
+ {
+  CAMLNativeTransaction owner;
+  assert(owner.TryBegin());
+  aml_dv_detect_active_area_start();
+ }
+ assert(frameL5Started.wait_for(2s) == std::future_status::ready);
+ s_detectWorker.Stop();
+ assert(!s_detectSource->result && !s_detectSource->subtitleResult && !s_detectStable);
+ settingsValue.detect = true;
+ dvDetection = false;
+
  for (bool unavailable : {false, true}) {
   aml_dv_detect_set_file("hevc-cropped");
   const auto selected = aml_subtitle_active_area_source();
   assert(aml_subtitle_active_area_configure(1920, 1036, false, true, selected,
                                             1920.0 / 1036.0, true));
   assert(s_detectSource->codedCrop);
-  assert(aml_subtitle_active_area_enable_hevc_live(selected, 3));
+  assert(aml_subtitle_active_area_enable_hevc_live(selected, 3, false));
   std::promise<void> entered;
   auto started = entered.get_future();
   hevcHook = [&](const auto& source, const auto&) {
