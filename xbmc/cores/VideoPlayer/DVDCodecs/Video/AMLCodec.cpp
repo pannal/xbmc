@@ -2658,6 +2658,8 @@ bool CAMLCodec::OpenDecoderInternal()
     if (!config_data.empty() && config_data.back() != ';')
       config_data += ';';
     config_data += "p3i_border_token:" + std::to_string(am_private->liveBorderToken) + ";";
+    if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_liveHEVCBorderScale == 2)
+      config_data += "p3i_border_scale:2;";
     if (am_private->liveFrameL5)
       config_data += "p3i_frame_l5:1;";
   }

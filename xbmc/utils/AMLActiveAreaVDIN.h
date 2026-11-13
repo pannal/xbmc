@@ -14,13 +14,14 @@
 namespace AML_ACTIVE_AREA_VDIN
 {
 using Borders = std::array<uint16_t, 4>;
-inline constexpr int HEVC_TAP_STEP = 4;
+inline constexpr int HEVC_DEFAULT_TAP_STEP = 4;
 
 struct Sample
 {
   uint64_t stamp;
   Borders borders;
   std::optional<Borders> snapped{};
+  int tapStep{HEVC_DEFAULT_TAP_STEP};
 };
 
 enum class Source
@@ -59,14 +60,26 @@ inline std::optional<Sample> Read(std::istream& stream, int width, int height,
   if (source == Source::HEVC)
   {
     const std::array<int, 4> limits{height / 3, height / 3, width / 3, width / 3};
+    std::array<int, 4> offsets{};
+    for (int& value : offsets)
+    {
+      if (!(stream >> value))
+        return sample;
+    }
+    int tapStep;
+    if (stream >> tapStep)
+    {
+      if (tapStep != 2 && tapStep != HEVC_DEFAULT_TAP_STEP)
+        return sample;
+      sample.tapStep = tapStep;
+    }
     Borders snapped{};
     for (std::size_t i = 0; i < snapped.size(); ++i)
     {
-      int value;
-      if (!(stream >> value) || value < 0 || value > limits[i] ||
-          std::abs(value - sample.borders[i]) >= HEVC_TAP_STEP)
+      if (offsets[i] < 0 || offsets[i] > limits[i] ||
+          std::abs(offsets[i] - sample.borders[i]) >= sample.tapStep)
         return sample;
-      snapped[i] = static_cast<uint16_t>(value);
+      snapped[i] = static_cast<uint16_t>(offsets[i]);
     }
     sample.snapped = snapped;
   }
@@ -89,14 +102,14 @@ public:
       return {};
     m_stamp = sample->stamp;
 
-    // Compare measured HEVC edges at the tap's four-pixel resolution.
-    const int tolerance = m_source == Source::HEVC ? HEVC_TAP_STEP : 2;
+    const int tolerance = m_source == Source::HEVC ? sample->tapStep : 2;
     bool matches = m_count != 0;
     if (matches && m_source == Source::HEVC)
     {
       const auto& b = sample->borders;
       // A one-step bar and an uncropped axis are distinct geometries.
-      matches = ((m_candidate[0] || m_candidate[1]) == (b[0] || b[1])) &&
+      matches = m_tapStep == sample->tapStep &&
+                ((m_candidate[0] || m_candidate[1]) == (b[0] || b[1])) &&
                 ((m_candidate[2] || m_candidate[3]) == (b[2] || b[3]));
     }
     for (std::size_t i = 0; matches && i < m_candidate.size(); ++i)
@@ -105,6 +118,7 @@ public:
     {
       m_candidate = sample->borders;
       m_output = sample->snapped.value_or(sample->borders);
+      m_tapStep = sample->tapStep;
       m_count = 1;
     }
     else if (m_count < 3)
@@ -120,6 +134,7 @@ private:
   std::optional<uint64_t> m_stamp;
   Borders m_candidate{};
   Borders m_output{};
+  int m_tapStep{HEVC_DEFAULT_TAP_STEP};
   int m_count{0};
 };
 } // namespace AML_ACTIVE_AREA_VDIN

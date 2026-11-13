@@ -186,6 +186,7 @@ void CAdvancedSettings::Initialize()
 
   m_videoDecoderTimeout = 5;
   m_videoDecoderDrainTimeout = 5;
+  m_liveHEVCBorderScale = 4;
   m_videoMenuDomainQueueTimeSize = 1.0f;
   m_videoBdBoundaryDrain = true;
   m_blurayIsoCacheEnabled = true;
@@ -944,6 +945,15 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
 
     XMLUtils::GetInt(pElement, "decodertimeout", m_videoDecoderTimeout, 1, 60);
     XMLUtils::GetInt(pElement, "decoderdraintimeout", m_videoDecoderDrainTimeout, 1, 60);
+    std::string borderScale;
+    if (XMLUtils::GetString(pElement, "livehevcborderscale", borderScale))
+    {
+      StringUtils::Trim(borderScale);
+      if (borderScale == "2" || borderScale == "4")
+        m_liveHEVCBorderScale = borderScale.front() - '0';
+      else
+        CLog::Log(LOGWARNING, "Ignoring <livehevcborderscale>; expected 2 or 4");
+    }
     XMLUtils::GetBoolean(pElement, "decoderbypassbufferready", m_videoDecoderBypassBufferReady);
     XMLUtils::GetFloat(pElement, "decoderbuffer", m_videoDecoderBuffer, 0.0f, 100.0f);
     XMLUtils::GetFloat(pElement, "decoderstreambuffer", m_videoDecoderStreamBuffer, 0.0f, 100.0f);

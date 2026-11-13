@@ -279,6 +279,14 @@ void hevc_border_samples()
  assert(!refined.Observe(rawJitter));
  assert(refined.Observe(readUhd("1 3 3840 2160 276 1887 0 3839 0 180 279 275 0 0")) ==
         nearCentered->snapped);
+ const auto half = readUhd("1 4 3840 2160 276 1883 0 3839 0 180 277 277 0 0 2");
+ assert(half && half->tapStep == 2 && (half->snapped == Borders{277, 277, 0, 0}));
+ assert(legacy->tapStep == 4 && nearCentered->tapStep == 4);
+ assert(!refined.Observe(half)); // New scale starts a fresh consensus.
+ assert(!refined.Observe(readUhd("1 5 3840 2160 278 1883 0 3839 0 180 278 276 0 0 2")));
+ assert(refined.Observe(readUhd("1 6 3840 2160 276 1883 0 3839 0 180 277 277 0 0 2")) ==
+        half->snapped);
+ assert(!refined.Observe(readUhd("1 7 3840 2160 280 1883 0 3839 0 180 280 276 0 0 2")));
  const Borders scope{204, 204, 0, 0};
  const Borders jitter{208, 204, 0, 0};
  const Borders different{212, 212, 0, 0};

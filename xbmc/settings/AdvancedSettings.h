@@ -405,6 +405,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
 
     int m_videoDecoderTimeout;
     int m_videoDecoderDrainTimeout;
+    int m_liveHEVCBorderScale;
     float m_videoMenuDomainQueueTimeSize;
     bool m_videoBdBoundaryDrain;
     bool m_blurayIsoCacheEnabled;
