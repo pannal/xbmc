@@ -50,6 +50,14 @@ inline std::optional<Sample> Read(std::istream& stream, int width, int height)
 class Consensus
 {
 public:
+  enum class Source
+  {
+    VDIN,
+    HEVC
+  };
+
+  explicit Consensus(Source source = Source::VDIN) : m_source(source) {}
+
   std::optional<Borders> Observe(const std::optional<Sample>& sample)
   {
     if (!sample)
@@ -61,9 +69,18 @@ public:
       return {};
     m_stamp = sample->stamp;
 
+    // The quarter-resolution HEVC surface moves in four coded pixels.
+    const int tolerance = m_source == Source::HEVC ? 4 : 2;
     bool matches = m_count != 0;
+    if (matches && m_source == Source::HEVC)
+    {
+      const auto& b = sample->borders;
+      // A one-step bar and an uncropped axis are distinct geometries.
+      matches = ((m_candidate[0] || m_candidate[1]) == (b[0] || b[1])) &&
+                ((m_candidate[2] || m_candidate[3]) == (b[2] || b[3]));
+    }
     for (std::size_t i = 0; matches && i < m_candidate.size(); ++i)
-      matches = std::abs(static_cast<int>(m_candidate[i]) - sample->borders[i]) <= 2;
+      matches = std::abs(static_cast<int>(m_candidate[i]) - sample->borders[i]) <= tolerance;
     if (!matches)
     {
       m_candidate = sample->borders;
@@ -78,6 +95,7 @@ public:
   }
 
 private:
+  const Source m_source;
   std::optional<uint64_t> m_stamp;
   Borders m_candidate{};
   int m_count{0};

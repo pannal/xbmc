@@ -242,6 +242,44 @@ void vdin_samples()
  assert(consensus.Observe(read("1 106 1920 1080 0 1079 0 1919 16 180")) == Borders{});
 }
 
+void hevc_border_samples()
+{
+ using namespace AML_ACTIVE_AREA_VDIN;
+ const Borders scope{204, 204, 0, 0};
+ const Borders jitter{208, 204, 0, 0};
+ const Borders different{212, 212, 0, 0};
+ const Borders full{};
+ const Borders thin{4, 4, 0, 0};
+ Consensus consensus{Consensus::Source::HEVC};
+ assert(!consensus.Observe(Sample{1, scope}));
+ assert(!consensus.Observe(Sample{2, jitter}));
+ assert(!consensus.Observe(Sample{2, jitter}));
+ assert(consensus.Observe(Sample{3, scope}) == scope);
+ assert(consensus.Observe(Sample{4, jitter}) == scope);
+ assert(!consensus.Observe(Sample{5, different}));
+ assert(!consensus.Observe(Sample{6, full}));
+ assert(!consensus.Observe(Sample{7, full}));
+ assert(consensus.Observe(Sample{8, full}) == full);
+ assert(!consensus.Observe(Sample{9, thin}));
+ assert(!consensus.Observe(Sample{10, thin}));
+ assert(consensus.Observe(Sample{11, thin}) == thin);
+ assert(!consensus.Observe(Sample{12, full}));
+ assert(!consensus.Observe(std::nullopt));
+ assert(!consensus.Observe(Sample{13, full}));
+ assert(!consensus.Observe(Sample{14, full}));
+ assert(consensus.Observe(Sample{15, full}) == full);
+
+ Consensus drifting{Consensus::Source::HEVC};
+ assert(!drifting.Observe(Sample{1, scope}));
+ assert(!drifting.Observe(Sample{2, Borders{208, 208, 0, 0}}));
+ assert(!drifting.Observe(Sample{3, different}));
+
+ Consensus vdin;
+ assert(!vdin.Observe(Sample{1, scope}));
+ assert(!vdin.Observe(Sample{2, jitter}));
+ assert(!vdin.Observe(Sample{3, scope}));
+}
+
 void vdin_playback()
 {
  CAMLSession s;init(s);
@@ -311,7 +349,7 @@ void hevc_live_only()
  dvDetection = savedDV;
 }
 
-int main(){ready();cancel_before_native_join();active_retirement_exception();detector_replacement();stop_resets_after_join();generic_detector();vdin_samples();vdin_playback();hevc_live_only();watcher_identity_and_join();shutdown_drains_before_display();std::cout<<"PASS: native participants, exact runs, real joins and shutdown retirement (ASan/UBSan)\n";}
+int main(){ready();cancel_before_native_join();active_retirement_exception();detector_replacement();stop_resets_after_join();generic_detector();vdin_samples();hevc_border_samples();vdin_playback();hevc_live_only();watcher_identity_and_join();shutdown_drains_before_display();std::cout<<"PASS: native participants, exact runs, real joins and shutdown retirement (ASan/UBSan)\n";}
 '''
 
 def source():

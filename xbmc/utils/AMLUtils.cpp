@@ -5729,7 +5729,8 @@ static void detect_from_vdin(const std::shared_ptr<DetectSource>& source,
 static void detect_from_hevc(const std::shared_ptr<DetectSource>& source,
                              const CAMLNativeWorker::Run& run)
 {
-  AML_ACTIVE_AREA_VDIN::Consensus consensus;
+  using AML_ACTIVE_AREA_VDIN::Consensus;
+  Consensus consensus{Consensus::Source::HEVC};
   std::optional<uint64_t> initialStamp;
   {
     std::ifstream initial(HEVC_ACTIVE_AREA_PATH);
