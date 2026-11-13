@@ -3017,7 +3017,9 @@ struct DetectSource
   const bool codedCrop;
   bool usesAMLVideoPlane{false}; // set at configuration before worker admission
   unsigned int hevcBorderToken{0};
-  std::shared_ptr<const void> hevcFrameL5Session;
+  bool hevcFrameL5{false};
+  bool nativeP81{false};
+  std::shared_ptr<const void> dvSession;
   bool subtitleOnly{false}; // live route's file fallback, set by its worker before scanning
   const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
   std::atomic<bool> pending{false};
@@ -3109,10 +3111,17 @@ static bool detect_install_binding_locked(const std::shared_ptr<DetectSource>& s
   return true;
 }
 
+static bool detect_native_fill_only(const DetectSource& source)
+{
+  return source.nativeP81 && !source.binding;
+}
+
 static bool detect_native_result_enabled(const std::shared_ptr<DetectSource>& source)
 {
   if (source->binding && source->binding->state == DETECTOR_PLAYBACK::State::FAILED)
     return false;
+  if (detect_native_fill_only(*source))
+    return aml_dv_live_frame_l5_eligible(source->dvSession);
   return aml_dv_detect_active_area_enabled() || (source->boundUsable && source->nativeDV &&
       s_dvModeCached == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL &&
       settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) && !aml_dv_l5_override_active());
@@ -3130,6 +3139,7 @@ static std::shared_ptr<const void> detect_reserve_scanner()
 }
 
 static std::atomic<bool> s_detectInjected{false};
+
 // Caller holds the source mutex and has entered native admission.
 static void detect_apply_l5_override_locked();
 
@@ -3147,6 +3157,7 @@ static void detect_apply_l5_override_locked()
     active = autoLb;
   }
   if (!active && detect_native_result_enabled(s_detectSource) && s_detectSource->nativeDV &&
+      !detect_native_fill_only(*s_detectSource) &&
       s_detectSource->allowProbe && !s_detectSource->superseded->load() &&
       s_detectSource->result && s_detectSource->result->highConfidence)
   {
@@ -3218,7 +3229,8 @@ std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int
 
 bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bool allowProbe,
                                       const std::shared_ptr<const void>& expectedSource,
-                                      double displayAspect, bool usesAMLVideoPlane)
+                                      double displayAspect, bool usesAMLVideoPlane, bool nativeP81,
+                                      const std::shared_ptr<const void>& dvSession)
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   if (!expectedSource || expectedSource != s_detectSource->selection)
@@ -3231,6 +3243,8 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
                                                  displayAspect);
   s_detectSource->policy = previous->policy;
   s_detectSource->usesAMLVideoPlane = usesAMLVideoPlane;
+  s_detectSource->nativeP81 = nativeP81;
+  s_detectSource->dvSession = dvSession;
   s_detectSource->binding = previous->binding;
   s_detectSource->selectionId = previous->selectionId;
   s_detectSource->startupVideoReady = previous->startupVideoReady;
@@ -3247,7 +3261,8 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
   }
   if (allowProbe && !s_detectSource->codedCrop && !s_detectSource->policy->Blocked() && previous->width == width &&
       previous->height == height && previous->displayAspect == displayAspect &&
-      previous->nativeDV == nativeDV && previous->allowProbe == allowProbe)
+      previous->nativeDV == nativeDV && previous->nativeP81 == nativeP81 &&
+      previous->allowProbe == allowProbe)
   {
     s_detectSource->retained = previous->retained;
     s_detectSource->retainedSubtitle = previous->retainedSubtitle;
@@ -3271,7 +3286,9 @@ void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedS
   s_detectSource->policy = previous->policy;
   s_detectSource->usesAMLVideoPlane = previous->usesAMLVideoPlane;
   s_detectSource->hevcBorderToken = previous->hevcBorderToken;
-  s_detectSource->hevcFrameL5Session = previous->hevcFrameL5Session;
+  s_detectSource->hevcFrameL5 = previous->hevcFrameL5;
+  s_detectSource->nativeP81 = previous->nativeP81;
+  s_detectSource->dvSession = previous->dvSession;
   s_detectSource->binding = previous->binding;
   s_detectSource->selectionId = previous->selectionId;
   s_detectSource->startupVideoReady = previous->startupVideoReady;
@@ -3526,6 +3543,7 @@ bool aml_dv_detect_active_area_override_get(int width, int height, uint16_t& top
   const auto accepted = !source->superseded->load() && source->result ?
       source->result : source->retained;
   if (!source->nativeDV || !source->allowProbe || (!source->boundUsable && source->policy->Blocked()) || !detect_native_result_enabled(source) ||
+      detect_native_fill_only(*source) ||
       source->width != width || source->height != height ||
       !accepted || !accepted->highConfidence)
     return false;
@@ -3741,6 +3759,8 @@ static void detect_publish(const CAMLNativeWorker::Run& run,
 {
   {
     std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+    if (detect_native_fill_only(*source) && !highConfidence)
+      return;
     if (source->standalone)
     {
       if (!run.Cancelled() && !source->timedOut &&
@@ -3780,7 +3800,7 @@ static void detect_publish(const CAMLNativeWorker::Run& run,
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_bottom", detBottom);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_left", detLeft);
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_detected_l5_right", detRight);
-  if (highConfidence)
+  if (highConfidence && !detect_native_fill_only(*source))
     detect_apply_l5_override_locked();
   s_detectInjected.store(true);
 }
@@ -5333,7 +5353,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
              srcMeta.level5_active_area_left_offset || srcMeta.level5_active_area_right_offset))
         {
           authoredPositive = true;
-          if (!aml_dv_detect_active_area_enabled() &&
+          if (!detect_native_result_enabled(source) &&
               !settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA))
           {
             CLog::Log(LOGINFO, "DetectActiveArea: source L5 present; subtitle detection disabled");
@@ -5384,7 +5404,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
       state.store(subtitleAccepted ? DV_DETECT_OK : DV_DETECT_SKIPPED);
       goto cleanup;
     }
-    if (authoredPositive && (!aml_dv_detect_active_area_enabled() ||
+    if (authoredPositive && (!detect_native_result_enabled(source) ||
                              validSamples != numSeeks || !spatialAccepted || !spatialInvariant))
     {
       CLog::Log(LOGINFO, "DetectActiveArea: source L5 retained; pixel estimate used only for text");
@@ -5474,6 +5494,12 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     if (authoredPositive && !nativeHighConfidence)
     {
       state.store(DV_DETECT_SKIPPED);
+      goto cleanup;
+    }
+    if (detect_native_fill_only(*source) && !nativeHighConfidence)
+    {
+      CLog::Log(LOGINFO, "DetectActiveArea: no invariant geometry for native P8.1 L5 fallback");
+      state.store(DV_DETECT_SKIP_IMAX);
       goto cleanup;
     }
     detTop = consensus.top;
@@ -5684,8 +5710,7 @@ static constexpr char HEVC_ACTIVE_AREA_PATH[] =
     "/sys/module/amvdec_h265/parameters/p3i_active_area_status";
 
 bool aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>& expectedSource,
-                                              unsigned int token,
-                                              const std::shared_ptr<const void>& frameL5Session)
+                                              unsigned int token, bool frameL5)
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   if (!token || !expectedSource || expectedSource != s_detectSource->selection ||
@@ -5693,7 +5718,7 @@ bool aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>
       !s_detectSource->allowProbe || s_detectSource->policy->Blocked())
     return false;
   s_detectSource->hevcBorderToken = token;
-  s_detectSource->hevcFrameL5Session = frameL5Session;
+  s_detectSource->hevcFrameL5 = frameL5;
   s_detectSource->startupWait->store(false);
   s_detectSource->startupHeld->store(false);
   s_detectSource->startupAdmission->store(false);
@@ -5776,11 +5801,12 @@ static bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,
   Consensus consensus{Source::HEVC};
   const auto ownerDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   auto lastConfirmed = std::chrono::steady_clock::time_point{};
+  bool supported = false;
   bool fallback = false;
   while (!run.Cancelled() &&
          (settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
-          aml_dv_live_frame_l5_eligible(source->hevcFrameL5Session)) &&
-         (!source->nativeDV || source->hevcFrameL5Session || !aml_dv_detect_active_area_enabled()))
+          (source->hevcFrameL5 && aml_dv_live_frame_l5_eligible(source->dvSession))) &&
+         (!source->nativeDV || source->hevcFrameL5 || !aml_dv_detect_active_area_enabled()))
   {
     std::ifstream input(HEVC_ACTIVE_AREA_PATH);
     char status = 0;
@@ -5799,7 +5825,12 @@ static bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,
       break;
     }
     const bool owned = status == 'P' || status == 'Y' || status == 'N';
-    if ((owned && status == 'N') || (!owned && std::chrono::steady_clock::now() >= ownerDeadline))
+    supported |= status == 'Y';
+    // A supported L5 route stays per-picture. A later low-confidence or
+    // unsupported picture cannot justify file-wide offsets for this stream.
+    const bool deadlinePassed = std::chrono::steady_clock::now() >= ownerDeadline;
+    const bool unavailable = status == 'N' || (!owned && deadlinePassed);
+    if (unavailable && (!source->hevcFrameL5 || (!supported && deadlinePassed)))
     {
       fallback = true;
       break;
@@ -5887,22 +5918,22 @@ void aml_dv_detect_active_area_start()
     publishState(source->policy->timedOut ? DV_DETECT_TIMED_OUT : DV_DETECT_SKIPPED);
     return; // playback vetoes and terminal timeouts precede cache identity I/O
   }
-  const bool frameL5 = aml_dv_live_frame_l5_eligible(source->hevcFrameL5Session);
+  const bool nativeL5 = source->nativeDV && detect_native_result_enabled(source);
+  const bool frameL5 = source->hevcFrameL5 && nativeL5;
   const bool hevcLive = source->hevcBorderToken && !source->startupScan &&
       (frameL5 || (settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) &&
-                  (!source->nativeDV || !aml_dv_detect_active_area_enabled())));
+                  !nativeL5));
   if (source->codedCrop && !hevcLive)
   {
     publishState(DV_DETECT_SKIP_NON16X9);
     return; // no worker, cache lookup, file reads or software decoding
   }
-  const bool enabled = frameL5 || settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
-      (source->nativeDV && aml_dv_detect_active_area_enabled());
+  const bool enabled = nativeL5 || settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA);
   if (!enabled || !source->allowProbe || source->superseded->load() ||
       source->width < 64 || source->height < 64 ||
       source->width > 65535 || source->height > 65535 || source->path.empty())
     return;
-  const bool live = !hevcLive && detect_can_use_vdin(*source);
+  const bool live = !hevcLive && !nativeL5 && detect_can_use_vdin(*source);
   auto reservation = live || hevcLive ? std::shared_ptr<const void>{} : detect_reserve_scanner();
   if (!live && !hevcLive && !reservation)
   {
@@ -5919,9 +5950,11 @@ void aml_dv_detect_active_area_start()
     {
       CLog::Log(LOGINFO, "DetectActiveArea: using live HEVC {} without file scanning",
                 frameL5 ? "frame L5" : "borders");
-      if (!detect_from_hevc(source, run) || run.Cancelled() || source->policy->Blocked() ||
-          !settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
-          (source->nativeDV && !frameL5 && aml_dv_detect_active_area_enabled()))
+      if (!detect_from_hevc(source, run) || run.Cancelled() || source->policy->Blocked())
+        return;
+      const bool fallbackL5 = frameL5 && aml_dv_live_frame_l5_eligible(source->dvSession);
+      if (!fallbackL5 && (!settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
+                         (source->nativeDV && !frameL5 && detect_native_result_enabled(source))))
         return;
       if (source->codedCrop)
       {
@@ -5936,11 +5969,12 @@ void aml_dv_detect_active_area_start()
         if (source != s_detectSource || source->superseded->load())
           return;
         source->liveResult.reset();
-        source->subtitleOnly = true;
+        source->subtitleOnly = !fallbackL5;
       }
       if (!publishState(DV_DETECT_RUNNING))
         return;
-      CLog::Log(LOGINFO, "DetectActiveArea: live HEVC unavailable; using subtitle file scan");
+      CLog::Log(LOGINFO, "DetectActiveArea: live HEVC unavailable; using {} file scan",
+                fallbackL5 ? "L5 fallback" : "subtitle");
     }
     if (live)
     {
@@ -5963,10 +5997,12 @@ void aml_dv_detect_active_area_start()
     identity.width = source->width;
     identity.height = source->height;
     identity.nativeDV = source->nativeDV;
+    const bool fillOnly = detect_native_fill_only(*source) && !source->subtitleOnly;
     const bool identified = cacheEnabled && ACTIVE_AREA_CACHE::ReadIdentity(identity);
     ACTIVE_AREA_CACHE::Record saved;
     if (identified && !run.Cancelled() && ACTIVE_AREA_CACHE::Load(identity, saved) &&
-        (!source->subtitleOnly || saved.hasSubtitle))
+        (!source->subtitleOnly || saved.hasSubtitle) &&
+        (!fillOnly || (saved.hasStrict && saved.highConfidence)))
     {
       source->uniqueStream = saved.uniqueStream;
       if (saved.hasSubtitle)
@@ -5999,9 +6035,9 @@ void aml_dv_detect_active_area_start()
     }
     if (retainedSubtitle)
       detect_publish_subtitle(run, source, *retainedSubtitle);
-    if (retained && !source->subtitleOnly)
+    if (retained && !source->subtitleOnly && (!fillOnly || retained->highConfidence))
       detect_publish(run, source, retained->top, retained->bottom, retained->left, retained->right, retained->highConfidence);
-    else if (retainedSubtitle)
+    else if (retainedSubtitle && !fillOnly)
     {
       std::lock_guard<std::mutex> lock(s_detectSourceMutex);
       if (!run.Cancelled() && source == s_detectSource && !source->superseded->load())
