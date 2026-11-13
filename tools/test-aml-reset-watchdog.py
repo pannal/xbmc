@@ -43,6 +43,15 @@ constexpr int LOGDEBUG=0, DVD_PLAYSPEED_NORMAL=1000, TRICKMODE_NONE=0;
 constexpr double DVD_NOPTS_VALUE=-1e30;
 enum class StreamHdrType {HDR_TYPE_NONE, HDR_TYPE_HDR10, HDR_TYPE_DOLBYVISION};
 constexpr int AV_CODEC_ID_HEVC=173;
+constexpr int AVCOL_RANGE_MPEG=1, AVCOL_PRI_BT709=1, AVCOL_TRC_BT709=1, AVCOL_SPC_BT709=1;
+struct CDVDStreamInfo {
+  StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE;
+  int width=3840, height=2160, codec=0;
+  int colorRange=0, colorPrimaries=0, colorTransferCharacteristic=0, colorSpace=0;
+  double aspect=16.0/9; bool interlaced=false;
+  struct {int dv_profile=0, dv_bl_signal_compatibility_id=0;} dovi;
+  int subtitleProbeSource=0;
+};
 // Fake wall clock: production reads std::chrono::system_clock::now().
 struct FakeClock {
   static inline std::chrono::system_clock::time_point value{std::chrono::seconds(1000)};
@@ -63,6 +72,7 @@ struct Dll {
 };
 static std::chrono::milliseconds probeRetireDelay{0};
 static int probeStarts=0;
+static int liveStarts=0;
 void dumpfile_close(Private*) {}
 void dumpfile_open(Private*) {}
 void am_packet_release(Packet*) {}
@@ -71,7 +81,7 @@ void pre_header_feeding(Private*,Packet*) {}
 void aml_dv_backend_invalidate(void*) {}
 uint64_t aml_dv_backend_epoch() {return 1;}
 bool aml_subtitle_active_area_configure(int,int,bool,bool,int,double,bool) {return true;}
-void aml_subtitle_active_area_enable_hevc_live(int) {}
+void aml_subtitle_active_area_enable_hevc_live(int) {++liveStarts;}
 // Stops and joins the previous probe worker before starting the next one.
 void aml_dv_detect_active_area_start() {++probeStarts; FakeClock::Advance(probeRetireDelay);}
 struct CAMLCodec {
@@ -86,10 +96,7 @@ struct CAMLCodec {
   bool m_resetHoldsVideo=true, m_inputEnded=false;
   struct {int frames=1;} m_stillFrameDrain;
   float m_dataLevel=1;
-  struct {StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE; int width=3840, height=2160, codec=0;
-          double aspect=16.0/9; bool interlaced=false;
-          struct {int dv_profile=0, dv_bl_signal_compatibility_id=0;} dovi;
-          int subtitleProbeSource=0;} m_hints;
+  CDVDStreamInfo m_hints;
   StreamHdrType m_originalSourceHdrType=StreamHdrType::HDR_TYPE_NONE;
   std::chrono::system_clock::time_point m_tp_last_frame{};
   int m_decoder_timeout=5;
@@ -107,6 +114,17 @@ struct CAMLCodec {
 
 TESTS = r'''
 int main() {
+  CAMLCodec sdr;
+  sdr.m_hints.codec = AV_CODEC_ID_HEVC;
+  sdr.m_hints.colorPrimaries = AVCOL_PRI_BT709;
+  sdr.m_hints.colorTransferCharacteristic = AVCOL_TRC_BT709;
+  sdr.m_hints.colorSpace = AVCOL_SPC_BT709;
+  sdr.ResetInternal();
+  assert(liveStarts == 0);
+  sdr.m_hints.colorRange = AVCOL_RANGE_MPEG;
+  sdr.ResetInternal();
+  assert(liveStarts == 1);
+
   // A probe retirement longer than the watchdog interval must not turn the
   // first post-reset poll into a timeout (an unfair second escalation step).
   for (int delay : {0, 6000, 20000}) {
@@ -142,7 +160,8 @@ def harness(root):
     reset = body(aml, 'void CAMLCodec::ResetInternal()')
     assert 'aml_dv_detect_active_area_start();' in reset
     reset = reset.replace('std::chrono::system_clock::now()', 'FakeClock::now()')
-    return PREFIX + 'void CAMLCodec::ResetInternal() {' + reset + '}\n' + TESTS
+    eligibility = function(aml, 'bool CanUseLiveHEVCBorders(')
+    return PREFIX + eligibility + '\nvoid CAMLCodec::ResetInternal() {' + reset + '}\n' + TESTS
 
 
 def run(source, directory, label, expect_failure=False):

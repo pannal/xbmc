@@ -39,16 +39,19 @@ static RecordingWorker s_detectWorker;
     # Keep the actual caller-owned hints alive across output and reset. A fresh
     # local hints object per call hides hardware writes to source geometry.
     code += r'''
+enum class StreamHdrType {HDR_TYPE_NONE};
+template<typename Hints>
+bool CanUseLiveHEVCBorders(const Hints&, StreamHdrType, bool) {return false;}
+void aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>&) {}
 struct Hardware {
  struct Hints{int width,height;double aspect;struct{int dv_profile=8;}dovi;std::shared_ptr<const void> subtitleProbeSource;};
  Hints hints;Hints& m_hints=hints;
+ StreamHdrType m_originalSourceHdrType=StreamHdrType::HDR_TYPE_NONE;
  struct{double dar=0.0;void SetVideoDAR(double value){dar=value;}}m_processInfo;
  Hardware(int w,int h,double dar,const std::shared_ptr<const void>& selected):hints{w,h,dar,{},selected}{}
 '''
     for name, variable in [('Open','hints'),('Reset','m_hints')]:
-        start = aml.index('  if (aml_subtitle_active_area_configure('+variable+'.width,')
-        end = aml.index('aml_dv_detect_active_area_start();',start)+len('aml_dv_detect_active_area_start();')
-        statement = aml[start:end]
+        statement = function(aml, '  if (aml_subtitle_active_area_configure('+variable+'.width,')
         assert variable+'.aspect' in statement
         code += '\nvoid '+name+'(bool nativeDV){\n'+statement+'\n}\n'
     code += 'void Picture(int ratio){struct{int ratio_control;}vi{ratio};\n'

@@ -2148,6 +2148,19 @@ void CAMLCodec::WaitForLifecycle()
 
 namespace
 {
+bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHdrType, bool nativeDV)
+{
+  if (hints.codec != AV_CODEC_ID_HEVC || hints.interlaced)
+    return false;
+
+  const bool limitedBT709 =
+      originalHdrType == StreamHdrType::HDR_TYPE_NONE && hints.colorRange == AVCOL_RANGE_MPEG &&
+      hints.colorPrimaries == AVCOL_PRI_BT709 &&
+      hints.colorTransferCharacteristic == AVCOL_TRC_BT709 && hints.colorSpace == AVCOL_SPC_BT709;
+  return limitedBT709 || originalHdrType == StreamHdrType::HDR_TYPE_HDR10 ||
+         (nativeDV && hints.dovi.dv_profile == 8 && hints.dovi.dv_bl_signal_compatibility_id == 1);
+}
+
 bool SetMPEG2KeepProgressive(const char* path, bool enabled)
 {
   unsigned long long control = 0;
@@ -2455,14 +2468,11 @@ bool CAMLCodec::OpenDecoderInternal()
 
   const bool nativeDV = hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
                         m_originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
-  const bool hevcLiveBorders = hints.codec == AV_CODEC_ID_HEVC && !hints.interlaced &&
-      (m_originalSourceHdrType == StreamHdrType::HDR_TYPE_HDR10 ||
-       (nativeDV && hints.dovi.dv_profile == 8 && hints.dovi.dv_bl_signal_compatibility_id == 1));
   if (aml_subtitle_active_area_configure(hints.width, hints.height, nativeDV,
                                         !nativeDV || hints.dovi.dv_profile != 9,
                                         hints.subtitleProbeSource, hints.aspect, true))
   {
-    if (hevcLiveBorders)
+    if (CanUseLiveHEVCBorders(hints, m_originalSourceHdrType, nativeDV))
       aml_subtitle_active_area_enable_hevc_live(hints.subtitleProbeSource);
     aml_dv_detect_active_area_start(); // separately selected DV injection / non-DV geometry
   }
@@ -2882,15 +2892,11 @@ void CAMLCodec::ResetInternal()
   // probe is joined before startup and old injection is cleared under this owner.
   const bool nativeDV = m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
                         m_originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
-  const bool hevcLiveBorders = m_hints.codec == AV_CODEC_ID_HEVC && !m_hints.interlaced &&
-      (m_originalSourceHdrType == StreamHdrType::HDR_TYPE_HDR10 ||
-       (nativeDV && m_hints.dovi.dv_profile == 8 &&
-        m_hints.dovi.dv_bl_signal_compatibility_id == 1));
   if (aml_subtitle_active_area_configure(m_hints.width, m_hints.height, nativeDV,
                                         !nativeDV || m_hints.dovi.dv_profile != 9,
                                         m_hints.subtitleProbeSource, m_hints.aspect, true))
   {
-    if (hevcLiveBorders)
+    if (CanUseLiveHEVCBorders(m_hints, m_originalSourceHdrType, nativeDV))
       aml_subtitle_active_area_enable_hevc_live(m_hints.subtitleProbeSource);
     aml_dv_detect_active_area_start();
   }
