@@ -42,7 +42,6 @@ static RecordingWorker s_detectWorker;
 enum class StreamHdrType {HDR_TYPE_NONE};
 template<typename Hints>
 unsigned int RequestLiveHEVCBorders(const Hints&, StreamHdrType, bool) {return 0;}
-void aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>&, unsigned int) {}
 struct Hardware {
  struct Hints{int width,height;double aspect;struct{int dv_profile=8;}dovi;std::shared_ptr<const void> subtitleProbeSource;};
  Hints hints;Hints& m_hints=hints;
@@ -258,7 +257,7 @@ def main():
         controls=[
             ('hardware DAR overwrites source evidence','m_processInfo.SetVideoDAR(65536.0 / vi.ratio_control);','m_hints.aspect = 65536.0 / vi.ratio_control; m_processInfo.SetVideoDAR(m_hints.aspect);'),
             ('stale pending snapshot pauses a crop','if (held && aml_subtitle_active_area_startup_try_hold(\n                  m_CurrentVideo.hint.subtitleProbeSource, [this] { SetCaching(CACHESTATE_INIT); }))','if (held && ([this] { SetCaching(CACHESTATE_INIT); return true; }()))'),
-            ('crop worker bypass removed','if (source->codedCrop)\n  {\n    publishState(DV_DETECT_SKIP_NON16X9);','if (false)\n  {\n    publishState(DV_DETECT_SKIP_NON16X9);'),
+            ('crop worker bypass removed','if (source->codedCrop && !hevcLive)','if (false)'),
             ('non-square DAR ignored','std::abs(displayAspect * height - width) > 1.0','false'),
             ('unknown DAR accepted','!std::isfinite(displayAspect) || displayAspect <= 0.0 ||\n      std::abs(displayAspect * height - width) > 1.0','(std::isfinite(displayAspect) && displayAspect > 0.0 && std::abs(displayAspect * height - width) > 1.0)'),
             ('retained geometry survives crop','allowProbe && !s_detectSource->codedCrop && !s_detectSource->policy->Blocked() && previous->width == width &&\n      previous->height == height && previous->displayAspect == displayAspect &&','allowProbe &&'),

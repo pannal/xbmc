@@ -21,8 +21,15 @@ struct Sample
   Borders borders;
 };
 
+enum class Source
+{
+  VDIN,
+  HEVC
+};
+
 // The kernel reports inclusive active-picture bounds in the capture canvas.
-inline std::optional<Sample> Read(std::istream& stream, int width, int height)
+inline std::optional<Sample> Read(std::istream& stream, int width, int height,
+                                  Source source = Source::VDIN)
 {
   int version, canvasWidth, canvasHeight, top, bottom, left, right, lumaMin, lumaMax;
   uint64_t stamp;
@@ -40,7 +47,7 @@ inline std::optional<Sample> Read(std::istream& stream, int width, int height)
   bottom = height - 1 - bottom;
   right = width - 1 - right;
   if (top > height / 3 || bottom > height / 3 || left > width / 3 || right > width / 3 ||
-      std::abs(top - bottom) > 4 || std::abs(left - right) > 4)
+      (source == Source::VDIN && (std::abs(top - bottom) > 4 || std::abs(left - right) > 4)))
     return {};
 
   return Sample{stamp, {static_cast<uint16_t>(top), static_cast<uint16_t>(bottom),
@@ -50,12 +57,6 @@ inline std::optional<Sample> Read(std::istream& stream, int width, int height)
 class Consensus
 {
 public:
-  enum class Source
-  {
-    VDIN,
-    HEVC
-  };
-
   explicit Consensus(Source source = Source::VDIN) : m_source(source) {}
 
   std::optional<Borders> Observe(const std::optional<Sample>& sample)

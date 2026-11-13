@@ -20880,5 +20880,5 @@ msgstr "Live-Erkennung schwarzer Balken bevorzugen"
 #. Help for subtitle live black-border detection
 #: system/settings/settings.xml
 msgctxt "#69390"
-msgid "Follow changes in the active picture during playback when the hardware decoder supports it. If the decoder reports that the live path is unavailable, a file scan runs in the background. Turn this off to prefer file-wide estimates and the startup wait setting. Applies when opening a video."
-msgstr "Verfolgt Änderungen des aktiven Bildbereichs während der Wiedergabe, wenn der Hardwaredecoder dies unterstützt. Meldet der Decoder, dass keine Live-Erkennung möglich ist, läuft ein Dateiscan im Hintergrund. Deaktivieren, um dateiweite Schätzungen und die Wartezeit beim Start zu bevorzugen. Gilt beim Öffnen eines Videos."
+msgid "Follow changes in the active picture during playback when the hardware decoder supports it. Eligible sources fall back to a background file scan if live detection is unavailable. Turn this off to prefer file-wide estimates and the startup wait setting. Applies when opening a video."
+msgstr "Verfolgt Änderungen des aktiven Bildbereichs während der Wiedergabe, wenn der Hardwaredecoder dies unterstützt. Ist keine Live-Erkennung möglich, werden dafür geeignete Quellen im Hintergrund per Dateiscan geprüft. Deaktivieren, um dateiweite Schätzungen und die Wartezeit beim Start zu bevorzugen. Gilt beim Öffnen eines Videos."

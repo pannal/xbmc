@@ -5659,7 +5659,7 @@ bool aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   if (!token || !expectedSource || expectedSource != s_detectSource->selection ||
       s_detectSource->superseded->load() || s_detectSource->binding ||
-      s_detectSource->codedCrop || s_detectSource->policy->Blocked())
+      !s_detectSource->allowProbe || s_detectSource->policy->Blocked())
     return false;
   s_detectSource->hevcBorderToken = token;
   s_detectSource->startupWait->store(false);
@@ -5740,7 +5740,8 @@ static bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,
                              const CAMLNativeWorker::Run& run)
 {
   using AML_ACTIVE_AREA_VDIN::Consensus;
-  Consensus consensus{Consensus::Source::HEVC};
+  using AML_ACTIVE_AREA_VDIN::Source;
+  Consensus consensus{Source::HEVC};
   const auto ownerDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   auto lastConfirmed = std::chrono::steady_clock::time_point{};
   bool fallback = false;
@@ -5760,7 +5761,7 @@ static bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,
         continue;
       }
       if (status == 'Y')
-        sample = AML_ACTIVE_AREA_VDIN::Read(row, source->width, source->height);
+        sample = AML_ACTIVE_AREA_VDIN::Read(row, source->width, source->height, Source::HEVC);
       break;
     }
     const bool owned = status == 'P' || status == 'Y' || status == 'N';
@@ -5852,7 +5853,10 @@ void aml_dv_detect_active_area_start()
     publishState(source->policy->timedOut ? DV_DETECT_TIMED_OUT : DV_DETECT_SKIPPED);
     return; // playback vetoes and terminal timeouts precede cache identity I/O
   }
-  if (source->codedCrop)
+  const bool hevcLive = source->hevcBorderToken && !source->startupScan &&
+      settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) &&
+      (!source->nativeDV || !aml_dv_detect_active_area_enabled());
+  if (source->codedCrop && !hevcLive)
   {
     publishState(DV_DETECT_SKIP_NON16X9);
     return; // no worker, cache lookup, file reads or software decoding
@@ -5863,9 +5867,6 @@ void aml_dv_detect_active_area_start()
       source->width < 64 || source->height < 64 ||
       source->width > 65535 || source->height > 65535 || source->path.empty())
     return;
-  const bool hevcLive = source->hevcBorderToken && !source->startupScan && source->width == 3840 &&
-      source->height == 2160 && settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) &&
-      (!source->nativeDV || !aml_dv_detect_active_area_enabled());
   const bool live = !hevcLive && detect_can_use_vdin(*source);
   auto reservation = live || hevcLive ? std::shared_ptr<const void>{} : detect_reserve_scanner();
   if (!live && !hevcLive && !reservation)
@@ -5886,6 +5887,11 @@ void aml_dv_detect_active_area_start()
           !settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
           (source->nativeDV && aml_dv_detect_active_area_enabled()))
         return;
+      if (source->codedCrop)
+      {
+        publishState(DV_DETECT_SKIP_NON16X9);
+        return;
+      }
       reservation = detect_reserve_scanner();
       if (!reservation)
         return;

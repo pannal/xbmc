@@ -245,12 +245,24 @@ void vdin_samples()
 void hevc_border_samples()
 {
  using namespace AML_ACTIVE_AREA_VDIN;
+ auto read = [](const char* line, Source source) {
+  std::istringstream input(line);
+  return Read(input, 1920, 1036, source);
+ };
+ const char* window = "1 1 1920 1036 100 923 212 1707 0 180";
+ assert(!read(window, Source::VDIN));
+ const auto cropped = read(window, Source::HEVC);
+ const auto oneSided = read("1 2 1920 1036 0 1035 0 1887 0 180", Source::HEVC);
+ assert(cropped && (cropped->borders == Borders{100, 112, 212, 212}));
+ assert(oneSided && (oneSided->borders == Borders{0, 0, 0, 32}));
+ assert(!read("1 3 1920 1040 100 923 212 1707 0 180", Source::HEVC));
+ assert(!read("1 4 1920 1036 400 923 212 1707 0 180", Source::HEVC));
  const Borders scope{204, 204, 0, 0};
  const Borders jitter{208, 204, 0, 0};
  const Borders different{212, 212, 0, 0};
  const Borders full{};
  const Borders thin{4, 4, 0, 0};
- Consensus consensus{Consensus::Source::HEVC};
+ Consensus consensus{Source::HEVC};
  assert(!consensus.Observe(Sample{1, scope}));
  assert(!consensus.Observe(Sample{2, jitter}));
  assert(!consensus.Observe(Sample{2, jitter}));
@@ -269,7 +281,7 @@ void hevc_border_samples()
  assert(!consensus.Observe(Sample{14, full}));
  assert(consensus.Observe(Sample{15, full}) == full);
 
- Consensus drifting{Consensus::Source::HEVC};
+ Consensus drifting{Source::HEVC};
  assert(!drifting.Observe(Sample{1, scope}));
  assert(!drifting.Observe(Sample{2, Borders{208, 208, 0, 0}}));
  assert(!drifting.Observe(Sample{3, different}));
@@ -363,6 +375,33 @@ void hevc_live_only()
  assert(finished.wait_for(2s) == std::future_status::ready);
  s_detectWorker.Stop();
  assert(s_detectSource->subtitleResult && !s_detectSource->result && !s_detectStable);
+
+ for (bool unavailable : {false, true}) {
+  aml_dv_detect_set_file("hevc-cropped");
+  const auto selected = aml_subtitle_active_area_source();
+  assert(aml_subtitle_active_area_configure(1920, 1036, false, true, selected,
+                                            1920.0 / 1036.0, true));
+  assert(s_detectSource->codedCrop);
+  assert(aml_subtitle_active_area_enable_hevc_live(selected, 3));
+  std::promise<void> entered;
+  auto started = entered.get_future();
+  hevcHook = [&](const auto& source, const auto&) {
+   assert(source->hevcBorderToken == 3 && !source->startupScan);
+   entered.set_value();
+   return unavailable;
+  };
+  scanHook = [](const auto&, const auto&) { assert(false && "cropped source reached FFmpeg"); };
+  {
+   CAMLNativeTransaction owner;
+   assert(owner.TryBegin());
+   aml_dv_detect_active_area_start();
+  }
+  assert(started.wait_for(2s) == std::future_status::ready);
+  const int state = unavailable ? DV_DETECT_SKIP_NON16X9 : DV_DETECT_SKIPPED;
+  until([&] { return s_detectSource->scanState == state; });
+  s_detectWorker.Stop();
+  assert(!s_detectSource->result && !s_detectSource->subtitleResult);
+ }
  hevcHook = {};
  dvDetection = savedDV;
 }
@@ -399,7 +438,9 @@ bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,const CAMLNati
     methods+='\n'.join(function(aml,sig) for sig in (
       'void aml_dv_set_active_area_geometry(', 'static void _auto_letterbox_watch_run(',
       'void aml_dv_auto_letterbox_watch_start()', 'void aml_dv_auto_letterbox_watch_stop()',
-      'void aml_dv_detect_set_file(', 'static void detect_clear_injection_locked(bool nativeSource)\n{', 'static void detect_clear_injection(', 'void aml_dv_detect_active_area_start()',
+      'void aml_dv_detect_set_file(', 'static void detect_clear_injection_locked(bool nativeSource)\n{',
+      'static void detect_clear_injection(', 'bool aml_subtitle_active_area_enable_hevc_live(',
+      'void aml_dv_detect_active_area_start()',
       'void aml_dv_detect_active_area_stop()', 'bool aml_dv_retire_background_work()'))
     # Wiring into FFmpeg's interrupt and final publication; the full scan is not host-compiled.
     scan=function(aml,'static void DetectActiveAreaFromFile(')

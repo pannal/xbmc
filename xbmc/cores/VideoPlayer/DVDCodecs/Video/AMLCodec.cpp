@@ -2156,9 +2156,12 @@ bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHd
     return false;
 
   const bool limitedBT709 =
-      originalHdrType == StreamHdrType::HDR_TYPE_NONE && hints.colorRange == AVCOL_RANGE_MPEG &&
-      hints.colorPrimaries == AVCOL_PRI_BT709 &&
-      hints.colorTransferCharacteristic == AVCOL_TRC_BT709 && hints.colorSpace == AVCOL_SPC_BT709;
+      originalHdrType == StreamHdrType::HDR_TYPE_NONE &&
+      (hints.colorRange == AVCOL_RANGE_MPEG || hints.colorRange == AVCOL_RANGE_UNSPECIFIED) &&
+      (hints.colorPrimaries == AVCOL_PRI_BT709 || hints.colorPrimaries == AVCOL_PRI_UNSPECIFIED) &&
+      (hints.colorTransferCharacteristic == AVCOL_TRC_BT709 ||
+       hints.colorTransferCharacteristic == AVCOL_TRC_UNSPECIFIED) &&
+      (hints.colorSpace == AVCOL_SPC_BT709 || hints.colorSpace == AVCOL_SPC_UNSPECIFIED);
   return limitedBT709 || originalHdrType == StreamHdrType::HDR_TYPE_HDR10 ||
          (nativeDV && hints.dovi.dv_profile == 8 && hints.dovi.dv_bl_signal_compatibility_id == 1);
 }
@@ -2166,7 +2169,7 @@ bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHd
 unsigned int RequestLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHdrType,
                                     bool nativeDV)
 {
-  if (hints.width != 3840 || hints.height != 2160 ||
+  if (hints.width < 256 || hints.width > 3840 || hints.height < 256 || hints.height > 2176 ||
       !CanUseLiveHEVCBorders(hints, originalHdrType, nativeDV) ||
       access("/sys/module/amvdec_h265/parameters/p3i_active_area_status", R_OK) != 0)
     return 0;

@@ -28203,5 +28203,5 @@ msgstr ""
 #. Help for subtitle live black-border detection
 #: system/settings/settings.xml
 msgctxt "#69390"
-msgid "Follow changes in the active picture during playback when the hardware decoder supports it. If the decoder reports that the live path is unavailable, a file scan runs in the background. Turn this off to prefer file-wide estimates and the startup wait setting. Applies when opening a video."
+msgid "Follow changes in the active picture during playback when the hardware decoder supports it. Eligible sources fall back to a background file scan if live detection is unavailable. Turn this off to prefer file-wide estimates and the startup wait setting. Applies when opening a video."
 msgstr ""
