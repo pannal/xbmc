@@ -53,6 +53,10 @@ bool aml_dv_auto_letterbox_active(){uint16_t t,b,l,r;return _auto_letterbox_geom
 @DETECT_ENUM@
 int s_dvModeCached=1;constexpr int DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL=1;
 bool dvDetection=true;bool aml_dv_detect_active_area_enabled(){return dvDetection;}
+bool aml_dv_live_frame_l5_eligible(const std::shared_ptr<const void>& session)
+{
+ return session && dvDetection;
+}
 std::atomic<bool> s_detectStable{false},s_detectThrottleActive{false},s_detectCacheStarved{false};
 std::atomic<int> s_detectState{DV_DETECT_FAILED};
 std::atomic<uint16_t> s_detectedTop{0},s_detectedBottom{0},s_detectedLeft{0},s_detectedRight{0};
@@ -257,6 +261,24 @@ void hevc_border_samples()
  assert(oneSided && (oneSided->borders == Borders{0, 0, 0, 32}));
  assert(!read("1 3 1920 1040 100 923 212 1707 0 180", Source::HEVC));
  assert(!read("1 4 1920 1036 400 923 212 1707 0 180", Source::HEVC));
+ auto readUhd = [](const char* line) {
+  std::istringstream input(line);
+  return Read(input, 3840, 2160, Source::HEVC);
+ };
+ const auto nearCentered = readUhd("1 1 3840 2160 276 1887 0 3839 0 180 279 275 0 0");
+ const auto rawJitter = readUhd("1 2 3840 2160 272 1887 0 3839 0 180 272 272 0 0");
+ assert(nearCentered && (nearCentered->borders == Borders{276, 272, 0, 0}));
+ assert((nearCentered->snapped == Borders{279, 275, 0, 0}));
+ assert(rawJitter && (rawJitter->snapped == Borders{272, 272, 0, 0}));
+ const auto legacy = readUhd("1 3 3840 2160 276 1887 0 3839 0 180");
+ const auto malformed = readUhd("1 3 3840 2160 276 1887 0 3839 0 180 280 272 0 0");
+ assert(legacy && !legacy->snapped && legacy->borders == nearCentered->borders);
+ assert(malformed && !malformed->snapped && malformed->borders == nearCentered->borders);
+ Consensus refined{Source::HEVC};
+ assert(!refined.Observe(nearCentered));
+ assert(!refined.Observe(rawJitter));
+ assert(refined.Observe(readUhd("1 3 3840 2160 276 1887 0 3839 0 180 279 275 0 0")) ==
+        nearCentered->snapped);
  const Borders scope{204, 204, 0, 0};
  const Borders jitter{208, 204, 0, 0};
  const Borders different{212, 212, 0, 0};
