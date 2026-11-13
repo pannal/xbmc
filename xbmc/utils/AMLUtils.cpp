@@ -101,6 +101,11 @@ static std::atomic<unsigned int> s_guiDvOutputMode{DOLBY_VISION_OUTPUT_MODE_BYPA
 // Tracks whether DV playback is active (between aml_dv_open/aml_dv_close).
 // Used by CreateNewWindow to avoid restoring IPT during playback-start mode switches.
 static bool s_dvPlaybackActive = false;
+// The VS10 output mode aml_dv_open() admitted for the current playback, after
+// its software-decode and SDR BT.2020 Bypass overrides; a deferred disc engage
+// counts with the mode it will engage. Bypass when no playback is open.
+// Written under the DV-core lock, read by CreateNewWindow without it.
+static std::atomic<unsigned int> s_dvOpenOutputMode{DOLBY_VISION_OUTPUT_MODE_BYPASS};
 // A Blu-ray disc session holds DV_MODE_ON_DEMAND's DV output across the
 // decoder closes of its segment swaps (aml_dv_set_disc_hold). Guarded by the
 // DV-core lock, like s_dvPlaybackActive.
@@ -407,6 +412,9 @@ void aml_dv_set_vs10_mode(unsigned int mode, StreamHdrType hdrType, bool hardwar
     // must publish its HDR type as well, after native DV teardown completes.
     aml_dv_trigger_update_resolution(hdrType);
   }
+  // The live toggle replaces the mode aml_dv_open() admitted for this playback.
+  if (s_dvPlaybackActive)
+    s_dvOpenOutputMode.store(mode, std::memory_order_relaxed);
 
   aml_reset_audio_from_vs10_change();
   aml_dv_dump_state("vs10_change/post");
@@ -1927,6 +1935,7 @@ void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries 
   std::atomic_store(&s_dvPlaybackSession, std::move(session));
   std::atomic_store(&s_dvOutputTransition, std::shared_ptr<AMLDVOutputTransition>{});
   s_dvPlaybackActive = true;
+  s_dvOpenOutputMode.store(DOLBY_VISION_OUTPUT_MODE_BYPASS, std::memory_order_relaxed);
   s_pm4kActive.store(pm4kActive, std::memory_order_relaxed);
 
   enum DV_MODE dv_mode(aml_dv_mode());
@@ -2005,6 +2014,7 @@ void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries 
       else if (aml_is_dv_enable()) // DV BYPASS, and it is on - then switch it off.
         aml_dv_off();
     }
+    s_dvOpenOutputMode.store(vs10_mode, std::memory_order_relaxed);
 
     bool content_is_dv(hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION);
     CLog::Log(LOGINFO, "AMLUtils::{} - DV is [{}], requested with vs10 mode: [{}], set for: [{}]",  __FUNCTION__, aml_is_dv_enable(), aml_dv_output_mode_to_string(vs10_mode), content_is_dv ? "content" : "mapping");
@@ -2033,6 +2043,7 @@ void aml_dv_close()
   std::atomic_store(&s_dvPlaybackSession, std::shared_ptr<const void>{});
   std::atomic_store(&s_dvOutputTransition, std::shared_ptr<AMLDVOutputTransition>{});
   s_dvPlaybackActive = false;
+  s_dvOpenOutputMode.store(DOLBY_VISION_OUTPUT_MODE_BYPASS, std::memory_order_relaxed);
   s_pm4kActive.store(false, std::memory_order_relaxed);
 
   // DV_MODE_ON: leave DV enabled in its current output mode.  This avoids
@@ -2210,6 +2221,11 @@ void aml_dv_engage_stale_deferred_disc(const std::shared_ptr<const void>& sessio
 bool aml_dv_playback_active()
 {
   return s_dvPlaybackActive;
+}
+
+unsigned int aml_dv_open_output_mode()
+{
+  return s_dvOpenOutputMode.load(std::memory_order_relaxed);
 }
 
 void aml_dv_set_osd_max(int max)
