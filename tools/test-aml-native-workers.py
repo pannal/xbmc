@@ -328,10 +328,10 @@ void hevc_live_only()
  dvDetection = false;
  for (bool native : {false, true}) {
   select("hevc-live", native, 3840, 2160);
-  s_detectSource->hevcLiveBorders = true;
+  s_detectSource->hevcBorderToken = 1;
   std::promise<void> entered;
   auto ready = entered.get_future();
-  hevcHook = [&](const auto&, const auto&) { entered.set_value(); };
+  hevcHook = [&](const auto&, const auto&) { entered.set_value(); return false; };
   scanHook = [](const auto&, const auto&) { assert(false); };
   auto scanner = native ? detect_reserve_scanner() : std::shared_ptr<const void>{};
   assert(!native || scanner);
@@ -345,6 +345,24 @@ void hevc_live_only()
   assert(!s_detectSource->pending && !s_detectSource->result && !s_detectSource->subtitleResult);
   assert(s_detectSource->scanState == DV_DETECT_SKIPPED);
  }
+ select("hevc-fallback", true, 3840, 2160);
+ s_detectSource->hevcBorderToken = 2;
+ std::promise<void> scanned;
+ auto finished = scanned.get_future();
+ hevcHook = [](const auto&, const auto&) { return true; };
+ scanHook = [&](const auto& source, const auto& run) {
+  assert(source->subtitleOnly);
+  detect_publish_subtitle(run, source, {40, 40, 0, 0});
+  scanned.set_value();
+ };
+ {
+  CAMLNativeTransaction owner;
+  assert(owner.TryBegin());
+  aml_dv_detect_active_area_start();
+ }
+ assert(finished.wait_for(2s) == std::future_status::ready);
+ s_detectWorker.Stop();
+ assert(s_detectSource->subtitleResult && !s_detectSource->result && !s_detectStable);
  hevcHook = {};
  dvDetection = savedDV;
 }
@@ -369,12 +387,12 @@ def source():
     methods='''
 // VDIN sysfs is a boundary of this worker fixture.
 std::function<void(const std::shared_ptr<DetectSource>&,const CAMLNativeWorker::Run&)> liveHook;
-std::function<void(const std::shared_ptr<DetectSource>&,const CAMLNativeWorker::Run&)> hevcHook;
+std::function<bool(const std::shared_ptr<DetectSource>&,const CAMLNativeWorker::Run&)> hevcHook;
 void detect_from_vdin(const std::shared_ptr<DetectSource>& source,const CAMLNativeWorker::Run& run){
  assert(liveHook);liveHook(source,run);
 }
-void detect_from_hevc(const std::shared_ptr<DetectSource>& source,const CAMLNativeWorker::Run& run){
- assert(hevcHook);hevcHook(source,run);
+bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,const CAMLNativeWorker::Run& run){
+ assert(hevcHook);return hevcHook(source,run);
 }
 ''' + function(aml, 'static bool detect_can_use_vdin(').replace(
         'access(VDIN_ACTIVE_AREA_PATH, R_OK) == 0', 'static_cast<bool>(liveHook)') + '\n'

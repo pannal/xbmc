@@ -254,7 +254,8 @@ std::shared_ptr<const void> aml_subtitle_active_area_source(int streamIndex, int
 bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bool allowProbe,
                                       const std::shared_ptr<const void>& expectedSource,
                                       double displayAspect = 0.0, bool usesAMLVideoPlane = false);
-void aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>& expectedSource);
+bool aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>& expectedSource,
+                                              unsigned int token);
 // The serialized software reset has retired the old decode call; its next
 // output (including EOF) now belongs to a fresh route with the same geometry.
 void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedSource);

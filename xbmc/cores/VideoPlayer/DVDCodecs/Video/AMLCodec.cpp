@@ -41,6 +41,7 @@
 #include <fstream>
 #include <limits>
 #include <queue>
+#include <random>
 #include <signal.h>
 #include <sstream>
 #include <stdio.h>
@@ -363,6 +364,7 @@ typedef struct am_private_t
   hdr_buf_t         hdr_buf;
   aml_generic_param gcodec;
   codec_para_t      vcodec;
+  unsigned int      liveBorderToken;
 
   pstream_type      stream_type;
   int               check_first_pts;
@@ -2161,6 +2163,31 @@ bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHd
          (nativeDV && hints.dovi.dv_profile == 8 && hints.dovi.dv_bl_signal_compatibility_id == 1);
 }
 
+unsigned int RequestLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHdrType,
+                                    bool nativeDV)
+{
+  if (hints.width != 3840 || hints.height != 2160 ||
+      !CanUseLiveHEVCBorders(hints, originalHdrType, nativeDV) ||
+      access("/sys/module/amvdec_h265/parameters/p3i_active_area_status", R_OK) != 0)
+    return 0;
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  if (!settings->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
+      !settings->GetBool(CSettings::SETTING_SUBTITLES_LIVEACTIVEAREA) ||
+      (nativeDV && aml_dv_detect_active_area_enabled()))
+    return 0;
+  unsigned int token;
+  try
+  {
+    std::random_device random;
+    token = std::uniform_int_distribution<unsigned int>(1, INT32_MAX)(random);
+  }
+  catch (const std::exception&)
+  {
+    return 0;
+  }
+  return aml_subtitle_active_area_enable_hevc_live(hints.subtitleProbeSource, token) ? token : 0;
+}
+
 bool SetMPEG2KeepProgressive(const char* path, bool enabled)
 {
   unsigned long long control = 0;
@@ -2468,13 +2495,14 @@ bool CAMLCodec::OpenDecoderInternal()
 
   const bool nativeDV = hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
                         m_originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
+  am_private->liveBorderToken = 0;
   if (aml_subtitle_active_area_configure(hints.width, hints.height, nativeDV,
                                         !nativeDV || hints.dovi.dv_profile != 9,
                                         hints.subtitleProbeSource, hints.aspect, true))
   {
-    if (CanUseLiveHEVCBorders(hints, m_originalSourceHdrType, nativeDV))
-      aml_subtitle_active_area_enable_hevc_live(hints.subtitleProbeSource);
-    aml_dv_detect_active_area_start(); // separately selected DV injection / non-DV geometry
+    am_private->liveBorderToken = RequestLiveHEVCBorders(hints, m_originalSourceHdrType, nativeDV);
+    if (!am_private->liveBorderToken)
+      aml_dv_detect_active_area_start(); // separately selected DV injection / non-DV geometry
   }
 
   // Now have the HDRType resolved, ok to set the transfer pq - so renderer can set the shaders as needed.
@@ -2600,10 +2628,18 @@ bool CAMLCodec::OpenDecoderInternal()
   m_dll->codec_init_para(&am_private->gcodec, &am_private->vcodec);
 
   std::string config_data = GetHDRStaticMetadata();
+  if (am_private->liveBorderToken)
+  {
+    if (!config_data.empty() && config_data.back() != ';')
+      config_data += ';';
+    config_data += "p3i_border_token:" + std::to_string(am_private->liveBorderToken) + ";";
+  }
   if (!config_data.empty())
   {
     am_private->vcodec.config_len = static_cast<int>(config_data.size());
     am_private->vcodec.config = (char*)malloc(config_data.size() + 1);
+    if (!am_private->vcodec.config)
+      return false;
     config_data.copy(am_private->vcodec.config, config_data.size());
     am_private->vcodec.config[am_private->vcodec.config_len] = '\0';
   }
@@ -2631,6 +2667,8 @@ bool CAMLCodec::OpenDecoderInternal()
     CLog::Log(LOGDEBUG, "CAMLCodec::OpenDecoder codec init failed, ret=0x{:x}", -ret);
     return false;
   }
+  if (am_private->liveBorderToken)
+    aml_dv_detect_active_area_start();
 
   am_private->dumpdemux = false;
   dumpfile_open(am_private);
@@ -2896,8 +2934,8 @@ void CAMLCodec::ResetInternal()
                                         !nativeDV || m_hints.dovi.dv_profile != 9,
                                         m_hints.subtitleProbeSource, m_hints.aspect, true))
   {
-    if (CanUseLiveHEVCBorders(m_hints, m_originalSourceHdrType, nativeDV))
-      aml_subtitle_active_area_enable_hevc_live(m_hints.subtitleProbeSource);
+    if (am_private->liveBorderToken && (!nativeDV || !aml_dv_detect_active_area_enabled()))
+      aml_subtitle_active_area_enable_hevc_live(m_hints.subtitleProbeSource, am_private->liveBorderToken);
     aml_dv_detect_active_area_start();
   }
 

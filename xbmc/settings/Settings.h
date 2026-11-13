@@ -175,6 +175,7 @@ public:
   static constexpr auto SETTING_SUBTITLES_EXCLUDEHTTPACTIVEAREA = "subtitles.excludehttpactivearea";
   static constexpr auto SETTING_SUBTITLES_ACTIVEAREATIMEOUT = "subtitles.activeareatimeout";
   static constexpr auto SETTING_SUBTITLES_DETECTACTIVEAREA = "subtitles.detectactivearea";
+  static constexpr auto SETTING_SUBTITLES_LIVEACTIVEAREA = "subtitles.liveactivearea";
   static constexpr auto SETTING_SUBTITLES_CACHEACTIVEAREA = "subtitles.cacheactivearea";
   static constexpr auto SETTING_SUBTITLES_ISOLATEACTIVEAREA = "subtitles.isolateactivearea";
   static constexpr auto SETTING_SUBTITLES_WAITACTIVEAREA = "subtitles.waitactivearea";

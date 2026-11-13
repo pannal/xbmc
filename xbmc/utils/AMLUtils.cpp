@@ -2988,7 +2988,8 @@ struct DetectSource
   const double displayAspect;
   const bool codedCrop;
   bool usesAMLVideoPlane{false}; // set at configuration before worker admission
-  bool hevcLiveBorders{false};
+  unsigned int hevcBorderToken{0};
+  bool subtitleOnly{false}; // live route's file fallback, set by its worker before scanning
   const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
   std::atomic<bool> pending{false};
   bool startupVideoReady{false}; // current epoch, protected by s_detectSourceMutex
@@ -3240,7 +3241,7 @@ void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedS
       previous->streamIndex, previous->codecHint, previous->displayAspect);
   s_detectSource->policy = previous->policy;
   s_detectSource->usesAMLVideoPlane = previous->usesAMLVideoPlane;
-  s_detectSource->hevcLiveBorders = previous->hevcLiveBorders;
+  s_detectSource->hevcBorderToken = previous->hevcBorderToken;
   s_detectSource->binding = previous->binding;
   s_detectSource->selectionId = previous->selectionId;
   s_detectSource->startupVideoReady = previous->startupVideoReady;
@@ -3457,7 +3458,7 @@ bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
     return false;
   const bool live = subtitleDetection && !source->binding && !source->superseded->load() &&
                     source->liveResult.has_value() &&
-                    (!source->hevcLiveBorders || !source->nativeDV || allowSubtitleEstimate);
+                    (!source->hevcBorderToken || !source->nativeDV || allowSubtitleEstimate);
   const bool enabled = live || source->boundUsable || (source->nativeDV ? (aml_dv_detect_active_area_enabled() ||
       (allowSubtitleEstimate && subtitleDetection)) : subtitleDetection);
   // Retention is only set by an explicit pure seek/reset and remains bound to
@@ -3467,7 +3468,8 @@ bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
   // Strict full-frame evidence overrides estimates. A positive native crop
   // can prove only one axis; adapted text keeps its independently published
   // envelope on the other axis, including variable framing.
-  if (allowSubtitleEstimate && (!accepted || accepted->top || accepted->bottom ||
+  if ((allowSubtitleEstimate || (source->subtitleOnly && !source->nativeDV)) &&
+      (!accepted || accepted->top || accepted->bottom ||
                                 accepted->left || accepted->right))
   {
     const auto subtitle = !source->superseded->load() && source->subtitleResult ?
@@ -5293,7 +5295,7 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
       // Current source metadata keeps native authority. Adapted text still
       // needs an independent bounded pixel scan when authored offsets are too
       // small; it cannot replace native L5 or an explicit manual override.
-      if (source->nativeDV && !source->standalone)
+      if (source->nativeDV && !source->standalone && !source->subtitleOnly)
       {
         const auto srcMeta = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata();
         if (srcMeta.has_level5_metadata && !srcMeta.level5_detected &&
@@ -5336,15 +5338,21 @@ static void DetectActiveAreaFromFile(const std::shared_ptr<DetectSource>& source
     bool spatialInvariant = false;
     const bool spatialAccepted = detect_tiered_consensus(spatial, validSamples,
                                                         subtitleConsensus, spatialInvariant);
-    if (spatialAccepted ||
+    const bool subtitleAccepted = spatialAccepted ||
         detect_subtitle_consensus(subtitle_top, subtitle_bottom, subtitle_left, subtitle_right,
-                                  subtitle_rejected, validSamples, subtitleConsensus))
+                                  subtitle_rejected, validSamples, subtitleConsensus);
+    if (subtitleAccepted)
     {
       detect_publish_subtitle(run, source, subtitleConsensus);
       CLog::Log(LOGINFO, "DetectActiveArea: subtitle estimate T={} B={} L={} R={} "
                 "({} samples; no native L5 publication)", subtitleConsensus.top,
                 subtitleConsensus.bottom, subtitleConsensus.left, subtitleConsensus.right,
                 validSamples);
+    }
+    if (source->subtitleOnly)
+    {
+      state.store(subtitleAccepted ? DV_DETECT_OK : DV_DETECT_SKIPPED);
+      goto cleanup;
     }
     if (authoredPositive && (!aml_dv_detect_active_area_enabled() ||
                              validSamples != numSeeks || !spatialAccepted || !spatialInvariant))
@@ -5643,19 +5651,21 @@ static void detect_clear_injection(bool nativeSource)
 
 static constexpr char VDIN_ACTIVE_AREA_PATH[] = "/sys/class/vdin/vdin1/active_area";
 static constexpr char HEVC_ACTIVE_AREA_PATH[] =
-    "/sys/module/amvdec_h265/parameters/p3i_active_area";
+    "/sys/module/amvdec_h265/parameters/p3i_active_area_status";
 
-void aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>& expectedSource)
+bool aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>& expectedSource,
+                                             unsigned int token)
 {
-  char enabled = 0;
-  std::ifstream parameter("/sys/module/amvdec_h265/parameters/p3i_live_borders");
-  if (!(parameter >> enabled) || enabled != 'Y' || access(HEVC_ACTIVE_AREA_PATH, R_OK) != 0)
-    return;
-
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
-  if (expectedSource && expectedSource == s_detectSource->selection &&
-      !s_detectSource->superseded->load())
-    s_detectSource->hevcLiveBorders = true;
+  if (!token || !expectedSource || expectedSource != s_detectSource->selection ||
+      s_detectSource->superseded->load() || s_detectSource->binding ||
+      s_detectSource->codedCrop || s_detectSource->policy->Blocked())
+    return false;
+  s_detectSource->hevcBorderToken = token;
+  s_detectSource->startupWait->store(false);
+  s_detectSource->startupHeld->store(false);
+  s_detectSource->startupAdmission->store(false);
+  return true;
 }
 
 static bool detect_can_use_vdin(const DetectSource& source)
@@ -5726,25 +5736,39 @@ static void detect_from_vdin(const std::shared_ptr<DetectSource>& source,
   source->liveResult.reset();
 }
 
-static void detect_from_hevc(const std::shared_ptr<DetectSource>& source,
+static bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,
                              const CAMLNativeWorker::Run& run)
 {
   using AML_ACTIVE_AREA_VDIN::Consensus;
   Consensus consensus{Consensus::Source::HEVC};
-  std::optional<uint64_t> initialStamp;
-  {
-    std::ifstream initial(HEVC_ACTIVE_AREA_PATH);
-    if (const auto sample = AML_ACTIVE_AREA_VDIN::Read(initial, source->width, source->height))
-      initialStamp = sample->stamp;
-  }
+  const auto ownerDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   auto lastConfirmed = std::chrono::steady_clock::time_point{};
+  bool fallback = false;
   while (!run.Cancelled() && settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) &&
          (!source->nativeDV || !aml_dv_detect_active_area_enabled()))
   {
     std::ifstream input(HEVC_ACTIVE_AREA_PATH);
-    auto sample = AML_ACTIVE_AREA_VDIN::Read(input, source->width, source->height);
-    if (sample && sample->stamp == initialStamp)
-      sample.reset();
+    char status = 0;
+    std::optional<AML_ACTIVE_AREA_VDIN::Sample> sample;
+    for (std::string line; std::getline(input, line);)
+    {
+      std::istringstream row(line);
+      unsigned int token = 0;
+      if (!(row >> token >> status) || token != source->hevcBorderToken)
+      {
+        status = 0;
+        continue;
+      }
+      if (status == 'Y')
+        sample = AML_ACTIVE_AREA_VDIN::Read(row, source->width, source->height);
+      break;
+    }
+    const bool owned = status == 'P' || status == 'Y' || status == 'N';
+    if ((owned && status == 'N') || (!owned && std::chrono::steady_clock::now() >= ownerDeadline))
+    {
+      fallback = true;
+      break;
+    }
     const auto borders = consensus.Observe(sample);
     const auto now = std::chrono::steady_clock::now();
     {
@@ -5765,6 +5789,7 @@ static void detect_from_hevc(const std::shared_ptr<DetectSource>& source,
   }
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   source->liveResult.reset();
+  return fallback;
 }
 
 void aml_dv_detect_active_area_start()
@@ -5838,29 +5863,43 @@ void aml_dv_detect_active_area_start()
       source->width < 64 || source->height < 64 ||
       source->width > 65535 || source->height > 65535 || source->path.empty())
     return;
-  if (source->hevcLiveBorders && !source->startupScan && source->width == 3840 &&
+  const bool hevcLive = source->hevcBorderToken && !source->startupScan && source->width == 3840 &&
       source->height == 2160 && settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) &&
-      (!source->nativeDV || !aml_dv_detect_active_area_enabled()))
-  {
-    CLog::Log(LOGINFO, "DetectActiveArea: using live HEVC borders without file scanning");
-    if (publishState(DV_DETECT_SKIPPED))
-      s_detectWorker.Start([source](const CAMLNativeWorker::Run& run) { detect_from_hevc(source, run); },
-                           source->superseded);
-    return;
-  }
-  const bool live = detect_can_use_vdin(*source);
-  auto reservation = live ? std::shared_ptr<const void>{} : detect_reserve_scanner();
-  if (!live && !reservation)
+      (!source->nativeDV || !aml_dv_detect_active_area_enabled());
+  const bool live = !hevcLive && detect_can_use_vdin(*source);
+  auto reservation = live || hevcLive ? std::shared_ptr<const void>{} : detect_reserve_scanner();
+  if (!live && !hevcLive && !reservation)
   {
     publishState(DV_DETECT_SKIPPED);
     return;
   }
   // Known player padding is already represented by the renderer video rectangle.
-  if (!publishState(DV_DETECT_RUNNING))
+  if (!publishState(hevcLive ? DV_DETECT_SKIPPED : DV_DETECT_RUNNING))
     return;
   const bool cacheEnabled = settings()->GetBool(CSettings::SETTING_SUBTITLES_CACHEACTIVEAREA);
-  s_detectWorker.Start([source, cacheEnabled, completion, live, publishState,
+  s_detectWorker.Start([source, cacheEnabled, completion, live, hevcLive, publishState,
                         reservation = std::move(reservation)](const CAMLNativeWorker::Run& run) mutable {
+    if (hevcLive)
+    {
+      CLog::Log(LOGINFO, "DetectActiveArea: using live HEVC borders without file scanning");
+      if (!detect_from_hevc(source, run) || run.Cancelled() || source->policy->Blocked() ||
+          !settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
+          (source->nativeDV && aml_dv_detect_active_area_enabled()))
+        return;
+      reservation = detect_reserve_scanner();
+      if (!reservation)
+        return;
+      {
+        std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+        if (source != s_detectSource || source->superseded->load())
+          return;
+        source->liveResult.reset();
+        source->subtitleOnly = true;
+      }
+      if (!publishState(DV_DETECT_RUNNING))
+        return;
+      CLog::Log(LOGINFO, "DetectActiveArea: live HEVC unavailable; using subtitle file scan");
+    }
     if (live)
     {
       detect_from_vdin(source, run);
@@ -5884,13 +5923,14 @@ void aml_dv_detect_active_area_start()
     identity.nativeDV = source->nativeDV;
     const bool identified = cacheEnabled && ACTIVE_AREA_CACHE::ReadIdentity(identity);
     ACTIVE_AREA_CACHE::Record saved;
-    if (identified && !run.Cancelled() && ACTIVE_AREA_CACHE::Load(identity, saved))
+    if (identified && !run.Cancelled() && ACTIVE_AREA_CACHE::Load(identity, saved) &&
+        (!source->subtitleOnly || saved.hasSubtitle))
     {
       source->uniqueStream = saved.uniqueStream;
       if (saved.hasSubtitle)
         detect_publish_subtitle(run, source,
             {saved.subtitle[0], saved.subtitle[1], saved.subtitle[2], saved.subtitle[3]});
-      if (saved.hasStrict)
+      if (saved.hasStrict && !source->subtitleOnly)
         detect_publish(run, source, saved.strict[0], saved.strict[1],
                        saved.strict[2], saved.strict[3], saved.highConfidence);
       else
@@ -5917,7 +5957,7 @@ void aml_dv_detect_active_area_start()
     }
     if (retainedSubtitle)
       detect_publish_subtitle(run, source, *retainedSubtitle);
-    if (retained)
+    if (retained && !source->subtitleOnly)
       detect_publish(run, source, retained->top, retained->bottom, retained->left, retained->right, retained->highConfidence);
     else if (retainedSubtitle)
     {
@@ -5945,7 +5985,7 @@ void aml_dv_detect_active_area_start()
       }
       DetectActiveAreaFromFile(source, run);
     }
-    if (identified && !run.Cancelled() && !source->timedOut.load())
+    if (identified && !source->subtitleOnly && !run.Cancelled() && !source->timedOut.load())
     {
       ACTIVE_AREA_CACHE::Record record;
       {

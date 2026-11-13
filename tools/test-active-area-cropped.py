@@ -41,12 +41,14 @@ static RecordingWorker s_detectWorker;
     code += r'''
 enum class StreamHdrType {HDR_TYPE_NONE};
 template<typename Hints>
-bool CanUseLiveHEVCBorders(const Hints&, StreamHdrType, bool) {return false;}
-void aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>&) {}
+unsigned int RequestLiveHEVCBorders(const Hints&, StreamHdrType, bool) {return 0;}
+void aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>&, unsigned int) {}
 struct Hardware {
  struct Hints{int width,height;double aspect;struct{int dv_profile=8;}dovi;std::shared_ptr<const void> subtitleProbeSource;};
  Hints hints;Hints& m_hints=hints;
  StreamHdrType m_originalSourceHdrType=StreamHdrType::HDR_TYPE_NONE;
+ struct {unsigned int liveBorderToken=0;} privateData;
+ decltype(privateData)* am_private=&privateData;
  struct{double dar=0.0;void SetVideoDAR(double value){dar=value;}}m_processInfo;
  Hardware(int w,int h,double dar,const std::shared_ptr<const void>& selected):hints{w,h,dar,{},selected}{}
 '''

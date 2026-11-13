@@ -60,7 +60,7 @@ struct FakeClock {
 };
 struct VCodec {int cntl_handle=7;};
 struct Packet {VCodec* codec=nullptr;};
-struct Private {VCodec vcodec; Packet am_pkt;};
+struct Private {VCodec vcodec; Packet am_pkt; unsigned int liveBorderToken=0;};
 struct Dll {
   int resets=0;
   void codec_set_cntl_mode(VCodec*,int) {}
@@ -81,7 +81,8 @@ void pre_header_feeding(Private*,Packet*) {}
 void aml_dv_backend_invalidate(void*) {}
 uint64_t aml_dv_backend_epoch() {return 1;}
 bool aml_subtitle_active_area_configure(int,int,bool,bool,int,double,bool) {return true;}
-void aml_subtitle_active_area_enable_hevc_live(int) {++liveStarts;}
+bool aml_dv_detect_active_area_enabled() {return false;}
+void aml_subtitle_active_area_enable_hevc_live(int, unsigned int token) {assert(token); ++liveStarts;}
 // Stops and joins the previous probe worker before starting the next one.
 void aml_dv_detect_active_area_start() {++probeStarts; FakeClock::Advance(probeRetireDelay);}
 struct CAMLCodec {
@@ -122,6 +123,7 @@ int main() {
   sdr.ResetInternal();
   assert(liveStarts == 0);
   sdr.m_hints.colorRange = AVCOL_RANGE_MPEG;
+  sdr.priv.liveBorderToken = 1;
   sdr.ResetInternal();
   assert(liveStarts == 1);
 
@@ -160,8 +162,7 @@ def harness(root):
     reset = body(aml, 'void CAMLCodec::ResetInternal()')
     assert 'aml_dv_detect_active_area_start();' in reset
     reset = reset.replace('std::chrono::system_clock::now()', 'FakeClock::now()')
-    eligibility = function(aml, 'bool CanUseLiveHEVCBorders(')
-    return PREFIX + eligibility + '\nvoid CAMLCodec::ResetInternal() {' + reset + '}\n' + TESTS
+    return PREFIX + 'void CAMLCodec::ResetInternal() {' + reset + '}\n' + TESTS
 
 
 def run(source, directory, label, expect_failure=False):
