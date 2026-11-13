@@ -123,8 +123,12 @@ static std::atomic<int64_t> s_dvDiscDeferredSinceMs{0};
 // consumed/failed engage must not look like successful completion to blackout.
 struct AMLDVOutputTransition
 {
-  explicit AMLDVOutputTransition(std::shared_ptr<const void> owner) : session(std::move(owner)) {}
+  AMLDVOutputTransition(std::shared_ptr<const void> owner, unsigned int mode)
+    : session(std::move(owner)), requestedMode(mode)
+  {
+  }
   const std::shared_ptr<const void> session;
+  const unsigned int requestedMode;
   std::atomic<bool> programmed{false};
 };
 static std::shared_ptr<AMLDVOutputTransition> s_dvOutputTransition;
@@ -1985,7 +1989,8 @@ void aml_dv_open(StreamHdrType hdrType, unsigned int bitDepth, AVColorPrimaries 
       s_dvDiscDeferredMode = vs10_mode;
       s_dvDiscDeferredSinceMs = aml_steady_ms();
       if (owner)
-        std::atomic_store(&s_dvOutputTransition, std::make_shared<AMLDVOutputTransition>(owner));
+        std::atomic_store(&s_dvOutputTransition,
+                          std::make_shared<AMLDVOutputTransition>(owner, vs10_mode));
       CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_policy", DOLBY_VISION_FORCE_OUTPUT_MODE);
       CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_enable", "Y");
       CLog::Log(LOGINFO, "AMLUtils::{} - DV output mode [{}] deferred to the mode set",
@@ -2563,12 +2568,35 @@ int aml_dv_l5_subs_signal_mode()
   return settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5_SIGNAL_SUBS);
 }
 
-bool aml_dv_detect_active_area_enabled()
+static bool dv_l5_detection_requested()
 {
-  return s_dvModeCached == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL &&
-         settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) &&
+  return settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) &&
          settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA) &&
          !aml_dv_l5_override_active();
+}
+
+bool aml_dv_detect_active_area_enabled()
+{
+  return s_dvModeCached == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL && dv_l5_detection_requested();
+}
+
+bool aml_dv_live_frame_l5_eligible(const std::shared_ptr<const void>& session)
+{
+  if (!session || session != std::atomic_load(&s_dvPlaybackSession))
+    return false;
+
+  // The decoder needs its private luma surface at open, before the display
+  // mode set can engage TV-led output for a blacked-out On Demand startup.
+  const auto transition = std::atomic_load(&s_dvOutputTransition);
+  const bool pendingTVLed = transition && transition->session == session &&
+      !transition->programmed.load() &&
+      (transition->requestedMode == DOLBY_VISION_OUTPUT_MODE_IPT ||
+       transition->requestedMode == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL) &&
+      aml_dv_type() == DV_TYPE_DISPLAY_LED &&
+      settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR) == 0;
+  return (pendingTVLed || aml_gui_dv_output_mode() == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL) &&
+         dv_l5_detection_requested() &&
+         settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_SOURCE_LEVEL_5);
 }
 
 /* Parse the override setting into (active, top, bottom, left, right).
@@ -2989,7 +3017,7 @@ struct DetectSource
   const bool codedCrop;
   bool usesAMLVideoPlane{false}; // set at configuration before worker admission
   unsigned int hevcBorderToken{0};
-  bool hevcFrameL5{false};
+  std::shared_ptr<const void> hevcFrameL5Session;
   bool subtitleOnly{false}; // live route's file fallback, set by its worker before scanning
   const std::shared_ptr<std::atomic<bool>> superseded{std::make_shared<std::atomic<bool>>(false)};
   std::atomic<bool> pending{false};
@@ -3243,7 +3271,7 @@ void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedS
   s_detectSource->policy = previous->policy;
   s_detectSource->usesAMLVideoPlane = previous->usesAMLVideoPlane;
   s_detectSource->hevcBorderToken = previous->hevcBorderToken;
-  s_detectSource->hevcFrameL5 = previous->hevcFrameL5;
+  s_detectSource->hevcFrameL5Session = previous->hevcFrameL5Session;
   s_detectSource->binding = previous->binding;
   s_detectSource->selectionId = previous->selectionId;
   s_detectSource->startupVideoReady = previous->startupVideoReady;
@@ -5656,7 +5684,8 @@ static constexpr char HEVC_ACTIVE_AREA_PATH[] =
     "/sys/module/amvdec_h265/parameters/p3i_active_area_status";
 
 bool aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>& expectedSource,
-                                             unsigned int token, bool frameL5)
+                                              unsigned int token,
+                                              const std::shared_ptr<const void>& frameL5Session)
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   if (!token || !expectedSource || expectedSource != s_detectSource->selection ||
@@ -5664,7 +5693,7 @@ bool aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>
       !s_detectSource->allowProbe || s_detectSource->policy->Blocked())
     return false;
   s_detectSource->hevcBorderToken = token;
-  s_detectSource->hevcFrameL5 = frameL5;
+  s_detectSource->hevcFrameL5Session = frameL5Session;
   s_detectSource->startupWait->store(false);
   s_detectSource->startupHeld->store(false);
   s_detectSource->startupAdmission->store(false);
@@ -5750,8 +5779,8 @@ static bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,
   bool fallback = false;
   while (!run.Cancelled() &&
          (settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
-          (source->hevcFrameL5 && aml_dv_detect_active_area_enabled())) &&
-         (!source->nativeDV || source->hevcFrameL5 || !aml_dv_detect_active_area_enabled()))
+          aml_dv_live_frame_l5_eligible(source->hevcFrameL5Session)) &&
+         (!source->nativeDV || source->hevcFrameL5Session || !aml_dv_detect_active_area_enabled()))
   {
     std::ifstream input(HEVC_ACTIVE_AREA_PATH);
     char status = 0;
@@ -5858,7 +5887,7 @@ void aml_dv_detect_active_area_start()
     publishState(source->policy->timedOut ? DV_DETECT_TIMED_OUT : DV_DETECT_SKIPPED);
     return; // playback vetoes and terminal timeouts precede cache identity I/O
   }
-  const bool frameL5 = source->hevcFrameL5 && aml_dv_detect_active_area_enabled();
+  const bool frameL5 = aml_dv_live_frame_l5_eligible(source->hevcFrameL5Session);
   const bool hevcLive = source->hevcBorderToken && !source->startupScan &&
       (frameL5 || (settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) &&
                   (!source->nativeDV || !aml_dv_detect_active_area_enabled())));
@@ -5867,7 +5896,7 @@ void aml_dv_detect_active_area_start()
     publishState(DV_DETECT_SKIP_NON16X9);
     return; // no worker, cache lookup, file reads or software decoding
   }
-  const bool enabled = settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
+  const bool enabled = frameL5 || settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
       (source->nativeDV && aml_dv_detect_active_area_enabled());
   if (!enabled || !source->allowProbe || source->superseded->load() ||
       source->width < 64 || source->height < 64 ||

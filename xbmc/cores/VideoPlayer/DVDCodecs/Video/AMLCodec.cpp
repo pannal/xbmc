@@ -2172,14 +2172,14 @@ bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHd
 }
 
 unsigned int RequestLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHdrType,
-                                    bool nativeDV, bool frameL5)
+                                    bool nativeDV, const std::shared_ptr<const void>& frameL5Session)
 {
   if (hints.width < 256 || hints.width > 3840 || hints.height < 256 || hints.height > 2176 ||
       !CanUseLiveHEVCBorders(hints, originalHdrType, nativeDV) ||
       access("/sys/module/amvdec_h265/parameters/p3i_active_area_status", R_OK) != 0)
     return 0;
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  if (!frameL5 && (!settings->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
+  if (!frameL5Session && (!settings->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
                   !settings->GetBool(CSettings::SETTING_SUBTITLES_LIVEACTIVEAREA) ||
                   (nativeDV && aml_dv_detect_active_area_enabled())))
     return 0;
@@ -2193,7 +2193,7 @@ unsigned int RequestLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType o
   {
     return 0;
   }
-  return aml_subtitle_active_area_enable_hevc_live(hints.subtitleProbeSource, token, frameL5) ?
+  return aml_subtitle_active_area_enable_hevc_live(hints.subtitleProbeSource, token, frameL5Session) ?
       token : 0;
 }
 
@@ -2514,16 +2514,15 @@ bool CAMLCodec::OpenDecoderInternal()
                         m_originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
   am_private->liveBorderToken = 0;
   am_private->liveFrameL5 = am_private->originalP81 && nativeDV && hints.width == 3840 &&
-      hints.height == 2160 && aml_dv_detect_active_area_enabled() &&
-      CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
-          CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_SOURCE_LEVEL_5) &&
+      hints.height == 2160 && aml_dv_live_frame_l5_eligible(m_dvSession) &&
       LiveFrameL5Enabled();
   if (aml_subtitle_active_area_configure(hints.width, hints.height, nativeDV,
                                         !nativeDV || hints.dovi.dv_profile != 9,
                                         hints.subtitleProbeSource, hints.aspect, true))
   {
     am_private->liveBorderToken =
-        RequestLiveHEVCBorders(hints, m_originalSourceHdrType, nativeDV, am_private->liveFrameL5);
+        RequestLiveHEVCBorders(hints, m_originalSourceHdrType, nativeDV,
+                               am_private->liveFrameL5 ? m_dvSession : nullptr);
     if (!am_private->liveBorderToken)
       aml_dv_detect_active_area_start(); // separately selected DV injection / non-DV geometry
   }
@@ -2962,7 +2961,8 @@ void CAMLCodec::ResetInternal()
     if (am_private->liveBorderToken &&
         (am_private->liveFrameL5 || !nativeDV || !aml_dv_detect_active_area_enabled()))
       aml_subtitle_active_area_enable_hevc_live(m_hints.subtitleProbeSource,
-                                               am_private->liveBorderToken, am_private->liveFrameL5);
+                                               am_private->liveBorderToken,
+                                               am_private->liveFrameL5 ? m_dvSession : nullptr);
     aml_dv_detect_active_area_start();
   }
 

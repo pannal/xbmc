@@ -255,7 +255,8 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
                                       const std::shared_ptr<const void>& expectedSource,
                                       double displayAspect = 0.0, bool usesAMLVideoPlane = false);
 bool aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>& expectedSource,
-                                              unsigned int token, bool frameL5 = false);
+                                              unsigned int token,
+                                              const std::shared_ptr<const void>& frameL5Session);
 // The serialized software reset has retired the old decode call; its next
 // output (including EOF) now belongs to a fresh route with the same geometry.
 void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedSource);
@@ -269,6 +270,7 @@ bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
     uint16_t& bottom, uint16_t& left, uint16_t& right, bool allowSubtitleEstimate = false);
 bool aml_dv_get_l5_override(uint16_t& top, uint16_t& bottom, uint16_t& left, uint16_t& right);
 bool aml_dv_detect_active_area_enabled();
+bool aml_dv_live_frame_l5_eligible(const std::shared_ptr<const void>& session);
 // Invariant all-scene native detection may supersede authored L5. Manual wins.
 bool aml_dv_detect_active_area_override_get(int width, int height, uint16_t& top,
     uint16_t& bottom, uint16_t& left, uint16_t& right);
