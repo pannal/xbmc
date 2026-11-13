@@ -123,6 +123,10 @@ bool aml_dv_new_backend_available();
 bool aml_dv_new_sdr_route_available();
 // DV types the SDR route is offered for; the setting keeps its value when hidden.
 bool aml_dv_sdr_new_backend_type_ok(int type);
+// Cached at Setup: the kernel has the dv_ll_hdr10_drm_mode parameter.
+bool aml_dv_ll_hdr10_drm_mode_available();
+// HDR10 DRM of player-led DV to an HDR10 sink: 0 steps, 1 target, 2 none.
+void aml_dv_set_ll_hdr10_drm_mode(int mode);
 bool aml_dv_graphics_stability_supported();
 void aml_dv_apply_graphics_stability();
 // Enables automatic eligible routing; caller holds native Setup admission.

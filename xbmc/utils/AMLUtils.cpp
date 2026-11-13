@@ -770,6 +770,7 @@ static std::atomic<bool> s_dvNewBackendAvailable{false};
 static std::atomic<int> s_dvNewBackendAvailability{-1}; // -1: unsupported/unknown
 // The kernel exposes xbmc_dv_new_sdr_route only when it can route SDR output to dovi5.
 static std::atomic<bool> s_dvNewSdrRouteSupported{false};
+static std::atomic<bool> s_dvLlHdr10DrmModeSupported{false};
 
 struct AMLDVBackendSnapshot
 {
@@ -883,6 +884,19 @@ bool aml_dv_new_backend_available()
   return s_dvNewBackendAvailable.load(std::memory_order_acquire);
 }
 
+bool aml_dv_ll_hdr10_drm_mode_available()
+{
+  return s_dvLlHdr10DrmModeSupported.load(std::memory_order_acquire);
+}
+
+// Kernels without the parameter keep their built-in DRM, so a missing node is fine.
+void aml_dv_set_ll_hdr10_drm_mode(int mode)
+{
+  CSysfsPath drm{"/sys/module/amdolby_vision/parameters/dv_ll_hdr10_drm_mode"};
+  if (drm.Exists() && mode >= 0 && mode <= 2)
+    drm.Set(static_cast<unsigned int>(mode));
+}
+
 bool aml_dv_new_sdr_route_available()
 {
   return s_dvNewSdrRouteSupported.load(std::memory_order_acquire) && aml_dv_new_backend_available();
@@ -916,6 +930,9 @@ bool aml_support_dolby_vision()
                                          std::memory_order_release);
         s_dvNewSdrRouteSupported.store(
             CSysfsPath{"/sys/module/amdolby_vision/parameters/xbmc_dv_new_sdr_route"}.Exists(),
+            std::memory_order_release);
+        s_dvLlHdr10DrmModeSupported.store(
+            CSysfsPath{"/sys/module/amdolby_vision/parameters/dv_ll_hdr10_drm_mode"}.Exists(),
             std::memory_order_release);
         CSysfsPath ko_info{"/sys/class/amdolby_vision/ko_info"};
         if (ko_info.Exists())
@@ -1233,6 +1250,7 @@ unsigned int aml_dv_on(unsigned int mode, bool force_hdmi)
   // Enable HDR10 metadata injection for DV LL output (VP/HDR modes)
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_hdr10_for_dv_ll",
              (dv_type == DV_TYPE_PLAYER_LED_HDR || dv_type == DV_TYPE_PLAYER_LED_HDR2) ? 'Y' : 'N');
+  aml_dv_set_ll_hdr10_drm_mode(settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LL_HDR10_DRM_MODE));
   unsigned int xbmc_dv_hdr10_for_dv_ll_inject_num = 0;
   CSysfsPath("/sys/module/amdolby_vision/parameters/xbmc_dv_hdr10_for_dv_ll_inject_num", xbmc_dv_hdr10_for_dv_ll_inject_num);
 

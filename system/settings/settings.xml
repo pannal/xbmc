@@ -4827,6 +4827,44 @@
           <control type="list" format="string" /> -->
           <control type="edit" format="integer" />
         </setting>
+        <setting id="coreelec.amlogic.dolbyvision.ll.hdr10.drm.mode" type="integer" label="60669" help="60670" parent="coreelec.amlogic.dolbyvision.type">
+          <requirement>HAVE_AMCODEC</requirement>
+          <visible>false</visible>
+          <level>2</level>
+          <default>1</default>
+          <constraints>
+            <options>
+              <option label="60671">0</option>
+              <option label="60672">1</option>
+              <option label="60673">2</option>
+            </options>
+          </constraints>
+          <dependencies>
+            <dependency type="visible" setting="coreelec.amlogic.dolbyvision.mode" operator="!is">2</dependency>
+            <dependency type="visible" setting="coreelec.amlogic.dolbyvision.video.processor" operator="is">0</dependency>
+            <dependency type="visible">
+              <and>
+                <condition on="property" name="dvllhdr10drmmodeavailable" />
+                <or>
+                  <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">2</condition>
+                  <condition setting="coreelec.amlogic.dolbyvision.type" operator="is">4</condition>
+                </or>
+              </and>
+            </dependency>
+            <!-- only when some source really leaves as player-led DV (VS10 output 0 = DV) -->
+            <dependency type="visible">
+              <or>
+                <condition setting="coreelec.amlogic.dolbyvision.vs10.dv" operator="is">0</condition>
+                <condition setting="coreelec.amlogic.dolbyvision.vs10.hdr10" operator="is">0</condition>
+                <condition setting="coreelec.amlogic.dolbyvision.vs10.hdr10plus" operator="is">0</condition>
+                <condition setting="coreelec.amlogic.dolbyvision.vs10.hdrhlg" operator="is">0</condition>
+                <condition setting="coreelec.amlogic.dolbyvision.vs10.sdr8" operator="is">0</condition>
+                <condition setting="coreelec.amlogic.dolbyvision.vs10.sdr10" operator="is">0</condition>
+              </or>
+            </dependency>
+          </dependencies>
+          <control type="list" format="string" />
+        </setting>
         <setting id="coreelec.amlogic.dolbyvision.vsvdb.min.luminance" type="integer" label="60073" help="60074" parent="coreelec.amlogic.dolbyvision.vsvdb.inject">
           <requirement>HAVE_AMCODEC</requirement>
           <visible>false</visible>
