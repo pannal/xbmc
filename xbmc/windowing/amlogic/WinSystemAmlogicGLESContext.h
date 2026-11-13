@@ -17,6 +17,7 @@
 #include "utils/GlobalsHandling.h"
 #include "utils/StreamDetails.h"
 #include "utils/Variant.h"
+#include "AMLAFBCPresenter.h"
 #include "WinSystemAmlogic.h"
 
 #include <array>
@@ -70,6 +71,7 @@ public:
   bool SupportsStereo(RENDER_STEREO_MODE mode) const override;
 
   bool BeginRender() override;
+  bool EndRender() override;
 
   // Disc menu graphics composite, see CWinSystemBase.
   void RequestMenuComposite(bool menuShown) override;
@@ -165,6 +167,7 @@ private:
   RenderTargetToken m_menuTarget;
   void QueueKernelSwitch(const char* path, int value);
   void ApplyPendingKernelSwitch();
+  bool HasPendingKernelSwitch() const;
 
   struct RouteInputs
   {
@@ -212,6 +215,25 @@ private:
   bool m_menuFboHasContent = false;
   bool m_menuScissor = false;
   bool m_firstStartGUI = true;
+
+  // <gui><afbcscanout> (on by default): the GUI is drawn into AFBC display
+  // buffers.
+  void BeginAFBCScanoutFrame();
+  // The frame begun in a display buffer ends without being presented.
+  void AbandonAFBCScanoutFrame();
+  // Applies the presentation of an AFBC frame once it is on screen, and
+  // draws the GUI again after one was lost, also while the GUI is idle.
+  void TakeAFBCOutcome();
+  CAMLAFBCPresenter m_afbcPresenter;
+  bool m_afbcFrame = false; // this frame was begun in a display buffer
+  struct
+  {
+    bool pending = false; // handed over, not yet known to be on screen
+    uint64_t videoMuteHandoff = 0;
+    bool displayReady = false;
+    bool fullscreenVideo = false;
+  } m_afbcPresented;
+  bool m_afbcDirtyRegionsReported = false;
 };
 
 }

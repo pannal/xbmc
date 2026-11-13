@@ -8,7 +8,9 @@
 
 #include "GUIRenderingControl.h"
 
+#include "guilib/GUIExternalRendering.h"
 #include "guilib/IRenderingCallback.h"
+#include "utils/TimeUtils.h"
 
 #include <mutex>
 #ifdef TARGET_WINDOWS
@@ -77,6 +79,8 @@ void CGUIRenderingControl::Process(unsigned int currentTime, CDirtyRegionList &d
   std::unique_lock<CCriticalSection> lock(m_rendering);
   if (m_callback && m_callback->IsDirty())
     MarkDirtyRegion();
+  if (m_callback)
+    CGUIExternalRendering::Note(currentTime);
 
   CGUIControl::Process(currentTime, dirtyregions);
 }
@@ -86,6 +90,7 @@ void CGUIRenderingControl::Render()
   std::unique_lock<CCriticalSection> lock(m_rendering);
   if (m_callback)
   {
+    CGUIExternalRendering::Note(CTimeUtils::GetFrameTime());
     // set the viewport - note: We currently don't have any control over how
     // the addon renders, so the best we can do is attempt to define
     // a viewport??

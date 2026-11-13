@@ -66,12 +66,18 @@ public:
   // Return the internally created texture ID
   GLuint Texture() const { return m_texid; }
 
+  // The framebuffer that receives the frame being drawn: 0, or the display
+  // buffer a window system renders into instead of its EGL surface.
+  static void SetDefaultFramebuffer(GLuint framebuffer) { m_defaultFramebuffer = framebuffer; }
+  static GLuint GetDefaultFramebuffer() { return m_defaultFramebuffer; }
+
   // Begin rendering to FBO
   bool BeginRender();
   // Finish rendering to FBO
   void EndRender() const;
 
 private:
+  static GLuint m_defaultFramebuffer;
   GLuint m_fbo = 0;
   bool   m_valid;
   bool   m_bound;
