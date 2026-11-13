@@ -9,6 +9,7 @@ COverlayTextureGLES::Render, under ASan/UBSan, and checks:
   (GL_ONE, GL_ONE_MINUS_SRC_ALPHA) matches the authored straight-alpha blend to
   1 LSB, for palette (HDMV IG) and ARGB (BD-J) graphics alike;
 - the linear-light premultiply stays the default for everything else;
+- the Amlogic GUI output is never HDR during a screenshot's plain GUI pass;
 - disc menus keep GL_LINEAR at every subtitle zoom, subtitles keep their policy.
 Does not claim GPU validation. Temporary outputs are removed.
 """
@@ -100,7 +101,7 @@ bool aml_transfer_pq_at_open(){return pqAtOpen;}
 bool aml_dv_core_at_open(){return dvAtOpen;}
 enum DV_MODE{DV_MODE_ON=0,DV_MODE_ON_DEMAND=1,DV_MODE_OFF=2};static DV_MODE dvMode=DV_MODE_ON_DEMAND;
 DV_MODE aml_dv_mode(){return dvMode;}
-struct CWinSystemAmlogicGLESContext {bool IsGuiOutputHdr();};
+struct CWinSystemAmlogicGLESContext {bool m_plainGuiCapture=false;bool IsGuiOutputHdr();};
 struct COverlay {static bool PlainPremultiplyDiscMenu(const CDVDOverlayImage& o);};
 namespace OVERLAY {
 '''
@@ -162,6 +163,11 @@ int main(){
   // DV mode On keeps the GUI in DV before the first decoder open.
   for(DV_MODE m:{DV_MODE_ON,DV_MODE_ON_DEMAND,DV_MODE_OFF})for(bool pq:{false,true})for(bool dv:{false,true}){
     dvMode=m;pqAtOpen=pq;dvAtOpen=dv;assert(ctx.IsGuiOutputHdr()==(pq||dv||m==DV_MODE_ON));}
+  // A screenshot's GUI pass is drawn as plain SDR, whatever the output.
+  ctx.m_plainGuiCapture=true;
+  for(DV_MODE m:{DV_MODE_ON,DV_MODE_ON_DEMAND,DV_MODE_OFF})for(bool pq:{false,true})for(bool dv:{false,true}){
+    dvMode=m;pqAtOpen=pq;dvAtOpen=dv;assert(!ctx.IsGuiOutputHdr());}
+  ctx.m_plainGuiCapture=false;
 
   // Filtering: disc menus bilinear at every zoom; subtitles keep the zoom policy.
   auto& zoom=CServiceBroker::GetSettingsComponent()->GetSettings()->zoom;

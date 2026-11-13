@@ -58,6 +58,10 @@ public:
 
   virtual bool BeginRender() = 0;
   virtual bool EndRender() = 0;
+  // Draws the GUI as plain SDR (no limited range, HDR scale or GUI tuning)
+  // until switched back, for a screenshot. The switch can change the render
+  // target generation.
+  virtual void SetPlainGuiEncoding(bool plain) {}
   virtual void PresentRender(bool rendered, bool videoLayer) = 0;
   virtual void InvalidateColorBuffer() {}
   virtual bool ClearBuffers(UTILS::COLOR::Color color) = 0;
