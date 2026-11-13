@@ -100,6 +100,7 @@ public:
 
   bool BeginRender() override;
   bool EndRender() override;
+  void SetPlainGuiEncoding(bool plain) override;
   void PresentRender(bool rendered, bool videoLayer) override;
   void InvalidateColorBuffer() override;
   bool ClearBuffers(UTILS::COLOR::Color color) override;
@@ -176,6 +177,9 @@ protected:
   ShaderSet m_pShader;
   std::pair<float, float> m_guiColour{1.0f, 1.0f};
   bool m_guiColourEnabled{false};
+  bool m_plainGuiEncoding{false};
+  // Selects the shader variant of the GUI encoding the output needs.
+  void SelectGuiEncoding();
   // Inactive variants share the current EGL context; surface changes retain them.
   std::array<ShaderSet, 8> m_shaderVariants;
   ShaderMethodGLES m_method = ShaderMethodGLES::SM_DEFAULT;

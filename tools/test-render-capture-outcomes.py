@@ -2,8 +2,10 @@
 """Exercise production capture outcomes with controlled syscall/GL/service stand-ins.
 
 Extracts complete AML video capture, AML/GLES RenderCapture and AML/GLES screenshot
-Capture methods. Checks bytes, failure states, composition cancellation, stale
-readback suppression and geometry/matrix restoration. Direct screenshot source
+Capture methods, and the AML video composition. Checks bytes, failure states,
+composition cancellation, stale readback suppression, geometry/matrix
+restoration and which video capture an AML screenshot falls back to; the vdin1
+capture result is a stand-in. Direct screenshot source
 admission is an always-open session stand-in here; test-aml-screenshot-admission.py
 executes the production source snapshot/admission protocol. ASan/UBSan do not prove GPU
 or driver behavior, nor detect reads of uninitialized memory; differing initialized
@@ -24,6 +26,7 @@ def harness():
     defines = '\n'.join(line for line in aml.splitlines() if line.startswith('#define '))
     source = PRELUDE + '\n' + defines + '\n'
     source += function(aml, 'bool CScreenshotAML::CaptureVideoFrame(')
+    source += '\n' + function(aml, 'bool CScreenshotAML::ComposeVideo(')
     source += '\n#undef open\n#undef ioctl\n#undef pread\n#undef close\n'
     for path, signature in [
         ('cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.cpp', 'bool CRendererAML::RenderCapture('),
@@ -44,12 +47,12 @@ def main():
                         '-fno-omit-frame-pointer', '-fno-pie', '-no-pie', '-I', str(ROOT / 'xbmc'),
                         str(directory / 'test.cpp'), '-o', str(directory / 'test')], check=True)
         subprocess.run([str(directory / 'test')], check=True)
-    print('Render capture outcomes: PASS (five production methods; ASan/UBSan; GPU/driver/services stubbed)')
+    print('Render capture outcomes: PASS (six production methods; ASan/UBSan; GPU/driver/services stubbed)')
 
 
 PRELUDE = r'''
 #include "utils/PlaybackDiagnostics.h"
-constexpr int LOGINFO=1;
+constexpr int LOGDEBUG=0, LOGINFO=1, LOGWARNING=2;
 struct CLog {template<class... T> static void Log(T&&...) {}};
 
 #include <algorithm>
@@ -69,6 +72,21 @@ struct CLog {template<class... T> static void Log(T&&...) {}};
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
 #include "utils/ScreenshotAML.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
+// The vdin1 capture's outcome; UNAVAILABLE takes the amvideocap read.
+namespace AML_VIDEO_CAPTURE {
+enum class Result {OK,NO_VIDEO,UNAVAILABLE,FAILED};
+struct Frame {};
+struct State {Result result=Result::UNAVAILABLE; int captures=0;} vdin;
+Result Capture(Frame&){++vdin.captures;return vdin.result;}
+}
+using AML_VIDEO_CAPTURE::vdin;
+namespace AML_CAPTURE_CONVERT {
+bool ComposeUnder(const AML_VIDEO_CAPTURE::Frame&,unsigned char* buffer,int width,int height,int stride){
+  assert(stride==width*4);
+  for(int i=0;i<width*height*4;++i) buffer[i]=i%4==3 ? 255 : 90+i%4;
+  return true;
+}
+}
 #define HAS_GLES 2
 constexpr int CAPTURESTATE_WORKING=1, CAPTURESTATE_DONE=2, CAPTURESTATE_FAILED=3;
 constexpr int GL_BLEND=1, GL_VIEWPORT=2, GL_RGBA=3, GL_UNSIGNED_BYTE=4;
@@ -105,15 +123,19 @@ ssize_t fakePread(int fd,void* buffer,size_t size,off_t offset) {
 }
 int fakeClose(int fd) { assert(fd==7); ++hardware.closes; return 0; }
 struct RenderSystem {
-  bool valid=true; unsigned generation=1;
+  bool valid=true,plain=false; unsigned generation=1; int clears=0;
   bool CanRender() const { return valid; }
+  void SetPlainGuiEncoding(bool on) { plain=on; }
+  void ClearBuffers(int color) { assert(color==0); ++clears; }
   unsigned CaptureRenderTarget() const { return generation; }
   bool IsRenderTargetCurrent(unsigned target) const { return valid && target==generation; }
 } renderSystem;
-struct Gfx : CCriticalSection { int GetHeight() const { return 1080; } };
+using CRenderSystemBase=RenderSystem;
+struct Gfx : CCriticalSection { int GetHeight() const { return 1080; } void ResetScissors() {} };
 struct CWinSystemBase {
-  Gfx gfx; bool begin=true,end=true; int begins=0,ends=0,cancels=0;
+  Gfx gfx; bool begin=true,end=true,plain=false; int begins=0,ends=0,cancels=0;
   Gfx& GetGfxContext() { return gfx; }
+  void SetPlainGuiCapture(bool on) { plain=on; }
   bool BeginGuiComposite() { ++begins; return begin; }
   bool EndGuiComposite() { ++ends; return end; }
   void CancelGuiComposite() { ++cancels; }
@@ -121,6 +143,7 @@ struct CWinSystemBase {
 struct WindowManager {
   int renders=0; bool stale=false;
   void Render() { ++renders; if(stale) ++renderSystem.generation; }
+  void RenderForCapture() { assert(window.plain && renderSystem.plain && renderSystem.clears==1); Render(); }
 };
 struct CGUIComponent { WindowManager manager; WindowManager& GetWindowManager(){return manager;} } gui;
 struct CServiceBroker {
@@ -212,7 +235,8 @@ struct Surface {
 struct CScreenshotSurfaceAML : Surface { bool Capture(); };
 struct CScreenshotSurfaceGLES : Surface { bool Capture(); };
 void reset(){
-  hardware={};renderSystem={};gui={};window.begin=window.end=true;
+  assert(!window.plain && !renderSystem.plain);
+  hardware={};vdin={};renderSystem={};gui={};window.begin=window.end=true;
   window.begins=window.ends=window.cancels=0;
   CServiceBroker::renderer=&renderSystem;CServiceBroker::win=&window;CServiceBroker::guiPtr=&gui;
   glMatrixModview={};readbacks=disables=0;
@@ -246,15 +270,12 @@ void testHardware(){
   reset();assert(CScreenshotAML::CaptureVideoFrame(b.data(),2,2,false));assert(a==b);
   const std::array<unsigned char,16> expected{10,11,12,255,13,14,15,255,40,41,42,255,43,44,45,255};
   assert(a==expected);
-  reset();a={110,111,112,0,113,114,115,255,140,141,142,128,143,144,145,64};
-  const auto original=a;
+  // The overlay is premultiplied, as the GUI pass draws it: the video shows
+  // through by 1 - alpha under the overlay's colour as it is.
+  reset();a={0,0,0,0,113,114,115,255,70,71,72,128,35,36,37,64};
   assert(CScreenshotAML::CaptureVideoFrame(a.data(),2,2,true));
-  for(int i=0;i<4;++i){
-    const float alpha=original[i*4+3]/255.0f;
-    for(int c=0;c<3;++c)
-      assert(a[i*4+c]==static_cast<unsigned char>(alpha*original[i*4+c]+(1-alpha)*expected[i*4+c]));
-    assert(a[i*4+3]==255);
-  }
+  const std::array<unsigned char,16> blended{10,11,12,255,113,114,115,255,90,91,93,255,67,69,71,255};
+  assert(a==blended);
 }
 void testRenderers(){
   reset();CRendererAML aml;assert(!aml.RenderCapture(0,nullptr));
@@ -311,7 +332,7 @@ template<class T>void testScreenshot(){
     if(mode==2)window.begin=false;
     if(mode==3)gui.manager.stale=true;
     if(mode==4)window.end=false;
-    hardware.openResult=-1; // AML's GUI-only fallback must remain successful.
+    vdin.result=AML_VIDEO_CAPTURE::Result::NO_VIDEO; // AML: no video, the GUI alone.
     const bool result=surface.Capture();assert(result==(mode==5));
     assert(readbacks==(result ? 1 : 0));
     assert(window.cancels==((mode==3 || mode==4) ? 1 : 0));
@@ -323,8 +344,31 @@ template<class T>void testScreenshot(){
     }else assert(!surface.m_buffer);
   }
 }
+void testAmlVideo(){
+  // Only an unavailable vdin1 capture falls back to amvideocap. A screenshot
+  // whose video cannot be captured fails rather than saving the GUI alone.
+  using AML_VIDEO_CAPTURE::Result;
+  const std::array<unsigned char,16> gui{52,51,50,255,56,55,54,255,12,11,10,255,16,15,14,255};
+  const std::array<unsigned char,16> video{90,91,92,255,90,91,92,255,90,91,92,255,90,91,92,255};
+  for(int mode=0;mode<5;++mode){
+    reset();CScreenshotSurfaceAML surface;
+    vdin.result=mode==0 ? Result::OK : mode==1 ? Result::FAILED : Result::UNAVAILABLE;
+    if(mode==3)hardware.openResult=-1;
+    if(mode==4)hardware.shortRead=true;
+    const bool result=surface.Capture();
+    assert(result==(mode==0 || mode==2));
+    assert(vdin.captures==1 && readbacks==1);
+    assert(hardware.opens==(mode>=2 ? 1 : 0));
+    assert(!window.plain && !renderSystem.plain);
+    if(mode==0)assert(std::equal(video.begin(),video.end(),surface.m_buffer));
+    // The GUI read back is opaque here, so the amvideocap video stays under it.
+    else if(mode==2)assert(std::equal(gui.begin(),gui.end(),surface.m_buffer) && hardware.reads==1);
+    else assert(!surface.m_buffer);
+  }
+}
 int main(){
   testHardware();testRenderers();testScreenshot<CScreenshotSurfaceAML>();testScreenshot<CScreenshotSurfaceGLES>();
+  testAmlVideo();
   reset();CScreenshotSurfaceGLES noWindow;CServiceBroker::win=nullptr;assert(!noWindow.Capture());
   reset();CScreenshotSurfaceGLES noGui;CServiceBroker::guiPtr=nullptr;assert(!noGui.Capture());
 }

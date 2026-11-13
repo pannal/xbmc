@@ -7,6 +7,8 @@
  */
 
 #include "utils/ScreenshotAML.h"
+#include "utils/AMLCaptureConvert.h"
+#include "utils/AMLVideoCapture.h"
 #include "utils/PlaybackDiagnostics.h"
 #include "utils/log.h"
 #include <sys/types.h>
@@ -14,6 +16,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
+#include <algorithm>
 #include <limits>
 
 #include <sys/ioctl.h>
@@ -27,6 +30,26 @@
 // capture format already defaults to GE2D_FORMAT_S24_RGB - no need to pull in all the ge2d headers :)
 
 #define CAPTURE_DEVICEPATH "/dev/amvideocap0"
+
+bool CScreenshotAML::ComposeVideo(unsigned char* buffer, int width, int height)
+{
+  AML_VIDEO_CAPTURE::Frame frame;
+  switch (AML_VIDEO_CAPTURE::Capture(frame))
+  {
+    case AML_VIDEO_CAPTURE::Result::OK:
+      return AML_CAPTURE_CONVERT::ComposeUnder(frame, buffer, width, height, width * 4);
+    case AML_VIDEO_CAPTURE::Result::UNAVAILABLE:
+      // Without vdin1, read the decoder's frame as before.
+      return CaptureVideoFrame(buffer, width, height);
+    case AML_VIDEO_CAPTURE::Result::NO_VIDEO:
+      // Nothing on the video layer: the GUI is the whole picture.
+      return true;
+    case AML_VIDEO_CAPTURE::Result::FAILED:
+    default:
+      // Not an amvideocap read instead, which may be undecodable.
+      return false;
+  }
+}
 
 //the buffer format is BGRA (4 byte)
 bool CScreenshotAML::CaptureVideoFrame(unsigned char *buffer, int iWidth, int iHeight, bool bBlendToBuffer)
@@ -68,17 +91,14 @@ bool CScreenshotAML::CaptureVideoFrame(unsigned char *buffer, int iWidth, int iH
 
         for (int x = 0; x < iWidth; ++x, buffer += 4, videoPtr += 3)
         {
-          float alpha = bBlendToBuffer ? buffer[3] / (float)255 : 0.0f;
-
           if (bBlendToBuffer)
           {
-            //B
-            buffer[0] = alpha * (float)buffer[0] + (1 - alpha) * (float)videoPtr[0];
-            //G
-            buffer[1] = alpha * (float)buffer[1] + (1 - alpha) * (float)videoPtr[1];
-            //R
-            buffer[2] = alpha * (float)buffer[2] + (1 - alpha) * (float)videoPtr[2];
-            //A
+            // The overlay is premultiplied, as the GUI pass draws it: it goes
+            // over the video as it is, which shows through by 1 - alpha.
+            const float under = 1.0f - buffer[3] / 255.0f;
+            for (int c = 0; c < 3; ++c) // B, G, R
+              buffer[c] = static_cast<unsigned char>(
+                  std::min(buffer[c] + under * videoPtr[c] + 0.5f, 255.0f));
             buffer[3] = 0xff;// we are solid now
           }
           else

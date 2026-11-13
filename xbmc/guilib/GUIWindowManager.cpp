@@ -1284,6 +1284,21 @@ bool RenderOrderSortFunction(const std::shared_ptr<CGUIWindow>& first,
   return first->GetRenderOrder() < second->GetRenderOrder();
 }
 
+void CGUIWindowManager::AssignDepth(CGUIWindow* activeWindow)
+{
+  if (activeWindow)
+    activeWindow->AssignDepth();
+
+  auto activeDialogs = m_activeDialogs;
+  stable_sort(activeDialogs.begin(), activeDialogs.end(), RenderOrderSortFunction);
+
+  for (const auto& window : activeDialogs)
+  {
+    if (window->IsDialogRunning())
+      window->AssignDepth();
+  }
+}
+
 void CGUIWindowManager::Process(unsigned int currentTime)
 {
   GUI_FRAME_TIMING::Scope timing(GUI_FRAME_TIMING::Region::WindowProcess);
@@ -1315,17 +1330,7 @@ void CGUIWindowManager::Process(unsigned int currentTime)
   // assign depth values to all active controls
   {
     GUI_FRAME_TIMING::Scope depthTiming(GUI_FRAME_TIMING::Region::AssignDepth);
-    if (pWindow)
-      pWindow->AssignDepth();
-
-    auto activeDialogs = m_activeDialogs;
-    stable_sort(activeDialogs.begin(), activeDialogs.end(), RenderOrderSortFunction);
-
-    for (const auto& window : activeDialogs)
-    {
-      if (window->IsDialogRunning())
-        window->AssignDepth();
-    }
+    AssignDepth(pWindow);
   }
 
   const bool observeDirty = GUI_FRAME_TIMING::ActiveFrame() != 0;
@@ -1542,6 +1547,29 @@ bool CGUIWindowManager::Render()
     GUI_FRAME_TIMING::Count(GUI_FRAME_TIMING::Counter::RenderClean);
   PublishRenderBounds();
   return hasRendered;
+}
+
+bool CGUIWindowManager::RenderForCapture()
+{
+  assert(CServiceBroker::GetAppMessenger()->IsProcessThread());
+  auto& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  std::unique_lock<CCriticalSection> lock(gfx);
+
+  // A control is drawn at the depth Process() gave it, divided by the number of
+  // depth layers counted up to then; AfterRender() resets that count. Between
+  // frames the depths would be divided by the reset count, which puts nearly all
+  // of them outside the depth range, so nothing but the clears would be drawn.
+  // Count them again for this pass and leave the count as it was.
+  const uint32_t layers = gfx.GetDepth(0);
+  gfx.ResetDepth();
+  AssignDepth(GetWindow(GetActiveWindow()));
+
+  MarkDirty();
+  const bool rendered = Render();
+
+  gfx.ResetDepth();
+  gfx.GetDepth(layers - 2);
+  return rendered;
 }
 
 void CGUIWindowManager::AfterRender()
