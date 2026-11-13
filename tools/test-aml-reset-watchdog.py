@@ -41,7 +41,8 @@ PREFIX = r'''
 struct CLog {template<class... T> static void Log(T&&...) {}};
 constexpr int LOGDEBUG=0, DVD_PLAYSPEED_NORMAL=1000, TRICKMODE_NONE=0;
 constexpr double DVD_NOPTS_VALUE=-1e30;
-enum class StreamHdrType {HDR_TYPE_NONE, HDR_TYPE_DOLBYVISION};
+enum class StreamHdrType {HDR_TYPE_NONE, HDR_TYPE_HDR10, HDR_TYPE_DOLBYVISION};
+constexpr int AV_CODEC_ID_HEVC=173;
 // Fake wall clock: production reads std::chrono::system_clock::now().
 struct FakeClock {
   static inline std::chrono::system_clock::time_point value{std::chrono::seconds(1000)};
@@ -70,6 +71,7 @@ void pre_header_feeding(Private*,Packet*) {}
 void aml_dv_backend_invalidate(void*) {}
 uint64_t aml_dv_backend_epoch() {return 1;}
 bool aml_subtitle_active_area_configure(int,int,bool,bool,int,double,bool) {return true;}
+void aml_subtitle_active_area_enable_hevc_live(int) {}
 // Stops and joins the previous probe worker before starting the next one.
 void aml_dv_detect_active_area_start() {++probeStarts; FakeClock::Advance(probeRetireDelay);}
 struct CAMLCodec {
@@ -84,8 +86,10 @@ struct CAMLCodec {
   bool m_resetHoldsVideo=true, m_inputEnded=false;
   struct {int frames=1;} m_stillFrameDrain;
   float m_dataLevel=1;
-  struct {StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE; int width=3840, height=2160; double aspect=16.0/9;
-          struct {int dv_profile=0;} dovi; int subtitleProbeSource=0;} m_hints;
+  struct {StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE; int width=3840, height=2160, codec=0;
+          double aspect=16.0/9; bool interlaced=false;
+          struct {int dv_profile=0, dv_bl_signal_compatibility_id=0;} dovi;
+          int subtitleProbeSource=0;} m_hints;
   StreamHdrType m_originalSourceHdrType=StreamHdrType::HDR_TYPE_NONE;
   std::chrono::system_clock::time_point m_tp_last_frame{};
   int m_decoder_timeout=5;
