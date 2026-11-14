@@ -258,7 +258,8 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
                                       const std::shared_ptr<const void>& dvSession = {});
 const char* aml_subtitle_active_area_decoder_status_path(int codec);
 bool aml_subtitle_active_area_enable_decoder_live(const std::shared_ptr<const void>& expectedSource,
-                                              unsigned int token, bool frameL5);
+                                                 unsigned int token, bool frameL5,
+                                                 bool liveFELWithL5Scan = false);
 // The serialized software reset has retired the old decode call; its next
 // output (including EOF) now belongs to a fresh route with the same geometry.
 void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedSource);
@@ -269,9 +270,11 @@ bool aml_subtitle_native_dv();
 // The default exposes only conservative geometry. Only subtitle placement may
 // opt into the separate estimate; it is never evidence for native L5 or cropping.
 bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
-    uint16_t& bottom, uint16_t& left, uint16_t& right, bool allowSubtitleEstimate = false);
+    uint16_t& bottom, uint16_t& left, uint16_t& right, bool allowSubtitleEstimate = false,
+    bool* preferLiveFEL = nullptr);
 bool aml_dv_get_l5_override(uint16_t& top, uint16_t& bottom, uint16_t& left, uint16_t& right);
 bool aml_dv_detect_active_area_enabled();
+bool aml_dv_active_area_detection_requested();
 bool aml_dv_live_frame_l5_eligible(const std::shared_ptr<const void>& session);
 // Invariant all-scene native detection may supersede authored L5. Manual wins.
 bool aml_dv_detect_active_area_override_get(int width, int height, uint16_t& top,

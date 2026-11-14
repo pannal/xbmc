@@ -2568,7 +2568,7 @@ int aml_dv_l5_subs_signal_mode()
   return settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5_SIGNAL_SUBS);
 }
 
-static bool dv_l5_detection_requested()
+bool aml_dv_active_area_detection_requested()
 {
   return settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) &&
          settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA) &&
@@ -2577,7 +2577,8 @@ static bool dv_l5_detection_requested()
 
 bool aml_dv_detect_active_area_enabled()
 {
-  return s_dvModeCached == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL && dv_l5_detection_requested();
+  return s_dvModeCached == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL &&
+         aml_dv_active_area_detection_requested();
 }
 
 bool aml_dv_live_frame_l5_eligible(const std::shared_ptr<const void>& session)
@@ -2595,7 +2596,7 @@ bool aml_dv_live_frame_l5_eligible(const std::shared_ptr<const void>& session)
       aml_dv_type() == DV_TYPE_DISPLAY_LED &&
       settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VIDEO_PROCESSOR) == 0;
   return (pendingTVLed || aml_gui_dv_output_mode() == DOLBY_VISION_OUTPUT_MODE_IPT_TUNNEL) &&
-         dv_l5_detection_requested() &&
+         aml_dv_active_area_detection_requested() &&
          settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_STD_SOURCE_LEVEL_5);
 }
 
@@ -2956,6 +2957,7 @@ static std::atomic<uint16_t> s_detectedLeft{0};
 static std::atomic<uint16_t> s_detectedRight{0};
 
 static CAMLNativeWorker s_detectWorker;
+static CAMLNativeWorker s_liveFELWorker;
 static CAMLNativeWorker s_bindingWorker;
 static std::mutex s_bindingDispatchMutex;
 static std::condition_variable s_bindingChanged;
@@ -3018,6 +3020,7 @@ struct DetectSource
   bool usesAMLVideoPlane{false}; // set at configuration before worker admission
   unsigned int decoderBorderToken{0};
   bool hevcFrameL5{false};
+  bool liveFELWithL5Scan{false};
   bool nativeP81{false};
   std::shared_ptr<const void> dvSession;
   bool subtitleOnly{false}; // live route's file fallback, set by its worker before scanning
@@ -3039,6 +3042,11 @@ struct DetectSource
   std::shared_ptr<const DetectResult> subtitleResult;
   std::shared_ptr<const DetectResult> retainedSubtitle;
   std::optional<DetectResult> liveResult; // display geometry for the current presentation only
+  bool LiveBordersBlocked() const
+  {
+    // A file-scan deadline does not invalidate the decoder's geometry.
+    return policy->skip || policy->ended || (!liveFELWithL5Scan && policy->timedOut);
+  }
 };
 static std::mutex s_detectSourceMutex;
 static std::shared_ptr<DetectSource> s_detectSource = std::make_shared<DetectSource>("");
@@ -3287,6 +3295,7 @@ void aml_subtitle_active_area_reset(const std::shared_ptr<const void>& expectedS
   s_detectSource->usesAMLVideoPlane = previous->usesAMLVideoPlane;
   s_detectSource->decoderBorderToken = previous->decoderBorderToken;
   s_detectSource->hevcFrameL5 = previous->hevcFrameL5;
+  s_detectSource->liveFELWithL5Scan = previous->liveFELWithL5Scan;
   s_detectSource->nativeP81 = previous->nativeP81;
   s_detectSource->dvSession = previous->dvSession;
   s_detectSource->binding = previous->binding;
@@ -3343,9 +3352,7 @@ void aml_subtitle_active_area_startup_begin(uint64_t pm4kStartupToken)
   // Native mode is resolved later by decoder open; do not use its cached mode
   // to decide whether startup must wait for admission.
   const bool requested = settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
-      (settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) &&
-       settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA) &&
-       !aml_dv_l5_override_active());
+                         aml_dv_active_area_detection_requested();
   const bool wait = requested && !s_detectSource->binding && !s_detectSource->policy->Blocked() && settings()->GetBool(CSettings::SETTING_SUBTITLES_WAITACTIVEAREA);
   s_detectSource->startupWait->store(wait);
   s_detectSource->startupHeld->store(false);
@@ -3495,16 +3502,19 @@ static bool detect_wait_for_startup_hold(const CAMLNativeWorker::Run& run,
 }
 
 bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
-    uint16_t& bottom, uint16_t& left, uint16_t& right, bool allowSubtitleEstimate)
+    uint16_t& bottom, uint16_t& left, uint16_t& right, bool allowSubtitleEstimate,
+    bool* preferLiveFEL)
 {
   top = bottom = left = right = 0;
+  if (preferLiveFEL)
+    *preferLiveFEL = false;
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   const auto& source = s_detectSource;
   const bool subtitleDetection = settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA);
   if (source->binding && source->binding->state == DETECTOR_PLAYBACK::State::FAILED)
     return false;
   const bool live = subtitleDetection && !source->binding && !source->superseded->load() &&
-                    source->liveResult.has_value() &&
+                    source->liveResult.has_value() && !source->LiveBordersBlocked() &&
                     (!source->decoderBorderToken || !source->nativeDV || allowSubtitleEstimate);
   const bool enabled = live || source->boundUsable || (source->nativeDV ? (aml_dv_detect_active_area_enabled() ||
       (allowSubtitleEstimate && subtitleDetection)) : subtitleDetection);
@@ -3524,12 +3534,15 @@ bool aml_subtitle_detect_active_area_get(int width, int height, uint16_t& top,
     if (subtitle)
       accepted = subtitle;
   }
-  if (!enabled || !source->allowProbe || (!source->boundUsable && source->policy->Blocked()) ||
+  if (!enabled || !source->allowProbe ||
+      (!live && !source->boundUsable && source->policy->Blocked()) ||
       source->width != width || source->height != height)
     return false;
   if (!live && !accepted)
     return false;
   const auto& result = live ? *source->liveResult : *accepted;
+  if (preferLiveFEL)
+    *preferLiveFEL = live && source->liveFELWithL5Scan;
   top = result.top; bottom = result.bottom; left = result.left; right = result.right;
   return true;
 }
@@ -5720,18 +5733,24 @@ const char* aml_subtitle_active_area_decoder_status_path(int codec)
 }
 
 bool aml_subtitle_active_area_enable_decoder_live(const std::shared_ptr<const void>& expectedSource,
-                                                 unsigned int token, bool frameL5)
+                                                 unsigned int token, bool frameL5,
+                                                 bool liveFELWithL5Scan)
 {
   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
   if (!token || !expectedSource || expectedSource != s_detectSource->selection ||
       s_detectSource->superseded->load() || s_detectSource->binding ||
-      !s_detectSource->allowProbe || s_detectSource->policy->Blocked())
+      !s_detectSource->allowProbe || s_detectSource->policy->skip || s_detectSource->policy->ended ||
+      (!liveFELWithL5Scan && s_detectSource->policy->timedOut))
     return false;
   s_detectSource->decoderBorderToken = token;
   s_detectSource->hevcFrameL5 = frameL5;
-  s_detectSource->startupWait->store(false);
-  s_detectSource->startupHeld->store(false);
-  s_detectSource->startupAdmission->store(false);
+  s_detectSource->liveFELWithL5Scan = liveFELWithL5Scan;
+  if (!liveFELWithL5Scan)
+  {
+    s_detectSource->startupWait->store(false);
+    s_detectSource->startupHeld->store(false);
+    s_detectSource->startupAdmission->store(false);
+  }
   return true;
 }
 
@@ -5821,7 +5840,8 @@ static bool detect_from_live_decoder(const std::shared_ptr<DetectSource>& source
   while (!run.Cancelled() &&
          (settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
           (source->hevcFrameL5 && aml_dv_live_frame_l5_eligible(source->dvSession))) &&
-         (!source->nativeDV || source->hevcFrameL5 || !aml_dv_detect_active_area_enabled()))
+         (!source->nativeDV || source->hevcFrameL5 || source->liveFELWithL5Scan ||
+          !aml_dv_detect_active_area_enabled()))
   {
     std::ifstream input(statusPath);
     char status = 0;
@@ -5877,7 +5897,7 @@ static bool detect_from_live_decoder(const std::shared_ptr<DetectSource>& source
     {
       std::lock_guard<std::mutex> lock(s_detectSourceMutex);
       if (run.Cancelled() || source != s_detectSource || source->superseded->load() ||
-          source->policy->Blocked())
+          source->LiveBordersBlocked())
         break;
       if (epochChanged)
         source->liveResult.reset();
@@ -5897,6 +5917,7 @@ static bool detect_from_live_decoder(const std::shared_ptr<DetectSource>& source
 
 void aml_dv_detect_active_area_start()
 {
+  s_liveFELWorker.Stop();
   s_detectWorker.Stop(); // cancel/join before shared scanner state is reused
   std::shared_ptr<DetectSource> source;
   std::shared_ptr<const void> completion;
@@ -5929,7 +5950,7 @@ void aml_dv_detect_active_area_start()
     source->liveResult.reset();
     source->completedPositions.store(0);
   }
-  if (s_detectWorker.Closed())
+  if (s_detectWorker.Closed() || s_liveFELWorker.Closed())
     return;
   {
     std::lock_guard<std::mutex> guard(s_detectSourceMutex);
@@ -5950,6 +5971,15 @@ void aml_dv_detect_active_area_start()
     s_detectState.store(state);
     return true;
   };
+  if (source->liveFELWithL5Scan && source->decoderBorderToken && !source->LiveBordersBlocked() &&
+      settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA))
+  {
+    s_liveFELWorker.Start([source](const CAMLNativeWorker::Run& run) {
+      CLog::Log(LOGINFO, "DetectActiveArea: using live FEL subtitle borders alongside the L5 file scan");
+      if (detect_from_live_decoder(source, run) && !run.Cancelled())
+        CLog::Log(LOGINFO, "DetectActiveArea: live FEL unavailable; using available file geometry");
+    }, source->superseded);
+  }
   if (source->policy->Blocked())
   {
     publishState(source->policy->timedOut ? DV_DETECT_TIMED_OUT : DV_DETECT_SKIPPED);
@@ -5957,7 +5987,8 @@ void aml_dv_detect_active_area_start()
   }
   const bool nativeL5 = source->nativeDV && detect_native_result_enabled(source);
   const bool frameL5 = source->hevcFrameL5 && nativeL5;
-  const bool decoderLive = source->decoderBorderToken && !source->startupScan &&
+  const bool decoderLive = source->decoderBorderToken && !source->liveFELWithL5Scan &&
+      !source->startupScan &&
       (frameL5 || (settings()->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) &&
                   !nativeL5));
   if (source->codedCrop && !decoderLive)
@@ -5970,7 +6001,8 @@ void aml_dv_detect_active_area_start()
       source->width < 64 || source->height < 64 ||
       source->width > 65535 || source->height > 65535 || source->path.empty())
     return;
-  const bool live = !decoderLive && !nativeL5 && detect_can_use_vdin(*source);
+  const bool live = !decoderLive && !source->liveFELWithL5Scan && !nativeL5 &&
+                    detect_can_use_vdin(*source);
   auto reservation = live || decoderLive ? std::shared_ptr<const void>{} : detect_reserve_scanner();
   if (!live && !decoderLive && !reservation)
   {
@@ -6134,6 +6166,7 @@ void aml_dv_detect_active_area_start()
 
 void aml_dv_detect_active_area_stop()
 {
+  s_liveFELWorker.Stop();
   s_detectWorker.Stop();
   const bool nativeSource = aml_subtitle_native_dv();
   aml_subtitle_active_area_invalidate();
@@ -6564,13 +6597,16 @@ bool aml_dv_retire_background_work()
   // No display fence or native acquisition may precede their cancellation.
   const bool watcher = s_autoLbWorker.Retire();
   const bool detector = s_detectWorker.Retire();
+  const bool liveFEL = s_liveFELWorker.Retire();
   const bool jobs = aml_detector_retire_jobs();
   const bool bindings = s_bindingWorker.Retire();
   if (watcher && s_autoLbWorker.Failure())
     CLog::Log(LOGERROR, "AML: auto-letterbox worker failed before retirement");
   if (detector && s_detectWorker.Failure())
     CLog::Log(LOGERROR, "AML: active-area detector failed before retirement");
-  return watcher && detector && jobs && bindings;
+  if (liveFEL && s_liveFELWorker.Failure())
+    CLog::Log(LOGERROR, "AML: live FEL subtitle detector failed before retirement");
+  return watcher && detector && liveFEL && jobs && bindings;
 }
 
 enum DV_MODE aml_dv_mode()

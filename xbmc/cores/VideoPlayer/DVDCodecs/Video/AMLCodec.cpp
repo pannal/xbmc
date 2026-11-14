@@ -368,6 +368,7 @@ typedef struct am_private_t
   bool              originalP81;
   bool              convertProfile7;
   bool              liveFrameL5;
+  bool              liveFELWithL5Scan;
 
   pstream_type      stream_type;
   int               check_first_pts;
@@ -2199,6 +2200,7 @@ unsigned int RequestLiveDecoderBorders(const CDVDStreamInfo& hints,
                                        bool nativeDV,
                                        bool frameL5,
                                        bool nativeP7Borders,
+                                       bool liveFELWithL5Scan,
                                        bool h264Frame)
 {
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
@@ -2214,10 +2216,11 @@ unsigned int RequestLiveDecoderBorders(const CDVDStreamInfo& hints,
     return 0;
   if (!frameL5 && (!settings->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
                   !settings->GetBool(CSettings::SETTING_SUBTITLES_LIVEACTIVEAREA) ||
-                  (nativeDV && aml_dv_detect_active_area_enabled())))
+                  (nativeDV && !liveFELWithL5Scan && aml_dv_detect_active_area_enabled())))
     return 0;
   // On Demand output can still be pending. Keep the configured L5 scan on P7.
-  if (nativeP7Borders && settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) &&
+  if (nativeP7Borders && !liveFELWithL5Scan &&
+      settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) &&
       settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA) &&
       !aml_dv_l5_override_active())
     return 0;
@@ -2231,7 +2234,8 @@ unsigned int RequestLiveDecoderBorders(const CDVDStreamInfo& hints,
   {
     return 0;
   }
-  return aml_subtitle_active_area_enable_decoder_live(hints.subtitleProbeSource, token, frameL5) ?
+  return aml_subtitle_active_area_enable_decoder_live(hints.subtitleProbeSource, token, frameL5,
+                                                      liveFELWithL5Scan) ?
       token : 0;
 }
 
@@ -2559,9 +2563,10 @@ bool CAMLCodec::OpenDecoderInternal()
                         m_originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
   const bool nativeP81 = nativeDV && am_private->originalP81;
   const bool nativeP7 = nativeDV && hints.dovi.dv_profile == 7 && !am_private->convertProfile7;
-  const bool nativeP7Borders = nativeP7 &&
-      (hints.dovi_el_type == DOVIELType::TYPE_MEL ||
-       (hints.dovi_el_type == DOVIELType::TYPE_FEL && LiveFELBordersEnabled()));
+  const bool liveFEL = nativeP7 && hints.dovi_el_type == DOVIELType::TYPE_FEL &&
+                       LiveFELBordersEnabled();
+  const bool nativeP7Borders = liveFEL || (nativeP7 && hints.dovi_el_type == DOVIELType::TYPE_MEL);
+  am_private->liveFELWithL5Scan = liveFEL && aml_dv_active_area_detection_requested();
   const bool nativeL5 = nativeP81 && aml_dv_live_frame_l5_eligible(m_dvSession);
   am_private->liveBorderToken = 0;
   am_private->liveFrameL5 = nativeL5 && hints.width == 3840 && hints.height == 2160 &&
@@ -2575,6 +2580,7 @@ bool CAMLCodec::OpenDecoderInternal()
       am_private->liveBorderToken =
           RequestLiveDecoderBorders(hints, m_originalSourceHdrType, nativeDV,
                                     am_private->liveFrameL5, nativeP7Borders,
+                                    am_private->liveFELWithL5Scan,
                                     am_private->video_format == VFORMAT_H264 &&
                                         am_private->gcodec.dec_mode == STREAM_TYPE_FRAME);
     if (!am_private->liveBorderToken)
@@ -3021,9 +3027,12 @@ void CAMLCodec::ResetInternal()
                                         nativeDV && am_private->originalP81, m_dvSession))
   {
     if (am_private->liveBorderToken &&
-        (am_private->liveFrameL5 || !nativeDV || !aml_dv_detect_active_area_enabled()))
+        (am_private->liveFELWithL5Scan || am_private->liveFrameL5 || !nativeDV ||
+         !aml_dv_detect_active_area_enabled()))
       aml_subtitle_active_area_enable_decoder_live(m_hints.subtitleProbeSource,
-                                                 am_private->liveBorderToken, am_private->liveFrameL5);
+                                                   am_private->liveBorderToken,
+                                                   am_private->liveFrameL5,
+                                                   am_private->liveFELWithL5Scan);
     aml_dv_detect_active_area_start();
   }
 

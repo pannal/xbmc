@@ -155,7 +155,7 @@ bool aml_subtitle_native_dv(){return native;}
 bool aml_dv_get_l5_override(uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r){if(!manual)return false;t=mt;b=mb;l=ml;r=mr;return true;}
 bool aml_dv_auto_letterbox_active(){return autoLb;}
 bool aml_dv_auto_letterbox_additive(){return additive;}
-bool aml_subtitle_detect_active_area_get(int,int,uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r,bool allowSubtitleEstimate=false){assert(!allowSubtitleEstimate);if(!detected)return false;t=dt;b=db;l=dl;r=dr;return true;}
+bool aml_subtitle_detect_active_area_get(int,int,uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r,bool allowSubtitleEstimate=false,bool* preferLiveFEL=nullptr){assert(!allowSubtitleEstimate&&!preferLiveFEL);if(!detected)return false;t=dt;b=db;l=dl;r=dr;return true;}
 // These retained cases exercise authored/manual geometry, without an HC override.
 bool aml_dv_detect_active_area_override_get(int,int,uint16_t&,uint16_t&,uint16_t&,uint16_t&){return false;}
 struct MathUtils {static int round_int(double value){return std::lround(value);}};

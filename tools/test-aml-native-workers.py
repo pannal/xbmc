@@ -45,6 +45,9 @@ struct CSettings {static constexpr int SETTING_COREELEC_AMLOGIC_DV_L5_AUTO_LETTE
 struct Settings {bool detect=true,wait=false,dvRequested=true;bool GetBool(int id){return id==5?wait:id==2?detect:(id>=6?dvRequested:id<3);}} settingsValue;
 Settings* settings(){return &settingsValue;}
 bool aml_dv_l5_override_active(){return false;}
+bool aml_dv_active_area_detection_requested(){return settingsValue.dvRequested;}
+bool aml_subtitle_active_area_enable_decoder_live(const std::shared_ptr<const void>&, unsigned int,
+                                                  bool, bool = false);
 bool aml_detector_retire_jobs(){return true;}
 @CONSTANTS@
 @GEOMETRY@
@@ -480,7 +483,62 @@ void hevc_live_only()
  dvDetection = savedDV;
 }
 
-int main(){ready();cancel_before_native_join();active_retirement_exception();detector_replacement();stop_resets_after_join();generic_detector();vdin_samples();hevc_border_samples();h264_border_samples();vdin_playback();hevc_live_only();watcher_identity_and_join();shutdown_drains_before_display();std::cout<<"PASS: native participants, exact runs, real joins and shutdown retirement (ASan/UBSan)\n";}
+void fel_subtitles_alongside_l5()
+{
+ CAMLSession decoder;
+ init(decoder);
+ select("fel-with-l5", true, 3840, 2160);
+ auto source = s_detectSource;
+ source->startupWait->store(true);
+ assert(aml_subtitle_active_area_enable_decoder_live(source->selection, 5, false, true));
+ assert(source->startupWait->load());
+
+ std::promise<void> live, scanned;
+ auto liveReady = live.get_future();
+ auto scanReady = scanned.get_future();
+ hevcHook = [&](const auto& current, const auto& run) {
+  {
+   std::lock_guard<std::mutex> lock(s_detectSourceMutex);
+   assert(current == source && !current->hevcFrameL5);
+   current->liveResult = DetectResult{68, 68, 0, 0};
+  }
+  live.set_value();
+  while (run.WaitFor(10ms)) {}
+  return false;
+ };
+ scanHook = [&](const auto& current, const auto& run) {
+  assert(current == source && current->startupScan && !current->subtitleOnly);
+  detect_publish_subtitle(run, current, {110, 110, 0, 0});
+  detect_publish(run, current, 276, 276, 0, 0);
+  scanned.set_value();
+ };
+ {
+  CAMLNativeTransaction owner;
+  assert(owner.TryBegin());
+  aml_dv_detect_active_area_start();
+ }
+ assert(liveReady.wait_for(2s) == std::future_status::ready);
+ assert(scanReady.wait_for(2s) == std::future_status::ready);
+ uint16_t top, bottom, left, right;
+ bool preferLiveFEL = false;
+ assert(aml_subtitle_detect_active_area_get(3840, 2160, top, bottom, left, right,
+                                            true, &preferLiveFEL));
+ assert(top == 68 && preferLiveFEL);
+ aml_dv_detect_active_area_get(top, bottom, left, right);
+ assert(top == 276);
+ source->policy->timedOut.store(true);
+ assert(aml_subtitle_detect_active_area_get(3840, 2160, top, bottom, left, right, true));
+ assert(top == 68);
+ {
+  CAMLNativeTransaction owner;
+  assert(owner.TryBegin());
+  aml_dv_detect_active_area_stop();
+ }
+ assert(!aml_subtitle_detect_active_area_get(3840, 2160, top, bottom, left, right, true));
+ hevcHook = {};
+}
+
+int main(){ready();cancel_before_native_join();active_retirement_exception();detector_replacement();stop_resets_after_join();generic_detector();vdin_samples();hevc_border_samples();h264_border_samples();vdin_playback();hevc_live_only();fel_subtitles_alongside_l5();watcher_identity_and_join();shutdown_drains_before_display();std::cout<<"PASS: native participants, exact runs, real joins and shutdown retirement (ASan/UBSan)\n";}
 '''
 
 def source():

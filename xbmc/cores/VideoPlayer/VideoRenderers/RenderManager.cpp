@@ -1229,13 +1229,16 @@ CRect CRenderManager::CalcPictureActiveArea(const CRect& src, const CRect& dst, 
       // may need a tighter pixel-supported rectangle when native
       // offsets understate visible bars; manual and phantom paths stay above.
       uint16_t textTop = 0, textBottom = 0, textLeft = 0, textRight = 0;
+      bool preferLiveFEL = false;
       if (aml_subtitle_detect_active_area_get(m_picture.iWidth, m_picture.iHeight,
-                                             textTop, textBottom, textLeft, textRight, true))
+                                             textTop, textBottom, textLeft, textRight, true,
+                                             &preferLiveFEL))
       {
-        const uint16_t confinedTop = std::max(top, textTop);
-        const uint16_t confinedBottom = std::max(bottom, textBottom);
-        const uint16_t confinedLeft = std::max(left, textLeft);
-        const uint16_t confinedRight = std::max(right, textRight);
+        // A file-wide L5 estimate can be larger than the current FEL borders.
+        const uint16_t confinedTop = preferLiveFEL ? textTop : std::max(top, textTop);
+        const uint16_t confinedBottom = preferLiveFEL ? textBottom : std::max(bottom, textBottom);
+        const uint16_t confinedLeft = preferLiveFEL ? textLeft : std::max(left, textLeft);
+        const uint16_t confinedRight = preferLiveFEL ? textRight : std::max(right, textRight);
         if (confinedTop + confinedBottom < m_picture.iHeight &&
             confinedLeft + confinedRight < m_picture.iWidth)
         {
