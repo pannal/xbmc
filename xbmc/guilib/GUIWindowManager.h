@@ -107,6 +107,14 @@ public:
    */
   bool Render();
 
+  /*! \brief Render the whole current window and any dialogs between frames
+   For a screenshot: unlike Render(), which follows Process() in the same frame and
+   draws only what changed, this assigns the controls' depths again and draws
+   everything. It should only be called from the application thread.
+   Returns true only if it has rendered something.
+   */
+  bool RenderForCapture();
+
   void RenderEx() const;
 
   /*! \brief Do any post render activities.
@@ -234,6 +242,9 @@ public:
 #endif
 private:
   void PublishRenderBounds();
+  /*! \brief Assign depth values to the controls of the active window and dialogs
+   */
+  void AssignDepth(CGUIWindow* activeWindow);
   void RenderPass() const;
   /*! \brief Render in one back to front pass.
    */

@@ -833,6 +833,8 @@ void CWinSystemAmlogicGLESContext::RequestMenuComposite(bool menuShown)
 // these is a sysfs read.
 bool CWinSystemAmlogicGLESContext::IsGuiOutputHdr()
 {
+  if (m_plainGuiCapture)
+    return false;
   return aml_transfer_pq_at_open() || aml_dv_core_at_open() || aml_dv_mode() == DV_MODE_ON;
 }
 
@@ -1225,7 +1227,8 @@ bool CWinSystemAmlogicGLESContext::BeginGuiComposite()
   m_menuFboHasContent = false;
   if (!CanRender())
     return false;
-  if (m_menuRoute == MenuRoute::NONE)
+  // A screenshot's plain pass draws straight into the surface it reads back.
+  if (m_menuRoute == MenuRoute::NONE || m_plainGuiCapture)
     return true;
   m_guiTarget = CaptureRenderTarget();
   m_guiResources = GetTextureResources();
@@ -1299,7 +1302,7 @@ void CWinSystemAmlogicGLESContext::CancelGuiComposite()
 bool CWinSystemAmlogicGLESContext::EndGuiComposite()
 {
   if (!m_guiFboBound)
-    return CanRender() && m_menuRoute == MenuRoute::NONE;
+    return CanRender() && (m_menuRoute == MenuRoute::NONE || m_plainGuiCapture);
   if (!IsRenderTargetCurrent(m_guiTarget))
   {
     CancelGuiComposite();

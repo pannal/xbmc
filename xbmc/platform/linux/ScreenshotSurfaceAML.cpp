@@ -38,12 +38,39 @@ bool CScreenshotSurfaceAML::Capture()
   auto* renderSystem = CServiceBroker::GetRenderSystem();
   if (!renderSystem || !renderSystem->CanRender())
     return false;
+  // Draw this pass as plain SDR, as the video under it is converted to: no
+  // limited range, HDR scale or GUI tuning, and disc menus through their SDR
+  // path rather than the PQ menu composite. The next frame draws as before.
+  struct PlainPass
+  {
+    CWinSystemBase* winsystem;
+    CRenderSystemBase* renderSystem;
+    bool active{true};
+    void End()
+    {
+      if (!active)
+        return;
+      active = false;
+      winsystem->SetPlainGuiCapture(false);
+      renderSystem->SetPlainGuiEncoding(false);
+    }
+    ~PlainPass() { End(); }
+  } plain{winsystem, renderSystem};
+  winsystem->SetPlainGuiCapture(true);
+  renderSystem->SetPlainGuiEncoding(true);
   const auto target = renderSystem->CaptureRenderTarget();
   if (!winsystem->BeginGuiComposite())
     return false;
   auto cancel = [](CWinSystemBase* window) { window->CancelGuiComposite(); };
   std::unique_ptr<CWinSystemBase, decltype(cancel)> composite(winsystem, cancel);
-  CServiceBroker::GetGUI()->GetWindowManager().Render();
+  // Draw the whole GUI into the surface read back below. That surface may hold
+  // any older picture: with AFBC scanout the frames on screen live in the
+  // presenter's buffers and the EGL surface is never drawn, and in linear mode
+  // the back buffer is an older frame. Clear it to transparent first, so that
+  // where the GUI draws nothing the video blended in below shows.
+  winsystem->GetGfxContext().ResetScissors();
+  renderSystem->ClearBuffers(0);
+  CServiceBroker::GetGUI()->GetWindowManager().RenderForCapture();
   if (!renderSystem->IsRenderTargetCurrent(target) || !winsystem->EndGuiComposite())
     return false;
   composite.release();
@@ -84,10 +111,25 @@ bool CScreenshotSurfaceAML::Capture()
   }
 
   delete [] surface;
+  plain.End();
 
-  // Captures the current visible videobuffer and blend it into m_buffer (captured overlay)
+  // The GUI is read. The video capture waits for frames to arrive, so let the
+  // other threads have the graphics context meanwhile.
+  lock.unlock();
+  // Put the video under the GUI (m_buffer), if it is still the session the GUI
+  // was drawn over. A screenshot without the video it was taken of fails,
+  // rather than saving the GUI over black.
   auto permit = video.Acquire();
-  if (permit)
-    CScreenshotAML::CaptureVideoFrame(m_buffer, m_width, m_height);
+  const bool composed = permit ? CScreenshotAML::ComposeVideo(m_buffer, m_width, m_height)
+                               : !video.codec;
+  if (!composed)
+  {
+    CLog::Log(LOGWARNING, "CScreenshotSurfaceAML: {}",
+              permit ? "the video could not be captured"
+                     : "playback changed while the screenshot was taken");
+    delete[] m_buffer;
+    m_buffer = nullptr;
+    return false;
+  }
   return true;
 }
