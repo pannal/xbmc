@@ -27,6 +27,7 @@ struct Sample
 enum class Source
 {
   VDIN,
+  H264,
   HEVC
 };
 
@@ -57,6 +58,8 @@ inline std::optional<Sample> Read(std::istream& stream, int width, int height,
                         static_cast<uint16_t>(left), static_cast<uint16_t>(right)}};
   // HEVC can append refined offsets while keeping the original bounds for
   // consensus and for clients that only read the original fields.
+  if (source == Source::H264)
+    sample.tapStep = 2; // Tolerate two pixels of edge jitter at full resolution.
   if (source == Source::HEVC)
   {
     const std::array<int, 4> limits{height / 3, height / 3, width / 3, width / 3};
@@ -91,6 +94,12 @@ class Consensus
 public:
   explicit Consensus(Source source = Source::VDIN) : m_source(source) {}
 
+  void Reset()
+  {
+    m_stamp.reset();
+    m_count = 0;
+  }
+
   std::optional<Borders> Observe(const std::optional<Sample>& sample)
   {
     if (!sample)
@@ -102,9 +111,9 @@ public:
       return {};
     m_stamp = sample->stamp;
 
-    const int tolerance = m_source == Source::HEVC ? sample->tapStep : 2;
+    const int tolerance = m_source != Source::VDIN ? sample->tapStep : 2;
     bool matches = m_count != 0;
-    if (matches && m_source == Source::HEVC)
+    if (matches && m_source != Source::VDIN)
     {
       const auto& b = sample->borders;
       // A one-step bar and an uncropped axis are distinct geometries.

@@ -28203,7 +28203,7 @@ msgstr ""
 #. Help for subtitle live black-border detection
 #: system/settings/settings.xml
 msgctxt "#69390"
-msgid "Follow changes in the active picture during playback for eligible progressive HEVC streams on supported Amlogic decoders. SDR must use limited range or leave the range unspecified, with BT.709 or unspecified color tags. Eligible files use a background scan when live detection is unavailable, including H.264 files. Turn this off to prefer file-wide estimates and the startup wait setting. Applies when opening a video."
+msgid "Follow changes in the active picture during playback on supported Amlogic decoders. Live detection supports eligible progressive HEVC streams and progressive 8-bit SDR H.264 streams up to 1080p. SDR must use limited range or leave the range unspecified, with BT.709 or unspecified color tags. Eligible files use a background scan when live detection is unavailable. Turn this off to prefer file-wide estimates and the startup wait setting. Applies when opening a video."
 msgstr ""
 
 #. Label of the live black-border scan resolution setting

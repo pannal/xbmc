@@ -322,6 +322,27 @@ void hevc_border_samples()
  assert(!vdin.Observe(Sample{3, scope}));
 }
 
+void h264_border_samples()
+{
+ using namespace AML_ACTIVE_AREA_VDIN;
+ auto read = [](const char* line) {
+  std::istringstream input(line);
+  return Read(input, 1920, 1080, Source::H264);
+ };
+ const Borders mixed{30, 30, 1, 1};
+ const auto sample = read("1 1 1920 1080 30 1049 1 1918 16 100");
+ assert(sample && sample->borders == mixed && sample->tapStep == 2 && !sample->snapped);
+ Consensus consensus{Source::H264};
+ assert(!consensus.Observe(sample));
+ assert(!consensus.Observe(read("1 2 1920 1080 29 1047 2 1918 16 100")));
+ assert(!consensus.Observe(read("1 3 1920 1080 30 1049 0 1919 16 100")));
+ consensus.Reset();
+ assert(!consensus.Observe(sample)); // A replacement decoder can repeat the same sequence.
+ assert(!consensus.Observe(sample));
+ assert(!consensus.Observe(read("1 2 1920 1080 29 1047 2 1918 16 100")));
+ assert(consensus.Observe(read("1 3 1920 1080 30 1049 1 1918 16 100")) == mixed);
+}
+
 void vdin_playback()
 {
  CAMLSession s;init(s);
@@ -370,7 +391,7 @@ void hevc_live_only()
  dvDetection = false;
  for (bool native : {false, true}) {
   select("hevc-live", native, 3840, 2160);
-  s_detectSource->hevcBorderToken = 1;
+  s_detectSource->decoderBorderToken = 1;
   std::promise<void> entered;
   auto ready = entered.get_future();
   hevcHook = [&](const auto&, const auto&) { entered.set_value(); return false; };
@@ -388,7 +409,7 @@ void hevc_live_only()
   assert(s_detectSource->scanState == DV_DETECT_SKIPPED);
  }
  select("hevc-fallback", true, 3840, 2160);
- s_detectSource->hevcBorderToken = 2;
+ s_detectSource->decoderBorderToken = 2;
  std::promise<void> scanned;
  auto finished = scanned.get_future();
  hevcHook = [](const auto&, const auto&) { return true; };
@@ -409,7 +430,7 @@ void hevc_live_only()
  settingsValue.detect = false;
  dvDetection = true;
  select("hevc-frame-l5", true, 3840, 2160);
- assert(aml_subtitle_active_area_enable_hevc_live(s_detectSource->selection, 4, true));
+ assert(aml_subtitle_active_area_enable_decoder_live(s_detectSource->selection, 4, true));
  std::promise<void> frameL5Entered;
  auto frameL5Started = frameL5Entered.get_future();
  hevcHook = [&](const auto& source, const auto&) {
@@ -435,11 +456,11 @@ void hevc_live_only()
   assert(aml_subtitle_active_area_configure(1920, 1036, false, true, selected,
                                             1920.0 / 1036.0, true));
   assert(s_detectSource->codedCrop);
-  assert(aml_subtitle_active_area_enable_hevc_live(selected, 3, false));
+  assert(aml_subtitle_active_area_enable_decoder_live(selected, 3, false));
   std::promise<void> entered;
   auto started = entered.get_future();
   hevcHook = [&](const auto& source, const auto&) {
-   assert(source->hevcBorderToken == 3 && !source->startupScan);
+   assert(source->decoderBorderToken == 3 && !source->startupScan);
    entered.set_value();
    return unavailable;
   };
@@ -459,7 +480,7 @@ void hevc_live_only()
  dvDetection = savedDV;
 }
 
-int main(){ready();cancel_before_native_join();active_retirement_exception();detector_replacement();stop_resets_after_join();generic_detector();vdin_samples();hevc_border_samples();vdin_playback();hevc_live_only();watcher_identity_and_join();shutdown_drains_before_display();std::cout<<"PASS: native participants, exact runs, real joins and shutdown retirement (ASan/UBSan)\n";}
+int main(){ready();cancel_before_native_join();active_retirement_exception();detector_replacement();stop_resets_after_join();generic_detector();vdin_samples();hevc_border_samples();h264_border_samples();vdin_playback();hevc_live_only();watcher_identity_and_join();shutdown_drains_before_display();std::cout<<"PASS: native participants, exact runs, real joins and shutdown retirement (ASan/UBSan)\n";}
 '''
 
 def source():
@@ -477,13 +498,14 @@ def source():
         detector=detector.replace(function(detector,'void aml_dv_apply_l5_override_sysfs()'),'')
     detector+=function(aml,'static void detect_publish_subtitle(')
     methods='''
+constexpr int AV_CODEC_ID_H264 = 27;
 // VDIN sysfs is a boundary of this worker fixture.
 std::function<void(const std::shared_ptr<DetectSource>&,const CAMLNativeWorker::Run&)> liveHook;
 std::function<bool(const std::shared_ptr<DetectSource>&,const CAMLNativeWorker::Run&)> hevcHook;
 void detect_from_vdin(const std::shared_ptr<DetectSource>& source,const CAMLNativeWorker::Run& run){
  assert(liveHook);liveHook(source,run);
 }
-bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,const CAMLNativeWorker::Run& run){
+bool detect_from_live_decoder(const std::shared_ptr<DetectSource>& source,const CAMLNativeWorker::Run& run){
  assert(hevcHook);return hevcHook(source,run);
 }
 ''' + function(aml, 'static bool detect_can_use_vdin(').replace(
@@ -492,7 +514,7 @@ bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,const CAMLNati
       'void aml_dv_set_active_area_geometry(', 'static void _auto_letterbox_watch_run(',
       'void aml_dv_auto_letterbox_watch_start()', 'void aml_dv_auto_letterbox_watch_stop()',
       'void aml_dv_detect_set_file(', 'static void detect_clear_injection_locked(bool nativeSource)\n{',
-      'static void detect_clear_injection(', 'bool aml_subtitle_active_area_enable_hevc_live(',
+      'static void detect_clear_injection(', 'bool aml_subtitle_active_area_enable_decoder_live(',
       'void aml_dv_detect_active_area_start()',
       'void aml_dv_detect_active_area_stop()', 'bool aml_dv_retire_background_work()'))
     # Wiring into FFmpeg's interrupt and final publication; the full scan is not host-compiled.

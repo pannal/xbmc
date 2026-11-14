@@ -256,7 +256,8 @@ bool aml_subtitle_active_area_configure(int width, int height, bool nativeDV, bo
                                       double displayAspect = 0.0, bool usesAMLVideoPlane = false,
                                       bool nativeP81 = false,
                                       const std::shared_ptr<const void>& dvSession = {});
-bool aml_subtitle_active_area_enable_hevc_live(const std::shared_ptr<const void>& expectedSource,
+const char* aml_subtitle_active_area_decoder_status_path(int codec);
+bool aml_subtitle_active_area_enable_decoder_live(const std::shared_ptr<const void>& expectedSource,
                                               unsigned int token, bool frameL5);
 // The serialized software reset has retired the old decode call; its next
 // output (including EOF) now belongs to a fresh route with the same geometry.

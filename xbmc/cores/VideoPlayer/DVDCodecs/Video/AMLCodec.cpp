@@ -2170,6 +2170,16 @@ int LiveHEVCBorderScale(const CDVDStreamInfo& hints, int overrideScale, bool pre
   return prefer1080p && hints.width == 3840 && knownRateUpTo30 ? 2 : 4;
 }
 
+bool IsLiveBorderSDR(const CDVDStreamInfo& hints, StreamHdrType originalHdrType)
+{
+  return originalHdrType == StreamHdrType::HDR_TYPE_NONE &&
+      (hints.colorRange == AVCOL_RANGE_MPEG || hints.colorRange == AVCOL_RANGE_UNSPECIFIED) &&
+      (hints.colorPrimaries == AVCOL_PRI_BT709 || hints.colorPrimaries == AVCOL_PRI_UNSPECIFIED) &&
+      (hints.colorTransferCharacteristic == AVCOL_TRC_BT709 ||
+       hints.colorTransferCharacteristic == AVCOL_TRC_UNSPECIFIED) &&
+      (hints.colorSpace == AVCOL_SPC_BT709 || hints.colorSpace == AVCOL_SPC_UNSPECIFIED);
+}
+
 bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints,
                           StreamHdrType originalHdrType,
                           bool nativeDV,
@@ -2178,25 +2188,29 @@ bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints,
   if (hints.codec != AV_CODEC_ID_HEVC || hints.interlaced)
     return false;
 
-  const bool limitedBT709 =
-      originalHdrType == StreamHdrType::HDR_TYPE_NONE &&
-      (hints.colorRange == AVCOL_RANGE_MPEG || hints.colorRange == AVCOL_RANGE_UNSPECIFIED) &&
-      (hints.colorPrimaries == AVCOL_PRI_BT709 || hints.colorPrimaries == AVCOL_PRI_UNSPECIFIED) &&
-      (hints.colorTransferCharacteristic == AVCOL_TRC_BT709 ||
-       hints.colorTransferCharacteristic == AVCOL_TRC_UNSPECIFIED) &&
-      (hints.colorSpace == AVCOL_SPC_BT709 || hints.colorSpace == AVCOL_SPC_UNSPECIFIED);
   const bool hdr10CompatibleDV = nativeDV &&
       (nativeP7Borders || (hints.dovi.dv_profile == 8 && hints.dovi.dv_bl_signal_compatibility_id == 1));
-  return limitedBT709 || originalHdrType == StreamHdrType::HDR_TYPE_HDR10 || hdr10CompatibleDV;
+  return IsLiveBorderSDR(hints, originalHdrType) ||
+         originalHdrType == StreamHdrType::HDR_TYPE_HDR10 || hdr10CompatibleDV;
 }
 
-unsigned int RequestLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHdrType,
-                                    bool nativeDV, bool frameL5, bool nativeP7Borders)
+unsigned int RequestLiveDecoderBorders(const CDVDStreamInfo& hints,
+                                       StreamHdrType originalHdrType,
+                                       bool nativeDV,
+                                       bool frameL5,
+                                       bool nativeP7Borders,
+                                       bool h264Frame)
 {
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  const bool h264 = hints.codec == AV_CODEC_ID_H264;
+  const bool supported = h264
+      ? h264Frame && !hints.interlaced && hints.orientation == 0 && hints.bitdepth == 8 &&
+            hints.width <= 1920 && hints.height <= 1080 &&
+            hints.hdrType == StreamHdrType::HDR_TYPE_NONE && IsLiveBorderSDR(hints, originalHdrType)
+      : CanUseLiveHEVCBorders(hints, originalHdrType, nativeDV, nativeP7Borders);
+  const char* statusPath = aml_subtitle_active_area_decoder_status_path(hints.codec);
   if (hints.width < 256 || hints.width > 3840 || hints.height < 256 || hints.height > 2176 ||
-      !CanUseLiveHEVCBorders(hints, originalHdrType, nativeDV, nativeP7Borders) ||
-      access("/sys/module/amvdec_h265/parameters/p3i_active_area_status", R_OK) != 0)
+      !supported || !statusPath || access(statusPath, R_OK) != 0)
     return 0;
   if (!frameL5 && (!settings->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
                   !settings->GetBool(CSettings::SETTING_SUBTITLES_LIVEACTIVEAREA) ||
@@ -2217,7 +2231,7 @@ unsigned int RequestLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType o
   {
     return 0;
   }
-  return aml_subtitle_active_area_enable_hevc_live(hints.subtitleProbeSource, token, frameL5) ?
+  return aml_subtitle_active_area_enable_decoder_live(hints.subtitleProbeSource, token, frameL5) ?
       token : 0;
 }
 
@@ -2559,8 +2573,10 @@ bool CAMLCodec::OpenDecoderInternal()
   {
     if (!nativeL5 || am_private->liveFrameL5)
       am_private->liveBorderToken =
-          RequestLiveHEVCBorders(hints, m_originalSourceHdrType, nativeDV,
-                                 am_private->liveFrameL5, nativeP7Borders);
+          RequestLiveDecoderBorders(hints, m_originalSourceHdrType, nativeDV,
+                                    am_private->liveFrameL5, nativeP7Borders,
+                                    am_private->video_format == VFORMAT_H264 &&
+                                        am_private->gcodec.dec_mode == STREAM_TYPE_FRAME);
     if (!am_private->liveBorderToken)
       aml_dv_detect_active_area_start(); // separately selected DV injection / non-DV geometry
   }
@@ -2694,7 +2710,8 @@ bool CAMLCodec::OpenDecoderInternal()
       config_data += ';';
     config_data += "p3i_border_token:" + std::to_string(am_private->liveBorderToken) + ";";
     const auto settingsComponent = CServiceBroker::GetSettingsComponent();
-    if (LiveHEVCBorderScale(
+    if (hints.codec == AV_CODEC_ID_HEVC &&
+        LiveHEVCBorderScale(
             hints, settingsComponent->GetAdvancedSettings()->m_liveHEVCBorderScale,
             settingsComponent->GetSettings()->GetBool(
                 CSettings::SETTING_SUBTITLES_LIVEACTIVEAREA1080P)) == 2)
@@ -3005,8 +3022,8 @@ void CAMLCodec::ResetInternal()
   {
     if (am_private->liveBorderToken &&
         (am_private->liveFrameL5 || !nativeDV || !aml_dv_detect_active_area_enabled()))
-      aml_subtitle_active_area_enable_hevc_live(m_hints.subtitleProbeSource,
-                                               am_private->liveBorderToken, am_private->liveFrameL5);
+      aml_subtitle_active_area_enable_decoder_live(m_hints.subtitleProbeSource,
+                                                 am_private->liveBorderToken, am_private->liveFrameL5);
     aml_dv_detect_active_area_start();
   }
 
