@@ -15,6 +15,7 @@
 #include "guilib/WindowIDs.h"
 #include "messaging/IMessageTarget.h"
 
+#include <cstdint>
 #include <list>
 #include <memory>
 #include <unordered_map>
@@ -281,7 +282,14 @@ private:
   std::deque<int> m_windowHistory;
 
   IWindowManagerCallback* m_pCallback;
-  std::list< std::pair<CGUIMessage*,int> > m_vecThreadMessages;
+  struct QueuedMessage
+  {
+    std::unique_ptr<CGUIMessage> message;
+    int window;
+    std::uint64_t sequence;
+  };
+  std::list<QueuedMessage> m_threadMessages;
+  std::uint64_t m_threadMessageSequence{0};
   CCriticalSection m_critSection;
   std::vector<IMsgTargetCallback*> m_vecMsgTargets;
 

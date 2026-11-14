@@ -1749,8 +1749,8 @@ void CGUIWindowManager::SendThreadMessage(CGUIMessage& message, int window /*= 0
 {
   std::unique_lock<CCriticalSection> lock(m_critSection);
 
-  CGUIMessage* msg = new CGUIMessage(message);
-  m_vecThreadMessages.emplace_back(msg, window);
+  m_threadMessages.push_back(
+      {std::make_unique<CGUIMessage>(message), window, ++m_threadMessageSequence});
 }
 
 void CGUIWindowManager::DispatchThreadMessages()
@@ -1775,52 +1775,46 @@ void CGUIWindowManager::DispatchThreadMessages()
 
   std::unique_lock<CCriticalSection> lock(m_critSection);
 
-  while (!m_vecThreadMessages.empty())
+  // A handler can enqueue more work, remove pending work or enter a nested
+  // dispatch. Use the sequence to keep this pass bounded by its original queue.
+  const std::uint64_t lastSequence = m_threadMessageSequence;
+  while (!m_threadMessages.empty() && m_threadMessages.front().sequence <= lastSequence)
   {
     // pop up one message per time to make messages be processed by order.
     // this will ensure rule No.2 & No.3
-    CGUIMessage *pMsg = m_vecThreadMessages.front().first;
-    int window = m_vecThreadMessages.front().second;
-    m_vecThreadMessages.pop_front();
+    QueuedMessage queued = std::move(m_threadMessages.front());
+    m_threadMessages.pop_front();
 
     // Check for duplicate messages that would be superseded by later messages
     // Only deduplicate label/text messages where the final value wins
     // GUI_MSG_ITEM_SELECT is excluded because param1 specifies which item,
     // and skipping intermediate selections could lose important state changes
-    const int msgType = pMsg->GetMessage();
+    const int msgType = queued.message->GetMessage();
     if (msgType == GUI_MSG_LABEL_SET || msgType == GUI_MSG_LABEL2_SET ||
         msgType == GUI_MSG_SET_TEXT)
     {
-      const int controlId = pMsg->GetControlId();
+      const int controlId = queued.message->GetControlId();
       // Check if there's a later message of same type to same control
       const bool hasDuplicate = std::any_of(
-          m_vecThreadMessages.begin(), m_vecThreadMessages.end(),
-          [msgType, controlId, window](const auto& queued) {
-            return queued.first->GetMessage() == msgType &&
-                   queued.first->GetControlId() == controlId && queued.second == window;
+          m_threadMessages.begin(), m_threadMessages.end(),
+          [msgType, controlId, window = queued.window](const QueuedMessage& pending) {
+            return pending.message->GetMessage() == msgType &&
+                   pending.message->GetControlId() == controlId && pending.window == window;
           });
       if (hasDuplicate)
-      {
-        // Skip this message, a later one will supersede it
-        delete pMsg;
-        pMsg = nullptr;
-      }
+        continue;
     }
 
-    if (pMsg)
-    {
-      lock.unlock();
+    lock.unlock();
 
-      // XXX: during SendMessage(), there could be a deeper 'xbmc main loop' inited by e.g. doModal
-      //      which may loop there and callback to DispatchThreadMessages() multiple times.
-      if (window)
-        SendMessage(*pMsg, window);
-      else
-        SendMessage(*pMsg);
-      delete pMsg;
+    // A modal handler can run a nested main loop and dispatch its own batch.
+    if (queued.window)
+      SendMessage(*queued.message, queued.window);
+    else
+      SendMessage(*queued.message);
+    queued.message.reset();
 
-      lock.lock();
-    }
+    lock.lock();
   }
 }
 
@@ -1828,18 +1822,15 @@ int CGUIWindowManager::RemoveThreadMessageByMessageIds(int *pMessageIDList)
 {
   std::unique_lock<CCriticalSection> lock(m_critSection);
   int removedMsgCount = 0;
-  for (std::list < std::pair<CGUIMessage*,int> >::iterator it = m_vecThreadMessages.begin();
-       it != m_vecThreadMessages.end();)
+  for (auto it = m_threadMessages.begin(); it != m_threadMessages.end();)
   {
-    CGUIMessage *pMsg = it->first;
     int *pMsgID;
-    for(pMsgID = pMessageIDList; *pMsgID != 0; ++pMsgID)
-      if (pMsg->GetMessage() == *pMsgID)
+    for (pMsgID = pMessageIDList; *pMsgID != 0; ++pMsgID)
+      if (it->message->GetMessage() == *pMsgID)
         break;
     if (*pMsgID)
     {
-      it = m_vecThreadMessages.erase(it);
-      delete pMsg;
+      it = m_threadMessages.erase(it);
       ++removedMsgCount;
     }
     else
