@@ -148,7 +148,7 @@ def main():
     assert close_guard < closing.index('CSysfsPath native_source')
     assert closing.index('native_source.Set(0u)') < closing.index('DV_MODE_ON', close_guard)
     assert 'm_originalSourceHdrType.store(hints.hdrType)' in codec
-    assert 'new CAMLCodec(m_processInfo, m_hints, m_originalSourceHdrType.load())' in codec
+    assert re.search(r'new CAMLCodec\(\s*m_processInfo, m_hints, m_originalSourceHdrType\.load\(\),', codec)
     native_codec = read('xbmc/cores/VideoPlayer/DVDCodecs/Video/AMLCodec.cpp')
     assert re.search(r'aml_dv_open\(hints.hdrType, hints.bitdepth, hints.colorPrimaries, false, m_dvSession,\s*m_originalSourceHdrType, startupBlackout\)', native_codec)
     visibility = read('xbmc/windowing/amlogic/DolbyVisionAML.cpp')

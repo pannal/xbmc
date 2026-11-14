@@ -64,7 +64,10 @@ struct pq_ctrl_s {
 class CAMLCodec
 {
 public:
-  CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints, StreamHdrType originalSourceHdrType);
+  CAMLCodec(CProcessInfo& processInfo,
+            CDVDStreamInfo& hints,
+            StreamHdrType originalSourceHdrType,
+            bool convertProfile7);
   virtual ~CAMLCodec();
 
   struct CaptureSource

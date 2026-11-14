@@ -506,6 +506,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   m_hints = hints;
   m_hints.pClock = hints.pClock;
   m_originalSourceHdrType.store(hints.hdrType);
+  DOVIMode convertDovi = DOVIMode::MODE_NONE;
   UpdateAppendCMv40SettingCache();
   UpdateStripCMv40SettingCache();
 
@@ -759,7 +760,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
 
           if (m_hints.dovi.dv_profile == 7) 
           {
-            DOVIMode convertDovi = static_cast<DOVIMode>(settings->GetInt(CSettings::SETTING_VIDEOPLAYER_CONVERTDOVI));
+            convertDovi = static_cast<DOVIMode>(settings->GetInt(CSettings::SETTING_VIDEOPLAYER_CONVERTDOVI));
             if (convertDovi)
             {
               CLog::Log(LOGINFO, "{}::{} - DV HEVC bitstream - user chooses to convert to mode [{:d}]",
@@ -806,7 +807,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
 
   m_aspect_ratio = m_hints.aspect;
 
-  m_Codec = std::shared_ptr<CAMLCodec>(new CAMLCodec(m_processInfo, m_hints, m_originalSourceHdrType.load()));
+  m_Codec = std::shared_ptr<CAMLCodec>(new CAMLCodec(
+      m_processInfo, m_hints, m_originalSourceHdrType.load(), convertDovi != DOVIMode::MODE_NONE));
   if (!m_Codec)
   {
     CLog::Log(LOGERROR, "{}: Failed to create Amlogic Codec", __MODULE_NAME__);

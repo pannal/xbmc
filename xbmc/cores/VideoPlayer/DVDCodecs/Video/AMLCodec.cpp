@@ -366,6 +366,7 @@ typedef struct am_private_t
   codec_para_t      vcodec;
   unsigned int      liveBorderToken;
   bool              originalP81;
+  bool              convertProfile7;
   bool              liveFrameL5;
 
   pstream_type      stream_type;
@@ -1852,7 +1853,10 @@ static inline int calc_chunk_size(int size)
 }
 
 /*************************************************************************/
-CAMLCodec::CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints, StreamHdrType originalSourceHdrType)
+CAMLCodec::CAMLCodec(CProcessInfo& processInfo,
+                     CDVDStreamInfo& hints,
+                     StreamHdrType originalSourceHdrType,
+                     bool convertProfile7)
   : m_session(CServiceBroker::GetAppMessenger()->GetProcessThreadId())
   , m_opened(false)
   , m_speed(DVD_PLAYSPEED_NORMAL)
@@ -1869,6 +1873,7 @@ CAMLCodec::CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints, StreamHdr
   am_private->originalP81 = originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
       hints.dovi.dv_profile == 8 && hints.dovi.dv_bl_signal_compatibility_id == 1 &&
       !hints.dovi.el_present_flag && !hints.is_dual_track;
+  am_private->convertProfile7 = convertProfile7;
   m_dll = new DllLibAmCodec;
   if(!m_dll->Load())
     CLog::Log(LOGWARNING, "CAMLCodec::CAMLCodec libamcodec.so not found");
@@ -2155,7 +2160,10 @@ void CAMLCodec::WaitForLifecycle()
 
 namespace
 {
-bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHdrType, bool nativeDV)
+bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints,
+                          StreamHdrType originalHdrType,
+                          bool nativeDV,
+                          bool nativeP7MEL)
 {
   if (hints.codec != AV_CODEC_ID_HEVC || hints.interlaced)
     return false;
@@ -2167,21 +2175,27 @@ bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHd
       (hints.colorTransferCharacteristic == AVCOL_TRC_BT709 ||
        hints.colorTransferCharacteristic == AVCOL_TRC_UNSPECIFIED) &&
       (hints.colorSpace == AVCOL_SPC_BT709 || hints.colorSpace == AVCOL_SPC_UNSPECIFIED);
-  return limitedBT709 || originalHdrType == StreamHdrType::HDR_TYPE_HDR10 ||
-         (nativeDV && hints.dovi.dv_profile == 8 && hints.dovi.dv_bl_signal_compatibility_id == 1);
+  const bool hdr10CompatibleDV = nativeDV &&
+      (nativeP7MEL || (hints.dovi.dv_profile == 8 && hints.dovi.dv_bl_signal_compatibility_id == 1));
+  return limitedBT709 || originalHdrType == StreamHdrType::HDR_TYPE_HDR10 || hdr10CompatibleDV;
 }
 
 unsigned int RequestLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHdrType,
-                                    bool nativeDV, bool frameL5)
+                                    bool nativeDV, bool frameL5, bool nativeP7MEL)
 {
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   if (hints.width < 256 || hints.width > 3840 || hints.height < 256 || hints.height > 2176 ||
-      !CanUseLiveHEVCBorders(hints, originalHdrType, nativeDV) ||
+      !CanUseLiveHEVCBorders(hints, originalHdrType, nativeDV, nativeP7MEL) ||
       access("/sys/module/amvdec_h265/parameters/p3i_active_area_status", R_OK) != 0)
     return 0;
-  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   if (!frameL5 && (!settings->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
                   !settings->GetBool(CSettings::SETTING_SUBTITLES_LIVEACTIVEAREA) ||
                   (nativeDV && aml_dv_detect_active_area_enabled())))
+    return 0;
+  // On Demand output can still be pending. Keep the configured L5 scan on P7 MEL.
+  if (nativeP7MEL && settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) &&
+      settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA) &&
+      !aml_dv_l5_override_active())
     return 0;
   unsigned int token;
   try
@@ -2513,6 +2527,8 @@ bool CAMLCodec::OpenDecoderInternal()
   const bool nativeDV = hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
                         m_originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
   const bool nativeP81 = nativeDV && am_private->originalP81;
+  const bool nativeP7MEL = nativeDV && hints.dovi.dv_profile == 7 &&
+      hints.dovi_el_type == DOVIELType::TYPE_MEL && !am_private->convertProfile7;
   const bool nativeL5 = nativeP81 && aml_dv_live_frame_l5_eligible(m_dvSession);
   am_private->liveBorderToken = 0;
   am_private->liveFrameL5 = nativeL5 && hints.width == 3840 && hints.height == 2160 &&
@@ -2525,7 +2541,7 @@ bool CAMLCodec::OpenDecoderInternal()
     if (!nativeL5 || am_private->liveFrameL5)
       am_private->liveBorderToken =
           RequestLiveHEVCBorders(hints, m_originalSourceHdrType, nativeDV,
-                                 am_private->liveFrameL5);
+                                 am_private->liveFrameL5, nativeP7MEL);
     if (!am_private->liveBorderToken)
       aml_dv_detect_active_area_start(); // separately selected DV injection / non-DV geometry
   }

@@ -41,12 +41,13 @@ static RecordingWorker s_detectWorker;
     code += r'''
 enum class StreamHdrType {HDR_TYPE_NONE};
 template<typename Hints>
-unsigned int RequestLiveHEVCBorders(const Hints&, StreamHdrType, bool, bool) {return 0;}
+unsigned int RequestLiveHEVCBorders(const Hints&, StreamHdrType, bool, bool, bool) {return 0;}
 struct Hardware {
  struct Hints{int width,height;double aspect;struct{int dv_profile=8;}dovi;std::shared_ptr<const void> subtitleProbeSource;};
  Hints hints;Hints& m_hints=hints;
  StreamHdrType m_originalSourceHdrType=StreamHdrType::HDR_TYPE_NONE;
- struct {unsigned int liveBorderToken=0;bool liveFrameL5=false;} privateData;
+ std::shared_ptr<const void> m_dvSession;
+ struct {unsigned int liveBorderToken=0;bool liveFrameL5=false;bool originalP81=false;} privateData;
  decltype(privateData)* am_private=&privateData;
  struct{double dar=0.0;void SetVideoDAR(double value){dar=value;}}m_processInfo;
  Hardware(int w,int h,double dar,const std::shared_ptr<const void>& selected):hints{w,h,dar,{},selected}{}
@@ -54,7 +55,10 @@ struct Hardware {
     for name, variable in [('Open','hints'),('Reset','m_hints')]:
         statement = function(aml, '  if (aml_subtitle_active_area_configure('+variable+'.width,')
         assert variable+'.aspect' in statement
-        code += '\nvoid '+name+'(bool nativeDV){\n'+statement+'\n}\n'
+        code += '\nvoid '+name+'(bool nativeDV){\n'
+        if name == 'Open':
+            code += 'const bool nativeP81 = false, nativeL5 = false, nativeP7MEL = false;\n'
+        code += statement+'\n}\n'
     code += 'void Picture(int ratio){struct{int ratio_control;}vi{ratio};\n'
     code += function(aml,'    if (vi.ratio_control)')+'\n}\n};\n'
     for name in ('Open','Reset'):
