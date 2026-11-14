@@ -5861,8 +5861,10 @@ static bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,
           lastConfirmed = now;
           resumeDeadline = {};
         }
+        // In continuous playback, a missing sample and an unconfirmed
+        // candidate get the same time to establish fresh consensus.
         else if ((frameAdvance || now >= resumeDeadline) &&
-                 (!sample || now - lastConfirmed >= confirmationTimeout))
+                 ((frameAdvance && !sample) || now - lastConfirmed >= confirmationTimeout))
           source->liveResult.reset();
       }
     }
