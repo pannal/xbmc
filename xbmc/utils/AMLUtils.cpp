@@ -5801,6 +5801,9 @@ static bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,
   Consensus consensus{Source::HEVC};
   const auto ownerDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   auto lastConfirmed = std::chrono::steady_clock::time_point{};
+  auto resumeDeadline = std::chrono::steady_clock::time_point{};
+  constexpr auto confirmationTimeout = std::chrono::milliseconds(750);
+  bool wasPaused = false;
   bool supported = false;
   bool fallback = false;
   while (!run.Cancelled() &&
@@ -5837,18 +5840,31 @@ static bool detect_from_hevc(const std::shared_ptr<DetectSource>& source,
     }
     const auto borders = consensus.Observe(sample);
     const auto now = std::chrono::steady_clock::now();
+    auto& playback = CServiceBroker::GetDataCacheCore();
+    const bool frameAdvance = playback.IsFrameAdvance();
+    const bool paused = playback.GetSpeed() == 0.0f && !frameAdvance;
+    if (wasPaused && !paused && !frameAdvance)
+      resumeDeadline = now + confirmationTimeout;
+    wasPaused = paused;
     {
       std::lock_guard<std::mutex> lock(s_detectSourceMutex);
       if (run.Cancelled() || source != s_detectSource || source->superseded->load() ||
           source->policy->Blocked())
         break;
-      if (borders)
+      // Retain the published envelope while the paused picture stays on screen,
+      // even if the decoder drains queued pictures or the last sample expires.
+      if (!paused || !source->liveResult)
       {
-        source->liveResult = DetectResult{(*borders)[0], (*borders)[1], (*borders)[2], (*borders)[3]};
-        lastConfirmed = now;
+        if (borders)
+        {
+          source->liveResult = DetectResult{(*borders)[0], (*borders)[1], (*borders)[2], (*borders)[3]};
+          lastConfirmed = now;
+          resumeDeadline = {};
+        }
+        else if ((frameAdvance || now >= resumeDeadline) &&
+                 (!sample || now - lastConfirmed >= confirmationTimeout))
+          source->liveResult.reset();
       }
-      else if (!sample || now - lastConfirmed >= std::chrono::milliseconds(750))
-        source->liveResult.reset();
     }
     if (!run.WaitFor(std::chrono::milliseconds(125)))
       break;
