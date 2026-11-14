@@ -6853,8 +6853,8 @@ msgstr "1080p-Oberfläche bei 4K-Wiedergabe verwenden"
 
 #: system/settings/settings.xml
 msgctxt "#60668"
-msgid "Render the interface at 1080p when playing video above 1080p in a 4K display mode, including at film refresh rates. Kodi keeps the selected HDMI mode and restores the native 4K interface after playback. Applies from the next playback."
-msgstr "Bei der Wiedergabe von Videos mit mehr als 1080p rendert Kodi die Oberfläche in einem 4K-Anzeigemodus mit 1080p, auch bei kinotypischen Bildwiederholraten. Der gewählte HDMI-Modus bleibt aktiv und nach der Wiedergabe wird die native 4K-Oberfläche wiederhergestellt. Gilt ab der nächsten Wiedergabe."
+msgid "Try this if the picture edges flicker or shimmer when the playback controls are visible in Player Led (DV as HDR10 422 12 Bit) mode. In a 4K display mode, Kodi renders the interface at 1080p during playback of video above 1080p, including at film refresh rates. Kodi keeps the selected HDMI mode and restores the native 4K interface after playback. Applies from the next playback."
+msgstr "Probiere diese Option aus, wenn die Bildränder im Modus Player Led (DV as HDR10 422 12 Bit) bei eingeblendeter Wiedergabesteuerung flimmern oder flackern. In einem 4K-Anzeigemodus rendert Kodi die Oberfläche bei Videos mit mehr als 1080p in 1080p, auch bei kinotypischen Bildwiederholraten. Der gewählte HDMI-Modus bleibt aktiv. Nach der Wiedergabe stellt Kodi die native 4K-Oberfläche wieder her. Gilt ab der nächsten Wiedergabe."
 
 msgctxt "#14292"
 msgid "RGB"
@@ -20273,6 +20273,16 @@ msgstr "Helligkeit von SDR-Untertiteln und OSD stabilisieren"
 msgctxt "#60651"
 msgid "Use only if your TV's scene-dependent dimming of subtitles and the OSD is unwanted. This SDR-only compatibility option overrides dovi5's native graphics tone mapping during native display-led Dolby Vision playback. Leave disabled to preserve native behavior."
 msgstr "Nur verwenden, wenn das szenenabhängige Abdunkeln von Untertiteln und OSD durch den Fernseher unerwünscht ist. Diese auf SDR-Grafiken beschränkte Kompatibilitätsoption übersteuert das native Grafik-Tonemapping von dovi5 bei nativer Dolby-Vision-Wiedergabe im Display-led-Modus. Deaktiviert lassen, um das native Verhalten beizubehalten."
+
+#. Notification title when the DV type falls back from Display-LED at startup
+msgctxt "#60674"
+msgid "Dolby Vision type changed"
+msgstr "Dolby-Vision-Typ geändert"
+
+#. Notification text when the DV type falls back from Display-LED at startup
+msgctxt "#60675"
+msgid "This display has no Dolby Vision: Player-LED (HDR10) instead of Display-LED"
+msgstr "Dieses Display hat kein Dolby Vision: Player-LED (HDR10) statt Display-LED"
 
 
 msgctxt "#69196"
