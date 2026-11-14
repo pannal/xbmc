@@ -36,7 +36,7 @@ class CWinSystemAmlogicGLESContext : public CWinSystemAmlogic, public CRenderSys
 {
 public:
   CWinSystemAmlogicGLESContext() = default;
-  virtual ~CWinSystemAmlogicGLESContext() = default;
+  ~CWinSystemAmlogicGLESContext() override;
 
   using CWinSystemAmlogic::Register;
   static void Register();
@@ -234,6 +234,12 @@ private:
     bool fullscreenVideo = false;
   } m_afbcPresented;
   bool m_afbcDirtyRegionsReported = false;
+
+  void StartVncGuiListener();
+  void PollVncGuiViewer();
+  int m_vncGuiListener = -1;
+  int m_vncGuiViewer = -1;
+  bool m_vncGuiFramePending = false;
 };
 
 }

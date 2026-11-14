@@ -48,20 +48,37 @@ extern "C"
 }
 
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <utility>
 
 using namespace KODI;
 using namespace KODI::WINDOWING::AML;
 
 namespace
 {
+// The fbdev VNC addon keeps one connection open from its first viewer to its
+// last. An abstract socket disappears with Kodi, including after a crash.
+constexpr char VNC_GUI_SOCKET[] = "\0kodi.aml-vnc.fb0.v1";
+constexpr char VNC_GUI_READY = 'R';
+
+void CloseVncGuiSocket(int& fd)
+{
+  if (fd >= 0)
+    close(std::exchange(fd, -1));
+}
+
 bool GuiABRead(const std::string& path, std::string& text)
 {
   std::ifstream input(path);
@@ -267,12 +284,24 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
     return false;
   }
 
+  if (m_framebuffer_name == "fb0")
+    StartVncGuiListener();
+
   display.Finish(CAMLDisplayLifecycle::Phase::WAITING_FOR_RESET);
   return true;
 }
 
+CWinSystemAmlogicGLESContext::~CWinSystemAmlogicGLESContext()
+{
+  CloseVncGuiSocket(m_vncGuiViewer);
+  CloseVncGuiSocket(m_vncGuiListener);
+}
+
 bool CWinSystemAmlogicGLESContext::PrepareForShutdown()
 {
+  CloseVncGuiSocket(m_vncGuiViewer);
+  CloseVncGuiSocket(m_vncGuiListener);
+  m_vncGuiFramePending = false;
   m_pGLContext.CloseTextureUploadContext();
   GuiABFinish("shutdown");
   m_shutdownRequested = true;
@@ -734,6 +763,9 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
       TakeAFBCOutcome();
     }
     presented = m_pGLContext.TrySwapBuffers(diagnostics);
+    if (presented && m_vncGuiFramePending &&
+        send(m_vncGuiViewer, &VNC_GUI_READY, 1, MSG_NOSIGNAL) == 1)
+      m_vncGuiFramePending = false;
   }
   if (presented)
     m_presentResult = PresentResult::SWAP_ACCEPTED;
@@ -1156,8 +1188,8 @@ void CWinSystemAmlogicGLESContext::BeginAFBCScanoutFrame()
     m_afbcDirtyRegionsReported = true;
   }
   // A pending kernel switch goes with the swap of an ordinary frame.
-  bool want = advanced->m_guiAFBCScanout && wholeFrames && !m_afbcPresenter.Failed() &&
-              m_menuRoute == MenuRoute::NONE && !HasPendingKernelSwitch() &&
+  bool want = advanced->m_guiAFBCScanout && m_vncGuiViewer < 0 && wholeFrames &&
+              !m_afbcPresenter.Failed() && m_menuRoute == MenuRoute::NONE && !HasPendingKernelSwitch() &&
               m_guiAB.phase == GuiAB::Phase::IDLE &&
               GetGfxContext().GetStereoMode() == RENDER_STEREO_MODE_OFF && m_nWidth > 0 && m_nHeight > 0;
   if (want)
@@ -1600,6 +1632,7 @@ void CWinSystemAmlogicGLESContext::GuiABFinish(const char* reason)
 bool CWinSystemAmlogicGLESContext::MessagePump()
 {
   const bool handled = CWinSystemAmlogic::MessagePump();
+  PollVncGuiViewer();
   try
   {
     if (m_guiAB.memoryFailure)
@@ -1675,6 +1708,72 @@ bool CWinSystemAmlogicGLESContext::MessagePump()
     GuiABMemoryFailure();
     return handled;
   }
+}
+
+void CWinSystemAmlogicGLESContext::StartVncGuiListener()
+{
+  if (m_vncGuiListener >= 0)
+    return;
+
+  int listener = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+  sockaddr_un address{};
+  address.sun_family = AF_UNIX;
+  std::memcpy(address.sun_path, VNC_GUI_SOCKET, sizeof(VNC_GUI_SOCKET));
+  const socklen_t length = offsetof(sockaddr_un, sun_path) + sizeof(VNC_GUI_SOCKET) - 1;
+  if (listener < 0 || bind(listener, reinterpret_cast<const sockaddr*>(&address), length) < 0 ||
+      listen(listener, 1) < 0)
+  {
+    const int error = errno;
+    CloseVncGuiSocket(listener);
+    CLog::Log(LOGWARNING, "AFBC scanout: could not open the VNC GUI socket (errno {})", error);
+    return;
+  }
+  m_vncGuiListener = listener;
+}
+
+void CWinSystemAmlogicGLESContext::PollVncGuiViewer()
+{
+  if (m_vncGuiListener < 0)
+    return;
+
+  if (m_vncGuiViewer >= 0)
+  {
+    char unexpected;
+    // Only Kodi sends bytes on this connection. EOF, errors or unexpected
+    // input end the request. No stale file or server PID survives a crash.
+    const auto received = recv(m_vncGuiViewer, &unexpected, 1, 0);
+    if (received >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+    {
+      CloseVncGuiSocket(m_vncGuiViewer);
+      m_vncGuiFramePending = false;
+      MarkGuiDirty();
+      CLog::Log(LOGDEBUG, "AFBC scanout: final VNC viewer disconnected");
+    }
+  }
+
+  if (m_vncGuiViewer < 0)
+  {
+    const int viewer = accept4(m_vncGuiListener, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    if (viewer < 0)
+      return;
+
+    ucred credentials{};
+    socklen_t length = sizeof(credentials);
+    if (getsockopt(viewer, SOL_SOCKET, SO_PEERCRED, &credentials, &length) < 0 ||
+        credentials.uid != geteuid())
+    {
+      close(viewer);
+      return;
+    }
+
+    m_vncGuiViewer = viewer;
+    m_vncGuiFramePending = true;
+    CLog::Log(LOGDEBUG, "AFBC scanout: serving VNC from the linear GUI framebuffer");
+  }
+
+  // Retry a fresh GUI frame if the first linear swap was skipped or failed.
+  if (m_vncGuiFramePending && CanRender())
+    MarkGuiDirty();
 }
 
 void CWinSystemAmlogicGLESContext::GuiABBegin()
