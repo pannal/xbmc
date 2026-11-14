@@ -8761,7 +8761,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#14291"
-msgid "On by default. In a 4K display mode, Kodi renders the interface at native 4K for sharper artwork and text. With this setting off, Kodi renders the interface at up to 1080p and scales it to the display resolution. During demanding video playback, the interface may temporarily switch to 1080p. Changing this setting requires a reboot."
+msgid "On by default. In a 4K display mode, Kodi renders the interface at native 4K for sharper artwork and text. With this setting off, Kodi renders the interface at up to 1080p and scales it to the display resolution. On Amlogic systems with kernel 4.9, Kodi automatically uses a 1080p interface during video playback when the 4K output is above 30 Hz. Changing this setting requires a reboot."
 msgstr ""
 
 #: system/settings/settings.xml

@@ -739,7 +739,7 @@ protected:
   CEdl m_Edl;
   bool m_SkipCommercials;
 
-  bool m_HasVideo;
+  std::atomic<bool> m_HasVideo{false};
   bool m_HasAudio;
 
   bool m_UpdateStreamDetails;

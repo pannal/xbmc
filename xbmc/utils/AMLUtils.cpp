@@ -7249,17 +7249,10 @@ void aml_handle_scale(const RESOLUTION_INFO &res)
   aml_handle_native_gui_osd(res);
 }
 
-// Kernel 4.9: a DV FEL stream (dual-layer decode through the DV core) or an 8K
-// video (~5-7 GB/s measured) with a native 2160p GUI scanned out above 30 Hz
-// runs short of memory bandwidth and the OSD glitches, mostly while it is
-// redrawn. A 4K video through the DV core in Player-Led LLDV output glitches
-// too at a normal bus load (~3.5 GB/s), while a 1080p one is clean. So any
-// video larger than 1080p (or FEL) counts; a 1920x1080 GUI scaled to the
-// output is clean. While such a stream plays, the native GUI is suspended: the
-// GUI size of the 2160p entries of the resolution list drops to 1920x1080
-// (their calibration with it) and the resolution is set again. The display
-// mode stays, so aml_set_display_resolution() writes no display/mode and only
-// the framebuffer and the OSD scaling change: no HDMI handshake.
+// On kernel 4.9, use a 1080p GUI in 4K modes above 30 Hz during playback to leave
+// display bandwidth available for video. The playback override also covers
+// film-rate output when playing higher-resolution AML video. GUI suspension
+// changes the framebuffer and OSD scaling without changing the HDMI mode.
 enum class NativeGuiVideo
 {
   None,
@@ -7290,20 +7283,32 @@ void aml_native_gui_set_video(bool above1080p, bool fel)
 
 static bool aml_native_gui_suspend_wanted(RESOLUTION res)
 {
-  const auto video = s_nativeGuiVideo.load();
-  if (((LINUX_VERSION_CODE >> 16) & 0xFF) >= 5 || video == NativeGuiVideo::None ||
-      res < RES_DESKTOP)
+  if (((LINUX_VERSION_CODE >> 16) & 0xFF) >= 5 || res < RES_DESKTOP)
     return false;
 
-  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  if (!settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING))
+  const auto& display = CDisplaySettings::GetInstance();
+  if (static_cast<size_t>(res) >= display.ResolutionInfoSize())
     return false;
 
-  const RESOLUTION_INFO& info = CDisplaySettings::GetInstance().GetResolutionInfo(res);
-  return info.iScreenWidth > 1920 && info.iScreenHeight > 1080 &&
-         (info.fRefreshRate > 30.0f ||
-          (video == NativeGuiVideo::Above1080p &&
-           settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K)));
+  const auto& info = display.GetResolutionInfo(res);
+  if (info.iScreenWidth <= 1920 || info.iScreenHeight <= 1080)
+    return false;
+
+  const auto settings = CServiceBroker::GetSettingsComponent();
+  const auto guiSettings = settings->GetSettings();
+  if (!guiSettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING))
+    return false;
+
+  if (s_nativeGuiVideo.load() == NativeGuiVideo::Above1080p &&
+      guiSettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K))
+    return true;
+
+  if (info.iScreenWidth < 3840 || info.iScreenHeight < 2160 || info.fRefreshRate <= 30.0f ||
+      !settings->GetAdvancedSettings()->m_gui1080pForHighRefreshVideo)
+    return false;
+
+  const auto player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+  return player->IsPlayingLocalVideo() || (s_nativeGuiSuspended && player->HasPendingVideoOpen());
 }
 
 bool aml_native_gui_needs_update(RESOLUTION res)

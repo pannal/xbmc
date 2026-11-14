@@ -498,6 +498,7 @@ bool CAdvancedSettings::Load(const CProfileManager &profileManager)
   //       it should instead use the versions of GetString/Integer/Float that
   //       don't take defaults in.  Defaults are set in the constructor above
   Initialize(); // In case of profile switch.
+  m_gui1080pForHighRefreshVideo = true;
   ParseSettingsFile("special://xbmc/system/advancedsettings.xml");
   for (unsigned int i = 0; i < m_settingsFiles.size(); i++)
     ParseSettingsFile(m_settingsFiles[i]);
@@ -1410,6 +1411,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetBoolean(pElement, "afbcfanart", m_guiAFBCFanart);
     XMLUtils::GetBoolean(pElement, "afbcimages", m_guiAFBCImages);
     XMLUtils::GetBoolean(pElement, "afbcscanout", m_guiAFBCScanout);
+    XMLUtils::GetBoolean(pElement, "highrefreshvideoguifallback", m_gui1080pForHighRefreshVideo);
     XMLUtils::GetBoolean(pElement, "limitbackgroundfades", m_guiLimitBackgroundFades);
     XMLUtils::GetBoolean(pElement, "singlepasscrossfade", m_guiSinglePassCrossfade);
     XMLUtils::GetBoolean(pElement, "transparentvideolayout", m_guiVideoLayoutTransparent);

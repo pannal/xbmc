@@ -426,6 +426,11 @@ void CGraphicContext::RequestVideoResolutionRefresh()
 
 void CGraphicContext::ProcessPendingVideoResolution()
 {
+#if defined(HAS_LIBAMCODEC)
+  // Playback can start or end at the current HDMI mode, including windowed video.
+  if (!m_pendingVideoResolution && aml_native_gui_needs_update(m_Resolution))
+    RequestVideoResolutionRefresh();
+#endif
   if (!m_pendingVideoResolution && !m_videoResolutionRefreshPending)
     return;
   // Cleanup or a replacement player may have selected a new output since the

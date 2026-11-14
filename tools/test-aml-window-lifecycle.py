@@ -308,6 +308,20 @@ public:
   bool CreateNewWindow(const std::string&,bool,RESOLUTION_INFO&);bool DestroyWindow();
   bool SetFullScreen(bool,RESOLUTION_INFO&,bool);bool ResetRenderSystem(int,int);
   bool ResizeWindow(int,int,int,int);void BeginHandoff();uint64_t m_videoMuteHandoff{0};void PresentRenderImpl(bool);
+  bool m_afbcFrame{false};
+  struct {
+    void Destroy(bool) {}
+    bool Present() { return false; }
+    bool Shown() const { return false; }
+    void ReturnToLinear() {}
+  } m_afbcPresenter;
+  struct {
+    bool pending{false}, displayReady{false}, fullscreenVideo{false};
+    uint64_t videoMuteHandoff{0};
+  } m_afbcPresented;
+  void TakeAFBCOutcome() {}
+  void AbandonAFBCScanoutFrame() { m_afbcFrame = false; }
+  void MarkGuiDirty() {}
   void QueueKernelSwitch(const char*,int);void ApplyPendingKernelSwitch();
 };
 void SetKernelSwitch(const char* path,int value){event(std::string("kernel:")+path+":"+std::to_string(value));}

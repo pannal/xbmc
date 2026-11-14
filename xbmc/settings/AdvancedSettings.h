@@ -357,6 +357,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     bool m_guiAFBCFanart{true};
     bool m_guiAFBCImages{true};
     bool m_guiAFBCScanout{true};
+    bool m_gui1080pForHighRefreshVideo{true};
     bool m_guiLimitBackgroundFades{true};
     bool m_guiSinglePassCrossfade{true};
 

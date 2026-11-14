@@ -40,7 +40,9 @@ def harness():
     replace('SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS=3;',
             'SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS=3,SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING=4,'
             'SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K=5;')
-    replace('bool m_fullScreen=true;', 'bool nativeGui=true,gui1080pFor4k=false;bool m_fullScreen=true;')
+    replace('bool m_fullScreen=true;',
+            'bool nativeGui=true,gui1080pFor4k=false,m_gui1080pForHighRefreshVideo=true;'
+            'bool m_fullScreen=true;')
     replace('bool GetBool(int){return false;}',
             'bool GetBool(int key){return key==CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING?nativeGui:'
             'key==CSettings::SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K&&gui1080pFor4k;}')
@@ -52,11 +54,25 @@ struct CDisplaySettings {
   std::vector<RESOLUTION_INFO> resolutions;
   static CDisplaySettings& GetInstance(){static CDisplaySettings instance;return instance;}
   RESOLUTION_INFO& GetResolutionInfo(int res){return resolutions.at(res);}
+  const RESOLUTION_INFO& GetResolutionInfo(int res)const{return resolutions.at(res);}
   size_t ResolutionInfoSize()const{return resolutions.size();}
 };''')
     utils = (ROOT / 'xbmc/utils/AMLUtils.cpp').read_text()
     start = utils.index('enum class NativeGuiVideo')
     end = utils.index('\nvoid aml_handle_display_stereo_mode(', start)
+    replace('struct CServiceBroker{', '''struct CApplicationPlayer {
+  bool playingVideo = false;
+  bool pendingVideo = false;
+  bool IsPlayingLocalVideo() const { return playingVideo; }
+  bool HasPendingVideoOpen() const { return pendingVideo; }
+};
+static CApplicationPlayer appPlayer;
+struct AppComponents {
+  template<class T> T* GetComponent() { return &appPlayer; }
+};
+struct CServiceBroker{
+  static AppComponents& GetAppComponents() { static AppComponents c; return c; }
+'''.rstrip())
     production = 'static bool s_nativeGuiOsdHold=false;\n'
     production += function(utils, 'static void aml_native_gui_osd_unblank(') + '\n'
     production += utils[start:end] + '\n'
@@ -70,6 +86,10 @@ CASES = r'''
 void NativeSetup(Fixture& f,bool native=true) {
   auto& display=CDisplaySettings::GetInstance();display.resolutions.assign(4,RESOLUTION_INFO{});
   settings.nativeGui=native;
+  settings.gui1080pFor4k = false;
+  settings.m_gui1080pForHighRefreshVideo = true;
+  appPlayer.playingVideo = false;
+  appPlayer.pendingVideo = false;
   s_nativeGuiVideo=NativeGuiVideo::None;s_nativeGuiSuspended=false;s_nativeGuiSuspendedBefore=false;
   s_nativeGuiBlankPending=false;s_nativeGuiOsdHold=false;s_nativeGuiCalibrations.clear();
   for(int res=1;res<=3;res++) {
@@ -105,6 +125,7 @@ void CheckCalibration() {
   }
 }
 void StartHeavy(Fixture& f) {
+  appPlayer.playingVideo = true;
   aml_native_gui_set_video(true,false);
   assert(f.gfx.SetVideoResolution(1,false));CheckSize(f,1920,1080,1);
   assert(s_nativeGuiSuspended&&has("blank:1"));
@@ -115,6 +136,7 @@ void StartHeavy(Fixture& f) {
 }
 void StopKeepsOutputAndRestoresSize() {
   Fixture f;NativeSetup(f);StartHeavy(f);
+  appPlayer.playingVideo = false;
   aml_native_gui_set_video(false,false);aml_native_gui_playback_stopped();
   f.gfx.ProcessPendingVideoResolution();CheckSize(f,3840,2160,1);CheckCalibration();
   assert(!s_nativeGuiSuspended&&s_nativeGuiOsdHold&&has("blank:1"));
@@ -124,6 +146,7 @@ void StopKeepsOutputAndRestoresSize() {
 }
 void CleanupWins() {
   Fixture f;NativeSetup(f);StartHeavy(f);
+  appPlayer.playingVideo = false;
   aml_native_gui_set_video(false,false);aml_native_gui_playback_stopped();
   assert(f.gfx.SetVideoResolution(2,false));events.clear();
   f.gfx.ProcessPendingVideoResolution();CheckSize(f,3840,2160,2);CheckCalibration();
@@ -131,6 +154,7 @@ void CleanupWins() {
 }
 void BusyDisplayRestoresOnRetry() {
   Fixture f;NativeSetup(f);StartHeavy(f);
+  appPlayer.playingVideo = false;
   aml_native_gui_set_video(false,false);aml_native_gui_playback_stopped();
   {
     auto permit=f.session.AcquireDecoder();assert(permit);
@@ -176,10 +200,64 @@ void OptInAtFilmRate() {
   aml_native_gui_set_video(false,false);aml_native_gui_playback_stopped();
   f.gfx.ProcessPendingVideoResolution();CheckSize(f,3840,2160,3);CheckCalibration();
   aml_native_gui_set_video(false,true);
+  appPlayer.playingVideo = true;
   assert(!aml_native_gui_suspend_wanted(3)&&aml_native_gui_suspend_wanted(2));
+}
+void AutomaticFallbackFollowsVideoAndOutputRate() {
+  Fixture f;
+  NativeSetup(f);
+  assert(f.gfx.SetVideoResolution(2, false));
+  CheckSize(f, 3840, 2160, 2);
+  events.clear();
+
+  // An in-process video with no AML heavy-stream classification needs headroom too.
+  appPlayer.playingVideo = true;
+  f.gfx.ProcessPendingVideoResolution();
+  CheckSize(f, 1920, 1080, 2);
+  assert(!lastNativeForced && !has("engage-mode"));
+
+  // A queued output change takes precedence over a GUI-only refresh.
+  CDisplaySettings::GetInstance().GetResolutionInfo(3).fRefreshRate = 30.0f;
+  f.gfx.m_pendingVideoResolution = CGraphicContext::ResolutionRequest{3, false};
+  f.gfx.ProcessPendingVideoResolution();
+  CheckSize(f, 3840, 2160, 3);
+  CheckCalibration();
+  assert(f.gfx.SetVideoResolution(2, false));
+  CheckSize(f, 1920, 1080, 2);
+
+  appPlayer.playingVideo = false;
+  appPlayer.pendingVideo = true;
+  f.gfx.ProcessPendingVideoResolution();
+  CheckSize(f, 1920, 1080, 2);
+  appPlayer.pendingVideo = false;
+  f.gfx.ProcessPendingVideoResolution();
+  CheckSize(f, 3840, 2160, 2);
+  CheckCalibration();
+}
+void AutomaticFallbackIgnores1440pOutput() {
+  Fixture f;
+  NativeSetup(f);
+  auto& info = CDisplaySettings::GetInstance().GetResolutionInfo(2);
+  info.iWidth = info.iScreenWidth = 2560;
+  info.iHeight = info.iScreenHeight = 1440;
+  appPlayer.playingVideo = true;
+  assert(!aml_native_gui_suspend_wanted(2));
+}
+void AutomaticFallbackCanBeDisabled() {
+  Fixture f;
+  NativeSetup(f);
+  appPlayer.playingVideo = true;
+  aml_native_gui_set_video(true, false);
+  settings.m_gui1080pForHighRefreshVideo = false;
+  assert(f.gfx.SetVideoResolution(2, false));
+  CheckSize(f, 3840, 2160, 2);
+  settings.gui1080pFor4k = true;
+  f.gfx.ProcessPendingVideoResolution();
+  CheckSize(f, 1920, 1080, 2);
 }
 void RejectedResizeIsRetried() {
   Fixture f;NativeSetup(f);StartHeavy(f);
+  appPlayer.playingVideo = false;
   aml_native_gui_set_video(false,false);aml_native_gui_playback_stopped();
   rejectNativeResolution=true;
   f.gfx.ProcessPendingVideoResolution();
@@ -193,6 +271,8 @@ void RejectedResizeIsRetried() {
 int main() {
   StopKeepsOutputAndRestoresSize();CleanupWins();BusyDisplayRestoresOnRetry();
   ReplacementKeepsHeavyPolicy();NativeDisabledAndLightControls();OptInAtFilmRate();
+  AutomaticFallbackFollowsVideoAndOutputRate();AutomaticFallbackIgnores1440pOutput();
+  AutomaticFallbackCanBeDisabled();
   RejectedResizeIsRetried();
 }
 '''
@@ -216,7 +296,10 @@ def main():
          '  s_nativeGuiVideo = NativeGuiVideo::None;\n  if (s_nativeGuiSuspended)\n'),
         ('ignore newer output', 'm_pendingVideoResolution.value_or(ResolutionRequest{m_Resolution, false})',
          'ResolutionRequest{m_Resolution, false}'),
-        ('ignore opt-in', 'settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K)', 'false'),
+        ('ignore opt-in', 'guiSettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K)', 'false'),
+        ('ignore playback', 'player->IsPlayingLocalVideo() ||', 'true ||'),
+        ('ignore opt-out', '!settings->GetAdvancedSettings()->m_gui1080pForHighRefreshVideo',
+         'false'),
         ('ignore failed framebuffer resize', '  if (!resolutionSet)\n', '  if (false && !resolutionSet)\n'),
     ]
     for name, before, after in controls:

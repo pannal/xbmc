@@ -196,6 +196,7 @@ public:
   bool IsPlaying() const;
   bool IsPlayingAudio() const;
   bool IsPlayingVideo() const;
+  bool IsPlayingLocalVideo() const;
   bool IsPlayingGame() const;
   bool IsPlayingRDS() const;
   void LoadPage(int p, int sp, unsigned char* buffer);

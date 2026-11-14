@@ -446,6 +446,18 @@ bool CApplicationPlayer::IsPlayingVideo() const
   return (IsPlaying() && HasVideo());
 }
 
+bool CApplicationPlayer::IsPlayingLocalVideo() const
+{
+  std::shared_ptr<const IPlayer> player;
+  {
+    std::unique_lock<CCriticalSection> lock(m_playerLock);
+    if (m_pPlayer == m_closingPlayer)
+      return false;
+    player = m_pPlayer;
+  }
+  return player && player->m_type == "video" && player->IsPlaying() && player->HasVideo();
+}
+
 bool CApplicationPlayer::IsPlayingGame() const
 {
   return (IsPlaying() && HasGame());

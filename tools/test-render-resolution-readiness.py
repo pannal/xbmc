@@ -39,6 +39,7 @@ def harness():
     gfx = (ROOT / 'xbmc/windowing/GraphicContext.cpp').read_text()
     graphics = '\n'.join(function(gfx, signature) for signature in [
         'bool CGraphicContext::SetVideoResolution(',
+        'void CGraphicContext::RequestVideoResolutionRefresh()',
         'void CGraphicContext::ProcessPendingVideoResolution()',
         'bool CGraphicContext::SetVideoResolutionInternal('])
     gfx_header = (ROOT / 'xbmc/windowing/GraphicContext.h').read_text()
@@ -136,6 +137,7 @@ using GUI=CGUIComponent;
 void aml_native_gui_prepare(RESOLUTION){}
 void aml_native_gui_prepare_failed(){}
 bool aml_native_gui_needs_update(RESOLUTION){return false;}
+bool aml_native_gui_size_changing(){return false;}
 struct Win;
 struct CGraphicContext:CCriticalSection {
  explicit CGraphicContext(Win* owner):window(owner){}
@@ -156,6 +158,7 @@ struct CGraphicContext:CCriticalSection {
  void SetStereoView(int){}
  @PUBLIC_RESOLUTION@
  @INTERNAL_RESOLUTION@
+ void RequestVideoResolutionRefresh();
  void ProcessPendingVideoResolution();
 };
 struct Win {
