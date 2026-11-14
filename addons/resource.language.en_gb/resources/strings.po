@@ -27891,7 +27891,7 @@ msgstr ""
 #. Subtitle placement
 #: system/settings/settings.xml
 msgctxt "#69336"
-msgid "Detect black borders encoded in video files during Amlogic SDR, HDR and Dolby Vision playback. Enable 'Restrict subtitles to active picture' to use the detected area for subtitle confinement. Player-added bars need no scan. Known already-cropped square-pixel video bypasses scanning, the detection cache and startup pause. Missing or non-square pixel-aspect information does not prove a crop. Blu-ray/BDMV and DVD playback, and MPEG-TS (.ts/.m2ts) files, are not scanned. The file scan samples several positions. On a supported test kernel, live 1080p detection can follow aspect-ratio changes while a video-only capture is running and the startup wait is disabled. If detection is inconclusive, existing picture bounds are used. Manual Dolby Vision active-area overrides take priority. Extra file reads and software decoding can compete with playback. This setting enables subtitle detection only; 'Detect Dolby Vision active area' enables native L5 detection independently. Both detectors share the cache, startup pause, A53 core, HTTP exclusion and per-position timeout settings. Turning this off leaves enabled L5 detection and those shared settings active. Changes apply on next playback. An addon request to skip automatic detection applies to both."
+msgid "Detect black borders encoded in video files during Amlogic SDR, HDR and Dolby Vision playback. Enable 'Restrict subtitles to active picture' to use the detected area for subtitle confinement. Player-added bars need no scan. Known already-cropped square-pixel video skips the background file scan, detection cache and startup wait. Missing or non-square pixel-aspect information does not prove a crop. Blu-ray/BDMV and DVD playback, and MPEG-TS (.ts/.m2ts) files, are not scanned. The file scan samples several positions. When available, live detection follows aspect-ratio changes during playback without a startup wait. If detection is inconclusive, existing picture bounds are used. Manual Dolby Vision active-area overrides take priority. Extra file reads and software decoding can compete with playback. This setting enables subtitle detection only; 'Detect Dolby Vision active area' enables native L5 detection independently. Both detectors share the cache, startup pause, A53 core, HTTP exclusion and per-position timeout settings. Turning this off leaves enabled L5 detection and those shared settings active. Changes apply on next playback. An addon request to skip automatic detection applies to both."
 msgstr ""
 
 #. SDR bitmap subtitle colour
@@ -28203,7 +28203,7 @@ msgstr ""
 #. Help for subtitle live black-border detection
 #: system/settings/settings.xml
 msgctxt "#69390"
-msgid "Follow changes in the active picture during playback when the hardware decoder supports it. Eligible sources fall back to a background file scan if live detection is unavailable. Turn this off to prefer file-wide estimates and the startup wait setting. Applies when opening a video."
+msgid "Follow changes in the active picture during playback for eligible progressive HEVC streams on supported Amlogic decoders. SDR must use limited range or leave the range unspecified, with BT.709 or unspecified color tags. Eligible files use a background scan when live detection is unavailable, including H.264 files. Turn this off to prefer file-wide estimates and the startup wait setting. Applies when opening a video."
 msgstr ""
 
 #. Label of the live black-border scan resolution setting
