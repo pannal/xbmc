@@ -81,6 +81,8 @@ PRELUDE = r'''
 #include <thread>
 using CCriticalSection = std::recursive_mutex;
 constexpr int RENDER_STEREO_MODE_OFF=0,STATE_CONFIGURED=2,PLAYER_PROCESS_VIDEO_ACTIVE_PICTURE=1680;
+enum class DOVIELType { TYPE_NONE, TYPE_FEL };
+struct DoViStreamInfo {struct {int dv_profile=0;} dovi; DOVIELType dovi_el_type=DOVIELType::TYPE_NONE;};
 struct CDataCacheCore {
   SNAPSHOT_STRUCT
   CCriticalSection m_videoPlayerSection,m_stateSection,m_renderSection,m_contentSection;
@@ -99,6 +101,7 @@ struct CDataCacheCore {
   double requested=0;
   bool GetAVChangeExtended(){return false;}
   Metadata GetVideoDoViFrameMetadata(double pts){requested=pts;return meta;}
+  DoViStreamInfo GetVideoDoViStreamInfo(){return {};}
 } cache;
 struct CSettings {
   static constexpr int SETTING_COREELEC_AMLOGIC_DV_LEVEL5=1,SETTING_LOOKANDFEEL_SKINZOOM=2,

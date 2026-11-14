@@ -1205,15 +1205,29 @@ CRect CRenderManager::CalcPictureActiveArea(const CRect& src, const CRect& dst, 
       return OVERLAY::GetActivePictureAreaWithCanvasOverride(
           src, dst, view, m_picture.iWidth, m_picture.iHeight, top, bottom, left, right);
     const bool phantom = aml_dv_auto_letterbox_active() && !aml_dv_auto_letterbox_additive();
-    const auto metadata = CServiceBroker::GetDataCacheCore().GetVideoDoViFrameMetadata(pts);
-    const bool detectedOverride = !override && !phantom &&
+    auto& dataCache = CServiceBroker::GetDataCacheCore();
+    const auto metadata = dataCache.GetVideoDoViFrameMetadata(pts);
+    bool felSubtitles = false;
+    if (allowSubtitleEstimate && !override && !phantom)
+    {
+      const auto dovi = dataCache.GetVideoDoViStreamInfo();
+      felSubtitles = dovi.dovi.dv_profile == 7 && dovi.dovi_el_type == DOVIELType::TYPE_FEL;
+    }
+    const bool authoredL5 = metadata.has_level5_metadata && !metadata.level5_detected &&
+        (metadata.level5_active_area_top_offset || metadata.level5_active_area_bottom_offset ||
+         metadata.level5_active_area_left_offset || metadata.level5_active_area_right_offset) &&
+        (!felSubtitles ||
+         (metadata.level5_active_area_top_offset + metadata.level5_active_area_bottom_offset <
+              m_picture.iHeight &&
+          metadata.level5_active_area_left_offset + metadata.level5_active_area_right_offset <
+              m_picture.iWidth));
+    // Authored FEL L5 belongs to this picture. The live tap can lead it.
+    const bool preferAuthoredL5 = felSubtitles && authoredL5;
+    const bool detectedOverride = !override && !phantom && !preferAuthoredL5 &&
         aml_dv_detect_active_area_override_get(m_picture.iWidth, m_picture.iHeight,
                                                top, bottom, left, right);
-    // Manual/phantom geometry wins, then invariant native detection, then RPU.
-    if (!detectedOverride && !override && !phantom &&
-        metadata.has_level5_metadata && !metadata.level5_detected &&
-        (metadata.level5_active_area_top_offset || metadata.level5_active_area_bottom_offset ||
-         metadata.level5_active_area_left_offset || metadata.level5_active_area_right_offset))
+    // Manual/phantom geometry and trusted FEL subtitle L5 take priority.
+    if (!detectedOverride && !override && !phantom && authoredL5)
     {
       top = metadata.level5_active_area_top_offset;
       bottom = metadata.level5_active_area_bottom_offset;
@@ -1223,7 +1237,7 @@ CRect CRenderManager::CalcPictureActiveArea(const CRect& src, const CRect& dst, 
     else if (!detectedOverride && !override && !phantom)
       aml_subtitle_detect_active_area_get(m_picture.iWidth, m_picture.iHeight, top, bottom, left,
                                          right, allowSubtitleEstimate);
-    if (!override && !phantom && allowSubtitleEstimate)
+    if (!override && !phantom && allowSubtitleEstimate && !preferAuthoredL5)
     {
       // Native/public geometry follows the authority chosen above. Adapted dialogue
       // may need a tighter pixel-supported rectangle when native

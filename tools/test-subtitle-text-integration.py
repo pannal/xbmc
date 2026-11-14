@@ -173,10 +173,13 @@ struct Metadata {
  uint16_t level5_active_area_top_offset=0,level5_active_area_bottom_offset=0,
           level5_active_area_left_offset=0,level5_active_area_right_offset=0;
 };
+enum class DOVIELType { TYPE_NONE, TYPE_FEL };
+struct DoViStreamInfo {struct {int dv_profile=0;} dovi; DOVIELType dovi_el_type=DOVIELType::TYPE_NONE;};
 struct Cache {
  Metadata meta;double pts=-1;int clears=0;
  Metadata GetVideoDoViFrameMetadata(){return meta;}
  Metadata GetVideoDoViFrameMetadata(double requested){return requested==pts?meta:Metadata{};}
+ DoViStreamInfo GetVideoDoViStreamInfo(){return {};}
  void ClearVideoDoViFrameMetadata(){meta={};pts=-1;++clears;}
 } cache;
 struct CSettings{static constexpr int SETTING_SUBTITLES_DETECTACTIVEAREA=1,

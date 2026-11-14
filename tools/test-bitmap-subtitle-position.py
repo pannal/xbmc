@@ -26,7 +26,16 @@ def source():
   uint16_t level5_active_area_top_offset=0,level5_active_area_bottom_offset=0,
     level5_active_area_left_offset=0,level5_active_area_right_offset=0;
 };
-struct Cache {Metadata meta;double requested=0;Metadata GetVideoDoViFrameMetadata(double pts){requested=pts;return meta;}} cache;
+enum class DOVIELType { TYPE_NONE, TYPE_FEL, TYPE_MEL };
+struct DoViStreamInfo {struct {int dv_profile=0;} dovi; DOVIELType dovi_el_type=DOVIELType::TYPE_NONE;};
+struct Cache {
+  Metadata meta;
+  DoViStreamInfo stream;
+  double requested=0;
+  double missingPts=-1;
+  Metadata GetVideoDoViFrameMetadata(double pts){requested=pts;return pts==missingPts?Metadata{}:meta;}
+  DoViStreamInfo GetVideoDoViStreamInfo(){return stream;}
+} cache;
 struct CServiceBroker {
   static Cache& GetDataCacheCore(){return cache;}''')
     code = code.replace('  void RenderPqMenu(const OverlayBatch&);', '''  bool m_isSettingsChanged=false,m_activeAreaApplyUserPos=false;
@@ -106,10 +115,27 @@ int main(){
   assert(cache.requested==123&&manager.m_overlays.m_restrictToActivePicture);
   cache.meta.level5_active_area_top_offset=180;cache.meta.level5_active_area_bottom_offset=180;
   rect(manager.CalcOverlayActiveArea(src,dst,view,true,124),0,180,1920,900);
+  cache.stream={{7},DOVIELType::TYPE_FEL};
   liveFEL=true;
-  rect(manager.CalcOverlayActiveArea(src,dst,view,true,124),0,140,1920,940);
+  rect(manager.CalcOverlayActiveArea(src,dst,view,true,124),0,180,1920,900);
+  highConfidence=true;
+  rect(manager.CalcOverlayActiveArea(src,dst,view,true,124),0,180,1920,900);
+  rect(manager.CalcPictureActiveArea(src,dst,view,124,false,false),0,140,1920,940);
+  highConfidence=false;
   rect(manager.CalcPictureActiveArea(src,dst,view,124,false,false),0,180,1920,900);
+  cache.missingPts=125;
+  rect(manager.CalcOverlayActiveArea(src,dst,view,true,125),0,140,1920,940);
+  cache.meta.level5_detected=true;
+  rect(manager.CalcOverlayActiveArea(src,dst,view,true,126),0,140,1920,940);
+  cache.meta.level5_detected=false;
+  cache.meta.level5_active_area_top_offset=cache.meta.level5_active_area_bottom_offset=540;
+  rect(manager.CalcOverlayActiveArea(src,dst,view,true,127),0,140,1920,940);
+  cache.meta.level5_active_area_top_offset=cache.meta.level5_active_area_bottom_offset=0;
+  rect(manager.CalcOverlayActiveArea(src,dst,view,true,128),0,140,1920,940);
+  cache.meta.level5_active_area_top_offset=cache.meta.level5_active_area_bottom_offset=180;
   liveFEL=false;
+  rect(manager.CalcOverlayActiveArea(src,dst,view,true,129),0,180,1920,900);
+  cache.stream={};
   highConfidence=true;
   rect(manager.CalcOverlayActiveArea(src,dst,view,true,124),0,140,1920,940);
   overrideActive=true; // explicit 0,0,0,0 remains authoritative
