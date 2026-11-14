@@ -2160,6 +2160,16 @@ void CAMLCodec::WaitForLifecycle()
 
 namespace
 {
+int LiveHEVCBorderScale(const CDVDStreamInfo& hints, int overrideScale, bool prefer1080p)
+{
+  if (overrideScale != 0)
+    return overrideScale;
+
+  const bool knownRateUpTo30 = !hints.vfr && hints.fpsrate > 0 && hints.fpsscale > 0 &&
+                               hints.fpsrate <= 30LL * hints.fpsscale;
+  return prefer1080p && hints.width == 3840 && knownRateUpTo30 ? 2 : 4;
+}
+
 bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints,
                           StreamHdrType originalHdrType,
                           bool nativeDV,
@@ -2683,7 +2693,11 @@ bool CAMLCodec::OpenDecoderInternal()
     if (!config_data.empty() && config_data.back() != ';')
       config_data += ';';
     config_data += "p3i_border_token:" + std::to_string(am_private->liveBorderToken) + ";";
-    if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_liveHEVCBorderScale == 2)
+    const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+    if (LiveHEVCBorderScale(
+            hints, settingsComponent->GetAdvancedSettings()->m_liveHEVCBorderScale,
+            settingsComponent->GetSettings()->GetBool(
+                CSettings::SETTING_SUBTITLES_LIVEACTIVEAREA1080P)) == 2)
       config_data += "p3i_border_scale:2;";
     if (am_private->liveFrameL5)
       config_data += "p3i_frame_l5:1;";

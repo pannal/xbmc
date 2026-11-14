@@ -28205,3 +28205,15 @@ msgstr ""
 msgctxt "#69390"
 msgid "Follow changes in the active picture during playback when the hardware decoder supports it. Eligible sources fall back to a background file scan if live detection is unavailable. Turn this off to prefer file-wide estimates and the startup wait setting. Applies when opening a video."
 msgstr ""
+
+#. Label of the live black-border scan resolution setting
+#: system/settings/settings.xml
+msgctxt "#69391"
+msgid "Use a finer live black-border scan for 4K"
+msgstr ""
+
+#. Help for the live black-border scan resolution setting
+#: system/settings/settings.xml
+msgctxt "#69392"
+msgid "Use the 1080p scan for eligible 4K video at known frame rates up to 30 fps. Faster video and video with an unknown or explicitly variable frame rate use the 540p scan. Affects live subtitle positioning and Dolby Vision L5. Applies when opening a video."
+msgstr ""

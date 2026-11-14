@@ -186,7 +186,7 @@ void CAdvancedSettings::Initialize()
 
   m_videoDecoderTimeout = 5;
   m_videoDecoderDrainTimeout = 5;
-  m_liveHEVCBorderScale = 4;
+  m_liveHEVCBorderScale = 0;
   m_videoMenuDomainQueueTimeSize = 1.0f;
   m_videoBdBoundaryDrain = true;
   m_blurayIsoCacheEnabled = true;
