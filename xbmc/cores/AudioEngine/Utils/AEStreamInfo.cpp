@@ -437,7 +437,7 @@ void CAEStreamParser::DefeatAC3DialNorm(uint8_t* data, unsigned int size)
       {
         case 0: framewords = bitRate * 2; break;
         case 1: framewords = (320 * bitRate / 147 + (frmsizecod & 1 ? 1 : 0)); break;
-        case 2: framewords = bitRate * 4; break;
+        case 2: framewords = bitRate * 3; break;
       }
       frame_bytes = framewords * 2;
       if (offset + frame_bytes > size) break;
@@ -811,7 +811,7 @@ bool CAEStreamParser::TrySyncAC3(uint8_t* data,
         framesize = (320 * bitRate / 147 + (frmsizecod & 1 ? 1 : 0));
         break;
       case 2:
-        framesize = bitRate * 4;
+        framesize = bitRate * 3;
         break;
     }
 
