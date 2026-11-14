@@ -2163,7 +2163,7 @@ namespace
 bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints,
                           StreamHdrType originalHdrType,
                           bool nativeDV,
-                          bool nativeP7MEL)
+                          bool nativeP7Borders)
 {
   if (hints.codec != AV_CODEC_ID_HEVC || hints.interlaced)
     return false;
@@ -2176,24 +2176,24 @@ bool CanUseLiveHEVCBorders(const CDVDStreamInfo& hints,
        hints.colorTransferCharacteristic == AVCOL_TRC_UNSPECIFIED) &&
       (hints.colorSpace == AVCOL_SPC_BT709 || hints.colorSpace == AVCOL_SPC_UNSPECIFIED);
   const bool hdr10CompatibleDV = nativeDV &&
-      (nativeP7MEL || (hints.dovi.dv_profile == 8 && hints.dovi.dv_bl_signal_compatibility_id == 1));
+      (nativeP7Borders || (hints.dovi.dv_profile == 8 && hints.dovi.dv_bl_signal_compatibility_id == 1));
   return limitedBT709 || originalHdrType == StreamHdrType::HDR_TYPE_HDR10 || hdr10CompatibleDV;
 }
 
 unsigned int RequestLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType originalHdrType,
-                                    bool nativeDV, bool frameL5, bool nativeP7MEL)
+                                    bool nativeDV, bool frameL5, bool nativeP7Borders)
 {
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   if (hints.width < 256 || hints.width > 3840 || hints.height < 256 || hints.height > 2176 ||
-      !CanUseLiveHEVCBorders(hints, originalHdrType, nativeDV, nativeP7MEL) ||
+      !CanUseLiveHEVCBorders(hints, originalHdrType, nativeDV, nativeP7Borders) ||
       access("/sys/module/amvdec_h265/parameters/p3i_active_area_status", R_OK) != 0)
     return 0;
   if (!frameL5 && (!settings->GetBool(CSettings::SETTING_SUBTITLES_DETECTACTIVEAREA) ||
                   !settings->GetBool(CSettings::SETTING_SUBTITLES_LIVEACTIVEAREA) ||
                   (nativeDV && aml_dv_detect_active_area_enabled())))
     return 0;
-  // On Demand output can still be pending. Keep the configured L5 scan on P7 MEL.
-  if (nativeP7MEL && settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) &&
+  // On Demand output can still be pending. Keep the configured L5 scan on P7.
+  if (nativeP7Borders && settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_LEVEL5) &&
       settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DETECT_ACTIVE_AREA) &&
       !aml_dv_l5_override_active())
     return 0;
@@ -2209,6 +2209,13 @@ unsigned int RequestLiveHEVCBorders(const CDVDStreamInfo& hints, StreamHdrType o
   }
   return aml_subtitle_active_area_enable_hevc_live(hints.subtitleProbeSource, token, frameL5) ?
       token : 0;
+}
+
+bool LiveFELBordersEnabled()
+{
+  std::ifstream enabled("/sys/module/amvdec_h265/parameters/p3i_fel_borders");
+  char value = 0;
+  return (enabled >> value) && value == 'Y';
 }
 
 bool LiveFrameL5Enabled()
@@ -2527,8 +2534,10 @@ bool CAMLCodec::OpenDecoderInternal()
   const bool nativeDV = hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
                         m_originalSourceHdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
   const bool nativeP81 = nativeDV && am_private->originalP81;
-  const bool nativeP7MEL = nativeDV && hints.dovi.dv_profile == 7 &&
-      hints.dovi_el_type == DOVIELType::TYPE_MEL && !am_private->convertProfile7;
+  const bool nativeP7 = nativeDV && hints.dovi.dv_profile == 7 && !am_private->convertProfile7;
+  const bool nativeP7Borders = nativeP7 &&
+      (hints.dovi_el_type == DOVIELType::TYPE_MEL ||
+       (hints.dovi_el_type == DOVIELType::TYPE_FEL && LiveFELBordersEnabled()));
   const bool nativeL5 = nativeP81 && aml_dv_live_frame_l5_eligible(m_dvSession);
   am_private->liveBorderToken = 0;
   am_private->liveFrameL5 = nativeL5 && hints.width == 3840 && hints.height == 2160 &&
@@ -2541,7 +2550,7 @@ bool CAMLCodec::OpenDecoderInternal()
     if (!nativeL5 || am_private->liveFrameL5)
       am_private->liveBorderToken =
           RequestLiveHEVCBorders(hints, m_originalSourceHdrType, nativeDV,
-                                 am_private->liveFrameL5, nativeP7MEL);
+                                 am_private->liveFrameL5, nativeP7Borders);
     if (!am_private->liveBorderToken)
       aml_dv_detect_active_area_start(); // separately selected DV injection / non-DV geometry
   }

@@ -57,7 +57,7 @@ struct Hardware {
         assert variable+'.aspect' in statement
         code += '\nvoid '+name+'(bool nativeDV){\n'
         if name == 'Open':
-            code += 'const bool nativeP81 = false, nativeL5 = false, nativeP7MEL = false;\n'
+            code += 'const bool nativeP81 = false, nativeL5 = false, nativeP7Borders = false;\n'
         code += statement+'\n}\n'
     code += 'void Picture(int ratio){struct{int ratio_control;}vi{ratio};\n'
     code += function(aml,'    if (vi.ratio_control)')+'\n}\n};\n'
