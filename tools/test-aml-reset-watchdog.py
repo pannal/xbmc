@@ -40,6 +40,7 @@ PREFIX = r'''
 #include <vector>
 struct CLog {template<class... T> static void Log(T&&...) {}};
 constexpr int LOGDEBUG=0, DVD_PLAYSPEED_NORMAL=1000, TRICKMODE_NONE=0;
+constexpr int VIDEO_BUFFER_DELAY_MS=1000;
 constexpr double DVD_NOPTS_VALUE=-1e30;
 enum class StreamHdrType {HDR_TYPE_NONE, HDR_TYPE_HDR10, HDR_TYPE_DOLBYVISION};
 constexpr int AV_CODEC_ID_HEVC=173;
@@ -91,6 +92,7 @@ struct CAMLCodec {
   Dll dll; Dll* m_dll=&dll; Private priv; Private* am_private=&priv;
   void* m_dvSession=nullptr; uint64_t m_dvBackendEpoch=0; double m_dvBackendSampleTime=1;
   double m_cur_pts=1, m_last_pts=1, m_prev_last_pts=1;
+  double m_felInputDts=1;
   std::vector<int> m_reorderQueue{1};
   int m_repairExcursionRun=1, m_outPtsRingPos=1, m_outPtsRingCount=1, m_state=1;
   bool m_stream_eof=true, m_buffer_level_ready=true, m_no_data_since_reset=false;
@@ -135,6 +137,7 @@ int main() {
     codec.m_tp_last_frame = FakeClock::now();
     codec.ResetInternal();
     assert(codec.dll.resets == 1 && probeStarts > 0);
+    assert(codec.m_felInputDts == DVD_NOPTS_VALUE);
     assert(!codec.TimedOut() && "watchdog must start after all reset work");
     FakeClock::Advance(std::chrono::seconds(codec.m_decoder_timeout));
     assert(!codec.TimedOut());

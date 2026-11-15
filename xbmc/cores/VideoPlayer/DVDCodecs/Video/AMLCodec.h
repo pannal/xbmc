@@ -265,6 +265,8 @@ private:
 
   std::atomic<int> m_speed; // Decoder speed writes overlap presentation rate queries.
   uint64_t         m_cur_pts;
+  double m_felInputDts{DVD_NOPTS_VALUE};
+  double m_felInputStartDts{DVD_NOPTS_VALUE};
   uint64_t         m_last_pts;
   uint64_t         m_prev_last_pts; // pts before m_last_pts (excursion detection)
 

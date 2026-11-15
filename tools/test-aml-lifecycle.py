@@ -139,6 +139,7 @@ PRELUDE = r'''
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
 #include <atomic>
 #include <cassert>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <future>
@@ -169,12 +170,16 @@ int poll(pollfd* descriptors,nfds_t count,int timeout) {
 }
 struct SyncEvent {std::atomic<int> signals{0};void Set(){++signals;}} g_aml_sync_event;
 constexpr double DVD_TIME_BASE=1000000,DVD_NOPTS_VALUE=-1000000;
+constexpr double DVD_MSEC_TO_TIME(double ms) { return ms * DVD_TIME_BASE / 1000; }
+constexpr int VIDEO_BUFFER_DELAY_MS=1000;
 constexpr int PLAYER_SUCCESS=0,STREAM_TYPE_STREAM=1,STATE_HASPTS=1,KEYFRAME_PTS_ONLY=2;
 constexpr uint64_t UINT64_0=0;
 constexpr unsigned int RW_WAIT_TIME=1;
 constexpr int DVD_PLAYSPEED_NORMAL=1000,DVD_PLAYSPEED_PAUSE=0;
 constexpr int TRICKMODE_NONE=0,TRICKMODE_FFFB=1,TRICKMODE_I=2;
 constexpr int VFORMAT_H264=4,VFORMAT_H264_4K2K=5;
+constexpr int AV_CODEC_ID_H264=27,AV_CODEC_ID_HEVC=173;
+enum class DOVIELType {NONE,TYPE_FEL};
 void usleep(unsigned int) {} // Error-policy waits do not sleep in this fixture.
 int calc_chunk_size(size_t size) {return static_cast<int>(size);}
 struct Packet {uint8_t* data{}; size_t size{}; void* buf{};};
@@ -185,7 +190,7 @@ struct am_packet_t {
 struct Private {
   int video_format=VFORMAT_H264;
   struct {void* config{nullptr}; int config_len{0};} vcodec;
-  struct {int dec_mode{0}; uintptr_t param{0};} gcodec;
+  struct {int dec_mode{0}; bool dv_enable{false}; uintptr_t param{0};} gcodec;
   struct {size_t size{0}; uint8_t* data{};} hdr_buf;
   am_packet_t am_pkt;
   enum class Write {SUCCESS,STUCK,ERROR};
@@ -282,21 +287,26 @@ public:
     if(m_opened) {SetPollDevice(-1);SetPollDevice(nextDescriptor);}
   }
   bool AddData(uint8_t*,size_t,double,double);
-  float GetBufferLevel(int,int& data,int& free) {data=10; free=100; return 10.0f;}
+  int freeBytes{100};
+  float GetBufferLevel(int,int& data,int& free) {data=10; free=freeBytes; return 10.0f;}
   Private storage; Private* am_private{&storage};
   bool m_buffer_level_ready{false},m_decoder_bypass_buffer_ready{false};
   float m_decoder_stream_buffer{0.0f},m_decoder_buffer{0.0f};
   float m_minimum_buffer_level{},m_decoder_minimum_stream_buffer{},m_decoder_minimum_buffer{};
   bool m_no_data_since_reset{true},m_abort{false},m_resetHoldsVideo{true};
-  struct {bool ptsinvalid{false};} m_hints;
+  struct {
+    bool ptsinvalid{false};
+    int codec{AV_CODEC_ID_H264};
+    DOVIELType dovi_el_type{DOVIELType::NONE};
+  } m_hints;
   int m_state{0}; double m_cur_pts{DVD_NOPTS_VALUE};
+  double m_felInputDts{DVD_NOPTS_VALUE}, m_felInputStartDts{DVD_NOPTS_VALUE};
   bool m_wrFailActive{false};
   std::chrono::steady_clock::time_point m_tpWrFailStart,m_tpWrFailLastReset;
 };
-constexpr int AML_G12B=1,AV_CODEC_ID_H264=27;
+constexpr int AML_G12B=1;
 int cpu=AML_G12B;
 int aml_get_cpufamily_id() {return cpu;}
-enum class DOVIELType {NONE,TYPE_FEL};
 struct Bitstream {int resets{0}; void ResetStartDecode() {++resets;}};
 int freed=0;
 namespace KODI {namespace MEMORY {
@@ -700,6 +710,43 @@ void InternalRecovery() {
   assert(codec.AddData(packet,1,1,1));
   assert(!codec.LifecyclePending() && codec.trace.size()==before);
 }
+void FELInputBackpressure() {
+  CAMLCodec codec;
+  assert(codec.OpenDecoder());
+  codec.storage.gcodec.dec_mode = STREAM_TYPE_STREAM;
+  codec.storage.gcodec.dv_enable = true;
+  codec.m_hints.codec = AV_CODEC_ID_HEVC;
+  codec.m_hints.dovi_el_type = DOVIELType::TYPE_FEL;
+  uint8_t packet[8]{};
+  const auto feed = [&](double dts) {
+    return codec.AddData(packet, sizeof(packet), dts, dts);
+  };
+  assert(feed(0.0));
+  assert(feed(1'000'000.0)); // Startup can feed until the first decoded picture.
+  codec.m_cur_pts = 42'000.0;
+  assert(!feed(1'042'000.0));
+  assert(codec.storage.writes == 2);
+  codec.m_cur_pts = 83'000.0;
+  assert(feed(1'042'000.0));
+  codec.freeBytes = 7;
+  assert(!feed(1'083'000.0)); // The projected percentage may still be below full.
+  codec.freeBytes = 100;
+  assert(feed(15'000'000.0)); // A DTS discontinuity does not wait for the old output timeline.
+  assert(feed(15'042'000.0));
+  codec.m_cur_pts = 15'000'000.0;
+  assert(feed(15'950'000.0));
+  assert(!feed(16'000'000.0));
+  codec.m_hints.ptsinvalid = true;
+  assert(feed(16'000'000.0));
+  codec.m_hints.ptsinvalid = false;
+  assert(feed(16'042'000.0));
+  codec.m_speed = 2 * DVD_PLAYSPEED_NORMAL;
+  assert(feed(16'083'000.0));
+  codec.m_speed = DVD_PLAYSPEED_NORMAL;
+  codec.storage.gcodec.dec_mode = 0;
+  codec.freeBytes = 7;
+  assert(feed(16'125'000.0)); // Frame mode retains the existing admission rules.
+}
 void CloseMaskOrder() {
   for (bool enabled : {false, true}) {
     for (bool alreadyHeld : {false, true}) {
@@ -738,6 +785,7 @@ int main() {
   PollPacingResults(); PendingThroughActualPoll();
   FreshReset(); PendingAndReopen(); CloseSupersedes(); FailedOpen();
   WaitPinsOriginalSession(); WrapperCleanup(false); WrapperCleanup(true); InternalRecovery();
+  FELInputBackpressure();
   WrapperFailure(false); WrapperFailure(true);
   CloseDeferredCleanup(false); CloseDeferredCleanup(true);
 }

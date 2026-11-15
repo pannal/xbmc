@@ -38,6 +38,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <limits>
 #include <queue>
@@ -310,6 +311,8 @@ static const uint64_t UINT64_0 = 0x8000000000000000ULL;
 #define CODEC_TAG_mjpa  (0x61706a6d)
 
 #define RW_WAIT_TIME    (5 * 1000) // 20ms
+
+static constexpr int VIDEO_BUFFER_DELAY_MS = 1000;
 
 #define P_PRE           (0x02000000)
 #define F_PRE           (0x03000000)
@@ -2288,6 +2291,7 @@ bool CAMLCodec::OpenDecoderInternal()
   m_cur_pts = DVD_NOPTS_VALUE;
   m_last_pts = DVD_NOPTS_VALUE;
   m_prev_last_pts = DVD_NOPTS_VALUE;
+  m_felInputDts = DVD_NOPTS_VALUE;
   m_reorderQueue.clear();
   m_repairExcursionRun = 0;
   m_outPtsRingPos = 0;
@@ -2767,7 +2771,7 @@ bool CAMLCodec::OpenDecoderInternal()
   m_dll->codec_pause(&am_private->vcodec);
 
   m_dll->codec_set_cntl_mode(&am_private->vcodec, TRICKMODE_NONE);
-  m_dll->codec_set_video_delay_limited_ms(&am_private->vcodec, 1000);
+  m_dll->codec_set_video_delay_limited_ms(&am_private->vcodec, VIDEO_BUFFER_DELAY_MS);
 
   m_dll->codec_set_cntl_avthresh(&am_private->vcodec, AV_SYNC_THRESH);
   m_dll->codec_set_cntl_syncthresh(&am_private->vcodec, 0);
@@ -2988,7 +2992,7 @@ void CAMLCodec::ResetInternal()
     m_dll->codec_set_eos(&am_private->vcodec, 0);
     m_inputEnded = false;
   }
-  m_dll->codec_set_video_delay_limited_ms(&am_private->vcodec, 1000);
+  m_dll->codec_set_video_delay_limited_ms(&am_private->vcodec, VIDEO_BUFFER_DELAY_MS);
 
   dumpfile_close(am_private);
   dumpfile_open(am_private);
@@ -3003,6 +3007,7 @@ void CAMLCodec::ResetInternal()
   m_cur_pts = DVD_NOPTS_VALUE;
   m_last_pts = DVD_NOPTS_VALUE;
   m_prev_last_pts = DVD_NOPTS_VALUE;
+  m_felInputDts = DVD_NOPTS_VALUE;
   m_reorderQueue.clear();
   m_repairExcursionRun = 0;
   m_outPtsRingPos = 0;
@@ -3052,7 +3057,23 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
   int data_len, free_len;
   int chunk_size = calc_chunk_size(iSize);
   float new_buffer_level = GetBufferLevel(chunk_size, data_len, free_len);
-  bool streambuffer(am_private->gcodec.dec_mode == STREAM_TYPE_STREAM);
+  const bool streambuffer = am_private->gcodec.dec_mode == STREAM_TYPE_STREAM;
+  const bool felStream = streambuffer && m_hints.codec == AV_CODEC_ID_HEVC &&
+                         am_private->gcodec.dv_enable &&
+                         m_hints.dovi_el_type == DOVIELType::TYPE_FEL;
+  const bool timedFEL = felStream && !m_hints.ptsinvalid && dts != DVD_NOPTS_VALUE &&
+                       std::isfinite(dts);
+  constexpr double maxFELLead = DVD_MSEC_TO_TIME(VIDEO_BUFFER_DELAY_MS);
+  const bool continuousFEL = timedFEL && m_felInputDts != DVD_NOPTS_VALUE &&
+                             std::abs(dts - m_felInputDts) <= maxFELLead;
+  const double decodedPts = static_cast<double>(m_cur_pts);
+  // The elementary-stream parser used by FEL does not enforce the configured
+  // delay limit. Apply it once decoder output reaches the current input timeline.
+  // A seek or a DTS discontinuity starts a new timeline.
+  const bool felBufferAhead = continuousFEL && m_speed == DVD_PLAYSPEED_NORMAL &&
+                              m_cur_pts != DVD_NOPTS_VALUE &&
+                              decodedPts >= m_felInputStartDts - maxFELLead &&
+                              dts - decodedPts >= maxFELLead;
  
   if (!m_buffer_level_ready) {
     m_buffer_level_ready = m_decoder_bypass_buffer_ready ||
@@ -3065,7 +3086,8 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
                                : m_decoder_minimum_buffer;
   }
 
-  if (!m_opened || !pData || free_len == 0 || new_buffer_level >= 100.0f)
+  if (!m_opened || !pData || free_len == 0 || new_buffer_level >= 100.0f ||
+      (felStream && free_len < chunk_size) || felBufferAhead)
   {
     CLog::Log(LOGDEBUG, LOGVIDEO,
       "CAMLCodec::{}: skip add data dl:{:d} fl:{:d} sz:{:d}({:d}) lv:{:.1f}% dts:{:.3f} pts:{:.3f}", __FUNCTION__,
@@ -3225,6 +3247,9 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
     return false;
   }
   m_wrFailActive = false;
+  if (timedFEL && !continuousFEL)
+    m_felInputStartDts = dts;
+  m_felInputDts = timedFEL ? dts : DVD_NOPTS_VALUE;
   if (iSize > 50000)
     usleep(2000); // wait 2ms to process larger packets
 
