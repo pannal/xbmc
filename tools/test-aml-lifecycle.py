@@ -729,7 +729,7 @@ void FELInputBackpressure() {
   codec.m_cur_pts = 83'000.0;
   assert(feed(1'042'000.0));
   codec.freeBytes = 7;
-  assert(!feed(1'083'000.0)); // The projected percentage may still be below full.
+  assert(!feed(1'082'000.0)); // This stays below the time and percentage limits.
   codec.freeBytes = 100;
   assert(feed(15'000'000.0)); // A DTS discontinuity does not wait for the old output timeline.
   assert(feed(15'042'000.0));
