@@ -24,6 +24,7 @@
 #include "cores/DataCacheCore.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "guilib/GUIComponent.h"
+#include "guilib/GUIWindowManager.h"
 #include "guilib/StereoscopicsManager.h"
 #include "messaging/ApplicationMessenger.h"
 #include "settings/AdvancedSettings.h"
@@ -794,6 +795,8 @@ std::shared_ptr<CRenderLifecycle::Request> CRenderManager::RequestUnInit()
         return std::nullopt;
       UnInitOnMain();
       native.reset();
+      if (auto* gui = CServiceBroker::GetGUI())
+        gui->GetWindowManager().RetirePlayerInfoOverlays();
       return true;
     });
   }
@@ -834,6 +837,11 @@ std::shared_ptr<CRenderLifecycle::Request> CRenderManager::RequestFlush(bool sav
       ++m_lifecycleGeneration;
       m_lifecycle->AdvanceSession();
       m_closing = false;
+      m_renderDebug = false;
+      m_debugRenderer.Dispose();
+      state.unlock();
+      if (auto* gui = CServiceBroker::GetGUI())
+        gui->GetWindowManager().RetirePlayerInfoOverlays();
     }
     return result;
   });

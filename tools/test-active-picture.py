@@ -122,7 +122,8 @@ struct CGraphicContext {
   void GetGUIScaling(const RESOLUTION_INFO&,float&,float&,TransformMatrix*);
 } graphics;
 struct WinSystem {CGraphicContext& GetGfxContext(){return graphics;}} win;
-constexpr int WINDOW_HOME=10000,WINDOW_VIDEO_MENU=12901,WINDOW_DIALOG_EXT_PROGRESS=10151;
+constexpr int WINDOW_HOME=10000,WINDOW_VIDEO_MENU=12901,WINDOW_DIALOG_EXT_PROGRESS=10151,
+              WINDOW_DIALOG_PLAYER_PROCESS_INFO=10116;
 struct Property {std::string value="0";std::string asString(){return value;}} osdProperty;
 struct CGUIWindow {
   bool progress=false;Property marker;
@@ -133,6 +134,7 @@ struct WindowManager {
   CGUIWindow* GetWindow(int id){return id==WINDOW_DIALOG_EXT_PROGRESS?(progressPresent?&progress:nullptr):&home;}
   bool HasVisibleDialog(){return false;}
   bool IsWindowVisible(int id){return id==WINDOW_DIALOG_EXT_PROGRESS&&progressVisible;}
+  void RetirePlayerInfoOverlays(){}
 } wm;
 struct GUI {WindowManager& GetWindowManager(){return wm;}} gui;
 struct CServiceBroker {
@@ -179,7 +181,8 @@ struct CRenderLifecycle {
 struct CRenderManager {
   CDataCacheCore& m_dataCacheCore=cache;
   CCriticalSection m_statelock;
-  bool m_closing=false,m_presentstarted=true,m_showVideo=true;
+  bool m_closing=false,m_presentstarted=true,m_showVideo=true,m_renderDebug=false;
+  struct {void Dispose(){}} m_debugRenderer;
   int m_renderState=STATE_CONFIGURED;unsigned int m_orientation=0;
   uint64_t m_lifecycleGeneration=0;
   struct Picture {int iWidth=1920,iHeight=1080;std::string stereoMode;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;} m_picture;
@@ -216,25 +219,25 @@ int main(){
   check(0,140,1920,940);assert(cache.requested==123);
   // Actual PM4K OSD-property consumer writes the signal, while geometry stays raw.
   for(bool signal:{false,true,false}){
-    osdProperty.value=signal?"1":"0";aml_dv_set_xbmc_osd();assert(emittedOsd==signal);check(0,140,1920,940);
+    osdProperty.value=signal?"1":"0";aml_dv_set_xbmc_osd(false);assert(emittedOsd==signal);check(0,140,1920,940);
   }
   // Native detector progress must signal OSD even when PM4K reports none.
   progress.progress=true;osdProperty.value="0";
   for(bool pm4k:{true,false}){
     s_pm4kActive=pm4k;wm.progressVisible=true;progress.marker.value="";
-    aml_dv_set_xbmc_osd();assert(emittedOsd==0); // unrelated progress
+    aml_dv_set_xbmc_osd(false);assert(emittedOsd==0); // unrelated progress
     progress.marker.value="true";
-    aml_dv_set_xbmc_osd();assert(emittedOsd==1);check(0,140,1920,940);
+    aml_dv_set_xbmc_osd(false);assert(emittedOsd==1);check(0,140,1920,940);
     wm.progressVisible=false;
-    aml_dv_set_xbmc_osd();assert(emittedOsd==0); // pending/hidden dialog
+    aml_dv_set_xbmc_osd(false);assert(emittedOsd==0); // pending/hidden dialog
     wm.progressVisible=true;wm.progressPresent=false;
-    aml_dv_set_xbmc_osd();assert(emittedOsd==0); // absent dialog
+    aml_dv_set_xbmc_osd(false);assert(emittedOsd==0); // absent dialog
     wm.progressPresent=true;progress.marker.value="";
-    aml_dv_set_xbmc_osd();assert(emittedOsd==0); // completion/abort clears marker
+    aml_dv_set_xbmc_osd(false);assert(emittedOsd==0); // completion/abort clears marker
   }
   s_pm4kActive=true;wm.progressVisible=false;
-  s_discMenuVisible=true;aml_dv_set_xbmc_osd();assert(emittedOsd==1);
-  s_discMenuVisible=false;aml_dv_set_xbmc_osd();assert(emittedOsd==0);
+  s_discMenuVisible=true;aml_dv_set_xbmc_osd(false);assert(emittedOsd==1);
+  s_discMenuVisible=false;aml_dv_set_xbmc_osd(false);assert(emittedOsd==0);
   cache.meta={};detected=true;dt=db=120;check(0,120,1920,960);
   cache.meta.has_level5_metadata=true;cache.meta.level5_active_area_top_offset=140;cache.meta.level5_active_area_bottom_offset=140;
   check(0,140,1920,940); // authored beats detector
@@ -258,7 +261,7 @@ int main(){
   mt=mb=0;check(0,0,1920,1080); // zero absolute override includes added bars
   mt=mb=400;check(0,200,1920,880);
   for(bool signal:{false,true,false}){
-    osdProperty.value=signal?"1":"0";aml_dv_set_xbmc_osd();assert(emittedOsd==signal);check(0,200,1920,880);
+    osdProperty.value=signal?"1":"0";aml_dv_set_xbmc_osd(false);assert(emittedOsd==signal);check(0,200,1920,880);
   }
   m.renderer.dst={0,1000,1920,1800};check(0,1060,1920,1080); // last active pixels remain
   m.renderer.dst={0,1040,1920,1840};invalid(); // manual active area shifted out of view

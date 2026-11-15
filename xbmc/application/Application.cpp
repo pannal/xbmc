@@ -945,24 +945,26 @@ void CApplication::Render()
     return;
   if (appPower->GetRenderGUI() && !m_skipGuiRender)
   {
+    auto& windowManager = CServiceBroker::GetGUI()->GetWindowManager();
+    bool playerDebugRendered = false;
     if (CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode())
     {
       CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RENDER_STEREO_VIEW_LEFT);
-      hasRendered |= CServiceBroker::GetGUI()->GetWindowManager().Render();
+      hasRendered |= windowManager.Render(&playerDebugRendered);
 
       if (CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RENDER_STEREO_MODE_MONO)
       {
         CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RENDER_STEREO_VIEW_RIGHT);
-        hasRendered |= CServiceBroker::GetGUI()->GetWindowManager().Render();
+        hasRendered |= windowManager.Render(&playerDebugRendered);
       }
       CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RENDER_STEREO_VIEW_OFF);
     }
     else
     {
-      hasRendered |= CServiceBroker::GetGUI()->GetWindowManager().Render();
+      hasRendered |= windowManager.Render(&playerDebugRendered);
     }
     // execute post rendering actions (finalize window closing)
-    CServiceBroker::GetGUI()->GetWindowManager().AfterRender();
+    windowManager.AfterRender(hasRendered, playerDebugRendered);
 
     m_lastRenderTime = std::chrono::steady_clock::now();
   }

@@ -11,6 +11,8 @@
 #include "ServiceBroker.h"
 #include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayLibass.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
+#include "guilib/GUIComponent.h"
+#include "guilib/GUIWindowManager.h"
 #include "settings/SettingsComponent.h"
 #include "settings/SubtitlesSettings.h"
 #include "utils/log.h"
@@ -140,7 +142,10 @@ void CDebugRenderer::CRenderer::Render(int idx, float depth)
           ConvertLibass(*ovAss, it->pts, updateStyle, m_debugOverlayStyle);
 
       if (o)
+      {
         OVERLAY::CRenderer::Render(o);
+        CServiceBroker::GetGUI()->GetWindowManager().MarkPlayerDebugRendered();
+      }
     }
   }
   ReleaseUnused();

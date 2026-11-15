@@ -16,6 +16,7 @@ import re
 import subprocess
 
 SOURCE = 'xbmc/utils/AMLUtils.cpp'
+WINDOW_MANAGER = 'xbmc/guilib/GUIWindowManager.cpp'
 
 
 def function(source, signature):
@@ -43,7 +44,8 @@ def parts(source):
     declarations = '\n'.join(re.findall(r'^static [^\n;]+ s_pm4k(?:Active|Home)[^\n]*;',
                                        source, flags=re.M))
     assert 's_pm4kActive' in declarations
-    method = function(source, 'void aml_dv_set_xbmc_osd()')
+    method = function(source, 'void aml_dv_set_xbmc_osd(')
+    method = method.replace('aml_dv_set_xbmc_osd()', 'aml_dv_set_xbmc_osd(bool)')
     condition = method.index('if (s_pm4kActive')
     brace = method.index('{', condition)
     method = method[:brace + 1] + '\n    ScheduleClose();' + method[brace + 1:]
@@ -61,16 +63,29 @@ PRELUDE = r'''
 #include <string>
 #include <thread>
 #include <type_traits>
-constexpr int WINDOW_HOME=10000, WINDOW_VIDEO_MENU=12901, WINDOW_DIALOG_EXT_PROGRESS=10151;
+#include <vector>
+constexpr int WINDOW_HOME=10000, WINDOW_VIDEO_MENU=12901, WINDOW_DIALOG_EXT_PROGRESS=10151,
+              WINDOW_DIALOG_PLAYER_PROCESS_INFO=10116;
 struct Property {std::string text;std::string asString() const {return text;}};
 struct CGUIWindow {
   std::map<std::string,std::string> values;
   Property GetProperty(const char* name) const {
     const auto entry=values.find(name);return {entry==values.end()?"":entry->second};
   }
+  void AfterRender(){}
+  bool IsDialogRunning() const {return false;}
+  bool IsControlDirty() const {return false;}
+  void MarkDirtyRegion(){}
 } ownedHome,ownedProgress;
-struct WindowManager {
+struct CGUIDialog {
+  bool visible=false,closing=false;
+  void Close(bool force) {if(force)visible=closing=false;else if(visible)closing=true;}
+} processInfo;
+struct CGUIWindowManager {
   CGUIWindow* currentHome=&ownedHome;bool dialogs=false,videoMenu=false;
+  bool m_playerDebugRendered=false;
+  bool m_playerDebugVisible=false;
+  std::vector<CGUIWindow*> m_activeDialogs;
   CGUIWindow* GetWindow(int id) {
     if(id==WINDOW_DIALOG_EXT_PROGRESS)return &ownedProgress;
     assert(id==WINDOW_HOME);return currentHome;
@@ -78,21 +93,32 @@ struct WindowManager {
   bool HasVisibleDialog() const {return dialogs;}
   bool IsWindowVisible(int id) const {
     if(id==WINDOW_DIALOG_EXT_PROGRESS)return false;
+    if(id==WINDOW_DIALOG_PLAYER_PROCESS_INFO)return processInfo.visible;
     assert(id==WINDOW_VIDEO_MENU);return videoMenu;
   }
+  CGUIDialog* GetDialog(int id){assert(id==WINDOW_DIALOG_PLAYER_PROCESS_INFO);return &processInfo;}
+  int GetActiveWindow() const {return WINDOW_HOME;}
+  void PublishRenderBounds(){}
+  void AfterRender(bool,bool);
+  void MarkPlayerDebugRendered();
+  void RetirePlayerInfoOverlays();
 } wm;
-struct GUI {WindowManager& GetWindowManager(){return wm;}} gui;
+struct GUI {CGUIWindowManager& GetWindowManager(){return wm;}} gui;
+struct Graphics {void ResetDepth(){}} graphics;
+struct WinSystem {Graphics& GetGfxContext(){return graphics;}} winSystem;
 struct Cache {bool avChange=false;bool GetAVChangeExtended()const{return avChange;}} cache;
 struct CServiceBroker {
   static GUI* GetGUI(){return &gui;}
+  static WinSystem* GetWinSystem(){return &winSystem;}
   static Cache& GetDataCacheCore(){return cache;}
 };
 std::atomic_bool s_discMenuVisible{false};
-int s_lastOsd=-1,emittedOsd=-1;
+int s_lastOsd=-1,emittedOsd=-1,writes=0;
 struct CSysfsPath {
   CSysfsPath(const char* path,int value) {
     assert(std::string(path)=="/sys/module/amdolby_vision/parameters/dolby_vision_xbmc_osd");
     emittedOsd=value;
+    ++writes;
   }
 };
 void aml_dv_dump_state(const char*){}
@@ -109,12 +135,54 @@ void ScheduleClose(){
 TESTS = r'''
 void Reset(){
   wm.currentHome=&ownedHome;wm.dialogs=false;wm.videoMenu=false;cache.avChange=false;
+  processInfo={};wm.m_playerDebugVisible=false;wm.m_playerDebugRendered=false;
   ownedHome.values={{"script.plex.osd_active","0"},{"script.plex.is_active","1"},
     {"skin.codeclogosonscreen","0"},{"skin.codeclogososd","0"}};
-  s_discMenuVisible.store(false);s_lastOsd=-1;emittedOsd=-1;
+  s_discMenuVisible.store(false);s_lastOsd=-1;emittedOsd=-1;writes=0;
   Publish(false,&ownedHome);scheduled=false;phase=0;
 }
-void Expect(int value){s_lastOsd=-1;emittedOsd=-1;aml_dv_set_xbmc_osd();assert(emittedOsd==value);}
+void Expect(int value){s_lastOsd=-1;emittedOsd=-1;aml_dv_set_xbmc_osd(false);assert(emittedOsd==value);}
+void Frame(bool redrawn,bool drawDebug,int value,int count){
+  wm.m_playerDebugRendered=false;
+  if(drawDebug)wm.MarkPlayerDebugRendered();
+  wm.AfterRender(redrawn,wm.m_playerDebugRendered);
+  assert(emittedOsd==value&&writes==count);
+}
+void PlayerInfoOverlays(){
+  Reset();Publish(true,&ownedHome);
+  Frame(true,false,0,1);
+  processInfo.visible=true;
+  Frame(true,false,1,2);
+  processInfo.Close(false);assert(processInfo.closing);
+  Frame(true,false,1,2);
+  processInfo.Close(true);
+  Frame(true,false,0,3);
+  Frame(true,true,1,4);
+  Frame(false,false,1,4); // Clean GUI buffer still contains the overlay.
+  Frame(true,false,0,5);
+
+  for (bool debugClosesFirst : {false,true}){
+    Reset();Publish(true,&ownedHome);processInfo.visible=true;
+    Frame(true,true,1,1);
+    if(debugClosesFirst)Frame(true,false,1,1);
+    processInfo.Close(true);
+    if(!debugClosesFirst)Frame(false,false,1,1);
+    Frame(true,false,0,2);
+  }
+
+  Reset();Publish(true,&ownedHome);processInfo.visible=true;
+  Frame(true,true,1,1);
+  wm.RetirePlayerInfoOverlays();
+  assert(!processInfo.visible&&emittedOsd==0&&writes==2);
+  Frame(false,false,0,2);
+
+  // Retiring the native overlays keeps any independent PM4K OSD contribution.
+  processInfo.visible=true;ownedHome.values["script.plex.osd_active"]="1";
+  Frame(true,true,1,3);
+  wm.RetirePlayerInfoOverlays();
+  assert(!processInfo.visible&&emittedOsd==1&&writes==3);
+  ownedHome.values["script.plex.osd_active"]="0";Frame(false,false,0,4);
+}
 int main(int argc,char** argv){
   const bool onlySchedule=argc==2&&std::string(argv[1])=="schedule";
   if(!onlySchedule){
@@ -136,6 +204,7 @@ int main(int argc,char** argv){
     // Disc menus remain OSD even when PM4K hides its own OSD.
     Reset();Publish(true,&ownedHome);s_discMenuVisible.store(true);Expect(1);
     Reset();s_discMenuVisible.store(true);Expect(1);
+    PlayerInfoOverlays();
   }
   // Close occurs after condition selection. Owned builtin Home remains alive.
   // Original source reloads its nulled cache; corrected source holds GUI's local.
@@ -154,8 +223,12 @@ int main(int argc,char** argv){
 '''
 
 
-def generate(source, mutation=None):
+def generate(source, window_manager, mutation=None):
     declarations, opened, closed, method = parts(source)
+    gui = '\n'.join(function(window_manager, signature) for signature in (
+        'void CGUIWindowManager::MarkPlayerDebugRendered(',
+        'void CGUIWindowManager::RetirePlayerInfoOverlays(',
+        'void CGUIWindowManager::AfterRender('))
     if mutation == 'cached-pointer':
         condition = method[method.index('if (s_pm4kActive'):]
         match = re.search(r'&&\s*(\w+)\s*\)', condition)
@@ -185,15 +258,23 @@ def generate(source, mutation=None):
     elif mutation == 'ignore-pm4k-property':
         assert '"script.plex.osd_active"' in method
         method = method.replace('"script.plex.osd_active"','"script.plex.is_active"')
+    elif mutation == 'lose-process-info':
+        method = method.replace('|| processInfoVisible', '|| (false && processInfoVisible)')
+    elif mutation == 'lose-player-debug':
+        method = method.replace('|| playerDebugVisible ', '')
+    elif mutation == 'lose-retained-debug':
+        gui = gui.replace('if (guiRedrawn)', 'if (true)')
+    elif mutation == 'retain-player-info-on-retirement':
+        gui = gui.replace('processInfo->Close(true);', '(void)processInfo;')
     code = PRELUDE + declarations
     code += '\nvoid Publish(bool pm4kActive,CGUIWindow* pm4kHome){\n' + opened + '\n}\n'
-    code += '\nvoid ClosePublication(){\n' + closed + '\n}\n' + method + '\n' + TESTS
+    code += '\nvoid ClosePublication(){\n' + closed + '\n}\n' + method + '\n' + gui + '\n' + TESTS
     return code
 
 
 def run_case(root, out, name, source, mutation=None, schedule_only=False):
     cpp, executable = out / (name + '.cpp'), out / name
-    cpp.write_text(generate(source, mutation))
+    cpp.write_text(generate(source, (root/WINDOW_MANAGER).read_text(), mutation))
     argv = [os.environ.get('CXX','g++'), '-std=c++17','-O2','-Wall','-Wextra',
             '-Werror','-Wno-unused-parameter','-pthread','-fsanitize=undefined',
             '-fno-sanitize-recover=undefined',str(cpp),'-o',str(executable)]
@@ -229,12 +310,13 @@ def main():
     assert fixed.returncode==0,(fixed.returncode,fixed.stdout,fixed.stderr)
     print(fixed.stdout.strip(),flush=True)
     controls=['cached-pointer','missing-home-guard','keep-active-after-close',
-              'lose-disc-menu','ignore-pm4k-property']
+              'lose-disc-menu','ignore-pm4k-property','lose-process-info','lose-player-debug',
+              'lose-retained-debug','retain-player-info-on-retirement']
     for control in controls:
         bad=run_case(args.root,args.output,'negative-'+control,current,control)
         assert bad.returncode!=0,'destructive control survived: '+control
         print('Rejected behavioral control: '+control,flush=True)
-    print('AML OSD lifetime: PASS; baseline fails, fixed passes, five controls rejected; '
+    print(f'AML OSD lifetime: PASS; baseline fails, fixed passes, {len(controls)} controls rejected; '
           'host fixtures, not CE/GPU/device verification')
 
 if __name__=='__main__':main()

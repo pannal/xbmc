@@ -1461,7 +1461,7 @@ void CGUIWindowManager::RenderEx() const
   */
 }
 
-bool CGUIWindowManager::Render()
+bool CGUIWindowManager::Render(bool* playerDebugRendered)
 {
   assert(CServiceBroker::GetAppMessenger()->IsProcessThread());
   CSingleExit lock(CServiceBroker::GetWinSystem()->GetGfxContext());
@@ -1493,6 +1493,8 @@ bool CGUIWindowManager::Render()
   CServiceBroker::GetWinSystem()->SetDirtyRegions(dirtyRegions);
 
   bool hasRendered = false;
+  const bool previousPlayerDebugRendered = m_playerDebugRendered;
+  m_playerDebugRendered = false;
   CServiceBroker::GetWinSystem()->GetGfxContext().NextControlBoundsFrame();
   // If we visualize the regions we will always render the entire viewport
   // If the buffer age is zero, the current content is undefined and has to be rendered
@@ -1540,12 +1542,33 @@ bool CGUIWindowManager::Render()
 
   if (!hasRendered)
     GUI_FRAME_TIMING::Count(GUI_FRAME_TIMING::Counter::RenderClean);
+  if (playerDebugRendered)
+    *playerDebugRendered |= m_playerDebugRendered;
+  m_playerDebugRendered = previousPlayerDebugRendered;
   PublishRenderBounds();
   return hasRendered;
 }
 
-void CGUIWindowManager::AfterRender()
+void CGUIWindowManager::MarkPlayerDebugRendered()
 {
+  m_playerDebugRendered = true;
+}
+
+void CGUIWindowManager::RetirePlayerInfoOverlays()
+{
+  m_playerDebugRendered = false;
+  m_playerDebugVisible = false;
+  if (auto* processInfo = GetDialog(WINDOW_DIALOG_PLAYER_PROCESS_INFO))
+    processInfo->Close(true);
+  aml_dv_set_xbmc_osd(m_playerDebugVisible);
+}
+
+void CGUIWindowManager::AfterRender(bool guiRedrawn, bool playerDebugRendered)
+{
+  // A clean GUI pass retains the previous framebuffer, including debug text.
+  if (guiRedrawn)
+    m_playerDebugVisible = playerDebugRendered;
+
   CServiceBroker::GetWinSystem()->GetGfxContext().ResetDepth();
   CGUIWindow* pWindow = GetWindow(GetActiveWindow());
   if (pWindow)
@@ -1566,7 +1589,7 @@ void CGUIWindowManager::AfterRender()
 
   // Inform AMLogic kernel if OSD is displaying
   PublishRenderBounds();
-  aml_dv_set_xbmc_osd();
+  aml_dv_set_xbmc_osd(m_playerDebugVisible);
 }
 
 void CGUIWindowManager::FrameMove()

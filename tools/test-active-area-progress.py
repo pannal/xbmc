@@ -26,7 +26,8 @@ GUI_STUB = r'''
 #include <vector>
 using CCriticalSection=std::mutex;
 using CDirtyRegionList=std::vector<int>;
-constexpr int WINDOW_DIALOG_EXT_PROGRESS=10151,WINDOW_HOME=10000,WINDOW_VIDEO_MENU=12901;
+constexpr int WINDOW_DIALOG_EXT_PROGRESS=10151,WINDOW_HOME=10000,WINDOW_VIDEO_MENU=12901,
+              WINDOW_DIALOG_PLAYER_PROCESS_INFO=10116;
 constexpr int GUI_MSG_WINDOW_INIT=1,GUI_MSG_WINDOW_DEINIT=2,LOAD_ON_GUI_INIT=1;
 enum class DialogModalityType {MODELESS};
 struct CGUIMessage {int type;explicit CGUIMessage(int value):type(value){}int GetMessage(){return type;}};
@@ -67,7 +68,7 @@ struct WindowManager {
  template<class T>T* GetWindow(int id){return static_cast<T*>(GetWindow(id));}
  CGUIWindow* GetWindow(int id){if(id==WINDOW_DIALOG_EXT_PROGRESS)return &progress;assert(id==WINDOW_HOME);return &home;}
  bool HasVisibleDialog()const{return genericDialogs;}
- bool IsWindowVisible(int id)const{if(id==WINDOW_DIALOG_EXT_PROGRESS)return progress.visible;assert(id==WINDOW_VIDEO_MENU);return videoMenu;}
+ bool IsWindowVisible(int id)const{if(id==WINDOW_DIALOG_EXT_PROGRESS)return progress.visible;if(id==WINDOW_DIALOG_PLAYER_PROCESS_INFO)return false;assert(id==WINDOW_VIDEO_MENU);return videoMenu;}
 }wm;
 struct GUI {WindowManager& GetWindowManager(){return wm;}}gui;
 struct Cache {bool avChange=false;bool GetAVChangeExtended()const{return avChange;}}cache;
@@ -103,8 +104,8 @@ struct CVideoPlayer {
 };
 '''
 TEST = r'''
-void Frame(unsigned int now){CDirtyRegionList dirty;progress.Process(now,dirty);aml_dv_set_xbmc_osd();}
-void Expect(int value){aml_dv_set_xbmc_osd();assert(emittedOsd==value);}
+void Frame(unsigned int now){CDirtyRegionList dirty;progress.Process(now,dirty);aml_dv_set_xbmc_osd(false);}
+void Expect(int value){aml_dv_set_xbmc_osd(false);assert(emittedOsd==value);}
 void Empty(){assert(!progress.visible);assert(progress.GetProperty("activeareastartup").asString().empty());Expect(0);}
 void Complete(CVideoPlayer& player,unsigned int now){
  auto* handle=player.m_activeAreaProgress;assert(handle&&!handle->IsFinished());
@@ -210,9 +211,9 @@ def sources():
     assert 'm_closing = true;' in close and 'return;' in close[:close.index('CGUIMessage msg(GUI_MSG_WINDOW_DEINIT')]
     # Pause does not stop the real GUI's OSD publication path.
     manager = function((ROOT / 'xbmc/guilib/GUIWindowManager.cpp').read_text(),
-                       'void CGUIWindowManager::AfterRender()')
-    assert 'aml_dv_set_xbmc_osd();' in manager
-    osd = function(aml, 'void aml_dv_set_xbmc_osd()')
+                       'void CGUIWindowManager::AfterRender(')
+    assert 'aml_dv_set_xbmc_osd(m_playerDebugVisible);' in manager
+    osd = function(aml, 'void aml_dv_set_xbmc_osd(')
     wait = function(player, 'bool CVideoPlayer::WaitForActiveAreaDetection()')
     finish = function(player, 'void CVideoPlayer::FinishActiveAreaProgress()')
     return header, dialog, PRELUDE + osd + '\n' + wait + '\n' + finish + '\n' + TEST
@@ -271,15 +272,12 @@ def main():
             ('deinit leaves stale detector marker','dialog',
              'SetProperty("activeareastartup", "");','/* deinit signal leaked */'),
             ('PM4K ignores native detector progress','code',
-             'osd_active || detectorProgressVisible ||','osd_active || false ||'),
+             '|| detectorProgressVisible ||','|| (false && detectorProgressVisible) ||'),
         ]
         for label,target,old,new in controls:
             original=dialog if target=='dialog' else code
             assert old in original,label
             changed=original.replace(old,new)
-            # Keep negative controls compiling: an ignored signal remains read.
-            if label=='PM4K ignores native detector progress':
-                changed=changed.replace('int val = (osd_active', '(void)detectorProgressVisible;int val = (osd_active')
             run(header,changed if target=='dialog' else dialog,changed if target=='code' else code,negative=True)
             print('REJECTED:',label,flush=True)
     print('Host fixtures; real animation renderer, skin brightness and paused-frame kernel/HDMI remain device verification.',flush=True)

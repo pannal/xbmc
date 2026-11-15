@@ -2507,7 +2507,7 @@ void aml_set_disc_menu_visible(bool visible)
   s_discMenuVisible.store(visible, std::memory_order_relaxed);
 }
 
-void aml_dv_set_xbmc_osd()
+void aml_dv_set_xbmc_osd(bool playerDebugVisible)
 {
   auto &wm = CServiceBroker::GetGUI()->GetWindowManager();
   CGUIWindow* home = wm.GetWindow(WINDOW_HOME);
@@ -2541,7 +2541,8 @@ void aml_dv_set_xbmc_osd()
   const bool detectorProgressVisible =
       progress && wm.IsWindowVisible(WINDOW_DIALOG_EXT_PROGRESS) &&
       !progress->GetProperty("activeareastartup").asString().empty();
-  int val = (osd_active || detectorProgressVisible ||
+  const bool processInfoVisible = wm.IsWindowVisible(WINDOW_DIALOG_PLAYER_PROCESS_INFO);
+  int val = (osd_active || processInfoVisible || playerDebugVisible || detectorProgressVisible ||
              s_discMenuVisible.load(std::memory_order_relaxed)) ? 1 : 0;
   if (val != s_lastOsd)
   {

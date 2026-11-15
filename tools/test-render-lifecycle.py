@@ -610,12 +610,19 @@ template<class T=void> struct EndTime
 };
 }
 
+struct OverlayGui
+{
+  int retirements{0};
+  OverlayGui& GetWindowManager() { return *this; }
+  void RetirePlayerInfoOverlays() { ++retirements; }
+};
 struct CServiceBroker
 {
   static SettingsComponent* GetSettingsComponent() { static SettingsComponent value; return &value; }
   static Messenger* GetAppMessenger() { static Messenger value; return &value; }
   static Window* GetWinSystem() { static Window value; return &value; }
   static Cache& GetDataCacheCore() { static Cache value; return value; }
+  static OverlayGui* GetGUI() { static OverlayGui value; return &value; }
 };
 struct CSingleExit
 {
@@ -635,6 +642,8 @@ struct CRenderManager
   std::recursive_mutex m_statelock;
   uint64_t m_lifecycleGeneration{0};
   bool flushResult{true};
+  bool m_renderDebug{false};
+  struct DebugRenderer { int disposals{0}; void Dispose() { ++disposals; } } m_debugRenderer;
   enum { PRESENT_IDLE, PRESENT_READY, STATE_UNCONFIGURED, STATE_CONFIGURING, STATE_CONFIGURED };
   std::shared_ptr<CRenderLifecycle::Request> m_configRequest;
   Cache m_dataCacheCore;
@@ -852,32 +861,41 @@ static void production_close_join()
 static void production_session_requests()
 {
   CRenderManager manager;
+  auto& gui = *CServiceBroker::GetGUI();
+  const int before = gui.retirements;
   assert(manager.PreInit());
   auto stale = manager.RequestFlush(true);
   assert(stale && stale->status == CRenderLifecycle::Status::PENDING);
   assert(manager.UnInit()); // A newer lifecycle generation rejects stale work.
+  assert(gui.retirements == before + 1);
   assert(stale->status == CRenderLifecycle::Status::FAILED && manager.flags.empty());
   assert(manager.m_closing);
   assert(manager.PreInit() && !manager.m_closing);
 
+  manager.m_renderDebug = true;
   auto transition = manager.RequestFlush(false, true);
   auto queuedOld = manager.RequestFlush(true);
   assert(transition && queuedOld && manager.m_closing);
   assert(transition->session == queuedOld->session);
   assert(!transition->Wait(0ms));
+  assert(gui.retirements == before + 1 && manager.m_renderDebug);
   manager.ProcessLifecycleRequests();
   assert(transition->Wait(0ms) && !manager.m_closing);
+  assert(gui.retirements == before + 2 && !manager.m_renderDebug && manager.m_debugRenderer.disposals == 1);
   assert(queuedOld->status == CRenderLifecycle::Status::CANCELLED);
   assert((manager.flags == std::vector<bool>{false}));
+  manager.m_renderDebug = true;
   auto fresh = manager.RequestFlush(true);
   assert(fresh && fresh->session > transition->session);
   manager.ProcessLifecycleRequests();
   assert(fresh->Wait(0ms) && (manager.flags == std::vector<bool>{false, true}));
+  assert(gui.retirements == before + 2 && manager.m_renderDebug && manager.m_debugRenderer.disposals == 1);
 
   manager.flushResult = false;
   auto failedTransition = manager.RequestFlush(false, true);
   manager.ProcessLifecycleRequests();
   assert(!failedTransition->Wait(0ms));
+  assert(gui.retirements == before + 2);
   assert(failedTransition->status == CRenderLifecycle::Status::FAILED && manager.m_closing);
   assert(manager.m_lifecycle->Close());
 }

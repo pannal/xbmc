@@ -243,7 +243,7 @@ void aml_dv_start();
 bool aml_dv_restore_gui_ipt(const char* reason);
 void aml_dv_wait_for_pipeline();
 void aml_dv_set_subtitles(bool visible);
-void aml_dv_set_xbmc_osd();
+void aml_dv_set_xbmc_osd(bool playerDebugVisible);
 void aml_set_disc_menu_visible(bool visible);
 bool aml_dv_use_active_area();
 int aml_dv_l5_subs_signal_mode();

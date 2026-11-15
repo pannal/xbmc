@@ -105,14 +105,18 @@ public:
    Render is called every frame to draw the current window and any dialogs.
    It should only be called from the application thread.
    Returns true only if it has rendered something.
+   If supplied, playerDebugRendered accumulates debug draws across passes.
    */
-  bool Render();
+  bool Render(bool* playerDebugRendered = nullptr);
 
   void RenderEx() const;
 
   /*! \brief Do any post render activities.
    */
-  void AfterRender();
+  void AfterRender(bool guiRedrawn, bool playerDebugRendered);
+
+  void MarkPlayerDebugRendered();
+  void RetirePlayerInfoOverlays();
 
   /*! \brief Per-frame updating of the current window and any dialogs
    FrameMove is called every frame to update the current window and any dialogs
@@ -295,6 +299,8 @@ private:
 
   int  m_iNested;
   bool m_initialized;
+  bool m_playerDebugRendered{false};
+  bool m_playerDebugVisible{false};
   mutable bool m_touchGestureActive{false};
   mutable bool m_inhibitTouchGestureEvents{false};
 
