@@ -130,8 +130,95 @@ void bounded_events()
  for(const auto& e:events)assert(e.count==4&&e.queued==6&&e.render-e.pts==1000000&&e.serial==e.epoch);
  assert(q.TakeSkipEpisodes().empty());q.TakeFrames();
 }
+void paused_selection()
+{
+ int adjustments=0;
+ CAMLPresenter::Hooks h;h.adjustClock=[&](double){++adjustments;};
+ CAMLPresenter q(4,h);q.Show(true);
+ auto held=std::make_shared<Frame>();held->pts=0;held->presented=true;
+ auto next=std::make_shared<Frame>();next->pts=41708;
+ q.Restore(held,{next},-1);
+ for(int i=0;i<40;++i)q.Select({1000000,1,24000.0/1001,0,true,true});
+ assert(q.m_current==held&&q.m_queue.size()==1);
+ assert(adjustments==0); // paused selection must not discipline the clock
+ next->force=true;
+ q.Select({1000000,1,24000.0/1001,0,true,true});
+ assert(q.m_current==next&&q.m_queue.empty());
+ q.TakeFrames();
+
+ CAMLPresenter stepping(4,h);stepping.Show(true);
+ auto stepHeld=std::make_shared<Frame>();stepHeld->pts=0;
+ auto stepNext=std::make_shared<Frame>();stepNext->pts=41708;
+ auto future=std::make_shared<Frame>();future->pts=83416;
+ stepping.Restore(stepHeld,{stepNext,future},-1);
+ const int beforeStep=adjustments;
+ stepping.Select({41708,1,24000.0/1001,0,true,true,true,1});
+ assert(stepping.m_current==stepNext); // actual frame advance need not set Frame::force
+ for(int i=0;i<40;++i)stepping.Select({41708,1,24000.0/1001,0,true,true,true,1});
+ assert(stepping.m_current==stepNext&&adjustments==beforeStep);
+ stepping.TakeFrames();
+
+ CAMLPresenter initial(4,h);initial.Show(true);
+ auto first=std::make_shared<Frame>();first->pts=0;
+ initial.Restore(nullptr,{first},-1);
+ initial.Select({0,1,24000.0/1001,0,false,true});
+ assert(initial.m_current==first); // permit a paused startup/replacement frame
+ auto draining=std::make_shared<Frame>();draining->pts=41708;
+ initial.m_queue.push_back(draining);
+ initial.m_forceNext=true;
+ initial.Select({0,1,24000.0/1001,0,false,true});
+ assert(initial.m_current==draining); // preserve explicit queue draining
+ initial.TakeFrames();
+}
+void step_credits()
+{
+ const double period=1e6*1001/24000;
+ for(double latency:{0.,60000.,100000.})for(double offset:{0.,-60000.}){
+  CAMLPresenter::Hooks h;h.adjustClock=[](double){assert(false);};
+  CAMLPresenter q(8,h);q.Show(true);q.m_syncOffset=offset;
+  auto held=std::make_shared<Frame>();held->pts=0;held->presented=true;
+  std::vector<std::shared_ptr<CAMLPresenter::Frame>> frames;
+  for(int i=1;i<=6;++i){auto f=std::make_shared<Frame>();f->pts=i*period;frames.push_back(f);}
+  q.Restore(held,frames,-1);
+  q.Select({0,1,24000.0/1001,latency,true,true,true,0});
+  assert(q.m_current==held); // the flag precedes the actual clock advance
+  q.Select({period,1,24000.0/1001,latency,true,true,true,1});
+  assert(q.m_current==frames[0]&&q.Skipped()==0); // latency must not drop the requested frame
+  for(int i=0;i<40;++i)q.Select({period,1,24000.0/1001,latency,true,true,true,1});
+  assert(q.m_current==frames[0]);
+  for(int i=0;i<40;++i)q.Select({3*period,1,24000.0/1001,latency,true,true,true,3});
+  assert(q.m_current==frames[2]&&q.Skipped()==0); // two queued single-step requests
+  q.TakeFrames();
+ }
+ CAMLPresenter::Hooks h;h.adjustClock=[](double){};
+ CAMLPresenter q(8,h);q.Show(true);
+ auto held=std::make_shared<Frame>();held->presented=true;
+ q.Restore(held,{},-1);
+ q.Select({0,1,24000.0/1001,0,false,false,false,17});
+ assert(held->advanceCount==17); // baseline is recorded even with an empty queue
+ q.Select({0,1,24000.0/1001,0,false,true,true,17});
+ q.Select({3*period,1,24000.0/1001,0,false,true,true,20});
+ assert(held->advanceCount==17); // FrameAdvance(3) before picture delivery
+ std::vector<std::shared_ptr<Frame>> frames;
+ for(int i=1;i<=3;++i){
+  auto f=std::make_shared<Frame>();f->pts=i*period;frames.push_back(f);q.m_queue.push_back(f);
+  q.Select({3*period,1,24000.0/1001,0,false,true,true,20});
+  assert(q.m_current==f&&f->advanceCount==17+i);
+ }
+ for(int i=0;i<40;++i)q.Select({3*period,1,24000.0/1001,0,false,true,true,20});
+ assert(q.m_current==frames[2]);
+ q.ResetClock();q.Discard();
+ auto next=std::make_shared<Frame>();next->pts=4*period;q.m_queue.push_back(next);
+ q.Select({3*period,1,24000.0/1001,0,false,true,true,20});
+ assert(q.m_current==frames[2]); // timing resets do not authorize another step
+ q.Select({4*period,1,24000.0/1001,0,false,true,true,21});
+ assert(q.m_current==next&&next->advanceCount==21);
+ q.TakeFrames();
+}
 int main(){
   PLAYBACK_DIAGNOSTICS::SetEnabled(true);
+ paused_selection();
+ step_credits();
  steady(24000.0/1001,false,CAMLPresenter::Method::SINGLE);
  steady(24000.0/1001,true,CAMLPresenter::Method::SINGLE);
  steady(48000.0/1001,true,CAMLPresenter::Method::SINGLE);
@@ -164,8 +251,8 @@ def main():
                             '-I'+str(out),str(out/'test.cpp'),'-o',str(out/'test')],check=True)
             result=subprocess.run([str(out/'test')],capture_output=negative,text=True,timeout=20)
             if negative:
-                assert result.returncode!=0 and 'presenter.Skipped()==baseline' in result.stderr, result
-                print('Rejected negative control: rebasing every deadline accumulates steady-playback skips')
+                assert result.returncode!=0 and 'Assertion' in result.stderr, result
+                print('Rejected negative control')
             else:
                 result.check_returncode()
         run(source)
@@ -173,6 +260,8 @@ def main():
             needle='          nextTick += period;'
             assert source.count(needle)==1
             run(source.replace(needle,'          nextTick = iterationStart; // restored deadline drift\n'+needle),True)
+            run(source.replace('timing.advanceCount != *consumed', 'true'),True)
+            run(source.replace('!pausedStep && diff > 62000', 'diff > 62000'),True)
 
 
 if __name__=='__main__':

@@ -38,9 +38,11 @@ def main():
     block = function(render[start:], '  if (gui)')
     render = render[:start] + '  if (gui) { ++overlays; }' + render[start + len(block):]
     fixed = 'bool CRenderManager::SubmitVideoDraw' in rm
+    poll_type = 'bool' if 'bool CAMLVideoBuffer::Poll(' in codec else 'void'
     source = PRELUDE.replace('@DRAW@', function(rh, 'struct VideoRenderPass') + ';\n' +
                             function(rh, 'struct PreparedVideoDraw') + ';')
     source = source.replace('@SUBMIT_TYPE@', 'bool' if fixed else 'void')
+    source = source.replace('@POLL_TYPE@', poll_type)
     methods = [render, function(rm, 'CRenderManager::PreparedVideoDraw CRenderManager::PrepareVideoDraw(')]
     for name in ['ProcessPresentationQueue', 'PrepareNextRender', 'RetireBuffer', 'SelectFrame', 'DiscardBuffer']:
         methods.append(function(rm, 'void CRenderManager::' + name + '('))
@@ -51,7 +53,8 @@ def main():
     else:
         methods.append(function(aml, 'void CRendererAML::RenderUpdate('))
     for name in ['Commit', 'Poll', 'ApplyGeometry']:
-        methods.append(function(codec, 'void CAMLVideoBuffer::' + name + '('))
+        methods.append(function(codec, (poll_type if name == 'Poll' else 'void') +
+                                ' CAMLVideoBuffer::' + name + '('))
     # Use the producer's production wake condition with a minimal queue writer.
     producer = function(rm, 'bool CRenderManager::AddVideoPicture(')
     wake = function(producer, '  if (m_presentstep == PRESENT_IDLE)')
@@ -91,12 +94,25 @@ def main():
                  '  if (m_presentstep == PRESENT_READY) m_presentstep = PRESENT_IDLE;\n  m_presentevent.notifyAll();\n}'),
                 ('obsolete selection stalls reset', 'return !codec || codec->IsOperationInvalidated(buffer ? buffer->OperationEpoch() : m_pollEpoch);', 'return !codec && false;'),
                 ('denied native admission', 'return !codec || codec->IsOperationInvalidated(buffer ? buffer->OperationEpoch() : m_pollEpoch);', 'return true;'),
+                ('paused obsolete selection held forever',
+                 'codec && !codec->IsOperationInvalidated(buffer->OperationEpoch());',
+                 'codec && (!codec->IsOperationInvalidated(buffer->OperationEpoch()) || true);'),
+                ('paused display denial treated as invalidation',
+                 'codec && !codec->IsOperationInvalidated(buffer->OperationEpoch());',
+                 'codec && bool(buffer->AcquirePresentation());'),
+                ('replacement invents step credit',
+                 'pausedStep = paused && frameAdvance && advanceCount != consumedAdvances && !m_forceNext;',
+                 'pausedStep = paused && frameAdvance && !m_forceNext;'),
             ]
             for name, old, new in mutations:
                 assert source.count(old) == 1, name
                 # The mutated guard intentionally leaves the result unused.
                 check(source.replace(old, new).replace('bool videoComplete = false;',
                       '[[maybe_unused]] bool videoComplete = false;'), name)
+            accounting = 'pausedStep ? consumedAdvances + (advanceCount > consumedAdvances ? 1 : -1) : advanceCount;'
+            assert source.count(accounting) == 2
+            check(source.replace(accounting, 'advanceCount;'),
+                  'replacement consumes all outstanding steps')
 
 
 PRELUDE = r'''
@@ -136,7 +152,7 @@ struct CAMLCodec {
  bool IsPresentationPermit(const CAMLSession::Permit& p,uint64_t){return bool(p);}
  void ReleaseFrame(int i,uint64_t,const CAMLSession::Permit&){++submissions;returned.push_back(i);}
  void SetVideoRect(const CRect&,const CRect&,uint64_t,const CAMLSession::Permit&){++geometry;}
- void PollFrame(const CAMLSession::Permit&){++polls;}
+ int PollFrame(const CAMLSession::Permit&){++polls;return 1;}
 };
 struct CVideoBuffer{virtual ~CVideoBuffer()=default;};
 struct CAMLVideoBuffer:CVideoBuffer {
@@ -145,9 +161,9 @@ struct CAMLVideoBuffer:CVideoBuffer {
  int m_omxPts=0,m_bufferIndex=0;bool m_submitted=false;
  auto Codec()const{return m_codec;}uint64_t OperationEpoch()const{return m_operationEpoch;}
  bool WasSubmitted()const{return m_submitted;}
- CAMLSession::Permit AcquirePresentation(){return m_codec->AcquirePresentation(m_operationEpoch);}
+ CAMLSession::Permit AcquirePresentation()const{return m_codec->AcquirePresentation(m_operationEpoch);}
  void Commit(const CAMLSession::Permit&,const CRect&,const CRect&,int&);
- void Poll(const CAMLSession::Permit&)const;void ApplyGeometry(const CAMLSession::Permit&,const CRect&,const CRect&);
+ @POLL_TYPE@ Poll(const CAMLSession::Permit&)const;void ApplyGeometry(const CAMLSession::Permit&,const CRect&,const CRect&);
 };
 struct CRendererAML {
  struct Buffer{CVideoBuffer* videoBuffer=nullptr;};Buffer m_buffers[8];
@@ -156,19 +172,20 @@ struct CRendererAML {
  std::vector<int> released;
  struct PreparedVideoGeometry{CRect source,destination;};
  PreparedVideoGeometry PrepareVideoLayer(){return {};}
+ CVideoBuffer* PresentationBuffer(int index)const{return m_buffers[index].videoBuffer;}
  bool IsGuiLayer(){return gui;}bool NeedBuffer(int){return false;}
  void ReleaseBuffer(int i){released.push_back(i);}
  void RenderUpdate(int,int,bool,unsigned int,unsigned int);
  bool RenderUpdateVideo(int,int,bool,unsigned int,unsigned int);
 };
 struct Overlays{void Release(int){}int GetOverlays(int){return 0;}};
-struct Clock{double pts=0;double GetClock(){return pts;}double GetClockSpeed(){return 1;}void SetVsyncAdjust(double){}};
-struct Cache{void SetRenderPts(double){}};
+struct Clock{double pts=0;bool paused=false;int64_t advances=0;double GetClock(){return pts;}double GetClock(bool& pause,int64_t& count){pause=paused;count=advances;return pts;}double GetClockSpeed(){return paused?0:1;}void SetVsyncAdjust(double){}};
+struct Cache{bool frameAdvance=false;void SetRenderPts(double){}bool IsFrameAdvance(){return frameAdvance;}};
 struct CRenderManager {
  enum EPRESENTSTEP{PRESENT_IDLE,PRESENT_FLIP,PRESENT_FRAME,PRESENT_FRAME2,PRESENT_READY};
  enum EPRESENTMETHOD{PRESENT_METHOD_SINGLE,PRESENT_METHOD_BLEND,PRESENT_METHOD_BOB};
  enum EFIELDSYNC{FS_NONE,FS_TOP,FS_BOT};enum State{STATE_CONFIGURED};
- struct SPresent{double pts=0;EFIELDSYNC presentfield=FS_NONE;EPRESENTMETHOD presentmethod=PRESENT_METHOD_SINGLE;};
+ struct SPresent{double pts=0;EFIELDSYNC presentfield=FS_NONE;EPRESENTMETHOD presentmethod=PRESENT_METHOD_SINGLE;int64_t advanceCount=0;};
  struct FrameSelection{int source,past;SPresent present;int overlays;};
  @DRAW@
  struct Presenter{struct Queue{void Discard(){}} storage;Queue* queue=&storage;};
@@ -224,6 +241,62 @@ int main(){
  auto fresh=std::make_shared<CAMLCodec>();r.buffers[2].m_codec=fresh;
  r.Queue(2,41667);r.m_dvdClock.pts=41667;r.ProcessPresentationQueue();r.Pass(false);
  assert(fresh->returned==std::vector<int>{2});}
+ // Consume a real paused step before invalidating its selected operation epoch.
+ // Recovery with no credit must not invent a reverse step; queued credits still
+ // select exactly one FIFO frame each, including when the queue is overdue.
+ for(bool discard:{false,true})for(int64_t pending:{int64_t(0),int64_t(3),int64_t(-3)}){
+ R r;r.m_dvdClock.paused=true;r.m_dataCacheCore.frameAdvance=true;
+ r.Queue(1,0);r.ProcessPresentationQueue();r.Pass(false);
+ r.m_dvdClock.advances=1;r.Queue(2,0);r.ProcessPresentationQueue();r.Pass(false);
+ assert(r.m_presentsource==2&&r.m_Queue[2].advanceCount==1);
+ auto codec=r.renderer.m_pollCodec;++codec->epoch;
+ if(discard)r.DiscardBuffer();
+ r.m_dvdClock.advances=1+pending;
+ for(int i=3;i<=6;++i){r.buffers[i].m_operationEpoch=codec->epoch;r.Queue(i,0);}
+ r.m_dvdClock.pts=1000000;
+ r.ProcessPresentationQueue();
+ assert(r.m_presentsource==(pending==0?5:3));
+ const int64_t consumed=pending==0?1:(pending>0?2:0);
+ assert(r.m_Queue[r.m_presentsource].advanceCount==consumed);
+ assert(r.m_presentstep==R::PRESENT_FRAME);
+ const auto returned=codec->returned;
+ r.Pass(false);assert(codec->returned.size()==returned.size()+1);
+ if(pending!=0){
+ for(int i=4;i<=5;++i){r.ProcessPresentationQueue();r.Pass(false);
+ assert(r.m_presentsource==i&&r.m_Queue[i].advanceCount==1+(pending>0?i-2:2-i));}
+ }
+ const int held=r.m_presentsource;const auto submissions=codec->submissions;
+ for(int n=0;n<4;++n){r.ProcessPresentationQueue();r.Pass(false);}
+ assert(r.m_presentsource==held&&r.m_Queue[held].advanceCount==r.m_dvdClock.advances);
+ assert(codec->submissions==submissions);}
+ // Display admission is transient, not decoder invalidation. Neither a held
+ // consumed step nor a pending selected step may be replaced by that denial.
+ {R r;r.m_dvdClock.paused=true;r.m_dataCacheCore.frameAdvance=true;
+ r.Queue(1,0);r.ProcessPresentationQueue();r.Pass(false);
+ r.m_dvdClock.advances=1;r.Queue(2,0);r.ProcessPresentationQueue();r.Pass(false);
+ auto codec=r.renderer.m_pollCodec;r.Queue(3,0);r.Queue(4,0);codec->admit=false;
+ for(int n=0;n<4;++n){r.ProcessPresentationQueue();r.Pass(false);}
+ assert(r.m_presentsource==2&&r.m_Queue[2].advanceCount==1&&codec->submissions==2);
+ assert(codec->geometry==2&&codec->polls==2);
+ r.m_dvdClock.advances=2;r.ProcessPresentationQueue();r.Pass(false);
+ assert(r.m_presentsource==3&&r.m_presentstep==R::PRESENT_FRAME&&codec->submissions==2);
+ for(int n=0;n<4;++n){r.ProcessPresentationQueue();r.Pass(false);}
+ assert(r.m_presentsource==3&&r.m_Queue[3].advanceCount==2);
+ assert(codec->geometry==2&&codec->polls==2);
+ codec->admit=true;r.Pass(false);r.ProcessPresentationQueue();
+ assert(r.m_presentsource==3&&codec->returned==std::vector<int>({1,2,3}));}
+ // Ordinary pause (not frame-advance mode) also retains transient denial but
+ // replaces a permanently closed or reset decoder, without changing its count.
+ for(bool closed:{false,true}){R r;r.m_dvdClock.paused=true;r.m_dvdClock.advances=7;
+ r.Queue(1,0);r.ProcessPresentationQueue();r.Pass(false);r.Queue(2,0);
+ auto old=r.renderer.m_pollCodec;old->admit=false;
+ r.ProcessPresentationQueue();r.Pass(false);
+ assert(r.m_presentsource==1&&r.m_Queue[1].advanceCount==7&&old->submissions==1);
+ if(closed)old->open=false;else ++old->epoch;
+ r.DiscardBuffer();auto fresh=std::make_shared<CAMLCodec>();r.buffers[2].m_codec=fresh;
+ r.Queue(2,0);r.ProcessPresentationQueue();r.Pass(false);
+ assert(r.m_presentsource==2&&r.m_Queue[2].advanceCount==7);
+ assert(fresh->returned==std::vector<int>{2}&&old->submissions==1);}
  // An explicit decoder flush cancels the old selected epoch, even if its
  // presentation permit will never return. Fresh queue work must replace it.
  for(auto step:{R::PRESENT_FRAME,R::PRESENT_FRAME2}){R r;r.Queue(1,0);r.ProcessPresentationQueue();

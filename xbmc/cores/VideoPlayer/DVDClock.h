@@ -24,6 +24,7 @@ public:
   ~CDVDClock();
 
   double GetClock(bool interpolated = true);
+  double GetClock(bool& paused, int64_t& advanceCount, bool interpolated = true);
   double GetClock(double& absolute, bool interpolated = true);
 
   PLAYBACK_DIAGNOSTICS::ClockHistory::Report GetDiagnosticEvents(uint64_t after);
@@ -41,6 +42,7 @@ public:
   double GetSpeedAdjust();
 
   double GetClockSpeed(); /**< get the current speed of the clock relative normal system time */
+  bool IsPaused();
 
   /* tells clock at what framerate video is, to  *
    * allow it to adjust speed for a better match */
@@ -56,7 +58,7 @@ public:
   double GetVsyncAdjust();
 
   void Pause(bool pause);
-  void Advance(double time);
+  void Advance(double time, int frames = 1);
 
 protected:
   double SystemToAbsolute(int64_t system);
@@ -68,6 +70,7 @@ protected:
   int64_t m_systemUsed;
   int64_t m_startClock;
   int64_t m_pauseClock;
+  int64_t m_advanceCount{0};
   double m_iDisc;
   bool m_bReset;
   bool m_paused;

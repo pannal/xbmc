@@ -101,7 +101,8 @@ int main(){
 def main():
     extract=runpy.run_path(str(ROOT/'tools/test-render-slot-publication.py'))['function']
     src=(ROOT/'xbmc/cores/VideoPlayer/DVDClock.cpp').read_text()
-    names=['double CDVDClock::GetClock(bool','double CDVDClock::GetClock(double&',
+    names=['double CDVDClock::GetClock(bool interpolated','double CDVDClock::GetClock(bool&',
+           'double CDVDClock::GetClock(double&',
            'double CDVDClock::GetAbsoluteClock(', 'double CDVDClock::SystemToAbsolute(',
            'int64_t CDVDClock::AbsoluteToSystem(', 'double CDVDClock::SystemToPlaying(',
            'void CDVDClock::SetVsyncAdjust(', 'double CDVDClock::GetVsyncAdjust(',

@@ -69,6 +69,7 @@ public:
                        std::shared_ptr<const void> processInfo,
                        std::function<void(bool)> reportClock = {},
                        std::function<void(double)> reportSelection = {},
+                       std::function<bool()> frameAdvance = {},
                        std::shared_ptr<CAMLPresenter::Frame> current = {},
                        std::vector<std::shared_ptr<CAMLPresenter::Frame>> queued = {},
                        int previousPts = -1)
@@ -91,7 +92,7 @@ public:
       return accepted;
     };
     hooks.finish = [this] { m_toMain = m_codec->RequestPresentationOwner(m_main); };
-    hooks.timing = [this, reportClock]
+    hooks.timing = [this, reportClock, frameAdvance]
     {
       CAMLPresenter::Timing timing;
       double fps;
@@ -101,8 +102,9 @@ public:
         timing.latency = m_latency;
         fps = m_fps;
       }
-      timing.clock = m_clock.GetClock();
+      timing.clock = m_clock.GetClock(timing.paused, timing.advanceCount);
       timing.speed = m_clock.GetClockSpeed();
+      timing.frameAdvance = frameAdvance && frameAdvance();
       double speed, refresh;
       int missed;
       const bool running = m_clock.GetClockInfo(missed, speed, refresh);

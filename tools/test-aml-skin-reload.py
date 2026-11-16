@@ -42,6 +42,7 @@ def main(negative_controls=False):
     assert 'm_renderManager.FlushForSkinReload(restore)' in function(
         player, 'bool CVideoPlayer::FlushRendererForSkinReload(')
     prelude = fixture['PRELUDE'].replace('LOGDEBUG=0, LOGINFO=1', 'LOGDEBUG=0, LOGINFO=1, LOGERROR=2')
+    prelude = prelude.replace('struct CLog{', 'constexpr int LOGAVTIMING=0;struct CLog{template<class... T> static void LogFC(T&&...) {}')
     prelude = prelude.replace('std::shared_ptr<const void> lifetime;', '''std::shared_ptr<const void> lifetime;
   bool refuseOwner=false;
   std::mutex eventsMutex;std::vector<std::pair<uint32_t,bool>> events;''')
@@ -63,6 +64,7 @@ def main(negative_controls=False):
       OverlayBatch GetOverlays(int n){return slots[n];}
       void Flush(){for(auto& s:slots)s.clear();}''')
     picture = picture.replace('double GetClockSpeed() const {return 1;}', 'std::atomic<double> speed{1}; double GetClockSpeed() const {return speed;}')
+    picture = picture.replace('bool IsPaused() const {return false;}', 'bool IsPaused() const {return speed == 0;}')
     code += picture + function(adapter, 'class CAMLPresenterSession\n') + ';\n'
     code += BOUNDARIES + RENDERER
     for signature in ['void ResumeIndependentPresentation(', 'std::shared_ptr<CAMLCodec> PresenterCodec()',
@@ -76,7 +78,7 @@ def main(negative_controls=False):
     code += MANAGER
     for signature in ['bool CRenderManager::FlushOnMain(', 'bool CRenderManager::FlushForSkinReload(',
                       'void CRenderManager::StopAMLPresenter(', 'void CRenderManager::RestoreAMLPresenter(',
-                      'bool CRenderManager::UpdateAMLPresenter()']:
+                      'bool CRenderManager::UpdateAMLPresenter()', 'void CRenderManager::PrepareNextRender()']:
         code += function(manager, signature) + '\n'
     code += APP.replace('@STATE@', function(app_header, 'struct SkinReloadState') + ';')
     for signature in ['bool CApplicationPlayer::IsSkinReloadCurrent(', 'bool CApplicationPlayer::BeginSkinReload(',
@@ -94,7 +96,9 @@ def main(negative_controls=False):
         if negative_controls:
             mutations = {
                 'lying-save-buffers': ('if (!saveBuffers)\n    Reset();', 'Reset();'),
-                'held-selection-skipped': ('bool advance = !m_current;', 'bool advance = true;'),
+                'stepped-selection-unbounded': ('timing.advanceCount != *consumed', 'true'),
+                'lost-stepped-frame-credit': ('frame->advanceCount = m_Queue[index].advanceCount;', 'frame->advanceCount = 0;'),
+                'synchronous-step-unbounded': ('if (paused && selectedValid && (!frameAdvance || advanceCount == consumedAdvances) && !m_forceNext)', 'if (false)'),
                 'stale-player-restored': ('state.generation == m_openGeneration &&', 'true &&'),
                 'stale-renderer-restored': ('flush != m_flushGeneration ||', 'false ||'),
             }
@@ -102,7 +106,7 @@ def main(negative_controls=False):
                 original_header = ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/AMLPresenter.h'
                 mutated_code = code
                 include = ROOT / 'xbmc'
-                if label == 'held-selection-skipped':
+                if label == 'stepped-selection-unbounded':
                     target = out / 'include/cores/VideoPlayer/VideoRenderers/AMLPresenter.h'
                     target.parent.mkdir(parents=True, exist_ok=True)
                     text = original_header.read_text()
@@ -112,6 +116,9 @@ def main(negative_controls=False):
                 else:
                     assert code.count(before) == 1
                     mutated_code = code.replace(before, after)
+                    if label == 'synchronous-step-unbounded':
+                        mutated_code = mutated_code.replace('const bool selectedValid =',
+                                                            '[[maybe_unused]] const bool selectedValid =')
                 (out / 'negative.cpp').write_text(mutated_code)
                 subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++17', '-Wall', '-Wextra',
                                 '-Werror', '-Wno-unused-parameter', '-DHAS_LIBAMCODEC=1', '-pthread',
@@ -120,7 +127,7 @@ def main(negative_controls=False):
                 failed = subprocess.run([str(out / 'negative')], capture_output=True, timeout=30)
                 assert failed.returncode != 0, f'negative control survived: {label}'
                 print(f'negative control rejected: {label}')
-                if label == 'held-selection-skipped':
+                if label == 'stepped-selection-unbounded':
                     target.unlink()
     print('AML skin reload: PASS (production guards/flush/restore/queue/buffers; ASan/UBSan; '
           'native/clock/GUI stubs; LoadSkin wiring only)')
@@ -183,10 +190,10 @@ class CRenderManager {
 public:
   enum EPRESENTMETHOD{PRESENT_METHOD_SINGLE,PRESENT_METHOD_BLEND,PRESENT_METHOD_BOB};
   enum State{STATE_UNCONFIGURED,STATE_CONFIGURED};
-  enum Step{PRESENT_IDLE,PRESENT_READY};
+  enum Step{PRESENT_IDLE,PRESENT_READY,PRESENT_FLIP};
   CCriticalSection m_statelock,m_presentlock,m_datalock;
   uint64_t m_lifecycleGeneration=1,m_flushGeneration=0;
-  bool m_closing=false,m_amlIndependentPresenter=true,m_showVideo=true;
+  bool m_closing=false,m_amlIndependentPresenter=true,m_showVideo=true,m_forceNext=false;
   State m_renderState=STATE_CONFIGURED;
   Step m_presentstep=PRESENT_IDLE;
   CRendererAML renderer;
@@ -200,16 +207,17 @@ public:
   bool m_presentstarted=false;
   double m_presentpts=0;
   float m_fps=25;
-  int m_latencyTweak=0,m_audioLatencyTweak=0,m_videoDelay=0;
-  struct {double pts=0;EFIELDSYNC presentfield=FS_NONE;EPRESENTMETHOD presentmethod=PRESENT_METHOD_SINGLE;} m_Queue[8];
+  int m_latencyTweak=0,m_audioLatencyTweak=0,m_videoDelay=0,m_lateframes=0;
+  double m_displayLatency=0;
+  struct {double pts=0;EFIELDSYNC presentfield=FS_NONE;EPRESENTMETHOD presentmethod=PRESENT_METHOD_SINGLE;int64_t advanceCount=0;} m_Queue[8];
   std::deque<int> m_free,m_queued,m_discard;
   OVERLAY::CRenderer m_overlays;
   struct {void Flush(){}} m_debugRenderer;
-  struct {void Reset(){}} m_clockSync;
+  struct {bool m_enabled=false;double m_error=0,m_syncOffset=0;int m_errCount=0;void Reset(){}} m_clockSync;
   struct {void notifyAll(){}} m_presentevent;
   struct {bool sync=false;void UpdateClockSync(bool v){sync=v;}} port;
   decltype(port)* m_playerPort=&port;
-  struct {double pts=0;struct Picture {};void SetRenderPts(double value){pts=value;}void SetVideoActivePicture(Picture){}} m_dataCacheCore;
+  struct {double pts=0;bool frameAdvance=false;struct Picture {};bool IsFrameAdvance(){return frameAdvance;}void SetRenderPts(double value){pts=value;}void SetVideoActivePicture(Picture){}} m_dataCacheCore;
   int invalidations=0;
   void InvalidateReservations(){++invalidations;}
   void ClearFrameSelection(){}
@@ -221,6 +229,7 @@ public:
   void StopAMLPresenter(bool);
   void RestoreAMLPresenter(uint64_t,uint64_t,const std::shared_ptr<CAMLCodec>&,uint64_t);
   bool UpdateAMLPresenter();
+  void PrepareNextRender();
   ~CRenderManager(){StopAMLPresenter(false);renderer.Flush(false);}
 };
 '''
@@ -279,7 +288,8 @@ void Put(CRenderManager& manager,const std::shared_ptr<CAMLCodec>& codec,int n,b
 void Start(CRenderManager& manager,const std::shared_ptr<CAMLCodec>& codec){
   CServiceBroker::system.graphics.pq=true;
   manager.renderer.m_pollCodec=codec;manager.renderer.m_pollEpoch=codec->GetOperationEpoch();
-  manager.m_amlPresenter=std::make_shared<CAMLPresenterSession>(codec,manager.m_dvdClock,8,manager.m_processInfoLifetime);
+  manager.m_amlPresenter=std::make_shared<CAMLPresenterSession>(codec,manager.m_dvdClock,8,manager.m_processInfoLifetime,
+      std::function<void(bool)>{},std::function<void(double)>{},[&manager]{return manager.m_dataCacheCore.IsFrameAdvance();});
   manager.m_amlPresenter->queue->Show(true);manager.UpdateAMLPresenter();
   Put(manager,codec,1);
   Await([&]{return bool(manager.m_amlPresenter->queue->PendingControl().frame);});
@@ -448,6 +458,53 @@ void FailedSubmission(){
   assert(manager.m_amlPresenter->ApplyControl({},{}));Await([&]{return codec->polls>0;});
   assert(codec->releases==1&&codec->drops==0);
 }
+void SteppedMigration(bool pending){
+  auto codec=std::make_shared<CAMLCodec>();codec->pollPacing=0;
+  CRenderManager manager;Start(manager,codec);
+  auto first=manager.m_amlPresenter->queue->PendingControl().frame;
+  const double period=1e6*1001/24000;
+  const double start=first->pts;
+  manager.m_dvdClock.speed=0;manager.m_dvdClock.pausedClock=start;
+  manager.m_dataCacheCore.frameAdvance=true;
+  assert(manager.m_amlPresenter->ApplyControl({},{}));
+  Await([&]{return codec->polls>5;});
+  auto put=[&](int index,double pts){
+    VideoPicture picture;picture.pts=pts;
+    auto* buffer=new CAMLVideoBuffer(index);buffer->Set(codec,index,40,index,1);picture.videoBuffer=buffer;
+    auto overlays=std::make_shared<CAMLPresenterSession::OverlayObservation>();
+    auto frame=std::make_shared<CAMLPresenterSession::Frame>(picture,overlays);
+    auto slot=manager.m_amlPresenter->queue->Reserve(1s);assert(slot);
+    assert(manager.m_amlPresenter->queue->Publish(slot,frame));
+  };
+  if(!pending)put(2,start+period);
+  manager.m_dvdClock.pausedClock=start+period;manager.m_dvdClock.advances=1;
+  if(!pending){
+    Await([&]{manager.UpdateAMLPresenter();return codec->releases==2&&codec->polls>10;});
+    put(3,start+2*period);put(4,start+3*period);
+  }
+  std::function<void()> restore;assert(manager.FlushForSkinReload(restore));
+  const auto held=manager.m_presentsource;
+  assert(manager.m_Queue[held].advanceCount==(pending?0:1));
+  manager.m_latencyTweak=100; // old synchronous late dropping would consume the queued frames
+  for(int i=0;i<40;++i)manager.PrepareNextRender();
+  assert(manager.m_presentsource==held);
+  restore();
+  Await([&]{return bool(manager.m_amlPresenter->queue->PendingControl().frame);});
+  auto restored=manager.m_amlPresenter->queue->PendingControl().frame;
+  assert(restored->advanceCount==(pending?0:1));
+  assert(manager.m_amlPresenter->ApplyControl({},{}));
+  if(pending)put(2,start+period);
+  const auto polls=codec->polls.load();
+  Await([&]{manager.UpdateAMLPresenter();return codec->releases==2&&codec->polls>polls+5;});
+  assert(codec->drops==0); // restored consumed or pending step selected exactly once
+  if(!pending){
+    manager.m_dvdClock.pausedClock=start+3*period;manager.m_dvdClock.advances=3;
+    Await([&]{manager.UpdateAMLPresenter();return codec->releases==4;});
+    const auto after=codec->polls.load();
+    Await([&]{manager.UpdateAMLPresenter();return codec->polls>after+5;});
+    assert(codec->releases==4&&codec->drops==0);
+  }
+}
 int main(){
   AppCancellation();assert(buffers==0);
   Reloads(false);assert(buffers==0);
@@ -457,6 +514,8 @@ int main(){
   PendingAndHidden();assert(buffers==0);
   FailedSkinLoad();assert(buffers==0);
   FailedSubmission();assert(buffers==0);
+  SteppedMigration(false);assert(buffers==0);
+  SteppedMigration(true);assert(buffers==0);
   std::cout<<"skin reload scenarios passed\n";
 }
 '''

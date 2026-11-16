@@ -76,10 +76,15 @@ struct Renderer {virtual ~Renderer()=default;};
 struct CRendererAML : Renderer {int PresenterCodec(){return 1;}};
 struct Queue {void Show(bool){}};
 struct CAMLPresenterSession {std::shared_ptr<Queue> queue=std::make_shared<Queue>();
-  template<class A,class B> CAMLPresenterSession(int,int,int,bool,A,B){}
+  template<class A,class B,class C> CAMLPresenterSession(int,int,int,bool,A,B,C){}
 };
 struct Port {void UpdateClockSync(bool){}};
-struct Cache {void SetRenderPts(double){}};
+struct Cache {
+ void SetRenderPts(double){}bool IsFrameAdvance(){return false;}
+ void SetVideoActivePicture(std::optional<int>){}
+};
+struct MuteController {void CancelHandoff(){}};
+MuteController& aml_video_mute_controller(){static MuteController value;return value;}
 struct CRenderManager {
  CCriticalSection m_statelock,m_presentlock,m_datalock;
  int m_renderState=STATE_UNCONFIGURED,m_QueueSize=0,m_QueueSkip=0,m_presentstep=0;

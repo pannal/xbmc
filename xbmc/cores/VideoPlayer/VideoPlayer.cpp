@@ -3123,6 +3123,11 @@ void CVideoPlayer::HandlePlaySpeed()
       SetCaching(CACHESTATE_DONE);
   }
 
+  // Do not count intentional holds toward the playing-output watchdog.
+  if (m_clock.IsPaused() || m_playSpeed != DVD_PLAYSPEED_NORMAL ||
+      m_caching != CACHESTATE_DONE || tolerateStall)
+    m_videoWedgePts = DVD_NOPTS_VALUE;
+
   if (m_caching == CACHESTATE_DONE)
   {
     if (m_playSpeed == DVD_PLAYSPEED_NORMAL && !tolerateStall)
@@ -4569,7 +4574,7 @@ void CVideoPlayer::HandleMessages()
         int frames = std::static_pointer_cast<CDVDMsgInt>(pMsg)->m_value;
         double time = DVD_TIME_BASE / static_cast<double>(m_processInfo->GetVideoFps()) * frames;
         m_processInfo->SetFrameAdvance(true);
-        m_clock.Advance(time);
+        m_clock.Advance(time, frames);
       }
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_VS10_ACTION))

@@ -66,7 +66,7 @@ public:
  struct Sync{void Reset(){}}m_clockSync;
  struct Overlay{void Reset(){}void SetStereoMode(std::string){}}m_overlays;
  struct Event{void notifyAll(){}}m_presentevent;
- struct Cache{void SetRenderPts(double){}}m_dataCacheCore;
+ struct Cache{void SetRenderPts(double){}bool IsFrameAdvance(){return false;}}m_dataCacheCore;
  void StopAMLPresenter(bool){}void ClearFrameSelection(){}void InvalidateReservations(){}
  void CreateRenderer(){if(create)m_pRenderer=selectAML?new CRendererAML:new Renderer;}
  void DeleteRenderer(){delete m_pRenderer;m_pRenderer=nullptr;}

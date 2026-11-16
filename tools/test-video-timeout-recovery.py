@@ -300,7 +300,67 @@ int main() {
 }
 '''
 os.environ.setdefault('ASAN_OPTIONS', 'detect_leaks=0')
+guard_start = parent.index('  // Do not count intentional holds')
+wedge_guard = parent[guard_start:parent.index('  if (m_caching == CACHESTATE_DONE)', guard_start)]
+wedge = f.block(parent, '      // Video feed/drain WEDGE recovery.')
+wedge_source = r'''
+#include <cassert>
+#include <chrono>
+#include <memory>
+using namespace std::chrono_literals;
+constexpr int DVD_PLAYSPEED_NORMAL=1000,CACHESTATE_DONE=0,LOGWARNING=1;
+constexpr double DVD_NOPTS_VALUE=-1,DVD_TIME_BASE=1000000;
+struct FakeClock {
+  static inline std::chrono::steady_clock::time_point now{};
+  static auto Now() {return now;}
+};
+struct CLog {template<class... T> static void Log(T&&...) {}};
+struct IDVDStreamPlayer {static constexpr int SYNC_INSYNC=1;};
+struct CDVDMsgPlayerSeek {struct CMode {int time=0;bool backward=false,accurate=false,sync=false;};explicit CDVDMsgPlayerSeek(CMode) {}};
+struct Watchdog {
+  struct {bool paused=false;bool IsPaused() const {return paused;}} m_clock;
+  int m_playSpeed=DVD_PLAYSPEED_NORMAL,m_caching=CACHESTATE_DONE;
+  bool tolerateStall=false;
+  double m_videoWedgePts=DVD_NOPTS_VALUE;
+  std::chrono::steady_clock::time_point m_videoWedgeStart{};
+  struct {int id=1,syncState=1;bool inited=true;} m_CurrentVideo;
+  struct Video {bool AcceptsData() const {return false;}} video;
+  Video* m_VideoPlayerVideo=&video;
+  struct {double GetFramePts() const {return 1000000;}} m_renderManager;
+  struct {void Put(std::shared_ptr<CDVDMsgPlayerSeek>) {}} m_messenger;
+  int resets=0;
+  int GetUpdatedTime() const {return 1000;}
+  template<class F> void FlushBuffers(double,bool,bool,F,bool) {++resets;}
+  void Tick() {
+    {
+@GUARD@
+    }
+    if (m_caching == CACHESTATE_DONE && m_playSpeed == DVD_PLAYSPEED_NORMAL &&
+        !tolerateStall) { @WEDGE@ }
+  }
+};
+int main() {
+  for(int hold=0;hold<4;++hold) {
+    FakeClock::now={};Watchdog w;w.Tick();
+    FakeClock::now+=1s;
+    if(hold==0)w.m_playSpeed=0;
+    if(hold==1)w.m_clock.paused=true;
+    if(hold==2)w.m_caching=1;
+    if(hold==3)w.tolerateStall=true;
+    w.Tick();FakeClock::now+=10s;w.Tick();assert(w.resets==0);
+    w.m_playSpeed=DVD_PLAYSPEED_NORMAL;w.m_clock.paused=false;
+    w.m_caching=CACHESTATE_DONE;w.tolerateStall=false;w.Tick();
+    assert(w.resets==0);
+    FakeClock::now+=2s;w.Tick();assert(w.resets==0);
+    FakeClock::now+=1ms;w.Tick();assert(w.resets==1);
+  }
+}
+'''.replace('@GUARD@', wedge_guard).replace('@WEDGE@', wedge)
+wedge_source = wedge_source.replace('std::chrono::steady_clock::now()', 'FakeClock::Now()')
 with tempfile.TemporaryDirectory(prefix='video-timeout-recovery-') as tmp:
+    f.run(wedge_source, Path(tmp), 'pause-output-watchdog')
+    f.run(wedge_source.replace(wedge_guard, '', 1), Path(tmp),
+          'count-paused-time-as-wedge', expect_failure=True)
     f.run(source, Path(tmp), 'video-timeout-recovery')
     # Each mutant removes a specific safety/lifecycle side effect.
     for label, old, new in (

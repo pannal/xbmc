@@ -284,6 +284,9 @@ protected:
     double         pts;
     EFIELDSYNC     presentfield;
     EPRESENTMETHOD presentmethod;
+#if defined(HAS_LIBAMCODEC)
+    int64_t advanceCount{0};
+#endif
   } m_Queue[NUM_BUFFERS]{};
 
   // Selection identity and list membership are stable until the next FrameMove
