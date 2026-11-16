@@ -17,6 +17,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -49,6 +50,9 @@ public:
     double refresh{60};
     double latency{0};
     bool sync{false};
+    bool paused{false};
+    bool frameAdvance{false};
+    int64_t advanceCount{0};
   };
   struct Frame
   {
@@ -57,6 +61,7 @@ public:
     Method method{Method::SINGLE};
     bool force{false};
     bool presented{false};
+    int64_t advanceCount{0}; // consumed frame steps; preserved through skin migration
     std::atomic<bool> selected{false};
     std::shared_ptr<const void> observation; // CPU only; never holds the video lease
     virtual ~Frame() = default;
@@ -392,8 +397,23 @@ private:
   }
   void Select(const Timing& timing) // worker, mutex held
   {
+    if (!timing.paused || !timing.frameAdvance)
+      m_invalidatedAdvanceCount.reset();
+    if (m_current && (!timing.paused || !timing.frameAdvance))
+      m_current->advanceCount = timing.advanceCount;
     if (m_queue.empty() || (!m_show && !m_forceNext && !m_queue.front()->force))
       return;
+    const auto consumed = m_current ? std::optional<int64_t>{m_current->advanceCount}
+                                    : m_invalidatedAdvanceCount;
+    const bool stepped = timing.frameAdvance && consumed &&
+                         timing.advanceCount != *consumed;
+    if (timing.paused && !stepped && m_current &&
+        !m_forceNext && !m_queue.front()->force)
+      return;
+    const bool pausedStep = timing.paused && stepped &&
+                            !m_forceNext && !m_queue.front()->force;
+    const auto* previous = m_current.get();
+    const auto advanceCount = consumed.value_or(timing.advanceCount);
     std::stable_sort(m_queue.begin(), m_queue.end(),
                      [](const auto& a, const auto& b) { return a->pts < b->pts; });
     const double duration = static_cast<double>(DVD_TIME_BASE) / timing.refresh;
@@ -401,17 +421,20 @@ private:
     const double next = timing.speed < 0 ? render : m_queue.front()->pts;
     if (timing.sync)
     {
-      m_error += std::fmod(render - next, duration);
-      if (++m_samples > 30)
+      if (!timing.paused)
       {
-        m_syncOffset = m_error / m_samples;
-        m_error = 0;
-        m_samples = 0;
-        m_hooks.adjustClock(-m_syncOffset);
+        m_error += std::fmod(render - next, duration);
+        if (++m_samples > 30)
+        {
+          m_syncOffset = m_error / m_samples;
+          m_error = 0;
+          m_samples = 0;
+          m_hooks.adjustClock(-m_syncOffset);
+        }
       }
       render += duration / 2 - m_syncOffset;
     }
-    else
+    else if (!timing.paused)
       m_hooks.adjustClock(0);
 
     const bool combined = bool(m_past);
@@ -425,7 +448,7 @@ private:
       const auto queued = m_queue.size();
       const auto epoch = m_queue.front()->epoch;
       const int skipped = m_skipped;
-      while (diff > 62000 && m_queue.size() > 2)
+      while (!pausedStep && diff > 62000 && m_queue.size() > 2)
       {
         m_retired.push_back(std::move(m_queue.front()));
         m_queue.pop_front();
@@ -456,6 +479,13 @@ private:
       m_current = std::move(m_queue.front());
       m_queue.pop_front();
       m_renderPts = m_current->pts - duration / 2 - timing.latency;
+    }
+    if (m_current && m_current.get() != previous)
+    {
+      m_current->advanceCount = pausedStep
+                                    ? advanceCount + (timing.advanceCount > advanceCount ? 1 : -1)
+                                    : timing.advanceCount;
+      m_invalidatedAdvanceCount.reset();
     }
   }
   void Run()
@@ -619,6 +649,7 @@ private:
             m_pending = {};
             m_controlSinceUs = 0;
             ++m_progress.discarded;
+            m_invalidatedAdvanceCount = m_current->advanceCount;
             m_retired.push_back(std::move(m_current));
             advance = true;
             submitted = false;
@@ -743,6 +774,7 @@ private:
   std::vector<uint64_t> m_reservations;
   std::deque<std::shared_ptr<Frame>> m_queue;
   std::shared_ptr<Frame> m_current, m_past;
+  std::optional<int64_t> m_invalidatedAdvanceCount;
   std::vector<std::shared_ptr<Frame>> m_retired;
   Observation m_observation;
   ControlRequest m_pending;

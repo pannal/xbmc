@@ -57,13 +57,23 @@ double CDVDClock::GetAbsoluteClock(bool interpolated /*= true*/)
 
 double CDVDClock::GetClock(bool interpolated /*= true*/)
 {
+  bool paused;
+  int64_t advanceCount;
+  return GetClock(paused, advanceCount, interpolated);
+}
+
+double CDVDClock::GetClock(bool& paused, int64_t& advanceCount, bool interpolated)
+{
   std::unique_lock<CCriticalSection> lock(m_critSection);
 
   int64_t current = m_videoRefClock->GetTime(interpolated);
   m_systemAdjust += m_speedAdjust * (current - m_lastSystemTime);
   m_lastSystemTime = current;
 
-  return SystemToPlaying(current);
+  const auto clock = SystemToPlaying(current);
+  paused = m_pauseClock != 0;
+  advanceCount = m_advanceCount;
+  return clock;
 }
 
 double CDVDClock::GetClock(double& absolute, bool interpolated /*= true*/)
@@ -120,13 +130,16 @@ void CDVDClock::Pause(bool pause)
   }
 }
 
-void CDVDClock::Advance(double time)
+void CDVDClock::Advance(double time, int frames)
 {
   std::unique_lock<CCriticalSection> lock(m_critSection);
 
   if (m_pauseClock)
   {
+    const auto previous = m_pauseClock;
     m_pauseClock += time / DVD_TIME_BASE * m_systemFrequency;
+    if (m_pauseClock != previous)
+      m_advanceCount += frames;
   }
 }
 
@@ -326,4 +339,10 @@ double CDVDClock::GetClockSpeed()
 
   double speed = (double)m_systemFrequency / m_systemUsed;
   return m_videoRefClock->GetSpeed() * speed + m_speedAdjust;
+}
+
+bool CDVDClock::IsPaused()
+{
+  std::unique_lock<CCriticalSection> lock(m_critSection);
+  return m_pauseClock != 0;
 }
