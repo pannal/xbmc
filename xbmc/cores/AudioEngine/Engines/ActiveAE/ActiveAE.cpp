@@ -403,7 +403,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           return;
         case CActiveAEDataProtocol::FREESTREAM:
           MsgStreamFree *msgStreamFree;
-          msgStreamFree = *(MsgStreamFree**)msg->data;
+          msgStreamFree = reinterpret_cast<MsgStreamFree*>(msg->data);
           DiscardStream(msgStreamFree->stream);
           msg->Reply(CActiveAEDataProtocol::ACC);
           return;
@@ -427,6 +427,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
       {
         switch (signal)
         {
+        case CSinkDataProtocol::PAUSEDSAMPLE:
         case CSinkDataProtocol::RETURNSAMPLE:
           CSampleBuffer **buffer;
           buffer = (CSampleBuffer**)msg->data;
@@ -694,17 +695,22 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
           stream = *(CActiveAEStream**)msg->data;
           if (!stream->m_paused && m_streams.size() == 1)
           {
-            FlushEngine();
+            if (m_mode == MODE_RAW &&
+                m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD &&
+                stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC)
+              SPreservePausedPackets(stream);
+            else
+              FlushEngine();
             streaming = false;
             m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::STREAMING, &streaming, sizeof(bool));
+            bool paused = true;
+            m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::PAUSED, &paused, sizeof(bool));
           }
           stream->m_paused = true;
           return;
         case CActiveAEControlProtocol::RESUMESTREAM:
           stream = *(CActiveAEStream**)msg->data;
-          if (stream->m_paused)
-            stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
-          stream->m_paused = false;
+          SResumeStream(stream);
           streaming = true;
           m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::STREAMING, &streaming, sizeof(bool));
           m_extTimeout = 0ms;
@@ -860,6 +866,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
       {
         switch (signal)
         {
+        case CSinkDataProtocol::PAUSEDSAMPLE:
         case CSinkDataProtocol::RETURNSAMPLE:
           CSampleBuffer **buffer;
           buffer = (CSampleBuffer**)msg->data;
@@ -928,6 +935,7 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
       {
         switch (signal)
         {
+        case CSinkDataProtocol::PAUSEDSAMPLE:
         case CSinkDataProtocol::RETURNSAMPLE:
           CSampleBuffer **buffer;
           buffer = (CSampleBuffer**)msg->data;
@@ -956,13 +964,17 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
     case AE_TOP_CONFIGURED_IDLE:
       if (port == &m_controlPort)
       {
+        bool streaming;
         switch (signal)
         {
         case CActiveAEControlProtocol::RESUMESTREAM:
           CActiveAEStream *stream;
           stream = *(CActiveAEStream**)msg->data;
-          stream->m_paused = false;
-          stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
+          if (!stream->m_paused)
+            stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
+          SResumeStream(stream);
+          streaming = true;
+          m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::STREAMING, &streaming, sizeof(bool));
           m_state = AE_TOP_CONFIGURED_PLAY;
           m_extTimeout = 0ms;
           return;
@@ -1188,6 +1200,9 @@ AEAudioFormat CActiveAE::GetInputFormat(AEAudioFormat *desiredFmt)
 
 void CActiveAE::Configure(AEAudioFormat *desiredFmt)
 {
+  if (m_sinkFlushPending && !FlushEngine())
+    return;
+
   bool initSink = false;
 
   AEAudioFormat sinkInputFormat, inputFormat;
@@ -1208,7 +1223,10 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
        !CompareFormat(m_sinkRequestFormat, oldSinkRequestFormat)) ||
       m_currDevice.compare(dev.name) != 0 || m_settings.driver.compare(dev.driver) != 0)
   {
-    FlushEngine();
+    // A failed attempt must not make the next request look already configured.
+    m_currDevice = "";
+    if (!FlushEngine())
+      return;
     if (!InitSink())
       return;
     m_settings.driver = dev.driver;
@@ -1555,7 +1573,86 @@ void CActiveAE::DiscardStream(CActiveAEStream *stream)
       ++it;
   }
 
+  if (m_streams.empty())
+  {
+    bool paused = false;
+    m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::PAUSED, &paused, sizeof(bool));
+  }
+
   ClearDiscardedBuffers();
+}
+
+void CActiveAE::SPreservePausedPackets(CActiveAEStream* stream)
+{
+  Message* reply = nullptr;
+  const bool received =
+      m_sink.m_controlPort.SendOutMessageSync(CSinkControlProtocol::PAUSE, &reply, 2s);
+  const bool success = received && reply->signal == CSinkControlProtocol::ACC;
+  if (received)
+    reply->Release();
+  if (!success)
+  {
+    CLog::Log(LOGERROR, "ActiveAE::{} - packet preservation failed; flushing sink", __FUNCTION__);
+    stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
+    if (!FlushEngine())
+    {
+      m_state = AE_TOP_CONFIGURED_PLAY;
+      m_extTimeout = 0ms;
+    }
+    else
+      m_stats.UpdateStream(stream);
+    return;
+  }
+
+  // Consume the FIFO returns before another control message can flush or replace the stream.
+  std::deque<CSampleBuffer*> packets;
+  Message* msg = nullptr;
+  while (m_sink.m_dataPort.ReceiveInMessage(&msg))
+  {
+    if (msg->signal == CSinkDataProtocol::PAUSEDSAMPLE ||
+        msg->signal == CSinkDataProtocol::RETURNSAMPLE)
+    {
+      CSampleBuffer* buffer;
+      memcpy(&buffer, msg->data, sizeof(buffer));
+      if (msg->signal == CSinkDataProtocol::PAUSEDSAMPLE)
+        packets.push_back(buffer);
+      else
+        buffer->Return();
+    }
+    else
+    {
+      CLog::Log(LOGERROR, "ActiveAE::{} - unexpected sink return: {}", __FUNCTION__, msg->signal);
+      m_extError = true;
+    }
+    msg->Release();
+  }
+
+  for (auto* queue : {&m_sinkBuffers->m_outputSamples, &m_sinkBuffers->m_inputSamples})
+  {
+    packets.insert(packets.end(), queue->begin(), queue->end());
+    queue->clear();
+  }
+  auto& output = stream->m_processingBuffers->m_outputSamples;
+  output.insert(output.begin(), packets.begin(), packets.end());
+  m_stats.Reset(m_sinkFormat.m_sampleRate, false);
+  m_stats.UpdateStream(stream);
+}
+
+void CActiveAE::SResumeStream(CActiveAEStream* stream)
+{
+  if (stream->m_paused)
+  {
+    if (m_mode == MODE_RAW &&
+        m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD &&
+        stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC)
+    {
+      // Reacquisition mutes MAT packets, potentially discarding receiver sync headers.
+      stream->m_syncError.Flush(stream->GetErrorInterval());
+    }
+    else
+      stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
+  }
+  stream->m_paused = false;
 }
 
 void CActiveAE::SFlushStream(CActiveAEStream *stream)
@@ -1602,31 +1699,49 @@ void CActiveAE::SFlushStream(CActiveAEStream *stream)
   m_stats.UpdateStream(stream);
 }
 
-void CActiveAE::FlushEngine()
+bool CActiveAE::FlushEngine()
 {
+  m_sinkFlushPending = true;
   if (m_sinkBuffers)
     m_sinkBuffers->Flush();
   if (m_vizBuffers)
     m_vizBuffers->Flush();
 
   // send message to sink
-  Message *reply;
-  if (m_sink.m_controlPort.SendOutMessageSync(CSinkControlProtocol::FLUSH, &reply, 2s))
+  Message* reply = nullptr;
+  const bool received =
+      m_sink.m_controlPort.SendOutMessageSync(CSinkControlProtocol::FLUSH, &reply, 2s);
+  const bool success = received && reply->signal == CSinkControlProtocol::ACC;
+  if (received)
+    reply->Release();
+  if (!success)
   {
-    bool success = reply->signal == CSinkControlProtocol::ACC;
-    if (!success)
+    CLog::Log(LOGERROR, "ActiveAE::{} - sink flush not acknowledged", __FUNCTION__);
+    m_extError = true;
+    return false;
+  }
+
+  // FLUSH is ordered after any timed-out PAUSE and completes its packet returns.
+  Message* msg = nullptr;
+  while (m_sink.m_dataPort.ReceiveInMessage(&msg))
+  {
+    if (msg->signal == CSinkDataProtocol::RETURNSAMPLE ||
+        msg->signal == CSinkDataProtocol::PAUSEDSAMPLE)
     {
-      CLog::Log(LOGERROR, "ActiveAE::{} - returned error on flush", __FUNCTION__);
+      CSampleBuffer* buffer;
+      memcpy(&buffer, msg->data, sizeof(buffer));
+      buffer->Return();
+    }
+    else if (msg->signal != CSinkDataProtocol::ACC)
+    {
+      CLog::Log(LOGERROR, "ActiveAE::{} - unexpected sink return: {}", __FUNCTION__, msg->signal);
       m_extError = true;
     }
-    reply->Release();
-  }
-  else
-  {
-    CLog::Log(LOGERROR, "ActiveAE::{} - failed to flush", __FUNCTION__);
-    m_extError = true;
+    msg->Release();
   }
   m_stats.Reset(m_sinkFormat.m_sampleRate, m_mode == MODE_PCM);
+  m_sinkFlushPending = false;
+  return true;
 }
 
 void CActiveAE::ClearDiscardedBuffers()
@@ -1977,6 +2092,9 @@ void CActiveAE::UnconfigureSink()
 
 bool CActiveAE::RunStages()
 {
+  if (m_sinkFlushPending)
+    return false;
+
   bool busy = false;
 
   // serve input streams

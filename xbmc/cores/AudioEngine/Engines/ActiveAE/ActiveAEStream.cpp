@@ -668,6 +668,22 @@ float CActiveAEStreamBuffers::GetDelay()
 {
   float delay = 0;
 
+  if (m_inputFormat.m_dataFormat == AE_FMT_RAW)
+  {
+    const double packetSeconds = m_inputFormat.m_streamInfo.GetDuration() / 1000.0;
+    for (const auto* queue :
+         {&m_inputSamples, &m_outputSamples, &m_resampleBuffers->m_inputSamples,
+          &m_resampleBuffers->m_outputSamples, &m_atempoBuffers->m_inputSamples,
+          &m_atempoBuffers->m_outputSamples})
+    {
+      for (const auto* buffer : *queue)
+        delay += static_cast<float>(buffer->pkt->nb_samples > 0
+                                        ? packetSeconds
+                                        : buffer->pkt->pause_burst_ms / 1000.0);
+    }
+    return delay;
+  }
+
   for (auto &buf : m_inputSamples)
   {
     delay += (float)buf->pkt->nb_samples / buf->pkt->config.sample_rate;

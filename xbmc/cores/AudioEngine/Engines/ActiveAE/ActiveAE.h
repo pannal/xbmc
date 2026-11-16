@@ -330,8 +330,10 @@ protected:
   AEAudioFormat GetInputFormat(AEAudioFormat *desiredFmt = NULL);
   CActiveAEStream* CreateStream(MsgStreamNew *streamMsg);
   void DiscardStream(CActiveAEStream *stream);
+  void SResumeStream(CActiveAEStream* stream);
+  void SPreservePausedPackets(CActiveAEStream* stream);
   void SFlushStream(CActiveAEStream *stream);
-  void FlushEngine();
+  bool FlushEngine();
   void ClearDiscardedBuffers();
   void SStopSound(CActiveAESound *sound);
   void DiscardSound(CActiveAESound *sound);
@@ -357,6 +359,7 @@ protected:
   bool m_bStateMachineSelfTrigger;
   std::chrono::milliseconds m_extTimeout;
   bool m_extError;
+  bool m_sinkFlushPending{false};
   bool m_extDrain;
   XbmcThreads::EndTime<> m_extDrainTimer;
   std::chrono::milliseconds m_extKeepConfig;
