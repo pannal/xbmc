@@ -68,6 +68,7 @@ struct CPlayerCoreFactory {
 };
 struct Timer {int expires=0;void SetExpired(){++expires;}};
 struct CApplicationPlayer {
+  struct {void Reset() {}} m_seekHandler;
   mutable CCriticalSection m_playerLock;
   std::shared_ptr<IPlayer> m_pPlayer,m_closingPlayer;
   std::vector<std::shared_ptr<CEvent>> m_closeCompletionEvents,m_retiredCloseCompletionEvents;
@@ -409,24 +410,30 @@ def main():
     assert stop.index('if (!appPlayer->ClosePlayer(true))') < stop.index('aml_dv_auto_letterbox_watch_stop()')
     assert 'm_pendingStop = exitCode;' in stop and 'return false;' in stop
     assert 'm_pendingStop && !appPlayer->HasPlayer()' in frame
-    assert 'Powerdown()' in frame and 'Reboot()' in frame
+    power_action = function(application, 'bool CApplication::StopWithPowerAction(')
+    assert 'StopWithPowerAction(exitCode)' in frame
+    assert 'Powerdown()' in power_action and 'Reboot()' in power_action
     assert 'if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen() || appPlayer->IsOpening())' in function(application, 'void CApplication::StopPlaying(')
     playlist = (ROOT / 'xbmc/PlayListPlayer.cpp').read_text()
     media_stop = playlist[playlist.index('  case TMSG_MEDIA_STOP:'):playlist.index('  case TMSG_MEDIA_PAUSE:')]
     assert 'if (appPlayer->HasPlayer() || appPlayer->HasPendingOpen() ||\n        (!m_bIsDeferredPlayPending && appPlayer->IsOpening()))' in media_stop
-    assert 'if (!m_shutdownWatchdogStarted)' in stop
+    assert 'if (!m_shutdownWatchdogExitCode)' in stop
     gate_start = stop.index('  const auto appPlayer = GetComponent<CApplicationPlayer>();')
     gate_end = stop.index('  // Safety net', gate_start)
     gate = stop[gate_start:gate_end]
     latch = stop[stop.index('  if (m_pendingStop)'):stop.index('  CLog::Log')]
     retry = function(frame, 'if (m_pendingStop && !appPlayer->HasPlayer())')
     shutdown = r'''
+#include <atomic>
 constexpr int EXITCODE_POWERDOWN=1,EXITCODE_REBOOT=2,EXITCODE_QUIT=3,EXITCODE_RESTARTAPP=4;
-struct Power {int downs=0,reboots=0;void Powerdown(){++downs;}void Reboot(){++reboots;}};
-constexpr int LOGDEBUG=0, GUI_MSG_PLAYBACK_STARTED=1,GUI_MSG_PLAYBACK_ENDED=2,GUI_MSG_PLAYBACK_STOPPED=3,
+struct Power {int downs=0,reboots=0;bool Powerdown(){++downs;return true;}bool Reboot(){++reboots;return true;}};
+constexpr int LOGDEBUG=0,LOGERROR=1, GUI_MSG_PLAYBACK_STARTED=1,GUI_MSG_PLAYBACK_ENDED=2,GUI_MSG_PLAYBACK_STOPPED=3,
  GUI_MSG_PLAYLIST_CHANGED=4,GUI_MSG_PLAYLISTPLAYER_STOPPED=5,GUI_MSG_PLAYLISTPLAYER_STARTED=6,
  GUI_MSG_PLAYLISTPLAYER_CHANGED=7,GUI_MSG_QUEUE_NEXT_ITEM=8;
-struct CLog {template<class...T> static void LogF(T&&...) {}};
+struct CLog {
+  template<class...T> static void LogF(T&&...) {}
+  template<class...T> static void Log(T&&...) {}
+};
 struct Gui {
   std::vector<int> messages;
   Gui& GetWindowManager(){return *this;}
@@ -464,7 +471,10 @@ static void discarded_notifications() {
 }
 struct Shutdown {
   CApplicationPlayer app; std::optional<int> m_pendingStop;int teardowns=0,lastExit=0;
+  std::shared_ptr<std::atomic<int>> m_shutdownWatchdogExitCode=std::make_shared<std::atomic<int>>(0);
+  int m_ExitCode=0;
   template<class T> T* GetComponent(){return &app;}
+  bool StopWithPowerAction(int exitCode);
   bool Stop(int exitCode) {
 @LATCH@
 @GATE@
@@ -472,6 +482,7 @@ struct Shutdown {
   }
   void Frame() {auto* appPlayer=&app; @RETRY@}
 };
+@POWER_ACTION@
 static void shutdown_cases() {
   for(int code:{EXITCODE_POWERDOWN,EXITCODE_REBOOT,EXITCODE_QUIT,EXITCODE_RESTARTAPP}) {
     Shutdown shutdown;shutdown.app.m_pPlayer=std::make_shared<IPlayer>();
@@ -496,6 +507,7 @@ static void shutdown_cases() {
 '''
     discard = function(application, '  {\n    // for playing a new item,')
     shutdown = shutdown.replace('@DISCARD@', discard)
+    shutdown = shutdown.replace('@POWER_ACTION@', power_action.replace('CApplication::', 'Shutdown::'))
     shutdown = shutdown.replace('@LATCH@', latch).replace('@GATE@', gate).replace('@RETRY@', retry)
     code = code.replace(TESTS, shutdown + TESTS)
     parser = argparse.ArgumentParser()

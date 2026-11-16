@@ -83,6 +83,7 @@ template<class T> struct CDVDMsgType : CDVDMsg {
 };
 using CDVDMsgBool=CDVDMsgType<bool>;
 using CDVDMsgDouble=CDVDMsgType<double>;
+@TIME_SEEK_MESSAGE@
 struct CDVDMsgGeneralSynchronize : CDVDMsg {
   CDVDMsgGeneralSynchronize(std::chrono::milliseconds,int):CDVDMsg(GENERAL_SYNCHRONIZE) {}
   bool Wait(std::chrono::milliseconds duration,int) { assert(duration==0ms); ++waits; return ready; }
@@ -114,11 +115,12 @@ struct CDVDMessageQueue {
   void UpdateTimeFront() { ++updates; }
   bool IsInited() const { return m_bInitialized; }
   unsigned GetPacketCount(CDVDMsg::Message);
+  @USER_TIME_SEEK_COUNT@
   int GetDataSize() const { return m_iDataSize; }
   bool IsFull() const { return full; } bool full=true;
   void Flush(CDVDMsg::Message type=CDVDMsg::DEMUXER_PACKET);
   bool m_bInitialized=true, m_bAbortRequest=false, m_drain=false;
-  CCriticalSection m_section; Event m_hEvent; std::string m_owner="fixture";
+  mutable CCriticalSection m_section; Event m_hEvent; std::string m_owner="fixture";
   std::list<DVDMessageListItem> m_messages,m_prioMessages;
   int m_iDataSize=0, updates=0; double m_TimeBack=0,m_TimeFront=0;
 };
@@ -296,6 +298,8 @@ struct Parent {
   struct { void Suspend() {} } m_vs10Action;
   void FlushBuffers(double pts, bool accurate, bool sync, std::function<void()> complete={},bool preserveSubtitleGeometry=false);
   void CancelParentLifecycle(); bool ContinueParentLifecycle(); void SynchronizeStreams(bool);
+  void ClearSeekTarget() {}
+  std::shared_ptr<CDVDMsg> m_pendingSeek;
   bool m_activeAreaVideoReady=false;
   bool WaitForActiveAreaDetection(){return false;}
   void HandleMessages() {
@@ -749,6 +753,7 @@ int main() { startup_timeout_wait(); timeout_recovery(); subtitle_geometry_inten
 
 def harness(root=ROOT):
     queue = (root / 'xbmc/cores/VideoPlayer/DVDMessageQueue.cpp').read_text()
+    queue_header = (root / 'xbmc/cores/VideoPlayer/DVDMessageQueue.h').read_text()
     video = (root / 'xbmc/cores/VideoPlayer/VideoPlayerVideo.cpp').read_text()
     parent = (root / 'xbmc/cores/VideoPlayer/VideoPlayer.cpp').read_text()
     messages = (root / 'xbmc/cores/VideoPlayer/DVDMessage.h').read_text()
@@ -772,6 +777,8 @@ def harness(root=ROOT):
         '@AUDIO_FLUSH_MESSAGES@': block(audio_header, 'void FlushMessages()').replace(' override', ''),
         '@PUT@': block(queue, 'MsgQueueReturnCode CDVDMessageQueue::Put(const std::shared_ptr<CDVDMsg>& pMsg,\n'),
         '@PACKET_COUNT@': block(queue, 'unsigned CDVDMessageQueue::GetPacketCount('),
+        '@USER_TIME_SEEK_COUNT@': block(queue_header, '  unsigned GetUserTimeSeekCount() const'),
+        '@TIME_SEEK_MESSAGE@': block(messages, 'class CDVDMsgPlayerSeek :') + ';',
         '@QUEUE_FLUSH@': block(queue, 'void CDVDMessageQueue::Flush('),
         '@GET@': block(queue, 'MsgQueueReturnCode CDVDMessageQueue::Get('),
         '@VC_FLUSHED@': body(video, 'if (decoderState == CDVDVideoCodec::VC_FLUSHED ||'),

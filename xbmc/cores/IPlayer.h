@@ -15,6 +15,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -171,6 +172,8 @@ public:
    \return True if the player supports relative seeking, otherwise false
    */
   virtual bool SeekTimeRelative(int64_t iTime) { return false; }
+  // Keep a delayed relative preview anchored to the position it was based on.
+  virtual bool SeekTimeRelative(int64_t iTime, std::optional<int64_t> origin) { return false; }
 
   /*!
    \brief Sets the current time. This
