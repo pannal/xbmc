@@ -156,7 +156,7 @@ struct CActiveAESink {
 @STATES@
 struct CAESyncInfo {enum AESyncState {SYNC_START,SYNC_INSYNC};};
 struct CActiveAEStream {
-  bool m_paused=false;
+  bool m_paused=false,m_drain=false;
   CAESyncInfo::AESyncState m_syncState=CAESyncInfo::SYNC_INSYNC;
 };
 struct CActiveAE {
@@ -172,9 +172,12 @@ struct CActiveAE {
         sink->Control(signal,*static_cast<bool*>(data));
       }
     } m_controlPort;
+    bool NeedIecPack() const {return m_controlPort.sink->m_needIecPack;}
   } m_sink{{&sink}};
   void SPreservePausedPackets(CActiveAEStream*){}
   void FlushEngine(){}
+  // SPreservePausedPackets is a no-op here, so there is never preserved audio to release.
+  void ReleasePausedSinkSamples(){}
   void SResumeStream(CActiveAEStream* stream){stream->m_paused=false;}
   void Pause(CActiveAEStream* stream) {bool streaming;@PAUSE@}
   void ResumeIdle(CActiveAEStream* stream) {bool streaming;@RESUME@}

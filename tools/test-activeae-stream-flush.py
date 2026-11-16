@@ -51,8 +51,8 @@ def harness(engine, sink):
 TESTS = r'''
 int main(){
   for(bool shared:{false,true})for(bool raw:{false,true}){
-    CActiveAE engine;CActiveAEStream stream;
-    if(shared)engine.m_streams.push_back(2);
+    CActiveAE engine;CActiveAEStream stream,peer;
+    if(shared)engine.m_streams.push_back(&peer);
     if(!raw)engine.m_mode=CActiveAE::MODE_PCM;
     stream.m_paused=true;stream.m_bufferedTime=.3;
     stream.buffers.ratio=1.1;

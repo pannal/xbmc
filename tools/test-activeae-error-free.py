@@ -66,8 +66,8 @@ def harness(engine, sink):
 }
 """
     source = source.replace("#include <memory>", "#include <memory>\n#include <list>\n#include <functional>")
-    source = source.replace("constexpr int LOGERROR = 1;", """
-constexpr int LOGERROR = 1, LOGDEBUG = 0;
+    source = source.replace("constexpr int LOGERROR = 1, LOGINFO = 2;", """
+constexpr int LOGERROR = 1, LOGINFO = 2, LOGDEBUG = 0;
 struct CActiveAEDataProtocol {enum {FREESTREAM=101, ACC=1};};
 struct CActiveAEControlProtocol {enum {ACC=1, TIMEOUT=102};};
 @ENUMS@
@@ -109,8 +109,9 @@ struct CActiveAEStream {
     source = source.replace("struct CEngineStats {", "struct CEngineStats {\n"
                             "  void RemoveStream(unsigned int);\n")
     source = source.replace("#include <cassert>", "#include <cassert>\n#include <algorithm>")
-    source = source.replace("  std::vector<int> m_streams{1};", """
+    source = source.replace("  CActiveAEStream placeholder;\n  std::list<CActiveAEStream*> m_streams{&placeholder};", """
   std::list<CActiveAEStream*> m_streams;
+  void AbandonPausePreservation();
   std::vector<std::unique_ptr<Pool>> m_discardBufferPools;
   Port m_dataPort,m_controlPort;
   CActiveAE(){
@@ -126,6 +127,7 @@ struct CActiveAEStream {
 """)
     source = source.replace("  static constexpr int AE_TOP_CONFIGURED_PLAY=2;\n", "")
     source += "\n" + dispatch.replace("@FREE@", free)
+    source += "\n" + block(engine, "void CActiveAE::AbandonPausePreservation(")
     source += "\n" + block(engine, "void CActiveAE::DiscardStream(")
     source += "\n" + block(engine, "void CEngineStats::RemoveStream(")
     source += "\n" + block(engine, "bool CActiveAE::FreeStream(")

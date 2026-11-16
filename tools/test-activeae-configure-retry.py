@@ -25,7 +25,8 @@ AE = ROOT / "xbmc/cores/AudioEngine/Engines/ActiveAE"
 def harness(engine):
     methods = "\n".join(paused.block(engine, marker) for marker in (
         "void CActiveAE::Configure(", "AEAudioFormat CActiveAE::GetInputFormat(",
-        "bool CActiveAE::CompareFormat(", "bool CActiveAE::FlushEngine("))
+        "bool CActiveAE::CompareFormat(", "bool CActiveAE::FlushEngine(",
+        "void CActiveAE::ReleasePausedSinkSamples("))
     machine = paused.block(engine, "void CActiveAE::StateMachine(")
     error = machine[machine.index("    case AE_TOP_ERROR:"):
                     machine.index("    case AE_TOP_UNCONFIGURED:")]
@@ -90,7 +91,9 @@ struct CAESinkFactory {
     return {device.substr(separator+1),device.substr(0,separator)};
   }
 };
-struct CSampleBuffer {int returns=0;void Return(){++returns;}};
+struct Packet {int nb_samples=0;};
+struct CSampleBuffer {int returns=0;Packet packet;Packet* pkt=&packet;void Return(){++returns;}};
+struct CAESyncInfo {enum AESyncState {SYNC_START,SYNC_INSYNC};};
 struct CActiveAEBufferPool {
   AEAudioFormat m_format;
   explicit CActiveAEBufferPool(AEAudioFormat f={}):m_format(f){}
@@ -115,6 +118,7 @@ struct CActiveAEStream {
   std::unique_ptr<CActiveAEBufferPool> m_inputBuffers;
   std::unique_ptr<CActiveAEStreamBuffers> m_processingBuffers;
   int m_streamSpace=0;bool m_forceResampler=false;
+  CAESyncInfo::AESyncState m_syncState=CAESyncInfo::SYNC_INSYNC;
   void InitRemapper(){}
   struct {void SetSamplerate(int){}}m_limiter;
 };
@@ -189,6 +193,9 @@ struct CActiveAE {
   AEAudioFormat GetInputFormat(AEAudioFormat*);
   bool CompareFormat(const AEAudioFormat&,const AEAudioFormat&);
   bool FlushEngine();
+  std::deque<CSampleBuffer*> m_pausedSinkSamples;
+  bool m_pausePreserved=false,m_resumeEpoch=false;
+  void ReleasePausedSinkSamples();
   void ApplySettingsToFormat(AEAudioFormat&,Settings&,int*){}
   bool InitSink(){
     ++initCalls;

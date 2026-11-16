@@ -334,6 +334,10 @@ protected:
   void SPreservePausedPackets(CActiveAEStream* stream);
   void SFlushStream(CActiveAEStream *stream);
   bool FlushEngine();
+  void ReleasePausedSinkSamples();
+  void AbandonPausePreservation();
+  void SendPausedSinkSamples();
+  bool RunResumeEpoch();
   void ClearDiscardedBuffers();
   void SStopSound(CActiveAESound *sound);
   void DiscardSound(CActiveAESound *sound);
@@ -360,6 +364,12 @@ protected:
   std::chrono::milliseconds m_extTimeout;
   bool m_extError;
   bool m_sinkFlushPending{false};
+  // Sink-format PCM returned by an acknowledged PAUSE, oldest first.
+  std::deque<CSampleBuffer*> m_pausedSinkSamples;
+  bool m_pausePreserved{false};
+  bool m_resumeEpoch{false};
+  std::unique_ptr<CActiveAEBufferPool> m_resumePadBuffers;
+  XbmcThreads::EndTime<> m_resumeEpochTimer;
   bool m_extDrain;
   XbmcThreads::EndTime<> m_extDrainTimer;
   std::chrono::milliseconds m_extKeepConfig;

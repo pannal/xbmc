@@ -43,12 +43,13 @@ def harness(engine, sink, raw_delay=True):
 #include <cstring>
 #include <deque>
 #include <iostream>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <vector>
 using namespace std::chrono_literals;
 struct CLog {template<class... T> static void Log(int, T...) {}};
-constexpr int LOGERROR = 1;
+constexpr int LOGERROR = 1, LOGINFO = 2;
 struct CSinkDataProtocol {enum {RETURNSAMPLE, ACC, PAUSEDSAMPLE, SAMPLE, DRAIN};};
 struct CSinkControlProtocol {enum {PAUSE, ACC, ERR, STREAMING, FLUSH, PAUSED};};
 struct Packet {
@@ -156,7 +157,7 @@ struct CActiveAEStream {
   float m_bufferedTime=0;
   struct {double GetLastError(int64_t& time){time=0;return 0;}} m_syncError;
   std::deque<CSampleBuffer*> m_processingSamples;
-  bool m_paused = false;
+  bool m_paused = false, m_drain = false;
   CAESyncInfo::AESyncState m_syncState = CAESyncInfo::SYNC_INSYNC;
   Buffers buffers;
   Buffers* m_processingBuffers = &buffers;
@@ -180,6 +181,7 @@ struct CEngineStats {
  void Reset(unsigned int,bool);
  void UpdateStream(CActiveAEStream*);
  void GetDelay(AEDelayStatus&,CActiveAEStream*);
+ void AddSamples(int,const std::list<CActiveAEStream*>&);
 };
 @STATS@
 struct Stats:CEngineStats {
@@ -191,11 +193,16 @@ struct CActiveAE {
   enum Mode {MODE_RAW, MODE_PCM}; Mode m_mode = MODE_RAW;
   AEAudioFormat m_sinkFormat;
   CActiveAESink sink;
-  struct Sink {Control m_controlPort; Port& m_dataPort;} m_sink{{&sink}, sink.m_dataPort};
+  struct Sink {Control m_controlPort; Port& m_dataPort; bool m_needIecPack;
+    bool NeedIecPack() const {return m_needIecPack;}} m_sink{{&sink}, sink.m_dataPort, false};
   Buffers buffers;
   Buffers* m_sinkBuffers = &buffers; Buffers* m_vizBuffers=nullptr;
   Stats m_stats;
-  std::vector<int> m_streams{1};
+  CActiveAEStream placeholder;
+  std::list<CActiveAEStream*> m_streams{&placeholder};
+  std::deque<CSampleBuffer*> m_pausedSinkSamples;
+  bool m_pausePreserved = false, m_resumeEpoch = false;
+  void ReleasePausedSinkSamples();
   bool m_extError = false, m_sinkFlushPending=false;
   int m_state=0,configured=0,submitted=0;
   static constexpr int AE_TOP_CONFIGURED_PLAY=2;
@@ -208,6 +215,7 @@ struct CActiveAE {
   void Fallback(Message* msg) {@FALLBACK@}
 };
 @PRESERVE@
+@RELEASE@
 @FLUSH@
 int main() {
   CSampleBuffer played{0}, a{1}, b{2}, c{3}, d{4}, e{5};
@@ -238,11 +246,32 @@ int main() {
   Message lateMessage; lateMessage.sample = &late; lateMessage.signal = CSinkDataProtocol::PAUSEDSAMPLE;
   engine.Fallback(&lateMessage); assert(late.returns == 1);
   for (bool pcm : {false, true}) {
+    // Draining PCM and AC3 through a sink-side IEC packer keep the flush-on-pause path.
     CActiveAE other; CActiveAEStream audio;
-    if (pcm) other.m_mode = CActiveAE::MODE_PCM;
+    if (pcm) {other.m_mode = CActiveAE::MODE_PCM; audio.m_drain = true;}
     else other.m_sinkFormat.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_AC3;
     other.Pause(&audio);
     assert(other.m_stats.resets==1 && other.m_stats.updates==0 && audio.m_paused);
+    assert(!other.m_pausePreserved);
+  }
+  for (bool pcm : {false, true}) {
+    // In-sync PCM and Kodi-packed AC3 are preserved behind the resume gate instead.
+    CActiveAE kept; CActiveAEStream audio; CSampleBuffer held{12}, queued{13};
+    kept.m_streams = {&audio};
+    kept.sink.m_dataPort.Queue(CSinkDataProtocol::SAMPLE, &held, true);
+    kept.buffers.m_outputSamples.push_back(&queued);
+    if (pcm) kept.m_mode = CActiveAE::MODE_PCM;
+    else {kept.m_sinkFormat.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_AC3; kept.m_sink.m_needIecPack = true;}
+    kept.Pause(&audio);
+    assert(audio.m_paused && kept.m_pausePreserved && !kept.m_resumeEpoch && kept.m_stats.updates==1);
+    std::vector<int> order;
+    for (auto* sample : pcm ? kept.m_pausedSinkSamples : audio.buffers.m_outputSamples) order.push_back(sample->id);
+    assert((order == std::vector<int>{12,13}) && kept.buffers.m_outputSamples.empty());
+    assert(kept.m_stats.resets == (pcm ? 0 : 1));
+    assert(pcm ? audio.buffers.m_outputSamples.empty() : kept.m_pausedSinkSamples.empty());
+    assert(kept.FlushEngine() && !kept.m_pausePreserved && kept.m_pausedSinkSamples.empty());
+    assert(audio.m_syncState==CAESyncInfo::SYNC_START);
+    assert(held.returns == (pcm ? 1 : 0) && queued.returns == (pcm ? 1 : 0));
   }
   for (bool timeout : {false, true}) {
     CActiveAE failed; CActiveAEStream audio;
@@ -276,7 +305,7 @@ int main() {
   starting.m_syncState = CAESyncInfo::SYNC_START;
   initial.Pause(&starting); assert(initial.m_stats.resets==1);
   CActiveAE shared; CActiveAEStream mixed;
-  shared.m_streams.push_back(2);
+  shared.m_streams.push_back(&mixed);
   shared.Pause(&mixed); assert(shared.m_stats.resets == 0);
   CActiveAEStreamBuffers raw;
   CSampleBuffer mat{9}, pause{10}, dropped{11};
@@ -303,11 +332,12 @@ int main() {
         "@RETURN@", block(sink, "void CActiveAESink::ReturnBuffers(")).replace(
         "@PAUSE@", pause).replace("@FALLBACK@", fallback).replace(
         "@PRESERVE@", block(engine, "void CActiveAE::SPreservePausedPackets(")).replace(
+        "@RELEASE@", block(engine, "void CActiveAE::ReleasePausedSinkSamples(")).replace(
         "@FLUSH@", block(engine, "bool CActiveAE::FlushEngine(")).replace(
         "@DELAY@", block(stream_source, "float CActiveAEStreamBuffers::GetDelay(")).replace(
         "@STREAM_FLUSH@", block(stream_source, "void CActiveAEStreamBuffers::Flush(")).replace(
         "@STATS@", "\n".join(block(engine, signature) for signature in (
-            "void CEngineStats::Reset(", "void CEngineStats::UpdateStream(",
+            "void CEngineStats::Reset(", "void CEngineStats::UpdateStream(", "void CEngineStats::AddSamples(",
             "void CEngineStats::GetDelay(AEDelayStatus& status, CActiveAEStream *stream)"))).replace(
         "@CONFIGURE_GUARD@", configure_guard).replace("@STAGES_GUARD@", stages_guard)
 
@@ -327,8 +357,8 @@ def main():
                 ("reordered-packets", engine.replace("output.insert(output.begin(), packets.begin()",
                                                     "output.insert(output.end(), packets.begin()"), sink),
                 ("duplicated-ownership", engine.replace("queue->clear();", ""), sink),
-                ("pcm-preservation", engine.replace("if (m_mode == MODE_RAW &&",
-                                                   "if (m_mode >= MODE_RAW &&"), sink),
+                ("pcm-preservation", engine.replace("const bool trueHD = m_mode == MODE_RAW &&",
+                                                   "const bool trueHD = m_mode >= MODE_RAW &&"), sink),
                 ("late-return-leak", engine.replace("(*buffer)->Return();", ""), sink),
                 ("unbarriered-recovery", engine.replace(
                     "if (m_sinkFlushPending && !FlushEngine())",

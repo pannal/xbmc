@@ -114,6 +114,7 @@ struct CActiveAEStream {
 struct AEDelayStatus {double delay = 0; double GetDelay() const {return delay;}};
 struct Stats {double delay = 0.1; void GetDelay(AEDelayStatus& status) {status.delay = delay;}};
 struct CSinkControlProtocol {enum {STREAMING};};
+struct CSinkDataProtocol {enum {SAMPLE};};
 @CONSTANTS@
 struct CActiveAE {
   enum Mode {MODE_RAW, MODE_PCM, MODE_TRANSCODE};
@@ -127,7 +128,18 @@ struct CActiveAE {
     void SendOutMessage(int signal, void* value, size_t) {
       assert(signal == CSinkControlProtocol::STREAMING && *static_cast<bool*>(value));
     }
-  } m_controlPort;} m_sink;
+  } m_controlPort;
+  struct {
+    std::deque<CSampleBuffer*> sent;
+    void SendOutMessage(int signal, void* value, size_t) {
+      assert(signal == CSinkDataProtocol::SAMPLE);
+      sent.push_back(*static_cast<CSampleBuffer**>(value));
+    }
+  } m_dataPort;} m_sink;
+  std::deque<CSampleBuffer*> m_pausedSinkSamples;
+  bool m_pausePreserved = false, m_resumeEpoch = false;
+  XbmcThreads::EndTime<> m_resumeEpochTimer;
+  void SendPausedSinkSamples();
   CSampleBuffer* SyncStream(CActiveAEStream* stream);
   void SResumeStream(CActiveAEStream* stream);
   void Resume(CActiveAEStream* stream) {
@@ -146,6 +158,7 @@ struct CActiveAE {
   }
 };
 @SYNC_STREAM@
+@SEND_PAUSED@
 @RESUME_SYNC@
 static void near(double actual, double expected) {
   if (std::abs(actual - expected) > 1e-7) {
@@ -359,6 +372,22 @@ int main(int argc, char**) {
              (preserve ? CAESyncInfo::SYNC_INSYNC : CAESyncInfo::SYNC_START));
     }
   }
+  // Preserved non-TrueHD pauses open the resume epoch, or release held audio to reacquire.
+  for (bool pcm : {false, true}) for (bool insync : {false, true}) {
+    Replay replay(false, pcm);
+    CSampleBuffer held;
+    replay.engine.m_pausePreserved = true;
+    replay.engine.m_pausedSinkSamples.push_back(&held);
+    replay.stream.m_paused = true;
+    replay.stream.m_syncState = insync ? CAESyncInfo::SYNC_INSYNC : CAESyncInfo::SYNC_ADJUST;
+    replay.engine.Resume(&replay.stream);
+    assert(!replay.engine.m_pausePreserved && replay.engine.m_resumeEpoch == insync);
+    assert(replay.stream.m_syncState ==
+           (insync ? CAESyncInfo::SYNC_INSYNC : CAESyncInfo::SYNC_START));
+    assert(replay.engine.m_sink.m_dataPort.sent.size() == (insync ? 0u : 1u));
+    assert(replay.engine.m_pausedSinkSamples.size() == (insync ? 1u : 0u));
+    assert(!insync || !replay.engine.m_resumeEpochTimer.IsTimePast());
+  }
   {
     Replay replay;
     replay.stream.m_syncState = CAESyncInfo::SYNC_INSYNC;
@@ -376,6 +405,7 @@ int main(int argc, char**) {
         "@SAMPLE@", sample).replace("@SYNC_STREAM@", block(engine, "CSampleBuffer* CActiveAE::SyncStream(")).replace(
         "@RESUME@", resume).replace("@IDLE_RESUME@", idle_resume).replace(
         "@RESUME_SYNC@", block(engine, "void CActiveAE::SResumeStream(")).replace(
+        "@SEND_PAUSED@", block(engine, "void CActiveAE::SendPausedSinkSamples(")).replace(
         "@FLUSH@", flush.replace("stream->", "replay.stream."))
 
 
@@ -412,8 +442,8 @@ def main():
         if args.negative_control:
             mutations = {
                 "forced-resume-mute": engine.replace(
-                    "if (m_mode == MODE_RAW &&\n        m_sinkFormat.m_streamInfo.m_type",
-                    "if (false && m_mode == MODE_RAW &&\n        m_sinkFormat.m_streamInfo.m_type"),
+                    "if (trueHD && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC)",
+                    "if (false && trueHD && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC)"),
                 "unscaled-pause": engine.replace("ret->pkt->pause_burst_ms * syncErrorScale;",
                                                  "ret->pkt->pause_burst_ms;"),
                 "unscaled-drop": engine.replace("stream->m_format.m_streamInfo.GetDuration() * syncErrorScale;",
