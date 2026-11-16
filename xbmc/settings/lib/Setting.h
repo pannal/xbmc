@@ -299,6 +299,14 @@ public:
     std::shared_lock<CSharedSection> lock(m_critical);
     return m_value;
   }
+  bool TryGetValue(int& value) const
+  {
+    std::shared_lock<CSharedSection> lock(m_critical, std::try_to_lock);
+    if (!lock.owns_lock())
+      return false;
+    value = m_value;
+    return true;
+  }
   bool SetValue(int value);
   int GetDefault() const { return m_default; }
   void SetDefault(int value);
