@@ -80,8 +80,10 @@ static void excluded(const std::string& operation) {
   double result = 0;
   std::thread contender([&] {
     if (operation == "snapshot") { double absolute; result = c.GetClock(absolute, false); }
+    else if (operation == "frame-snapshot") { bool paused;int64_t count;result=c.GetClock(paused,count,false); }
     else if (operation == "reset") c.Reset();
     else if (operation == "framerate") c.UpdateFramerate(24);
+    else if (operation == "pause-state") result = c.IsPaused();
     else throw std::runtime_error("unknown operation");
     record("completed");
   });
@@ -117,12 +119,20 @@ static void arithmetic() {
   // ErrorAdjust recursively enters GetClock and Discontinuity.
   near(c.ErrorAdjust(10000, "test"), 10000);
   near(c.GetClock(), 710000);
+  require(!c.IsPaused(), "running clock reported paused");
   c.Pause(true);
+  require(c.IsPaused(), "user pause was not reported");
+  require(c.GetClockSpeed() > 0, "pause must not change the relative frequency API");
   CVideoReferenceClock::now += 100000;
   near(c.GetClock(absolute), 710000);
   c.Pause(false);
+  require(!c.IsPaused(), "resume was not reported");
   CVideoReferenceClock::now += 100000;
   near(c.GetClock(), 810000);
+  c.SetSpeed(DVD_PLAYSPEED_PAUSE);
+  require(c.IsPaused(), "buffering pause was not reported");
+  c.SetSpeed(DVD_PLAYSPEED_NORMAL);
+  require(!c.IsPaused(), "buffering resume was not reported");
   c.UpdateFramerate(24);
   c.SetVsyncAdjust(1);
   near(c.ErrorAdjust(30000, "quantized"), 1000000.0 / 24);
@@ -131,10 +141,28 @@ static void arithmetic() {
   near(c.GetSpeedAdjust(), 0);
   near(c.GetVsyncAdjust(), 0);
 }
+static void frame_advances() {
+  Clock c;
+  c.GetClock();c.Pause(true);
+  bool paused;int64_t count;
+  near(c.GetClock(paused,count),0);
+  require(paused&&count==0,"incorrect initial pause snapshot");
+  c.Advance(125000,3);
+  near(c.GetClock(paused,count),125000);
+  require(paused&&count==3,"multi-frame advance collapsed");
+  c.Advance(0,0);
+  c.Advance(41708);c.Advance(41708);
+  near(c.GetClock(paused,count),208416);
+  require(count==5,"queued single-step advances collapsed");
+  c.Pause(false);c.Advance(41708);
+  c.GetClock(paused,count);
+  require(!paused&&count==5,"running clock minted frame steps");
+}
 int main(int argc, char** argv) {
   try {
     require(argc == 2, "expected a case name");
     if (std::string(argv[1]) == "arithmetic") arithmetic();
+    else if (std::string(argv[1]) == "frame-advances") frame_advances();
     else excluded(argv[1]);
     std::cout << "PASS " << argv[1] << '\n';
   } catch (const std::exception& error) {
@@ -178,7 +206,8 @@ def run(source, header, cases, must_pass):
 if __name__ == "__main__":
     source = (CLOCK / "DVDClock.cpp").read_text()
     header = (CLOCK / "DVDClock.h").read_text()
-    run(source, header, ["snapshot", "reset", "framerate", "arithmetic"], True)
+    run(source, header, ["snapshot", "frame-snapshot", "reset", "framerate", "pause-state", "arithmetic", "frame-advances"], True)
+    run(source.replace("m_advanceCount += frames;","++m_advanceCount;"),header,["frame-advances"],False)
     # Negative controls: restore each old synchronization defect independently.
     paired = "double CDVDClock::GetClock(double& absolute"
     start = source.index(paired)

@@ -132,8 +132,12 @@ enum EFIELDSYNC {FS_NONE,FS_TOP,FS_BOT};
 namespace OVERLAY {struct CRenderer {using OverlayBatch=std::vector<int>;};}
 struct CDVDClock {
   std::chrono::steady_clock::time_point start=std::chrono::steady_clock::now();
-  double GetClock() const {return std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();}
+  std::atomic<double> pausedClock{-1};
+  std::atomic<int64_t> advances{0};
+  double GetClock() const {if(pausedClock>=0)return pausedClock;return std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();}
   double GetClockSpeed() const {return 1;}
+  bool IsPaused() const {return false;}
+  double GetClock(bool& paused,int64_t& advanceCount) const {paused=IsPaused();advanceCount=advances;return GetClock();}
   bool GetClockInfo(int& missed,double& speed,double& refresh) {missed=0;speed=1;refresh=1000;return false;}
   void SetVsyncAdjust(double) {}
   PLAYBACK_DIAGNOSTICS::ClockHistory::Report GetDiagnosticEvents(uint64_t) {return {};}
