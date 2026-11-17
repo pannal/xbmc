@@ -367,8 +367,11 @@ void CGUIWindow::AfterRender()
   // Check to see if we should close at this point
   // We check after the controls have finished rendering, as we may have to close due to
   // the controls rendering after the window has finished it's animation
-  // we call the base class instead of this class so that we can find the change
-  if (m_closing && !CGUIControlGroup::IsAnimating(ANIM_TYPE_WINDOW_CLOSE))
+  // we call the base class instead of this class so that we can find the change.
+  // Animate() does not advance anything while animations are disabled, so a close
+  // animation queued before they were disabled would never finish; don't wait for it.
+  if (m_closing &&
+      (!m_animationsEnabled || !CGUIControlGroup::IsAnimating(ANIM_TYPE_WINDOW_CLOSE)))
     Close(true);
 
 }
@@ -383,7 +386,8 @@ void CGUIWindow::Close_Internal(bool forceClose /*= false*/, int nextWindowID /*
   forceClose |= (nextWindowID == WINDOW_FULLSCREEN_VIDEO ||
                  nextWindowID == WINDOW_FULLSCREEN_GAME);
 
-  if (!forceClose && HasAnimation(ANIM_TYPE_WINDOW_CLOSE))
+  // With animations disabled the close animation would never run: close at once.
+  if (!forceClose && m_animationsEnabled && HasAnimation(ANIM_TYPE_WINDOW_CLOSE))
   {
     if (!m_closing)
     {
@@ -556,6 +560,10 @@ void CGUIWindow::OnInitWindow()
   m_hasProcessed = false;
   m_closing = false;
   m_active = true;
+  // CGUIWindowManager::DeInitialize() disables animations on the windows it force-closes.
+  // Windows without an XML file (e.g. the built-in Dim/Black screensaver) never pass
+  // through SetDefaults() again when they are reused, so restore the flag here.
+  m_animationsEnabled = true;
   ResetAnimations();  // we need to reset our animations as those windows that don't dynamically allocate
                       // need their anims reset. An alternative solution is turning off all non-dynamic
                       // allocation (which in some respects may be nicer, but it kills hdd spindown and the like)
