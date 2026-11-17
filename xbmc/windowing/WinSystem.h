@@ -263,6 +263,9 @@ public:
   // Around drawing the PQ menu graphics of a frame into their own buffer.
   virtual bool BeginMenuOverlayRender() { return false; }
   virtual void EndMenuOverlayRender() {}
+  // A screenshot's GUI pass, drawn as plain SDR like the video it goes over:
+  // the disc menu composite and the HDR GUI encoding stand aside meanwhile.
+  void SetPlainGuiCapture(bool plain) { m_plainGuiCapture = plain; }
 
   /*!
    * \brief System supports Video Super Resolution HW upscaler i.e.:
@@ -325,6 +328,7 @@ public:
   virtual bool HasContext() { return false; }
 
 protected:
+  bool m_plainGuiCapture{false};
   void UpdateDesktopResolution(RESOLUTION_INFO& newRes, const std::string &output, int width, int height, float refreshRate, uint32_t dwFlags);
   void UpdateDesktopResolution(RESOLUTION_INFO& newRes,
                                const std::string& output,

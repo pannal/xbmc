@@ -261,11 +261,15 @@ endif()
 
 if(AML_FOUND)
   list(APPEND SOURCES ActiveAreaCache.cpp
+                      AMLCaptureConvert.cpp
                       AMLUtils.cpp
+                      AMLVideoCapture.cpp
                       ScreenshotAML.cpp)
   list(APPEND HEADERS ActiveAreaCache.h
                       AMLActiveAreaVDIN.h
+                      AMLCaptureConvert.h
                       AMLUtils.h
+                      AMLVideoCapture.h
                       AMLVideoMute.h
                       AMLNativeWorker.h
                       ScreenshotAML.h)

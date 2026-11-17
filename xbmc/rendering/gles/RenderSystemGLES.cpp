@@ -241,15 +241,31 @@ bool CRenderSystemGLES::BeginRender()
     return false;
 
   DrainTextureResources();
+  SelectGuiEncoding();
+  return true;
+}
 
+void CRenderSystemGLES::SetPlainGuiEncoding(bool plain)
+{
+  m_plainGuiEncoding = plain;
+  if (CanRender())
+    SelectGuiEncoding();
+}
+
+void CRenderSystemGLES::SelectGuiEncoding()
+{
   // While the disc menu composite is active it encodes the GUI itself (PQ and
-  // limited range at its output), so the per-primitive paths stand down.
+  // limited range at its output), so the per-primitive paths stand down. A
+  // screenshot's plain pass encodes nothing either.
+  const bool plain = m_plainGuiEncoding;
   const bool menuComposite = CServiceBroker::GetWinSystem()->IsMenuCompositeActive();
-  m_guiColour = CServiceBroker::GetWinSystem()->GetGuiColourAdjustment();
+  m_guiColour = plain ? std::pair<float, float>{1.0f, 1.0f}
+                      : CServiceBroker::GetWinSystem()->GetGuiColourAdjustment();
   const bool useGuiColour = m_guiColour != std::pair<float, float>{1.0f, 1.0f};
-  const bool useLimited = CServiceBroker::GetWinSystem()->UseLimitedColor() && !menuComposite;
+  const bool useLimited =
+      !plain && CServiceBroker::GetWinSystem()->UseLimitedColor() && !menuComposite;
   const bool usePQ =
-      CServiceBroker::GetWinSystem()->GetGfxContext().IsTransferPQ() && !menuComposite;
+      !plain && CServiceBroker::GetWinSystem()->GetGfxContext().IsTransferPQ() && !menuComposite;
 
   if (m_limitedColorRange != useLimited || m_transferPQ != usePQ ||
       m_guiColourEnabled != useGuiColour)
@@ -274,8 +290,6 @@ bool CRenderSystemGLES::BeginRender()
 
     InitialiseShaders();
   }
-
-  return true;
 }
 
 bool CRenderSystemGLES::EndRender()
