@@ -171,7 +171,7 @@ constexpr int VideoPlayer_VIDEO=2, CODEC_INTERLACED=1;
 namespace MathUtils {bool FloatEquals(double a,double b,double t){return std::abs(a-b)<t;}}
 namespace PLAYBACK_DIAGNOSTICS {bool Enabled(){return false;}int64_t NowUs(){return 0;}}
 enum class EINTERLACEMETHOD {VS_INTERLACEMETHOD_NONE};
-struct SStartMsg {uint64_t epoch=0;int player=0;double cachetime=0,cachetotal=0,timestamp=0;};
+struct SStartMsg {std::shared_ptr<const void> subtitleProbeSource;uint64_t epoch=0;int player=0;double cachetime=0,cachetotal=0,timestamp=0;};
 struct CDVDMsg {enum {PLAYER_AVCHANGE,PLAYER_STARTED};explicit CDVDMsg(int){}virtual ~CDVDMsg()=default;};
 template<class T>struct CDVDMsgType:CDVDMsg {T value;CDVDMsgType(int t,T v):CDVDMsg(t),value(v){}};
 struct CSysfsPath {explicit CSysfsPath(const char*){}bool Exists(){return false;}};

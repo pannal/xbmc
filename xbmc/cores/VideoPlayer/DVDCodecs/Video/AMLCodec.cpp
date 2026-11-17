@@ -2029,6 +2029,7 @@ bool CAMLCodec::BeginLifecycle(Lifecycle operation, std::function<void()> before
   }
   if (m_lifecycle != operation)
   {
+    m_inputPending = false;
     aml_subtitle_active_area_invalidate(operation == Lifecycle::RESET,
                                         operation != Lifecycle::CLOSE);
     aml_dv_backend_invalidate(m_dvSession);
@@ -2054,6 +2055,13 @@ bool CAMLCodec::ContinueLifecycle()
   {
     if (m_lifecycleFailed || m_session.DisplayBlocked())
       return false;
+    // A reset can retire the sole paused frame. Service its hold even when
+    // neither decoding nor presentation polls, without bypassing native fences.
+    {
+      auto operation = m_session.AcquireDecoder();
+      if (operation)
+        CheckVideoHold();
+    }
     if (m_speedPending)
       SetSpeed(m_requestedSpeed);
     return !m_speedPending;
@@ -3047,7 +3055,8 @@ void CAMLCodec::ResetInternal()
   m_tp_last_frame = std::chrono::system_clock::now();
 }
 
-bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
+bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts,
+                       bool allowInputPause)
 {
   if (LifecyclePending() && !ContinueLifecycle())
     return false;
@@ -3086,8 +3095,9 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
                                : m_decoder_minimum_buffer;
   }
 
-  if (!m_opened || !pData || free_len == 0 || new_buffer_level >= 100.0f ||
-      (felStream && free_len < chunk_size) || felBufferAhead)
+  if (!m_opened || !pData || (!m_inputPending &&
+      (free_len == 0 || new_buffer_level >= 100.0f ||
+       (felStream && free_len < chunk_size) || felBufferAhead)))
   {
     CLog::Log(LOGDEBUG, LOGVIDEO,
       "CAMLCodec::{}: skip add data dl:{:d} fl:{:d} sz:{:d}({:d}) lv:{:.1f}% dts:{:.3f} pts:{:.3f}", __FUNCTION__,
@@ -3102,87 +3112,100 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
     return false;
   }
 
-  m_no_data_since_reset = false;
-
-  if (am_private->hdr_buf.size > 0)
+  if (!m_inputPending)
   {
-    CLog::Log(LOGDEBUG, "CAMLCodec::{}: feed extradata on first frame. extradata size: {:d}", __FUNCTION__,
-      am_private->hdr_buf.size);
+    m_no_data_since_reset = false;
 
-    am_packet_t *pkt = &am_private->am_pkt;
-    pkt->data = pData;
-    pkt->data_size = iSize;
-    pkt->avpkt.data = pkt->data;
-    pkt->avpkt.size = pkt->data_size;
-
-    av_buffer_unref(&pkt->avpkt.buf);
-    int ret = av_grow_packet(&(pkt->avpkt), am_private->hdr_buf.size);
-    if (ret < 0)
+    if (am_private->hdr_buf.size > 0)
     {
-      CLog::Log(LOGDEBUG, "CAMLCodec::{}: ERROR!!! grow_packet for apk failed.!!!", __FUNCTION__);
-      return ret;
+      CLog::Log(LOGDEBUG, "CAMLCodec::{}: feed extradata on first frame. extradata size: {:d}", __FUNCTION__,
+        am_private->hdr_buf.size);
+
+      am_packet_t *pkt = &am_private->am_pkt;
+      pkt->data = pData;
+      pkt->data_size = iSize;
+      pkt->avpkt.data = pkt->data;
+      pkt->avpkt.size = pkt->data_size;
+
+      av_buffer_unref(&pkt->avpkt.buf);
+      int ret = av_grow_packet(&(pkt->avpkt), am_private->hdr_buf.size);
+      if (ret < 0)
+      {
+        CLog::Log(LOGDEBUG, "CAMLCodec::{}: ERROR!!! grow_packet for apk failed.!!!", __FUNCTION__);
+        return ret;
+      }
+
+      pkt->data = pkt->avpkt.data;
+      pkt->data_size = pkt->avpkt.size;
+
+      memmove(pkt->data + am_private->hdr_buf.size, pkt->data, iSize);
+      memcpy(pkt->data, am_private->hdr_buf.data, am_private->hdr_buf.size);
+
+      iSize += am_private->hdr_buf.size;
+      am_private->hdr_buf.size = 0;
+      free(am_private->hdr_buf.data);
+      am_private->hdr_buf.data = NULL;
+    }
+    else
+    {
+      am_private->am_pkt.data = pData;
+      am_private->am_pkt.data_size = iSize;
     }
 
-    pkt->data = pkt->avpkt.data;
-    pkt->data_size = pkt->avpkt.size;
+    am_private->am_pkt.newflag    = 1;
+    am_private->am_pkt.isvalid    = 1;
+    am_private->am_pkt.avduration = 0;
 
-    memmove(pkt->data + am_private->hdr_buf.size, pkt->data, iSize);
-    memcpy(pkt->data, am_private->hdr_buf.data, am_private->hdr_buf.size);
+    // handle pts
+    if (m_hints.ptsinvalid || pts == DVD_NOPTS_VALUE)
+      am_private->am_pkt.avpts = UINT64_0;
+    else
+    {
+      am_private->am_pkt.avpts = pts;
+      m_state |= STATE_HASPTS;
+    }
 
-    iSize += am_private->hdr_buf.size;
-    am_private->hdr_buf.size = 0;
-    free(am_private->hdr_buf.data);
-    am_private->hdr_buf.data = NULL;
+    // handle dts
+    if (dts == DVD_NOPTS_VALUE)
+      am_private->am_pkt.avdts = am_private->am_pkt.avpts;
+    else
+    {
+      am_private->am_pkt.avdts = dts;
+
+      // For VC1 AML decoder uses PTS only on I-Frames
+      if (am_private->am_pkt.avpts == UINT64_0 && (((size_t)am_private->gcodec.param) & KEYFRAME_PTS_ONLY))
+        am_private->am_pkt.avpts = am_private->am_pkt.avdts;
+    }
+
+    // We use this to determine the fill state if no PTS is given
+    if (m_cur_pts == DVD_NOPTS_VALUE)
+    {
+      // No PTS given -> use first DTS for AML ptsserver initialization
+      if ((m_state & STATE_HASPTS) == 0)
+        am_private->am_pkt.avpts = am_private->am_pkt.avdts;
+    }
+
+    // some formats need header/data tweaks.
+    // the actual write occurs once in write_av_packet
+    // and is controlled by am_pkt.newflag.
+    set_header_info(am_private);
   }
-  else
-  {
-    am_private->am_pkt.data = pData;
-    am_private->am_pkt.data_size = iSize;
-  }
-
-  am_private->am_pkt.newflag    = 1;
-  am_private->am_pkt.isvalid    = 1;
-  am_private->am_pkt.avduration = 0;
-
-  // handle pts
-  if (m_hints.ptsinvalid || pts == DVD_NOPTS_VALUE)
-    am_private->am_pkt.avpts = UINT64_0;
-  else
-  {
-    am_private->am_pkt.avpts = pts;
-    m_state |= STATE_HASPTS;
-  }
-
-  // handle dts
-  if (dts == DVD_NOPTS_VALUE)
-    am_private->am_pkt.avdts = am_private->am_pkt.avpts;
-  else
-  {
-    am_private->am_pkt.avdts = dts;
-
-    // For VC1 AML decoder uses PTS only on I-Frames
-    if (am_private->am_pkt.avpts == UINT64_0 && (((size_t)am_private->gcodec.param) & KEYFRAME_PTS_ONLY))
-      am_private->am_pkt.avpts = am_private->am_pkt.avdts;
-  }
-
-  // We use this to determine the fill state if no PTS is given
-  if (m_cur_pts == DVD_NOPTS_VALUE)
-  {
-    // No PTS given -> use first DTS for AML ptsserver initialization
-    if ((m_state & STATE_HASPTS) == 0)
-      am_private->am_pkt.avpts = am_private->am_pkt.avdts;
-  }
-
-  // some formats need header/data tweaks.
-  // the actual write occurs once in write_av_packet
-  // and is controlled by am_pkt.newflag.
-  set_header_info(am_private);
 
   // loop until we write all into codec, am_pkt.isvalid
   // will get set to zero once everything is consumed.
   // PLAYER_SUCCESS means all is ok, not all bytes were written.
   int loop = 0;
   bool write_failed = false;
+  const auto pauseInput = [&] {
+    if (!allowInputPause || m_processInfo.GetNewSpeed() != 0.0f ||
+        m_processInfo.IsFrameAdvance())
+      return false;
+    // The wrapper pins the prepared packet until this cursor is consumed or
+    // reset. Do not replay its PTS, headers or already written payload prefix.
+    m_inputPending = true;
+    m_wrFailActive = false;
+    return true;
+  };
   while (am_private->am_pkt.isvalid && loop < 100)
   {
     if (m_abort)
@@ -3190,6 +3213,9 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
       CLog::Log(LOGDEBUG, "CAMLCodec::{}: write loop aborted by flush", __FUNCTION__);
       return false;
     }
+
+    if (pauseInput())
+      return false;
 
     // abort on any errors.
     if (write_av_packet(am_private, &am_private->am_pkt) != PLAYER_SUCCESS)
@@ -3202,7 +3228,13 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
       CLog::Log(LOGDEBUG, "CAMLCodec::{} Decode: write_av_packet looping", __FUNCTION__);
     loop++;
   }
-  if (loop == 100)
+  // A pause may arrive during the last blocking write. Completion still wins;
+  // an incomplete paused packet must not fall through to decoder recovery.
+  if (m_abort)
+    return false;
+  if (!write_failed && am_private->am_pkt.isvalid && pauseInput())
+    return false;
+  if (loop == 100 && am_private->am_pkt.isvalid)
   {
     // Decoder got stuck; Reset
     Reset();
@@ -3211,6 +3243,8 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
 
   if (write_failed)
   {
+    // Only EAGAIN preserves a resumable cursor in write_av_packet.
+    m_inputPending = false;
     // Hard (non-EAGAIN) write/checkin failure: the codec device is rejecting
     // data outright, typically after a codec_reset raced a display mode switch
     // and left the vdec dead. Returning true here would report the packet as
@@ -3233,6 +3267,7 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
       CLog::Log(LOGERROR, "CAMLCodec::{}: persistent codec write failure, dropping packet pts:{:.3f}",
         __FUNCTION__, pts / DVD_TIME_BASE);
       m_wrFailActive = false;
+      m_inputPending = false;
       return true;
     }
     else if (now - m_tpWrFailLastReset > std::chrono::milliseconds(250))
@@ -3246,6 +3281,7 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
     usleep(RW_WAIT_TIME);
     return false;
   }
+  m_inputPending = false;
   m_wrFailActive = false;
   if (timedFEL && !continuousFEL)
     m_felInputStartDts = dts;

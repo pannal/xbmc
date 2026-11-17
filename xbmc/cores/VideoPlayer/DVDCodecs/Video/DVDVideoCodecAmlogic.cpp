@@ -916,6 +916,12 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   if (!ContinueLifecycle())
     return false;
 
+  // A pause can interrupt a partially written, converted packet. The requeued
+  // message owns its raw data; keeping the converter untouched owns its output.
+  if (m_pendingInput && m_Codec && m_Codec->HasPendingInput())
+    return AddPreparedInput(packet);
+  m_pendingInput.reset();
+
   // More input after the end of the input (a growing file). The decoder ended
   // the stream and decodes again only after a reset, from the next key frame.
   // The shown picture stays until the next picture.
@@ -1056,16 +1062,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     }
   }
 
-  data_added = m_Codec->AddData(pData, iSize, packet.dts, m_hints.ptsinvalid ? DVD_NOPTS_VALUE : packet.pts);
-
-  // pop package only from list if hardware decoder did accept the data
-  if (data_added && dual_layer_converted)
-  {
-    DLDemuxPacket dual_layer_packet= m_packages.front();
-    uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
-    KODI::MEMORY::AlignedFree(pDataBackup);
-    m_packages.pop_front();
-  }
+  m_pendingInput = PendingInput{&packet, pData, iSize, dual_layer_converted};
+  data_added = AddPreparedInput(packet);
 
   // Make change in luminance as late a possible to try and avoid starting change in luminance in menu.
   if (set_osd_max)
@@ -1075,6 +1073,30 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   }
 
   return data_added;
+}
+
+bool CDVDVideoCodecAmlogic::AddPreparedInput(const DemuxPacket& packet)
+{
+  if (m_pendingInput->packet != &packet)
+  {
+    CLog::Log(LOGERROR, "CDVDVideoCodecAmlogic::AddData - pending packet was replaced");
+    ResetDecoder(true);
+    return false;
+  }
+  const auto pending = *m_pendingInput;
+  const bool added = m_Codec->AddData(pending.data, pending.size, packet.dts,
+                                    m_hints.ptsinvalid ? DVD_NOPTS_VALUE : packet.pts,
+                                    m_inputPauseAllowed);
+  if (added && pending.dualLayer)
+  {
+    KODI::MEMORY::AlignedFree(std::get<0>(m_packages.front()));
+    m_packages.pop_front();
+  }
+  // Normal rejection/recovery retains its existing retry policy. Only a pause
+  // continuation pins the original conversion and the native packet cursor.
+  if (added || !m_Codec->HasPendingInput())
+    m_pendingInput.reset();
+  return added;
 }
 
 void CDVDVideoCodecAmlogic::Reset(void)
@@ -1123,6 +1145,7 @@ bool CDVDVideoCodecAmlogic::ContinueLifecycle()
 
 void CDVDVideoCodecAmlogic::FinishReset()
 {
+  m_pendingInput.reset();
   while (!m_packages.empty())
   {
     DLDemuxPacket dual_layer_packet= m_packages.front();

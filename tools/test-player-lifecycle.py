@@ -185,17 +185,21 @@ struct CVideoPlayerVideo {
     for(int once=0; once<1; ++once) {
       int iPriority=0; auto timeout=0ms; bool onlyPrioMsgs=false;
       const bool diagnostics=false; // Normal logging: lifecycle policy remains exercised.
+      @PRIORITY@
       @SELECTION@
       (void)onlyPrioMsgs;
       if(ret==MSGQ_ABORT) { aborted=true; return; }
       if(ret!=MSGQ_OK) return;
+      if(beforeDispatch)beforeDispatch();
       if(pMsg->IsType(CDVDMsg::GENERAL_RESET)) { @RESET@ }
       else if(pMsg->IsType(CDVDMsg::GENERAL_FLUSH)) { @FLUSH_HANDLER@ }
       else if(pMsg->IsType(CDVDMsg::GENERAL_RESYNC)) ++resyncs;
       else if(pMsg->IsType(CDVDMsg::GENERAL_PAUSE)) ++pauses;
       else if(pMsg->IsType(CDVDMsg::GENERAL_SYNCHRONIZE)) ++synchronizes;
-      else if(pMsg->IsType(CDVDMsg::DEMUXER_PACKET))
+      else if(pMsg->IsType(CDVDMsg::DEMUXER_PACKET)) {
+        @PAUSE_ADMISSION@
         delivered.push_back(std::static_pointer_cast<CDVDMsgDemuxerPacket>(pMsg)->id);
+      }
     }
   }
   CDecoderFlushRecovery m_decoderFlushRecovery;
@@ -204,7 +208,9 @@ struct CVideoPlayerVideo {
   std::optional<uint64_t> m_pendingNoOutputRecovery;
   uint64_t m_pendingNoOutputEpoch=0; bool m_bStop=false;
   int m_speed=DVD_PLAYSPEED_NORMAL; bool m_paused=false;
-  struct {float GetNewSpeed() const {return speed;} float speed=1;} m_processInfo;
+  struct {float GetNewSpeed() const {return speed;} float speed=1;bool advance=false;bool IsFrameAdvance() const{return advance;}} m_processInfo;
+  std::function<void()> beforeDispatch;
+  void SendMessageBack(const std::shared_ptr<CDVDMsg>& pMsg,int priority=0){@SEND_BACK@}
   void PublishNoOutputRecovery();
   std::shared_ptr<FakeCodec> m_pVideoCodec=std::make_shared<FakeCodec>();
   Renderer m_renderManager; CDVDMessageQueue m_messageQueue,m_messageParent;
@@ -213,7 +219,7 @@ struct CVideoPlayerVideo {
   enum class DrainKind {NONE,STILL,INPUT,STREAM_CHANGE};
   struct {DrainKind kind=DrainKind::NONE;} m_drain; std::atomic_bool m_draining{false};
   void AbortDrain() { m_drain={}; m_draining=false; }
-  bool CanOutputPicture() const { return true; }
+  bool CanOutputPicture() const {@CAN_OUTPUT@}
   bool m_pendingRecoveryDiscard=false,m_isEOS=false,m_inputEnded=false,m_rewindStalled=true,m_stalled=false,m_bAbortOutput=false;
   bool aborted=false; int m_syncState=IDVDStreamPlayer::SYNC_INSYNC;
   struct { VideoBuffer* videoBuffer=nullptr; } m_picture;
@@ -743,7 +749,32 @@ static void timeout_recovery() {
   assert(receive(drain.m_messageParent,0)==MSGQ_TIMEOUT && !drain.m_pendingNoOutputRecovery);
 }
 
-int main() { startup_timeout_wait(); timeout_recovery(); subtitle_geometry_intent(); audio_seek_eof(); queues(); continuation(); multiple_flushes(); failed_lifecycle(); cancelled_session(); parent_wait(); nested_and_renderer(); stale_and_clock_policy(); }
+void paused_input() {
+ CVideoPlayerVideo video;
+ auto first=std::make_shared<CDVDMsgDemuxerPacket>(1);
+ auto second=std::make_shared<CDVDMsgDemuxerPacket>(2);
+ video.SendMessage(first);video.SendMessage(second);
+ video.m_processInfo.speed=0;video.Step();
+ assert(video.delivered.empty() && video.m_messageQueue.updates==2 && "requested pause blocks queued input");
+ video.SendMessage(message(CDVDMsg::GENERAL_PAUSE),1);video.Step();assert(video.pauses==1);
+ video.m_speed=0;video.m_processInfo.advance=true;video.Step();
+ assert(video.delivered==std::vector<int>({1}));
+ video.m_processInfo.advance=false;video.m_syncState=IDVDStreamPlayer::SYNC_STARTING;video.Step();
+ assert(video.delivered==std::vector<int>({1,2}) && "paused landing accepts input");
+ video.m_syncState=IDVDStreamPlayer::SYNC_INSYNC;video.m_speed=1000;video.m_processInfo.speed=1;
+ video.SendMessage(first);video.SendMessage(second);
+ video.beforeDispatch=[&]{video.m_processInfo.speed=0;};video.Step();video.beforeDispatch={};
+ assert(video.delivered.size()==2 && "pause after queue selection requeues packet");
+ // A priority replay must also return to the normal queue, retaining identity.
+ video.m_messageQueue.Flush();video.SendMessage(first,10);video.SendMessage(second);
+ video.Step();assert(video.delivered.size()==2);
+ assert(video.m_messageQueue.m_prioMessages.empty());
+ video.Step();assert(video.delivered.size()==2);
+ assert(video.m_messageQueue.m_messages.back().message==first);
+ video.m_processInfo.speed=1;video.Step();video.Step();
+ assert(video.delivered==std::vector<int>({1,2,1,2}));
+}
+int main() { paused_input(); startup_timeout_wait(); timeout_recovery(); subtitle_geometry_intent(); audio_seek_eof(); queues(); continuation(); multiple_flushes(); failed_lifecycle(); cancelled_session(); parent_wait(); nested_and_renderer(); stale_and_clock_policy(); }
 '''
 
 
@@ -786,6 +817,10 @@ def harness(root=ROOT):
         '@FLUSH_MESSAGE@': block(messages, 'class CDVDMsgVideoFlush') + ';',
         '@IS_PENDING@': body(video, 'bool CVideoPlayerVideo::IsFlushPending() const'),
         '@SELECTION@': selection,
+        '@PRIORITY@': video[video.index('    if (m_syncState == IDVDStreamPlayer::SYNC_WAITSYNC)', video.index('void CVideoPlayerVideo::Process()')):video.index('    const auto lifecycleStart =')],
+        '@CAN_OUTPUT@': body(video,'bool CVideoPlayerVideo::CanOutputPicture() const'),
+        '@PAUSE_ADMISSION@': block(body(video,'else if (pMsg->IsType(CDVDMsg::DEMUXER_PACKET))'),'if (!CanOutputPicture())'),
+        '@SEND_BACK@': body(video,'inline void CVideoPlayerVideo::SendMessageBack('),
         '@RESET@': body(video, 'else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))'),
         '@FLUSH_HANDLER@': body(video, 'else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH))'),
         '@STREAM_FLUSH_MESSAGE@': block(messages, 'class CDVDMsgStreamFlush') + ';',
@@ -832,6 +867,8 @@ def main():
         run(source, directory, 'player-lifecycle')
         if args.negative_controls:
             mutants = {
+                'feed-during-pause': ('if (!CanOutputPicture())\n      iPriority = 1;', 'if (false)\n      iPriority = 1;'),
+                'admit-priority-replay-during-pause': ('if (!CanOutputPicture())\n      {\n        SendMessageBack(pMsg);', 'if (false)\n      {\n        SendMessageBack(pMsg);'),
                 'reset-during-startup-wait': ('m_syncState == IDVDStreamPlayer::SYNC_WAITSYNC)\n    {', 'false)\n    {'),
                 'ignore-real-error-during-wait': ('if (decoderState == CDVDVideoCodec::VC_FLUSHED_TIMEOUT &&\n        m_syncState ==', 'if (m_syncState =='),
                 'ignore-timeout-before-first-picture': ('m_syncState == IDVDStreamPlayer::SYNC_WAITSYNC)\n    {', 'm_syncState != IDVDStreamPlayer::SYNC_INSYNC)\n    {'),

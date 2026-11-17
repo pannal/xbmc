@@ -454,7 +454,7 @@ void CVideoPlayerVideo::Process()
     if (m_syncState == IDVDStreamPlayer::SYNC_WAITSYNC)
       iPriority = 1;
 
-    if (m_paused)
+    if (!CanOutputPicture())
       iPriority = 1;
 
     // Packets and stream changes follow the drain
@@ -752,6 +752,13 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::DEMUXER_PACKET))
     {
+      // A pause can arrive after queue selection, including a priority replay.
+      // Leave the packet owned by the queue until a frame can be delivered.
+      if (!CanOutputPicture())
+      {
+        SendMessageBack(pMsg);
+        continue;
+      }
       m_inputEnded = false;
       m_isEOS = false;
       DemuxPacket* pPacket = std::static_pointer_cast<CDVDMsgDemuxerPacket>(pMsg)->GetPacket();
@@ -803,6 +810,7 @@ void CVideoPlayerVideo::Process()
         codecControl |= DVD_CODEC_CTRL_DROP_ANY;
       if (!m_renderManager.Supports(RENDERFEATURE_ROTATION))
         codecControl |= DVD_CODEC_CTRL_ROTATE;
+      m_pVideoCodec->SetInputPauseAllowed(m_syncState == IDVDStreamPlayer::SYNC_INSYNC);
       m_pVideoCodec->SetCodecControl(codecControl);
 
       const auto addStart = diagnostics ? PLAYBACK_DIAGNOSTICS::NowUs() : 0;
@@ -943,7 +951,8 @@ void CVideoPlayerVideo::PublishNoOutputRecovery()
 // and for the first picture after a reset
 bool CVideoPlayerVideo::CanOutputPicture() const
 {
-  return (m_speed != DVD_PLAYSPEED_PAUSE || m_processInfo.IsFrameAdvance() ||
+  const bool paused = m_speed == DVD_PLAYSPEED_PAUSE || m_processInfo.GetNewSpeed() == 0.0f;
+  return (!paused || m_processInfo.IsFrameAdvance() ||
           m_syncState != IDVDStreamPlayer::SYNC_INSYNC) &&
          !m_paused;
 }

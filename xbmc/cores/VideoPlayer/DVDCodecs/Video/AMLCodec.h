@@ -124,7 +124,9 @@ public:
   { m_processInfoLifetime = std::move(lifetime); }
   void          Abort();
 
-  bool          AddData(uint8_t *pData, size_t size, double dts, double pts);
+  bool          AddData(uint8_t *pData, size_t size, double dts, double pts,
+                        bool allowInputPause = false);
+  bool          HasPendingInput() const { return m_inputPending; }
   CDVDVideoCodec::VCReturn GetPicture(VideoPicture& videoPicture);
 
   void          SetSpeed(int speed);
@@ -170,6 +172,7 @@ private:
   std::function<void()> m_beforeClose;
   bool m_lifecycleFailed{false};
   bool m_speedPending{false};
+  bool m_inputPending{false}; // prepared packet retained across a user pause
   double m_prerollTarget{DVD_NOPTS_VALUE};
   int m_requestedSpeed{0};
   void SetSpeedInternal(int speed);

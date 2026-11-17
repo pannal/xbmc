@@ -266,6 +266,10 @@ public:
    */
   virtual void SetCodecControl(int flags) {}
 
+  // A synchronized packet write may yield to a newly requested user pause.
+  // Startup and seek landing must keep accepting input even at paused speed.
+  virtual void SetInputPauseAllowed(bool allowed) {}
+
   // Accurate seek presentation floor in the corrected packet PTS domain.
   // Async decoders must retain this independently of the latest packet's DROP bit.
   virtual void SetPrerollTarget(double target) {}

@@ -95,8 +95,8 @@ def main():
              'm_requestedSpeed = speed; m_speed = speed;'),
             ('decoder ignores closed display admission', 'if (!operation)',
              'if (false && !operation)'),
-            ('decoder permit ends before write', 'auto operation = m_session.AcquireDecoder();',
-             'auto operation = [](CAMLSession& session) { auto held=session.AcquireDecoder(); '
+            ('decoder permit ends before write', '\n  auto operation = m_session.AcquireDecoder();',
+             '\n  auto operation = [](CAMLSession& session) { auto held=session.AcquireDecoder(); '
              'return static_cast<bool>(held); }(m_session);'),
             ('mutation skips outer admission',
              'if (!CAMLSession::TryBeginNative(m_nativeLifecycleRequest))',
@@ -231,6 +231,11 @@ public:
   std::function<void()> m_beforeClose;
   bool m_lifecycleFailed{false};
   bool m_speedPending{false};
+  bool m_inputPending{false};
+  struct {float speed=1.0f; bool advance=false;
+    float GetNewSpeed() const {return speed;}
+    bool IsFrameAdvance() const {return advance;}
+  } m_processInfo;
   int m_speed=DVD_PLAYSPEED_NORMAL,m_requestedSpeed=DVD_PLAYSPEED_NORMAL;
   Dll dll; Dll* m_dll=&dll;
   std::chrono::system_clock::time_point m_tp_last_frame;
@@ -286,7 +291,7 @@ public:
     MutationOnly(); trace.push_back("reset"); m_abort=false;
     if(m_opened) {SetPollDevice(-1);SetPollDevice(nextDescriptor);}
   }
-  bool AddData(uint8_t*,size_t,double,double);
+  bool AddData(uint8_t*,size_t,double,double,bool=false);
   int freeBytes{100};
   float GetBufferLevel(int,int& data,int& free) {data=10; free=freeBytes; return 10.0f;}
   Private storage; Private* am_private{&storage};
@@ -319,6 +324,7 @@ public:
   struct {DOVIELType dovi_el_type{DOVIELType::NONE}; int codec{AV_CODEC_ID_H264};} m_hints;
   struct {float speed{1.0f}; float GetSpeed() const {return speed;}} m_dataCacheCore;
   bool m_resetCleanupPending{false};
+  std::optional<int> m_pendingInput;
   std::shared_ptr<int> m_videoBufferPool{std::make_shared<int>(1)};
   struct {int iFlags{1};} m_videobuffer;
   int *m_mpeg2_sequence{nullptr},*m_h264_sequence{nullptr},*m_bitparser{nullptr};

@@ -82,6 +82,10 @@ public:
  double m_prerollTarget=DVD_NOPTS_VALUE;
  bool m_keepMPEG2Progressive=false;
  int m_speed=DVD_PLAYSPEED_NORMAL;
+ bool m_lifecycleFailed=false,m_speedPending=false;
+ int m_requestedSpeed=DVD_PLAYSPEED_NORMAL;
+ void SetSpeed(int speed){m_speed=speed;m_speedPending=false;}
+ bool Service(){@IDLE_SERVICE@}
  bool VideoHoldDVReady();
  void StartupHold(){@STARTUP_HOLD@}
  void HandoffVideoHold();void HoldVideo(bool);void CheckVideoHold();void VideoHoldDecoded();
@@ -101,9 +105,32 @@ TESTS = r'''
 void receipt(const char* text){std::ofstream out(receiptPath);out<<text;}
 void routeReceipt(const char* text){std::ofstream out(routePath);out<<text;}
 void age(CAMLCodec& c){c.m_videoHoldStart-=std::chrono::seconds(4);}
+void idleCases(CAMLCodec& c){
+ // No GetPicture, DQBUF, submission or PollFrame: the player-loop service
+ // alone must release the abandoned active hold, including DV's own budget.
+ c.Reset();age(c);
+ aml_video_mute_controller().Expire(std::chrono::steady_clock::now()+std::chrono::seconds(60));
+ assert(muted && "GUI expiry does not own active codec hold");
+ auto native=CAMLSession::FenceNative();assert(native);
+ assert(c.Service());assert(muted && "idle service respects native fence");
+ assert(CAMLSession::CancelNative(native));
+ auto display=CAMLSession::FenceDisplay();assert(display);
+ assert(!c.Service());assert(muted && "idle service respects display fence");
+ assert(CAMLSession::TryBeginDisplay(display));
+ assert(CAMLSession::EndDisplay(display,CAMLSession::DisplayPhase::READY));
+ c.m_lifecycleFailed=true;assert(!c.Service());assert(muted);
+ c.m_lifecycleFailed=false;assert(c.Service());
+ assert(!muted && lastReleaseReason=="timeout" && "idle service expires hold without a frame");
+ s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession,0);
+ c.Reset();age(c);assert(c.Service());assert(muted && "idle service preserves DV budget");
+ age(c);assert(c.Service());
+ assert(!muted && lastReleaseReason=="DV output timeout");
+ s_dvOutputTransition.reset();
+ puts("PASS idle hold: no-frame expiry, native/display/failed-session fencing and bounded DV transition");
+}
 void dvCases(CAMLCodec& c){
  // Early application and unsupported decode do not expose the bypass interval.
- s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession);
+ s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession, 0);
  c.Reset();receipt("1 51 51");c.Submit();c.Poll();
  assert(muted && "applied frame must wait for DV output");
  routeReceipt("1 51 200 2 0");c.DQBuf();
@@ -116,17 +143,17 @@ void dvCases(CAMLCodec& c){
  aml_dv_complete_output_transition(c.m_dvSession);c.Poll();
  assert(!muted && lastReleaseReason=="legacy unsupported route" && "sole decoded paused frame survives output completion");
  std::remove(routePath.c_str());
- s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession);
+ s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession, 0);
  c.Reset();receipt("1 52 52");c.Submit();age(c);c.Poll();assert(muted);
  s_dvOutputTransition->programmed=true;aml_dv_complete_output_transition(c.m_dvSession);c.Poll();
  assert(!muted && lastReleaseReason=="applied replacement" && "sole submitted paused frame survives output completion");
  // Completion before the first poll still starts a new frame-receipt budget.
- s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession);
+ s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession, 0);
  c.Reset();age(c);s_dvOutputTransition->programmed=true;aml_dv_complete_output_transition(c.m_dvSession);
  c.Poll();assert(muted && "display work must not consume replacement budget");
  age(c);c.Poll();assert(!muted && lastReleaseReason=="timeout");
  // Lost renderer, decoder error, close and repeated reset remain bounded.
- s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession);
+ s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession, 0);
  c.Reset();age(c);age(c);c.Poll();
  assert(!muted && lastReleaseReason=="DV output timeout" && "abandoned DV transition cannot hang blackout");
  c.Reset();c.HoldVideo(false);assert(!muted && lastReleaseReason=="cancel");
@@ -213,6 +240,7 @@ int main(int argc,char** argv){
  c.HoldVideo(false);
  routeCases(c);
  dvCases(c);
+ idleCases(c);
  // A failed restart's handoff must not pulse unmute before a replacement.
  c.HoldVideo(true);const unsigned before=unmutes;
  c.HandoffVideoHold();assert(muted&&!c.m_videoHoldActive&&unmutes==before);
@@ -273,7 +301,10 @@ def main():
     dv+=function(aml,'bool aml_dv_output_transition_pending(')+function(aml,'void aml_dv_complete_output_transition(')
     startup=function(s,'bool CAMLCodec::OpenDecoderInternal(')
     startup=startup[startup.index('  if (VideoRestartHoldWanted())'):startup.index('  am_packet_init(')]
-    prelude=PRELUDE.replace('@STARTUP_HOLD@',startup).replace('@DQBUF@',dq).replace('@PRESENTATION_TYPES@',types).replace('@DV_TRANSITION@',dv)
+    idle=function(s,'bool CAMLCodec::ContinueLifecycle(')
+    idle=function(idle,'if (m_lifecycle == Lifecycle::NONE)')
+    idle=idle[idle.index('{')+1:-1]
+    prelude=PRELUDE.replace('@IDLE_SERVICE@',idle).replace('@STARTUP_HOLD@',startup).replace('@DQBUF@',dq).replace('@PRESENTATION_TYPES@',types).replace('@DV_TRANSITION@',dv)
     tests=TESTS
     if args.baseline_unsupported:
         prelude=prelude.replace('static bool ReadVideoPresentation(VideoPresentation&);','static bool ReadVideoPresentation(uint64_t&,uint64_t&);').replace('void ReleaseVideoHoldLocked(const char* reason="cancel");','void ReleaseVideoHoldLocked();')
@@ -300,6 +331,8 @@ def main():
         run(source)
         if args.negative_controls:
             for name,old,new,expected in [
+                ('idle hold service missing', '        CheckVideoHold();', '        (void)0;', 'idle service expires hold without a frame'),
+                ('idle service bypasses native fence', '      if (operation)\n        CheckVideoHold();', '      CheckVideoHold();', 'idle service respects native fence'),
                 ('receipt bypasses DV gate','  if (!VideoHoldDVReady())\n    return;','','applied frame must wait for DV output'),
                 ('decoded bypasses DV gate','if (outputReady && state.epoch','if ((outputReady || true) && state.epoch','unsupported decode must wait for DV output'),
                 ('no post-transition budget','    m_videoHoldDVWaiting = false;\n    m_videoHoldStart = std::chrono::steady_clock::now();','    m_videoHoldDVWaiting = false;','sole decoded paused frame survives output completion'),
@@ -311,7 +344,7 @@ def main():
                 ('drop arms receipt','else if (!drop)','else','drop does not arm receipt'),
                 ('failed QBUF arms receipt','else if (!drop)','if (!drop)','failed QBUF does not arm receipt'),
                 ('renewal retains prior submission','m_videoHoldProviderEpoch = 0;','// keep previous submission','renewal clears submitted eligibility'),
-                ('paused poll does not observe receipt','  CheckVideoHold();','  // no receipt check','paused poll observes receipt'),
+                ('paused poll does not observe receipt','\n  CheckVideoHold();','\n  // no receipt check','paused poll observes receipt'),
                 ('zero means unsupported','state.route = static_cast<VideoPresentationRoute>(support);','state.route = applied == 0 ? VideoPresentationRoute::UNSUPPORTED : static_cast<VideoPresentationRoute>(support);','unknown route is not unsupported'),
                 ('unsupported claims applied','state.route == VideoPresentationRoute::SUPPORTED && generation != 0','generation != 0','unsupported is not applied proof'),
                 ('stale route applied accepted','applied == generation','applied != 0','stale route must stay blank'),

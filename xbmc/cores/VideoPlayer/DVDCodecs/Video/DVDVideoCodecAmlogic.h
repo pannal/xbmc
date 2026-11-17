@@ -19,6 +19,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 
 class CAMLCodec;
@@ -111,6 +112,7 @@ public:
   virtual VCReturn GetPicture(VideoPicture* pVideoPicture) override;
   virtual void SetSpeed(int iSpeed) override;
   virtual void SetCodecControl(int flags) override;
+  void SetInputPauseAllowed(bool allowed) override { m_inputPauseAllowed = allowed; }
   void SetPrerollTarget(double target) override;
   virtual void Abort() override;
   virtual const char* GetName(void) override { return (const char*)m_pFormatName; }
@@ -146,6 +148,16 @@ protected:
 private:
   void ResetDecoder(bool holdVideo);
   void FinishReset();
+  bool AddPreparedInput(const DemuxPacket& packet);
+  struct PendingInput
+  {
+    const DemuxPacket* packet;
+    uint8_t* data;
+    uint32_t size;
+    bool dualLayer;
+  };
+  std::optional<PendingInput> m_pendingInput;
+  bool m_inputPauseAllowed{false};
   bool m_resetCleanupPending{false};
   void UpdateAppendCMv40SettingCache();
   int GetCMv40DisplayPeakNits() const;
