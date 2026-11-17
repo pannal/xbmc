@@ -132,6 +132,7 @@ struct CFileCache {
  uint32_t m_writeRate=0,m_writeRateActual=0,m_writeRateLowSpeed=0;
  std::chrono::milliseconds m_processWait{100ms};
  std::function<void()> m_readWaitCallback;
+ std::function<bool()> m_readInterrupt;
  ssize_t Read(void*,size_t);
  int IoControl(EIoControl,void*);
  int64_t GetLength(){return 4096;}
@@ -220,6 +221,7 @@ struct CVideoPlayer {
  std::vector<int> m_programs;
  double m_offset_pts=0;bool m_HasVideo=true,m_HasAudio=true;
  bool ParentLifecyclePending(){return pending;}
+ bool WaitForActiveAreaDetection(){return false;}
  bool IsInMenuInternal(){return menu;}
  void UpdateCorrection(DemuxPacket*,double){}
  void UpdateContent(){}void OpenDefaultStreams(bool){}

@@ -470,8 +470,12 @@ void CFileCache::Process()
       const int64_t forward = m_pCache->WaitForData(0, 0ms);
       if (forward + m_chunkSize >= m_forwardCacheSize)
       {
-        if (m_writeRateActual < m_writeRate)
-          m_writeRateLowSpeed = m_writeRateActual;
+        // The one-second bias is useful for buffering, but can make a fast
+        // refill after a seek look slower than playback. Classify the source
+        // using the measured rate while the cache is still filling.
+        const uint32_t rate = average.Rate(m_writePos);
+        if (rate < m_writeRate)
+          m_writeRateLowSpeed = rate;
 
         m_bFilling = false;
       }
