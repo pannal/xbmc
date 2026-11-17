@@ -225,18 +225,23 @@ private:
   void BeginAFBCScanoutFrame();
   // The frame begun in a display buffer ends without being presented.
   void AbandonAFBCScanoutFrame();
-  // Applies the presentation of an AFBC frame once it is on screen, and
-  // draws the GUI again after one was lost, also while the GUI is idle.
+  // Applies the presentation of each AFBC frame once it is on screen or
+  // lost, and draws the GUI again after one was lost, also while the GUI is
+  // idle.
   void TakeAFBCOutcome();
   CAMLAFBCPresenter m_afbcPresenter;
   bool m_afbcFrame = false; // this frame was begun in a display buffer
-  struct
+  // Frames handed over, not yet known to be on screen or lost: what their
+  // presentation applies once they are. At most one per display buffer.
+  struct AFBCPresented
   {
-    bool pending = false; // handed over, not yet known to be on screen
-    uint64_t videoMuteHandoff = 0;
-    bool displayReady = false;
-    bool fullscreenVideo = false;
-  } m_afbcPresented;
+    uint64_t frame;
+    uint64_t videoMuteHandoff;
+    bool displayReady;
+    bool fullscreenVideo;
+  };
+  std::vector<AFBCPresented> m_afbcPresented;
+  CAMLAFBCPresenter::Outcome m_afbcOutcome;
   bool m_afbcDirtyRegionsReported = false;
 
   void StartVncGuiListener();

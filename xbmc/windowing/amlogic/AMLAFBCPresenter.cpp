@@ -11,9 +11,11 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fcntl.h>
 #include <system_error>
+#include <utility>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -55,7 +57,19 @@ constexpr auto RETRY_DELAY = std::chrono::seconds(1);
 #endif
 } // namespace
 
-bool CAMLAFBCPresenter::Create(const std::string& framebuffer, int width, int height, int depthBits, int stencilBits)
+bool CAMLAFBCPresenter::KernelQueuesFlips(const char* path)
+{
+  std::FILE* file = std::fopen(path, "re");
+  if (!file)
+    return false;
+  char value = 0;
+  const bool yes = std::fread(&value, 1, 1, file) == 1 && value == 'Y';
+  std::fclose(file);
+  return yes;
+}
+
+bool CAMLAFBCPresenter::Create(const std::string& framebuffer, int width, int height, int depthBits,
+                             int stencilBits, bool allowThirdBuffer)
 {
   if (!CAMLAFBCImport::Supported())
     return Reject("requires the verified ARM32 G52 r12p0 fbdev library", 0, true);
@@ -96,48 +110,81 @@ bool CAMLAFBCPresenter::Create(const std::string& framebuffer, int width, int he
                           height);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
   }
-  for (unsigned int i = 0; i < m_buffers.size(); ++i)
+  // A third buffer only helps if a flip queued right after the previous one
+  // is shown with the next vsync; otherwise every second one waits a vsync.
+  const bool queued = KernelQueuesFlips(m_queuedFlipsParameter.c_str());
+  const unsigned int wanted = queued && allowThirdBuffer ? MAX_BUFFERS : 2;
+  m_count = 0;
+  for (unsigned int i = 0; i < wanted; ++i)
   {
     Buffer& buffer = m_buffers[i];
     ScanoutBuffer request{i, static_cast<uint32_t>(width), static_cast<uint32_t>(height), -1, 0};
+    std::string failure;
+    int error = 0;
     if (ioctl(m_session, SESSION_ALLOC, &request) < 0 || request.fd < 0)
-      return Reject("display buffer allocation failed", errno, false);
-    buffer.fd = request.fd;
-    if (!buffer.import.Import(buffer.fd, width, height, CAMLAFBCImport::Layout::WIDE_BLOCK))
-      return Reject("display buffer import failed", 0, false);
-    glGenTextures(1, &buffer.texture);
-    glBindTexture(GL_TEXTURE_2D, buffer.texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    const bool bound = buffer.import.BindTexture();
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glGenFramebuffers(1, &buffer.framebuffer);
-    glBindFramebuffer(GL_FRAMEBUFFER, buffer.framebuffer);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, buffer.texture, 0);
-    if (m_depthStencil)
     {
-      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_depthStencil);
-      if (packed)
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m_depthStencil);
+      error = errno;
+      failure = "display buffer allocation failed";
     }
-    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    const GLenum error = glGetError();
-    if (!bound || status != GL_FRAMEBUFFER_COMPLETE || error != GL_NO_ERROR)
-      return Reject(StringUtils::Format("display buffer is not renderable (bound {}, status 0x{:x}, GL error 0x{:x})",
-                                        bound, status, error),
-                    0, false);
+    else
+    {
+      buffer.fd = request.fd;
+      if (!buffer.import.Import(buffer.fd, width, height, CAMLAFBCImport::Layout::WIDE_BLOCK))
+        failure = "display buffer import failed";
+    }
+    if (failure.empty())
+    {
+      glGenTextures(1, &buffer.texture);
+      glBindTexture(GL_TEXTURE_2D, buffer.texture);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      const bool bound = buffer.import.BindTexture();
+      glBindTexture(GL_TEXTURE_2D, 0);
+      glGenFramebuffers(1, &buffer.framebuffer);
+      glBindFramebuffer(GL_FRAMEBUFFER, buffer.framebuffer);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, buffer.texture, 0);
+      if (m_depthStencil)
+      {
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_depthStencil);
+        if (packed)
+          glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m_depthStencil);
+      }
+      const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      const GLenum glError = glGetError();
+      if (!bound || status != GL_FRAMEBUFFER_COMPLETE || glError != GL_NO_ERROR)
+        failure = StringUtils::Format("display buffer is not renderable (bound {}, status 0x{:x}, GL error 0x{:x})",
+                                      bound, status, glError);
+    }
+    if (failure.empty())
+    {
+      m_count = i + 1;
+      continue;
+    }
+    if (i < 2)
+      return Reject(failure, error, false);
+    CLog::Log(LOGWARNING, "AFBC scanout: {} (errno {}); using two buffers", failure, error);
+    // Closing the exported fd leaves the kernel session's allocation alive.
+    // Recreate the session with two buffers if the third could not be used.
+    if (buffer.fd >= 0)
+    {
+      Destroy(true);
+      return Create(framebuffer, width, height, depthBits, stencilBits, false);
+    }
+    break;
   }
 
   m_width = width;
   m_height = height;
-  m_target = 0;
-  m_latched = true;
-  m_quit = false;
+  m_target = m_lastTarget = -1;
+  m_jobs.clear();
+  m_queued = {};
+  m_onScreen = -1;
+  m_phase = Phase::IDLE;
+  m_quit = m_cancel = false;
   m_error = 0;
-  m_jobBuffer = -1;
   try
   {
     m_thread = std::thread(&CAMLAFBCPresenter::Run, this);
@@ -148,15 +195,30 @@ bool CAMLAFBCPresenter::Create(const std::string& framebuffer, int width, int he
   }
   m_ready = true;
   if (!m_reported)
-    CLog::Log(LOGINFO, "AFBC scanout: active; {}x{} GUI frames are rendered as AFBC display buffers", width,
-              height);
+    CLog::Log(LOGINFO, "AFBC scanout: active; {}x{} GUI frames are rendered as AFBC display buffers ({}{})",
+              width, height, m_count,
+              queued ? " buffers" : " buffers, the kernel does not show a queued flip with the next vsync");
   m_reported = true;
   return true;
+}
+
+int CAMLAFBCPresenter::FreeBuffer() const
+{
+  // Round from the last frame's buffer, so the buffers take turns.
+  for (unsigned int n = 1; n <= m_count; ++n)
+  {
+    const int i = static_cast<int>((static_cast<unsigned int>(m_lastTarget + 1) + n - 1) % m_count);
+    if (!m_queued[i] && i != m_onScreen)
+      return i;
+  }
+  return -1;
 }
 
 bool CAMLAFBCPresenter::BeginFrame(const std::string& framebuffer, int width, int height, int depthBits,
                                    int stencilBits)
 {
+  if (m_target >= 0)
+    BeginLinearFrame(); // the last frame was neither presented nor abandoned
   if (m_failed || width <= 0 || height <= 0)
     return false;
   if (m_ready)
@@ -166,17 +228,13 @@ bool CAMLAFBCPresenter::BeginFrame(const std::string& framebuffer, int width, in
       std::lock_guard<std::mutex> lock(m_mutex);
       error = m_error;
       if (error == EAGAIN)
-      {
         m_error = 0;
-        m_latched = true;
-      }
     }
     if (error == EAGAIN)
     {
       // The display is not scanning out (off, or changing mode): the flip was
       // refused and nothing queued, so its buffer is free again. Draw
       // ordinary frames and try again a second later.
-      m_target ^= 1;
       m_retryAt = std::chrono::steady_clock::now() + RETRY_DELAY;
       return false;
     }
@@ -216,41 +274,52 @@ bool CAMLAFBCPresenter::BeginFrame(const std::string& framebuffer, int width, in
     }
     m_createFailures = 0;
   }
+  int target;
   {
-    // This frame's buffer was on screen until the last queued flip took
-    // effect, and the GPU may write it as soon as it is bound. If that takes
-    // too long, this frame is linear: the return to linear drains the flip.
+    // The GPU may write a buffer as soon as it is bound: wait until one has
+    // left the screen and is not queued. If none does in time, this frame is
+    // linear: the return to linear drains the flips.
     std::unique_lock<std::mutex> lock(m_mutex);
-    if (!WaitLatched(lock, true))
+    if (!m_condition.wait_for(lock, LATCH_TIMEOUT, [this] { return FreeBuffer() >= 0 || m_error; }) ||
+        m_error)
       return false;
+    target = FreeBuffer();
   }
-  glBindFramebuffer(GL_FRAMEBUFFER, m_buffers[m_target].framebuffer);
-  CFrameBufferObject::SetDefaultFramebuffer(m_buffers[m_target].framebuffer);
+  m_target = m_lastTarget = target;
+  glBindFramebuffer(GL_FRAMEBUFFER, m_buffers[target].framebuffer);
+  CFrameBufferObject::SetDefaultFramebuffer(m_buffers[target].framebuffer);
   return true;
+}
+
+void CAMLAFBCPresenter::EndFrame()
+{
+  // Whatever is drawn before the next BeginFrame (a screenshot renders the
+  // GUI between frames) goes to the EGL window surface, which is not shown,
+  // never into a display buffer.
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  CFrameBufferObject::SetDefaultFramebuffer(0);
+  m_target = -1;
 }
 
 void CAMLAFBCPresenter::BeginLinearFrame()
 {
+  if (m_target >= 0)
+  {
+    // A frame begun in a display buffer is not presented; the buffer, never
+    // queued, is drawn into again.
+    EndFrame();
+    return;
+  }
   if (CFrameBufferObject::GetDefaultFramebuffer() == 0)
     return;
   CFrameBufferObject::SetDefaultFramebuffer(0);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-bool CAMLAFBCPresenter::WaitLatched(std::unique_lock<std::mutex>& lock, bool bounded)
+uint64_t CAMLAFBCPresenter::Present()
 {
-  const auto done = [this] { return m_latched || m_error; };
-  if (!bounded)
-    m_condition.wait(lock, done);
-  else if (!m_condition.wait_for(lock, LATCH_TIMEOUT, done))
-    return false;
-  return !m_error;
-}
-
-bool CAMLAFBCPresenter::Present()
-{
-  if (!m_ready)
-    return false;
+  if (!m_ready || m_target < 0)
+    return 0;
   glBindFramebuffer(GL_FRAMEBUFFER, m_buffers[m_target].framebuffer);
   // Depth and stencil are never shown: keep the GPU from writing them out.
   if (m_discard && m_depthStencil)
@@ -258,13 +327,13 @@ bool CAMLAFBCPresenter::Present()
     const GLenum attachments[]{GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT};
     m_discard(GL_FRAMEBUFFER, 2, attachments);
   }
-  bool idle;
+  bool accept;
   {
-    // BeginFrame waited for the last flip: the presenter thread is idle.
     std::lock_guard<std::mutex> lock(m_mutex);
-    idle = !m_error && m_latched;
+    accept = !m_error;
   }
-  if (idle)
+  uint64_t frame = 0;
+  if (accept)
   {
     const EGLSyncKHR sync = m_createSync(m_display, EGL_SYNC_FENCE_KHR, nullptr);
     if (sync == EGL_NO_SYNC_KHR)
@@ -273,55 +342,74 @@ bool CAMLAFBCPresenter::Present()
       glFlush();
     {
       std::lock_guard<std::mutex> lock(m_mutex);
-      m_jobSync = sync;
-      m_jobBuffer = static_cast<int>(m_target);
-      m_latched = false;
+      // A flip that failed meanwhile dropped the jobs queued before this
+      // one; this frame would be flipped after them.
+      accept = !m_error;
+      if (accept)
+      {
+        frame = ++m_lastFrame;
+        m_jobs.push_back({sync, m_target, frame});
+        m_queued[m_target] = true;
+      }
     }
-    m_condition.notify_all();
-    m_shown = true;
-    m_retries = 0;
-    m_target ^= 1;
+    if (accept)
+    {
+      m_condition.notify_all();
+      m_shown = true;
+      m_retries = 0;
+    }
+    else if (sync != EGL_NO_SYNC_KHR)
+    {
+      m_destroySync(m_display, sync);
+    }
   }
-  // Whatever is drawn before the next BeginFrame (a screenshot renders the
-  // GUI between frames) goes to the EGL window surface, which is not shown,
-  // never into the buffer on its way to the screen.
-  glBindFramebuffer(GL_FRAMEBUFFER, 0);
-  CFrameBufferObject::SetDefaultFramebuffer(0);
-  return idle;
+  EndFrame();
+  return frame;
+}
+
+void CAMLAFBCPresenter::DropJobs()
+{
+  for (const Job& dropped : m_jobs)
+  {
+    if (dropped.sync != EGL_NO_SYNC_KHR)
+      m_destroySync(m_display, dropped.sync);
+    m_queued[dropped.buffer] = false;
+    m_outcome.frames.push_back({dropped.frame, false});
+  }
+  m_jobs.clear();
 }
 
 void CAMLAFBCPresenter::Run()
 {
   for (;;)
   {
-    EGLSyncKHR sync;
-    int buffer;
+    Job job;
     {
       std::unique_lock<std::mutex> lock(m_mutex);
-      m_condition.wait(lock, [this] { return m_jobBuffer >= 0 || m_quit; });
-      if (m_jobBuffer < 0)
+      m_condition.wait(lock, [this] { return !m_jobs.empty() || m_quit; });
+      if (m_jobs.empty())
         return;
-      sync = m_jobSync;
-      buffer = m_jobBuffer;
-      m_jobSync = EGL_NO_SYNC_KHR;
-      m_jobBuffer = -1;
+      job = m_jobs.front();
+      m_jobs.pop_front();
       m_phase = Phase::GPU;
     }
     int error = 0;
-    if (sync != EGL_NO_SYNC_KHR)
+    if (job.sync != EGL_NO_SYNC_KHR)
     {
-      if (m_waitSync(m_display, sync, 0, GPU_TIMEOUT_NS) != EGL_CONDITION_SATISFIED_KHR)
+      if (m_waitSync(m_display, job.sync, 0, GPU_TIMEOUT_NS) != EGL_CONDITION_SATISFIED_KHR)
         error = EIO;
-      m_destroySync(m_display, sync);
+      m_destroySync(m_display, job.sync);
     }
     {
       std::lock_guard<std::mutex> lock(m_mutex);
       if (m_cancel || m_quit)
       {
-        // The render thread has gone back to linear frames: nothing to flip.
+        // The render thread has gone back to linear frames, or the presenter
+        // is being destroyed: nothing to flip.
         m_cancel = false;
         m_phase = Phase::IDLE;
-        m_latched = true;
+        m_queued[job.buffer] = false;
+        m_outcome.frames.push_back({job.frame, false});
         m_condition.notify_all();
         continue;
       }
@@ -329,25 +417,29 @@ void CAMLAFBCPresenter::Run()
     }
     if (!error)
     {
-      // Returns after the vsync that put this buffer on screen, or with
-      // ETIMEDOUT when no vsync came (the flip stays queued then), or EAGAIN
-      // when the display was not scanning out (nothing queued).
-      ScanoutFlip flip{static_cast<uint32_t>(buffer), INTER_FORMAT, REVERSE_Y, FLIP_WAIT};
+      // Returns after the vsync that put this buffer on screen, when the one
+      // it replaced is no longer read, or with ETIMEDOUT when no vsync came
+      // (the flip stays queued), or EAGAIN when the display was not scanning
+      // out (nothing queued).
+      ScanoutFlip flip{static_cast<uint32_t>(job.buffer), INTER_FORMAT, REVERSE_Y, FLIP_WAIT};
       if (ioctl(m_session, SESSION_FLIP, &flip) < 0)
         error = errno ? errno : EIO;
     }
     {
       std::lock_guard<std::mutex> lock(m_mutex);
       m_phase = Phase::IDLE;
+      m_queued[job.buffer] = false;
+      m_outcome.frames.push_back({job.frame, !error});
       if (error)
       {
+        // The frames queued behind it are not flipped either.
+        DropJobs();
         m_error = error;
         m_outcome.redraw = true;
       }
       else
       {
-        m_latched = true;
-        m_outcome.shown = true;
+        m_onScreen = job.buffer;
       }
     }
     m_condition.notify_all();
@@ -363,44 +455,36 @@ void CAMLAFBCPresenter::ReturnToLinear()
     return;
   {
     // No AFBC flip may land after the linear frame: it would show AFBC again
-    // with nothing left to end it. A frame not yet handed to the kernel is
-    // dropped instead of waited for, and its buffer, never shown, is the
-    // next one drawn into. A flip with the kernel is ordered before the
-    // return to linear once its call has returned.
+    // with nothing left to end it. Frames not yet handed to the kernel are
+    // dropped instead of waited for; their buffers, never shown, are drawn
+    // into next. A flip with the kernel is ordered before the return to
+    // linear once its call has returned. The buffer last shown stays out of
+    // use until another flip replaces it.
     std::unique_lock<std::mutex> lock(m_mutex);
-    if (m_jobBuffer >= 0)
-    {
-      if (m_jobSync != EGL_NO_SYNC_KHR)
-        m_destroySync(m_display, m_jobSync);
-      m_jobSync = EGL_NO_SYNC_KHR;
-      m_jobBuffer = -1;
-      m_latched = true;
-      m_target ^= 1;
-    }
-    else if (m_phase == Phase::GPU)
-    {
+    DropJobs();
+    if (m_phase == Phase::GPU)
       m_cancel = true;
-      m_target ^= 1;
-    }
     else
-    {
       m_condition.wait(lock, [this] { return m_phase == Phase::IDLE; });
-    }
   }
   uint32_t flags = DISABLE_ON_PAN;
   ioctl(m_session, SESSION_DISABLE, &flags);
 }
 
-CAMLAFBCPresenter::Outcome CAMLAFBCPresenter::TakeOutcome()
+void CAMLAFBCPresenter::TakeOutcome(Outcome& outcome)
 {
+  outcome.frames.clear();
   std::lock_guard<std::mutex> lock(m_mutex);
-  Outcome outcome = m_outcome;
-  m_outcome = {};
-  return outcome;
+  // The emptied vector's storage collects the next frames.
+  std::swap(outcome.frames, m_outcome.frames);
+  outcome.redraw = m_outcome.redraw;
+  m_outcome.redraw = false;
 }
 
 void CAMLAFBCPresenter::Destroy(bool contextCurrent)
 {
+  // Not a frame to present any more; the buffers go with the session.
+  m_target = -1;
   if (m_thread.joinable())
   {
     {
@@ -410,10 +494,9 @@ void CAMLAFBCPresenter::Destroy(bool contextCurrent)
     m_condition.notify_all();
     m_thread.join();
   }
-  if (m_jobSync != EGL_NO_SYNC_KHR && m_destroySync)
-    m_destroySync(m_display, m_jobSync);
-  m_jobSync = EGL_NO_SYNC_KHR;
-  m_jobBuffer = -1;
+  DropJobs(); // a safeguard: the thread reports every job it takes before it quits
+  m_queued = {};
+  m_onScreen = -1;
   // Closing the session returns the plane to the linear framebuffer before
   // the kernel releases the buffers; the imports below only drop references.
   if (m_session >= 0)
@@ -449,15 +532,16 @@ void CAMLAFBCPresenter::Destroy(bool contextCurrent)
     close(m_fb);
   m_fb = -1;
   CFrameBufferObject::SetDefaultFramebuffer(0);
-  // A flip that took during the join belongs to the buffers just released,
-  // not to whatever is drawn next (perhaps at another size). Closing the
-  // session left the plane transparent, if it showed a buffer.
-  m_outcome.shown = false;
+  // A frame shown since the last TakeOutcome() is gone with its buffer,
+  // perhaps a GUI size ago. Closing the session left the plane transparent,
+  // if it showed a buffer.
+  for (Frame& frame : m_outcome.frames)
+    frame.shown = false;
   if (m_shown)
     m_outcome.redraw = true;
   m_ready = m_shown = false;
+  m_count = 0;
   m_width = m_height = 0;
-  m_latched = true;
   m_quit = m_cancel = false;
   m_phase = Phase::IDLE;
   m_error = 0;
