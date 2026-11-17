@@ -116,6 +116,7 @@ def generate(baseline=None):
 
 PREFIX = r'''
 #include <algorithm>
+#include "utils/AMLFrameL5.h"
 #include <atomic>
 #include <cassert>
 #include <cctype>
@@ -313,9 +314,9 @@ using namespace OVERLAY;
 int OVERLAY::GetStereoscopicDepth(bool,int){return 0;}
 enum class StreamHdrType{HDR_TYPE_NONE,HDR_TYPE_DOLBYVISION};
 struct CRenderManager{
- struct Picture{int iWidth=3840,iHeight=2160;std::string stereoMode;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE;}m_picture;
+ struct Picture{std::shared_ptr<const void> amlDVSession;int iWidth=3840,iHeight=2160;std::string stereoMode;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_NONE;}m_picture;
  CRenderer m_overlays;CRect CalcOverlayActiveArea(CRect&,CRect&,CRect&,bool,double);
- CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool,bool=false);
+ CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool,bool=false,const AML_FRAME_L5::Bounds& = {});
 };
 '''
 

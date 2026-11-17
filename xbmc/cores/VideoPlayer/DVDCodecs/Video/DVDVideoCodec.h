@@ -15,6 +15,7 @@
 #include "cores/VideoPlayer/Interface/DemuxPacket.h"
 #include "cores/VideoPlayer/Process/ProcessInfo.h"
 #include "cores/DataCacheCore.h"
+#include "utils/AMLFrameL5.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -50,6 +51,8 @@ public:
   CVideoBuffer *videoBuffer = nullptr;
   // Original AML DV-open identity, retained with the picture across renderer retries.
   std::shared_ptr<const void> amlDVSession;
+  // Exact decoder picture's live L5, before temporary OSD/subtitle suppression.
+  AML_FRAME_L5::Bounds amlFrameL5;
 
   double pts; // timestamp in seconds, used in the CVideoPlayer class to keep track of pts
   double dts;

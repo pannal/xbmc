@@ -70,6 +70,7 @@ PRELUDE = r'''
 #include "utils/TransformMatrix.h"
 #include "windowing/Resolution.h"
 #include <fmt/format.h>
+#include "utils/AMLFrameL5.h"
 #include <atomic>
 #include <cassert>
 #include <cmath>
@@ -157,6 +158,8 @@ enum class StreamHdrType {HDR_TYPE_NONE,HDR_TYPE_DOLBYVISION};
 bool native=true,manual=false,autoLb=false,additive=true,detected=false;
 uint16_t mt=0,mb=0,ml=0,mr=0,dt=0,db=0,dl=0,dr=0;
 bool aml_subtitle_native_dv(){return native;}
+bool liveL5Eligible=false;
+bool aml_dv_live_frame_l5_eligible(const std::shared_ptr<const void>&){return liveL5Eligible;}
 bool aml_dv_get_l5_override(uint16_t& t,uint16_t& b,uint16_t& l,uint16_t& r){if(!manual)return false;t=mt;b=mb;l=ml;r=mr;return true;}
 bool aml_dv_auto_letterbox_active(){return autoLb;}
 bool aml_dv_auto_letterbox_additive(){return additive;}
@@ -185,12 +188,12 @@ struct CRenderManager {
   struct {void Dispose(){}} m_debugRenderer;
   int m_renderState=STATE_CONFIGURED;unsigned int m_orientation=0;
   uint64_t m_lifecycleGeneration=0;
-  struct Picture {int iWidth=1920,iHeight=1080;std::string stereoMode;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;} m_picture;
+  struct Picture {std::shared_ptr<const void> amlDVSession;int iWidth=1920,iHeight=1080;std::string stereoMode;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;} m_picture;
   struct Frame {struct Present {double pts=123;} present;};
   std::shared_ptr<Frame> m_frameSelection=std::make_shared<Frame>();
   CBaseRenderer renderer;CBaseRenderer* m_pRenderer=&renderer;
   std::shared_ptr<CRenderLifecycle> m_lifecycle=std::make_shared<CRenderLifecycle>();
-  CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool,bool=false);
+  CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool,bool=false,const AML_FRAME_L5::Bounds& = {});
   void UpdateActivePicture();
   std::shared_ptr<CRenderLifecycle::Request> RequestUnInit();
   std::shared_ptr<CRenderLifecycle::Request> RequestFlush(bool,bool);

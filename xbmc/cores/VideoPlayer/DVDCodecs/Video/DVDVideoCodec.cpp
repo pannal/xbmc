@@ -33,6 +33,7 @@ void VideoPicture::Reset()
     videoBuffer->Release();
   videoBuffer = nullptr;
   amlDVSession.reset();
+  amlFrameL5.reset();
   pts = DVD_NOPTS_VALUE;
   dts = DVD_NOPTS_VALUE;
   iFlags = 0;

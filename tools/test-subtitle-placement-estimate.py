@@ -7,6 +7,7 @@ must never consume these estimates, including after a pure seek.
 """
 import argparse
 import hashlib
+import re
 from pathlib import Path
 import runpy
 
@@ -219,7 +220,8 @@ def main():
     signal = render[render.index('      const CRect signalActive ='):].split(';', 1)[0] + ';'
     assert 'HasTextSubOutsideActiveArea(prepared, signalActive, view)' in render
     assert 'HasImageSubOutsideActiveArea(prepared, signalActive)' in render
-    code += '\nCRect renderSignalArea(CRenderManager& manager,const CRect& src,const CRect& dst,const CRect& view,double pts){' + signal.replace('CalcPictureActiveArea(', 'manager.CalcPictureActiveArea(').replace('frame->present.pts', 'pts') + 'return signalActive;}\n'
+    signal = signal.replace('CalcPictureActiveArea(', 'manager.CalcPictureActiveArea(').replace('frame->present.pts', 'pts').replace('frame->present.liveL5', '{}')
+    code += '\nCRect renderSignalArea(CRenderManager& manager,const CRect& src,const CRect& dst,const CRect& view,double pts){' + signal + 'return signalActive;}\n'
     code += TESTS
     result = TEXT['run'](code, args, negative=bool(revision))
     if revision:
@@ -229,7 +231,8 @@ def main():
         for label, old, new in [
             ('estimate promoted to strict result', 'source->subtitleResult = std::make_shared<const DetectResult>(result);', 'source->result = std::make_shared<const DetectResult>(result);'),
             ('public snapshot opts into estimate', 'right, allowSubtitleEstimate);', 'right, true || allowSubtitleEstimate);'),
-            ('masking signal trusts estimate', 'manager.CalcPictureActiveArea(src, dst, view, pts, false);', 'manager.CalcPictureActiveArea(src, dst, view, pts, false, true);'),
+            ('masking signal trusts estimate', signal,
+             re.sub(r',\s*false,\s*false,\s*\{\}', ', false, true, {}', signal)),
             ('strict zero erased by estimate', 'if (!accepted && allowSubtitleEstimate)', 'if (allowSubtitleEstimate)'),
             ('warm cache promoted to native', 'detect_publish_subtitle(run, source, *retainedSubtitle);', 'detect_publish(run, source, retainedSubtitle->top, retainedSubtitle->bottom, retainedSubtitle->left, retainedSubtitle->right);'),
             ('destructive subtitle cache survives', 's_detectSource->retainedSubtitle.reset();', '(void)preserveGeometry;'),

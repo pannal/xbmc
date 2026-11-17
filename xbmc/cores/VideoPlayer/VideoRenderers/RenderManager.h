@@ -284,6 +284,7 @@ protected:
     double         pts;
     EFIELDSYNC     presentfield;
     EPRESENTMETHOD presentmethod;
+    AML_FRAME_L5::Bounds liveL5;
   } m_Queue[NUM_BUFFERS]{};
 
   // Selection identity and list membership are stable until the next FrameMove
@@ -398,7 +399,8 @@ private:
 
   CRect CalcOverlayActiveArea(CRect& src, CRect& dst, CRect& view, bool useActiveArea, double pts);
   CRect CalcPictureActiveArea(const CRect& src, const CRect& dst, const CRect& view,
-                             double pts, bool canvasOverride, bool allowSubtitleEstimate = false);
+                             double pts, bool canvasOverride, bool allowSubtitleEstimate = false,
+                             const AML_FRAME_L5::Bounds& liveL5 = {});
   void UpdateActivePicture();
 
   std::atomic_bool m_subtitleEnabled{false};

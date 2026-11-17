@@ -201,7 +201,7 @@ public:
   double m_presentpts=0;
   float m_fps=25;
   int m_latencyTweak=0,m_audioLatencyTweak=0,m_videoDelay=0;
-  struct {double pts=0;EFIELDSYNC presentfield=FS_NONE;EPRESENTMETHOD presentmethod=PRESENT_METHOD_SINGLE;} m_Queue[8];
+  struct {double pts=0;EFIELDSYNC presentfield=FS_NONE;EPRESENTMETHOD presentmethod=PRESENT_METHOD_SINGLE;AML_FRAME_L5::Bounds liveL5;} m_Queue[8];
   std::deque<int> m_free,m_queued,m_discard;
   OVERLAY::CRenderer m_overlays;
   struct {void Flush(){}} m_debugRenderer;
@@ -264,13 +264,14 @@ template<class F>void Await(F ready){
 }
 void Put(CRenderManager& manager,const std::shared_ptr<CAMLCodec>& codec,int n,bool main=false){
   VideoPicture picture;picture.pts=manager.m_dvdClock.GetClock()+(main?1000000:0);
+  picture.amlFrameL5=std::array<uint16_t,4>{static_cast<uint16_t>(n),static_cast<uint16_t>(n),0,0};
   auto* buffer=new CAMLVideoBuffer(n);buffer->Set(codec,n,40,n,1);picture.videoBuffer=buffer;
   if(main){
     assert(!manager.m_free.empty());int i=manager.m_free.front();manager.m_free.pop_front();
-    manager.renderer.AddVideoPicture(picture,i);manager.m_Queue[i].pts=picture.pts;
+    manager.renderer.AddVideoPicture(picture,i);manager.m_Queue[i].pts=picture.pts;manager.m_Queue[i].liveL5=picture.amlFrameL5;
     manager.m_overlays.SetOverlays({n},i);manager.m_queued.push_back(i);
   }else{
-    auto content=std::make_shared<CAMLPresenterSession::OverlayObservation>();content->overlays={n};
+    auto content=std::make_shared<CAMLPresenterSession::OverlayObservation>();content->overlays={n};content->liveL5=picture.amlFrameL5;
     auto frame=std::make_shared<CAMLPresenterSession::Frame>(picture,content);
     auto slot=manager.m_amlPresenter->queue->Reserve(1s);assert(slot);
     assert(manager.m_amlPresenter->queue->Publish(slot,frame));
@@ -306,6 +307,10 @@ void Reloads(bool paused){
     auto request=manager.m_amlPresenter->queue->PendingControl();
     auto frame=std::static_pointer_cast<CAMLPresenterSession::Frame>(request.frame);
     assert(frame->buffer->m_bufferIndex==1&&frame->buffer->WasSubmitted());
+    assert((manager.m_Queue[manager.m_presentsource].liveL5==AML_FRAME_L5::Bounds{{1,1,0,0}}));
+    assert((frame->picture.amlFrameL5==AML_FRAME_L5::Bounds{{1,1,0,0}}));
+    auto metadata=std::static_pointer_cast<const CAMLPresenterSession::OverlayObservation>(frame->observation);
+    assert(metadata->liveL5==frame->picture.amlFrameL5);
     assert(codec->releases==1&&codec->drops==0);
     auto current=manager.m_amlPresenter;
     app.FinishSkinReload(reload,true);assert(manager.m_amlPresenter==current); // one-shot

@@ -20,6 +20,7 @@ public:
     OVERLAY::CRenderer::OverlayBatch overlays;
     EFIELDSYNC field{FS_NONE};
     CAMLPresenter::Method method{CAMLPresenter::Method::SINGLE};
+    AML_FRAME_L5::Bounds liveL5;
   };
   struct Frame final : CAMLPresenter::Frame
   {

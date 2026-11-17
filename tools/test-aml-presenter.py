@@ -60,6 +60,7 @@ def main():
 PRELUDE = r'''
 #include "cores/VideoPlayer/VideoRenderers/AMLPresenter.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
+#include "utils/AMLFrameL5.h"
 #include <cassert>
 #include <future>
 #include <string>
@@ -124,9 +125,9 @@ void CVideoBuffer::Release() {
   if(--refs==0) {assert(static_cast<CAMLVideoBuffer*>(this)->Drop()); delete this;}
 }
 struct VideoPicture {
-  CVideoBuffer* videoBuffer{nullptr}; double pts{0}; int iFlags{0};
+  CVideoBuffer* videoBuffer{nullptr}; double pts{0}; int iFlags{0}; AML_FRAME_L5::Bounds amlFrameL5;
   ~VideoPicture() {if(videoBuffer) videoBuffer->Release();}
-  void CopyRef(const VideoPicture& other) {videoBuffer=other.videoBuffer; pts=other.pts; if(videoBuffer) videoBuffer->Acquire();}
+  void CopyRef(const VideoPicture& other) {videoBuffer=other.videoBuffer; pts=other.pts; amlFrameL5=other.amlFrameL5; if(videoBuffer) videoBuffer->Acquire();}
 };
 enum EFIELDSYNC {FS_NONE,FS_TOP,FS_BOT};
 namespace OVERLAY {struct CRenderer {using OverlayBatch=std::vector<int>;};}
@@ -407,6 +408,7 @@ void RouteProgress() {
     CRenderManager::BufferReservation reservation;
     assert(manager.WaitForBuffer(reservation,stop,2s)>=0);
     VideoPicture picture; picture.pts=clock.GetClock();
+    picture.amlFrameL5=std::array<uint16_t,4>{static_cast<uint16_t>(n),static_cast<uint16_t>(n),0,0};
     auto* buffer=new CAMLVideoBuffer(n); buffer->Set(codec,n,40,static_cast<uint32_t>(n),1);
     picture.videoBuffer=buffer;
     assert(manager.AddVideoPicture(reservation,picture,{n},stop,VS_INTERLACEMETHOD_NONE,false));
@@ -418,6 +420,9 @@ void RouteProgress() {
   Await([&] {return codec->releases==129;});
   assert(session->queue->WaitIdle(1s));
   manager.LogAMLPresenter("test-complete",true);
+  const auto observed=session->queue->Observe();
+  auto content=std::static_pointer_cast<const CAMLPresenterSession::OverlayObservation>(observed.payload);
+  assert((content->liveL5==AML_FRAME_L5::Bounds{{129,129,0,0}}));
   assert(session->queue->Stats().queued==0); // current frame cannot block EOS/drain
   CRenderManager::BufferReservation old;
   std::atomic_bool stop{false};

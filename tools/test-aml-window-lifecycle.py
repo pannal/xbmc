@@ -134,6 +134,7 @@ CAMLVideoMute& aml_video_mute_controller(){static CAMLVideoMute c([](bool){});re
 #include "windowing/amlogic/AMLNativeTransaction.h"
 #include "rendering/RenderResource.h"
 #include "utils/PlaybackEndDiagnostics.h"
+#include "utils/AMLFrameL5.h"
 #include <cassert>
 #include <cmath>
 #include <functional>
@@ -330,7 +331,7 @@ struct CResolutionUtils{static inline int chosen=2;static RESOLUTION ChooseBestR
 // but are outside this window/readiness fixture and may never execute here.
 struct CRendererAML{void Update(){event("renderer-update");}void SetPresentationEpoch(uint64_t){assert(false);}};
 struct CAMLPresenterSession{
-  struct OverlayObservation{int field,method;std::vector<int> overlays;};
+  struct OverlayObservation{int field,method;std::vector<int> overlays;AML_FRAME_L5::Bounds liveL5;};
   struct Queue{
     struct Observation{std::shared_ptr<void> payload;uint64_t epoch;double pts;};
     Observation Observe(){assert(false);return {};}
@@ -345,7 +346,7 @@ public:
   std::shared_ptr<CAMLPresenterSession> m_amlPresenter;
   void LogAMLPresenter(const char*,bool){assert(false);}void StopAMLPresenter(bool){assert(false);}
   bool UpdateAMLPresenter(){assert(false);return false;}
-  enum EPRESENTMETHOD{SINGLE};struct SPresent{double pts;int field;EPRESENTMETHOD method;};
+  enum EPRESENTMETHOD{SINGLE};struct SPresent{double pts;int field;EPRESENTMETHOD method;AML_FRAME_L5::Bounds liveL5;};
   struct FrameSelection{int index,index2;SPresent info;std::vector<int> overlays;};
   std::shared_ptr<const FrameSelection> m_frameSelection;CCriticalSection m_presentlock;
   bool m_presentstarted=false;double m_presentpts=0;Timer m_presentTimer;

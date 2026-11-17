@@ -3448,7 +3448,14 @@ int CAMLCodec::DequeueBuffer()
 
     // The pts history advances when a frame is handed over in GetPicture,
     // not here.
-    m_reorderQueue.push_back({pts, vbuf.index, vbuf.field == V4L2_FIELD_INTERLACED});
+    AML_FRAME_L5::Bounds liveL5;
+    if (am_private->liveFrameL5)
+      liveL5 = AML_FRAME_L5::FromDequeue(vbuf.reserved2,
+          {vbuf.timecode.frames, vbuf.timecode.seconds, vbuf.timecode.minutes,
+           vbuf.timecode.hours, vbuf.timecode.userbits[0], vbuf.timecode.userbits[1],
+           vbuf.timecode.userbits[2], vbuf.timecode.userbits[3]},
+          vbuf.timecode.type, vbuf.timecode.flags);
+    m_reorderQueue.push_back({pts, vbuf.index, vbuf.field == V4L2_FIELD_INTERLACED, liveL5});
   }
   else if (ret != EAGAIN)
   {
@@ -3602,6 +3609,7 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
     m_cur_pts = m_reorderQueue.front().pts;
     m_bufferIndex = m_reorderQueue.front().index;
     const bool interlaced = m_reorderQueue.front().interlaced;
+    videoPicture.amlFrameL5 = m_reorderQueue.front().liveL5;
     m_reorderQueue.pop_front();
 
     videoPicture.iFlags = 0;

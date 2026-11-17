@@ -545,7 +545,8 @@ void CRenderManager::FrameMove()
         static_cast<CRendererAML*>(m_pRenderer)->SetPresentationEpoch(observed.epoch);
         auto content = std::static_pointer_cast<const CAMLPresenterSession::OverlayObservation>(observed.payload);
         std::unique_lock<CCriticalSection> present(m_presentlock);
-        SPresent info{observed.pts, content->field, static_cast<EPRESENTMETHOD>(content->method)};
+        SPresent info{observed.pts, content->field, static_cast<EPRESENTMETHOD>(content->method),
+                      content->liveL5};
         m_frameSelection = std::make_shared<const FrameSelection>(FrameSelection{
             -1, -1, info, content->overlays});
         m_presentstarted = true;
@@ -1190,7 +1191,8 @@ RESOLUTION CRenderManager::GetResolution()
 
 CRect CRenderManager::CalcPictureActiveArea(const CRect& src, const CRect& dst, const CRect& view,
                                            double pts, bool canvasOverride,
-                                           bool allowSubtitleEstimate)
+                                           bool allowSubtitleEstimate,
+                                           const AML_FRAME_L5::Bounds& liveL5)
 {
   // Source/detector geometry is shared with subtitle placement. The public
   // snapshot additionally maps applicable absolute overrides from the final
@@ -1241,6 +1243,16 @@ CRect CRenderManager::CalcPictureActiveArea(const CRect& src, const CRect& dst, 
       bottom = metadata.level5_active_area_bottom_offset;
       left = metadata.level5_active_area_left_offset;
       right = metadata.level5_active_area_right_offset;
+    }
+    else if (!detectedOverride && !override && !phantom && liveL5 &&
+             aml_dv_live_frame_l5_eligible(m_picture.amlDVSession))
+    {
+      // The same held decoder picture supplies Dolby's fill-only L5. This
+      // input is independent of placement estimates and suppressed output.
+      top = (*liveL5)[0];
+      bottom = (*liveL5)[1];
+      left = (*liveL5)[2];
+      right = (*liveL5)[3];
     }
     else if (!detectedOverride && !override && !phantom)
       aml_subtitle_detect_active_area_get(m_picture.iWidth, m_picture.iHeight, top, bottom, left,
@@ -1403,7 +1415,8 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     if (subsSignalMode == 2)
     {
       // Placement can use subtitle-only estimates. Compare the final draw against L5 geometry.
-      const CRect signalActive = CalcPictureActiveArea(src, dst, view, frame->present.pts, false);
+      const CRect signalActive = CalcPictureActiveArea(src, dst, view, frame->present.pts, false,
+                                                      false, frame->present.liveL5);
       bool signalSubtitles = m_overlays.HasTextSubOutsideActiveArea(prepared, signalActive, view);
       if (m_picture.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION && aml_subtitle_native_dv())
         signalSubtitles |= m_overlays.HasImageSubOutsideActiveArea(prepared, signalActive);
@@ -1806,6 +1819,7 @@ bool CRenderManager::AddVideoPicture(BufferReservation& reservation,
       return false;
     auto content = std::make_shared<CAMLPresenterSession::OverlayObservation>();
     content->overlays = std::move(overlays);
+    content->liveL5 = picture.amlFrameL5;
     if ((picture.iFlags & DVP_FLAG_INTERLACED) && deintMethod != VS_INTERLACEMETHOD_NONE)
     {
       content->field = (picture.iFlags & DVP_FLAG_TOP_FIELD_FIRST) ? FS_TOP : FS_BOT;
@@ -1884,6 +1898,7 @@ bool CRenderManager::AddVideoPicture(BufferReservation& reservation,
   m.presentfield = displayField;
   m.presentmethod = presentmethod;
   m.pts = picture.pts;
+  m.liveL5 = picture.amlFrameL5;
   m_queued.push_back(index);
   m_reservations[index] = 0;
   reservation.m_owner = nullptr;
@@ -2326,8 +2341,10 @@ void CRenderManager::RestoreAMLPresenter(uint64_t lifecycle, uint64_t flush,
     picture.videoBuffer = buffer;
     buffer->Acquire();
     picture.pts = m_Queue[index].pts;
+    picture.amlFrameL5 = m_Queue[index].liveL5;
     auto observation = std::make_shared<CAMLPresenterSession::OverlayObservation>();
     observation->overlays = m_overlays.GetOverlays(index);
+    observation->liveL5 = picture.amlFrameL5;
     observation->field = m_Queue[index].presentfield;
     observation->method = static_cast<CAMLPresenter::Method>(m_Queue[index].presentmethod);
     imported.push_back(index);
@@ -2531,7 +2548,8 @@ void CRenderManager::StopAMLPresenter(bool migrate)
       auto overlays = std::static_pointer_cast<const CAMLPresenterSession::OverlayObservation>(frame->observation);
       m_pRenderer->AddVideoPicture(frame->picture, index);
       m_overlays.SetOverlays(overlays->overlays, index);
-      m_Queue[index] = {frame->pts, overlays->field, static_cast<EPRESENTMETHOD>(frame->method)};
+      m_Queue[index] = {frame->pts, overlays->field, static_cast<EPRESENTMETHOD>(frame->method),
+                        frame->picture.amlFrameL5};
       if (!m_presentstarted)
       {
         m_presentsource = index;

@@ -18,7 +18,7 @@ function = fixture['function']
 
 
 def source():
-    code = '#include <iostream>\n' + fixture['harness']()
+    code = '#include <iostream>\n#include "utils/AMLFrameL5.h"\n' + fixture['harness']()
     code = code.replace('  double GetNumber(int)', '  bool GetBool(int){return false;}\n  double GetNumber(int)')
     code = code.replace('SETTING_SUBTITLES_BITMAPMARGIN=4;', 'SETTING_SUBTITLES_BITMAPMARGIN=4,SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_USER_POS=5,SETTING_COREELEC_AMLOGIC_DV_LEVEL5=6;')
     code = code.replace('struct CServiceBroker {', '''struct Metadata {
@@ -50,6 +50,7 @@ enum class StreamHdrType {HDR_TYPE_NONE,HDR_TYPE_DOLBYVISION};
 bool nativeDV=true,phantom=false,detected=false,overrideActive=false,highConfidence=false,liveFEL=false;
 uint16_t detectedTop=140,detectedBottom=140,detectedLeft=0,detectedRight=0;
 bool aml_subtitle_native_dv(){return nativeDV;}
+bool aml_dv_live_frame_l5_eligible(const std::shared_ptr<const void>&){return false;}
 bool aml_dv_auto_letterbox_active(){return phantom;}
 bool aml_dv_auto_letterbox_additive(){return !phantom;}
 bool aml_dv_get_l5_override(uint16_t&,uint16_t&,uint16_t&,uint16_t&){return overrideActive;}
@@ -60,10 +61,10 @@ bool aml_subtitle_detect_active_area_get(int,int,uint16_t& t,uint16_t& b,uint16_
   if(!detected)return false;t=detectedTop;b=detectedBottom;l=detectedLeft;r=detectedRight;return true;
 }
 struct CRenderManager {
-  struct Picture {int iWidth=1920,iHeight=1080;std::string stereoMode;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;} m_picture;
+  struct Picture {std::shared_ptr<const void> amlDVSession;int iWidth=1920,iHeight=1080;std::string stereoMode;StreamHdrType hdrType=StreamHdrType::HDR_TYPE_DOLBYVISION;} m_picture;
   CRenderer m_overlays;
   CRect CalcOverlayActiveArea(CRect&,CRect&,CRect&,bool,double);
-  CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool,bool=false);
+  CRect CalcPictureActiveArea(const CRect&,const CRect&,const CRect&,double,bool,bool=false,const AML_FRAME_L5::Bounds& = {});
 };
 '''
     manager = (ROOT / 'xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp').read_text()

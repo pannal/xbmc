@@ -280,6 +280,7 @@ private:
     uint64_t pts;
     uint32_t index;
     bool interlaced;
+    AML_FRAME_L5::Bounds liveL5;
   };
   std::deque<DecodedFrame> m_reorderQueue;
   // Consecutive timeline-rebuild steps outside the true-reorder band; a run

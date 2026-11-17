@@ -98,6 +98,7 @@ PRELUDE = r'''
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include "utils/AMLFrameL5.h"
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -153,7 +154,7 @@ struct Clock {double GetClock() const{return 1.0;}};
 struct RefBuffer {int refs=1;void Acquire(){++refs;}void Release(){assert(refs>0);--refs;}};
 struct Light {int MaxCLL=0;};
 struct VideoPicture {
-  double pts=100;int iFlags=0,m_3dSubtitleDepth=7;
+  double pts=100;int iFlags=0,m_3dSubtitleDepth=7; AML_FRAME_L5::Bounds amlFrameL5;
   RefBuffer* videoBuffer=nullptr;
   int color_primaries=1,color_space=2,color_transfer=3,color_range=1,colorBits=10;
   bool hasDisplayMetadata=false,hasLightMetadata=false;
@@ -212,7 +213,7 @@ public:
   enum EPRESENTSTEP {PRESENT_IDLE,PRESENT_FLIP,PRESENT_FRAME,PRESENT_FRAME2,PRESENT_READY};
   enum EFIELDSYNC {FS_NONE,FS_TOP,FS_BOT};
   enum EPRESENTMETHOD {PRESENT_METHOD_SINGLE,PRESENT_METHOD_BLEND,PRESENT_METHOD_BOB};
-  struct SPresent {double pts=0;EFIELDSYNC presentfield=FS_NONE;EPRESENTMETHOD presentmethod=PRESENT_METHOD_SINGLE;};
+  struct SPresent {double pts=0;EFIELDSYNC presentfield=FS_NONE;EPRESENTMETHOD presentmethod=PRESENT_METHOD_SINGLE;AML_FRAME_L5::Bounds liveL5;};
   SPresent m_Queue[NUM_BUFFERS];
   @SELECTION@
   std::shared_ptr<const FrameSelection> m_frameSelection;
