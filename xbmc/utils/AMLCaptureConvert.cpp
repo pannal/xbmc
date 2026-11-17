@@ -19,7 +19,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
-#include <functional>
+#include <exception>
 #include <thread>
 #include <vector>
 
@@ -489,6 +489,37 @@ void ComposeRows(const CDecoder& decoder,
 // A 4K frame takes about a second on one core; spread the rows.
 constexpr unsigned int MAX_THREADS = 4;
 
+template<typename ProcessRows>
+void ParallelRows(int h, const ProcessRows& processRows)
+{
+  const unsigned int threads = std::clamp(std::thread::hardware_concurrency(), 1u, MAX_THREADS);
+  const int rows = (h + static_cast<int>(threads) - 1) / static_cast<int>(threads);
+  std::array<std::thread, MAX_THREADS - 1> workers;
+  for (unsigned int t = 1; t < threads; t++)
+  {
+    const int y0 = static_cast<int>(t) * rows;
+    if (y0 >= h)
+      break;
+    try
+    {
+      workers[t - 1] = std::thread(processRows, y0, std::min(h, y0 + rows));
+    }
+    catch (const std::exception&)
+    {
+      // Thread creation can fail from resource or allocation exhaustion. Finish
+      // only the unassigned rows here, then join all workers already started.
+      processRows(y0, h);
+      break;
+    }
+  }
+  processRows(0, std::min(h, rows));
+  for (auto& worker : workers)
+  {
+    if (worker.joinable())
+      worker.join();
+  }
+}
+
 void Compose(const CDecoder& decoder,
              Source source,
              const void* data,
@@ -496,21 +527,8 @@ void Compose(const CDecoder& decoder,
              int stride,
              const Rect& r)
 {
-  const int h = r.y1 - r.y0;
-  const unsigned int threads = std::clamp(std::thread::hardware_concurrency(), 1u, MAX_THREADS);
-  const int rows = (h + static_cast<int>(threads) - 1) / static_cast<int>(threads);
-  std::vector<std::thread> workers;
-  for (unsigned int t = 1; t < threads; t++)
-  {
-    const int y0 = static_cast<int>(t) * rows;
-    if (y0 >= h)
-      break;
-    workers.emplace_back(ComposeRows, std::cref(decoder), source, data, bgra, stride, std::cref(r),
-                         y0, std::min(h, y0 + rows));
-  }
-  ComposeRows(decoder, source, data, bgra, stride, r, 0, std::min(h, rows));
-  for (auto& worker : workers)
-    worker.join();
+  ParallelRows(r.y1 - r.y0, [&](int y0, int y1)
+               { ComposeRows(decoder, source, data, bgra, stride, r, y0, y1); });
 }
 
 // A source position and the weight of the next one, at 8 bits, for an output
@@ -602,27 +620,14 @@ bool ComposeUnder(
   return true;
 }
 
-bool ScaleGui(
-    const uint8_t* bgra, int width, int height, uint8_t* out, int outWidth, int outHeight)
+bool ScaleGui(const uint8_t* bgra, int width, int height, uint8_t* out, int outWidth, int outHeight)
 {
   if (!bgra || !out || width <= 0 || height <= 0 || outWidth <= 0 || outHeight <= 0)
     return false;
   const std::vector<Tap> xs = Taps(width, outWidth);
   const std::vector<Tap> ys = Taps(height, outHeight);
-  const unsigned int threads = std::clamp(std::thread::hardware_concurrency(), 1u, MAX_THREADS);
-  const int rows = (outHeight + static_cast<int>(threads) - 1) / static_cast<int>(threads);
-  std::vector<std::thread> workers;
-  for (unsigned int t = 1; t < threads; t++)
-  {
-    const int y0 = static_cast<int>(t) * rows;
-    if (y0 >= outHeight)
-      break;
-    workers.emplace_back(ScaleGuiRows, bgra, width, out, outWidth, std::cref(xs), std::cref(ys), y0,
-                         std::min(outHeight, y0 + rows));
-  }
-  ScaleGuiRows(bgra, width, out, outWidth, xs, ys, 0, std::min(outHeight, rows));
-  for (auto& worker : workers)
-    worker.join();
+  ParallelRows(outHeight,
+               [&](int y0, int y1) { ScaleGuiRows(bgra, width, out, outWidth, xs, ys, y0, y1); });
   return true;
 }
 
