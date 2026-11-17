@@ -61,7 +61,9 @@ def main():
 
     transition = function(aml, "struct AMLDVOutputTransition") + ";\n"
     transition += "static std::shared_ptr<AMLDVOutputTransition> s_dvOutputTransition;\n"
-    output = function(aml, "bool aml_dv_output_transition_pending(") + function(aml, "void aml_dv_complete_output_transition(")
+    output = (function(aml, "bool aml_dv_output_transition_pending(") +
+              function(aml, "void aml_dv_complete_output_transition(") +
+              function(aml, "void aml_dv_begin_startup_output_transition("))
     opening = function(aml, "void aml_dv_open(")
     if args.baseline_open:
         old = subprocess.check_output(["git", "show", f"{args.baseline_open}:{AML}"], cwd=ROOT, text=True)
@@ -78,6 +80,10 @@ def main():
     assert 'm_dvSession = std::make_shared<const unsigned char>(0);' in codec
     assert re.search(r'aml_dv_open\([^;]+false, m_dvSession,\s*m_originalSourceHdrType, startupBlackout\);', codec)
     assert 'startupBlackout = m_videoHoldActive;' in function(codec, 'bool CAMLCodec::OpenDecoderInternal(')
+    assert 'aml_dv_begin_startup_output_transition(m_dvSession, startupBlackout && isFullscreen);' in codec
+    codec_open = function(codec, 'bool CAMLCodec::OpenDecoderInternal(')
+    codec_fullscreen = re.search(r'  bool isFullscreen =.*?;\n', codec_open, re.S).group()
+    codec_startup = function(codec_open, '  if (m_dvOpened)\n')
     assert 'm_videoHoldDVWaiting = m_videoHoldActive && aml_dv_output_transition_pending(m_dvSession);' in function(codec, 'bool CAMLCodec::OpenDecoderInternal(')
     assert 'aml_dv_cancel_deferred_session(m_dvSession);' in function(codec, 'bool CAMLCodec::BeginLifecycle(')
     getpicture = function(codec, "CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(")
@@ -266,6 +272,28 @@ struct CServiceBroker {
 CSettings* settings(){return CServiceBroker::GetSettingsComponent()->GetSettings();}
 @OPENING@
 @CLOSING@
+struct StartupCodec {
+  struct ProcessInfo {
+    bool requestedFullscreen = false;
+    bool IsFullscreen() const { return requestedFullscreen; }
+  } m_processInfo;
+  struct Hints {
+    StreamHdrType hdrType = StreamHdrType::HDR_TYPE_NONE;
+    int bitdepth = 8;
+    AVColorPrimaries colorPrimaries = AVCOL_PRI_BT709;
+  };
+  bool m_dvOpened = true;
+  std::shared_ptr<const void> m_dvSession;
+  StreamHdrType m_originalSourceHdrType = StreamHdrType::HDR_TYPE_NONE;
+  std::mutex m_videoHoldMutex;
+  bool m_videoHoldActive = false;
+  bool m_videoHoldDVWaiting = false;
+  void OpenStartup() {
+    Hints hints;
+@CODECFULLSCREEN@
+@CODECSTARTUP@
+  }
+};
 using CCriticalSection = std::recursive_mutex;
 struct Picture {
   std::string stereoMode;
@@ -319,7 +347,8 @@ void deferred_open() {
   g_dvMode=DV_MODE_ON_DEMAND;g_dvEnabled=false;s_dvDiscHold=true;g_mapping=DOLBY_VISION_OUTPUT_MODE_IPT;
   {CAMLNativeTransaction native;check(native.TryBegin(),"open admission");
    aml_dv_open(StreamHdrType::HDR_TYPE_DOLBYVISION,10,AVCOL_PRI_BT709,false,s_dvPlaybackSession,
-               StreamHdrType::HDR_TYPE_DOLBYVISION,true);}
+               StreamHdrType::HDR_TYPE_DOLBYVISION,true);
+   aml_dv_begin_startup_output_transition(s_dvPlaybackSession,true);}
   check(g_dvEnabled && s_dvDiscDeferred && aml_dv_output_transition_pending(s_dvPlaybackSession),
         "decoder core enabled, output deferred under blackout");
   g_render.m_bTriggerUpdateResolution = true;  // the codec's first configure
@@ -513,7 +542,8 @@ void test_native_startup_policy() {
     auto owner=c.owner?std::shared_ptr<const void>(std::make_shared<const int>(0)):nullptr;
     {CAMLNativeTransaction native;check(native.TryBegin(),"open policy admission");
      aml_dv_open(c.hdr,10,AVCOL_PRI_BT709,c.sw,owner,c.original,c.blackout);}
-    check(aml_dv_output_transition_pending(owner)==(c.defer&&c.owner),"native startup eligibility");
+    check(aml_dv_output_transition_pending(owner)==
+          (c.defer && c.owner),"startup display eligibility");
     check(s_dvDiscDeferred==c.defer,"native output deferral policy");
     if(c.defer){
       check(g_dvEnabled && g_engages.empty(),"deferred open enables core without output");
@@ -546,6 +576,92 @@ void test_native_startup_policy() {
    aml_dv_close();aml_dv_set_disc_hold(false);
    check(!g_dvEnabled&&!s_dvDiscDeferred,"disc exit releases held core");}
 }
+void test_bypass_startup_completion() {
+  for(auto hdr:{StreamHdrType::HDR_TYPE_NONE,StreamHdrType::HDR_TYPE_HDR10})
+  for(auto mode:{DV_MODE_OFF,DV_MODE_ON_DEMAND})
+  for(bool change:{false,true}) {
+    g_render.CancelDeferredDV();g_fullscreen=true;g_refreshSwitching=1;
+    g_modeChanging=change;g_forceSwitch=false;g_windowReady=true;g_delayReset=false;
+    g_dvMode=mode;g_dvEnabled=false;s_dvDiscHold=false;s_dvDiscDeferred=false;
+    g_mapping=DOLBY_VISION_OUTPUT_MODE_BYPASS;g_engages.clear();
+    auto owner=std::shared_ptr<const void>(std::make_shared<const int>(0));
+    {CAMLNativeTransaction native;check(native.TryBegin(),"bypass open admission");
+     aml_dv_open(hdr,8,AVCOL_PRI_BT709,false,owner,hdr,true);
+     aml_dv_begin_startup_output_transition(owner,true);}
+    g_render.m_picture.amlDVSession=owner;
+    g_render.m_bTriggerUpdateResolution=true;g_render.m_appliedResolution.reset();
+    g_render.m_hdrType_override=StreamHdrType::HDR_TYPE_NONE;
+    check(aml_dv_output_transition_pending(owner),"bypass first frame must wait for renderer");
+    {CAMLNativeTransaction native;check(native.TryBegin(),"stale startup admission");
+     aml_dv_begin_startup_output_transition(std::make_shared<const int>(1),true);}
+    check(aml_dv_output_transition_pending(owner),"stale startup cannot replace current transition");
+    g_fullscreen=false;
+    g_render.ContinueDeferredDV(true);
+    check(aml_dv_output_transition_pending(owner),"idle poll cannot release bypass startup");
+    g_fullscreen=true;
+    if(change) {
+      g_delayReset=true;g_render.UpdateResolution();g_render.FrameDeferredDV();
+      check(aml_dv_output_transition_pending(owner),"bypass waits for delayed display reset");
+      g_delayReset=false;g_windowReady=true;
+    }
+    g_render.UpdateResolution();
+    check(!aml_dv_output_transition_pending(owner),"ready bypass display releases without another frame");
+    check(g_engages.empty()&&!g_dvEnabled,"bypass display gate must not enable DV");
+    {CAMLNativeTransaction native;check(native.TryBegin(),"windowed bypass open admission");
+     aml_dv_open(hdr,8,AVCOL_PRI_BT709,false,owner,hdr,true);
+     aml_dv_begin_startup_output_transition(owner,false);}
+    g_fullscreen=false;g_render.m_bTriggerUpdateResolution=true;
+    g_render.FrameDeferredDV();
+    check(!aml_dv_output_transition_pending(owner),"windowed bypass has no fullscreen update to wait for");
+    g_fullscreen=true;
+  }
+}
+
+void test_codec_startup_intent() {
+  for (bool requested : {false, true})
+  for (bool visible : {false, true})
+  for (bool blackout : {false, true}) {
+    g_render.CancelDeferredDV();
+    aml_dv_close();
+    g_fullscreen = visible;
+    g_dvMode = DV_MODE_OFF;
+    g_dvEnabled = false;
+    g_mapping = DOLBY_VISION_OUTPUT_MODE_BYPASS;
+    g_engages.clear();
+    StartupCodec codec;
+    codec.m_processInfo.requestedFullscreen = requested;
+    codec.m_videoHoldActive = blackout;
+    {
+      CAMLNativeTransaction native;
+      check(native.TryBegin(), "codec startup admission");
+      codec.OpenStartup();
+    }
+    const bool waiting = blackout && (requested || visible);
+    check(aml_dv_output_transition_pending(codec.m_dvSession) == waiting,
+          "production codec must gate recorded fullscreen intent, not transient GUI state");
+    check(codec.m_videoHoldDVWaiting == waiting, "codec remembers its actual output gate");
+    if (waiting) {
+      g_render.m_picture.amlDVSession = codec.m_dvSession;
+      g_render.m_bTriggerUpdateResolution = true;
+      g_render.m_appliedResolution.reset();
+      g_render.m_hdrType_override = StreamHdrType::HDR_TYPE_NONE;
+      g_windowReady = true; g_delayReset = false; g_modeChanging = false;
+      g_forceSwitch = false; g_refreshSwitching = 1;
+      if (!visible) {
+        g_render.ContinueDeferredDV(true);
+        check(aml_dv_output_transition_pending(codec.m_dvSession),
+              "transient windowed poll retains codec startup gate");
+      }
+      g_fullscreen = true;
+      g_render.UpdateResolution();
+      check(!aml_dv_output_transition_pending(codec.m_dvSession),
+            "renderer completion releases the codec's startup gate");
+    }
+    check(g_engages.empty() && !g_dvEnabled, "codec bypass startup must not program DV");
+  }
+  g_fullscreen = true;
+}
+
 void test_output_completion() {
   g_modeChanging=true;g_forceSwitch=false;g_refreshSwitching=1;g_windowReady=true;
   deferred_open();auto owner=s_dvPlaybackSession;
@@ -598,6 +714,8 @@ int main() {
     check(CAMLSession::EndDisplay(display,CAMLSession::DisplayPhase::READY),"ready");
     auto stream=nativeSession.Fence();check(nativeSession.BeginMutation(stream)&&nativeSession.Complete(stream,true),"session");
     test_native_startup_policy();
+    test_bypass_startup_completion();
+    test_codec_startup_intent();
     test_output_completion();
     test_mode_set();
     test_pending_window();
@@ -616,6 +734,7 @@ int main() {
 '''
     for key, value in [("TRANSITION", transition), ("OUTPUT", output), ("OPENING", opening), ("CLOSING", closing), ("ENGAGE", engage), ("PENDING", pending), ("CONTINUATION", continuation), ("STALE", stale), ("GATE", gate),
                        ("UPDATE", update), ("FRAME", frame),
+                       ("CODECFULLSCREEN", codec_fullscreen), ("CODECSTARTUP", codec_startup),
                        ("APPLIEDRESOLUTION", applied_resolution),
                        ("APPLIEDSTATE", "std::optional<AppliedResolution> m_appliedResolution;"
                         if applied_resolution else "")]:
@@ -638,6 +757,14 @@ int main() {
     run(harness)
     if args.negative_controls:
         for label,old,new in [
+            ('transient GUI skips recorded fullscreen startup',
+             '    aml_dv_begin_startup_output_transition(m_dvSession, startupBlackout && isFullscreen);',
+             '    if (CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo())\n      aml_dv_begin_startup_output_transition(m_dvSession, startupBlackout && isFullscreen);'),
+            ('fullscreen eligibility forgets recorded decoder intent',
+             codec_fullscreen,
+             '  bool isFullscreen = CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo();\n'),
+            ('non-DV startup releases before renderer', 'if (!startupBlackout || !session || session != std::atomic_load(&s_dvPlaybackSession))', 'if (true)'),
+            ('windowed bypass waits until timeout', 'if (!startupBlackout || !session || session != std::atomic_load(&s_dvPlaybackSession))', 'if (!session || session != std::atomic_load(&s_dvPlaybackSession))'),
             ('inactive disc cleanup cancels native startup', '  if (!wasHeld)\n    return; // A non-disc startup can also own a deferred output transition.', ''),
             ('early output on native startup', '(s_dvDiscHold || nativeStartup)', 's_dvDiscHold'),
             ('complete before programming', ' && transition->programmed.load()', ''),

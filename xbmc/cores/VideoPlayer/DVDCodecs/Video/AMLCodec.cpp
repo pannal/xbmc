@@ -2557,6 +2557,9 @@ bool CAMLCodec::OpenDecoderInternal()
     }
     aml_dv_open(hints.hdrType, hints.bitdepth, hints.colorPrimaries, false, m_dvSession,
                 m_originalSourceHdrType, startupBlackout);
+    // The GUI may still be windowed while a fullscreen open is starting.
+    // Genuine windowed playback has no refresh update to wait for.
+    aml_dv_begin_startup_output_transition(m_dvSession, startupBlackout && isFullscreen);
     // Remember the transition even if it finishes before our first receipt
     // check, so display setup cannot consume the replacement-frame budget.
     std::lock_guard<std::mutex> lock(m_videoHoldMutex);

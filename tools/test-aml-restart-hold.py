@@ -103,7 +103,7 @@ void routeReceipt(const char* text){std::ofstream out(routePath);out<<text;}
 void age(CAMLCodec& c){c.m_videoHoldStart-=std::chrono::seconds(4);}
 void dvCases(CAMLCodec& c){
  // Early application and unsupported decode do not expose the bypass interval.
- s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession);
+ s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession,0);
  c.Reset();receipt("1 51 51");c.Submit();c.Poll();
  assert(muted && "applied frame must wait for DV output");
  routeReceipt("1 51 200 2 0");c.DQBuf();
@@ -116,17 +116,17 @@ void dvCases(CAMLCodec& c){
  aml_dv_complete_output_transition(c.m_dvSession);c.Poll();
  assert(!muted && lastReleaseReason=="legacy unsupported route" && "sole decoded paused frame survives output completion");
  std::remove(routePath.c_str());
- s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession);
+ s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession,0);
  c.Reset();receipt("1 52 52");c.Submit();age(c);c.Poll();assert(muted);
  s_dvOutputTransition->programmed=true;aml_dv_complete_output_transition(c.m_dvSession);c.Poll();
  assert(!muted && lastReleaseReason=="applied replacement" && "sole submitted paused frame survives output completion");
  // Completion before the first poll still starts a new frame-receipt budget.
- s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession);
+ s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession,0);
  c.Reset();age(c);s_dvOutputTransition->programmed=true;aml_dv_complete_output_transition(c.m_dvSession);
  c.Poll();assert(muted && "display work must not consume replacement budget");
  age(c);c.Poll();assert(!muted && lastReleaseReason=="timeout");
  // Lost renderer, decoder error, close and repeated reset remain bounded.
- s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession);
+ s_dvOutputTransition=std::make_shared<AMLDVOutputTransition>(c.m_dvSession,0);
  c.Reset();age(c);age(c);c.Poll();
  assert(!muted && lastReleaseReason=="DV output timeout" && "abandoned DV transition cannot hang blackout");
  c.Reset();c.HoldVideo(false);assert(!muted && lastReleaseReason=="cancel");

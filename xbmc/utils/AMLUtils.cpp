@@ -2150,6 +2150,23 @@ void aml_dv_complete_output_transition(const std::shared_ptr<const void>& sessio
                                        std::shared_ptr<AMLDVOutputTransition>{});
 }
 
+void aml_dv_begin_startup_output_transition(const std::shared_ptr<const void>& session,
+                                          bool startupBlackout)
+{
+  CDVCoreGuard dvlock(__FUNCTION__);
+  if (!startupBlackout || !session || session != std::atomic_load(&s_dvPlaybackSession))
+    return;
+
+  // An applied first frame can precede the fullscreen refresh switch even in
+  // Bypass/SDR. Gate it on display completion without DV programming, retaining
+  // any native-DV transition already established by aml_dv_open().
+  auto transition = std::make_shared<AMLDVOutputTransition>(
+      session, DOLBY_VISION_OUTPUT_MODE_BYPASS);
+  transition->programmed = true;
+  std::shared_ptr<AMLDVOutputTransition> expected;
+  std::atomic_compare_exchange_strong(&s_dvOutputTransition, &expected, transition);
+}
+
 bool aml_dv_deferred_disc_pending(const std::shared_ptr<const void>& session, bool staleOnly)
 {
   if (!session || session != std::atomic_load(&s_dvPlaybackSession))
