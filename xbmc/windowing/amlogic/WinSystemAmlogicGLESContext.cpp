@@ -213,7 +213,7 @@ void CWinSystemAmlogicGLESContext::ReleaseCompositeResources()
   InvalidateRenderTarget();
   m_afbcFrame = false;
   m_afbcPresenter.Destroy(IsPrimaryContextCurrent());
-  m_afbcPresented.pending = false; // its buffers are gone, whether or not it was shown
+  m_afbcPresented.clear(); // its buffers are gone, whether or not they were shown
   if (IsPrimaryContextCurrent())
   {
     m_guiFbo.Cleanup();
@@ -579,7 +579,7 @@ bool CWinSystemAmlogicGLESContext::DestroyWindow()
   // linear framebuffer again before the surface goes.
   m_afbcFrame = false;
   m_afbcPresenter.Destroy(IsPrimaryContextCurrent());
-  m_afbcPresented.pending = false; // its buffers are gone, whether or not it was shown
+  m_afbcPresented.clear(); // its buffers are gone, whether or not they were shown
   m_pGLContext.DestroySurface();
   return CWinSystemAmlogic::DestroyWindow();
 }
@@ -748,10 +748,12 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   GuiABDraw(); // Opt-in only; retain the sole normal swap even if the trial aborts.
   const bool afbc = m_afbcFrame;
   bool presented;
+  uint64_t afbcFrame = 0;
   if (afbc)
   {
     m_afbcFrame = false;
-    presented = m_afbcPresenter.Present();
+    afbcFrame = m_afbcPresenter.Present();
+    presented = afbcFrame != 0;
     if (!presented)
       MarkGuiDirty(); // The frame is lost: draw it again.
   }
@@ -776,16 +778,13 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   {
     // Handed to the presenter thread, which may still find the display not
     // scanning out: what depends on the frame being shown waits for it.
-    m_afbcPresented.pending = true;
-    m_afbcPresented.videoMuteHandoff = m_videoMuteHandoff;
-    m_afbcPresented.displayReady = IsDisplayReadyForVideo();
-    m_afbcPresented.fullscreenVideo = GetGfxContext().IsFullScreenVideo();
+    m_afbcPresented.push_back({afbcFrame, m_videoMuteHandoff, IsDisplayReadyForVideo(),
+                               GetGfxContext().IsFullScreenVideo()});
     // Queued during the frame, too late to keep it linear: switch with it.
     ApplyPendingKernelSwitch();
   }
   else
   {
-    m_afbcPresented.pending = false;
     if (presented)
     {
       ApplyPendingKernelSwitch();
@@ -799,16 +798,23 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
 
 void CWinSystemAmlogicGLESContext::TakeAFBCOutcome()
 {
-  const CAMLAFBCPresenter::Outcome outcome = m_afbcPresenter.TakeOutcome();
-  if (outcome.redraw)
+  m_afbcPresenter.TakeOutcome(m_afbcOutcome);
+  if (m_afbcOutcome.redraw)
     MarkGuiDirty();
-  if (!m_afbcPresented.pending || (!outcome.shown && !outcome.redraw))
-    return;
-  m_afbcPresented.pending = false;
-  if (outcome.shown)
-    aml_video_mute_controller().Presented(m_afbcPresented.videoMuteHandoff, true,
-        m_afbcPresented.displayReady, m_afbcPresented.fullscreenVideo);
-  aml_native_gui_osd_present(outcome.shown);
+  // Each frame applies its own presentation: a later frame may carry a newer
+  // video mute handoff than one shown before it.
+  for (const CAMLAFBCPresenter::Frame& frame : m_afbcOutcome.frames)
+  {
+    const auto presented = std::find_if(m_afbcPresented.begin(), m_afbcPresented.end(),
+                                        [&frame](const AFBCPresented& p) { return p.frame == frame.number; });
+    if (presented == m_afbcPresented.end())
+      continue; // handed over before the presenter was destroyed
+    if (frame.shown)
+      aml_video_mute_controller().Presented(presented->videoMuteHandoff, true, presented->displayReady,
+                                            presented->fullscreenVideo);
+    aml_native_gui_osd_present(frame.shown);
+    m_afbcPresented.erase(presented);
+  }
 }
 
 void CWinSystemAmlogicGLESContext::QueueKernelSwitch(const char* path, int value)
@@ -865,6 +871,8 @@ void CWinSystemAmlogicGLESContext::RequestMenuComposite(bool menuShown)
 // these is a sysfs read.
 bool CWinSystemAmlogicGLESContext::IsGuiOutputHdr()
 {
+  if (m_plainGuiCapture)
+    return false;
   return aml_transfer_pq_at_open() || aml_dv_core_at_open() || aml_dv_mode() == DV_MODE_ON;
 }
 
@@ -1170,8 +1178,9 @@ void CWinSystemAmlogicGLESContext::AbandonAFBCScanoutFrame()
 // their own (visualisations, also one in a window's background, rendering
 // controls, screensavers, games) and the paths that read or compose through
 // the EGL surface keep the ordinary linear frame; switching either way takes
-// effect in one vsync. Each display buffer is drawn into every other frame, so
-// they need a dirty-region mode that draws each rendered frame whole.
+// effect in one vsync. Each display buffer is drawn into only every second or
+// third frame, so they need a dirty-region mode that draws each rendered frame
+// whole.
 void CWinSystemAmlogicGLESContext::BeginAFBCScanoutFrame()
 {
   m_afbcFrame = false;
@@ -1257,7 +1266,8 @@ bool CWinSystemAmlogicGLESContext::BeginGuiComposite()
   m_menuFboHasContent = false;
   if (!CanRender())
     return false;
-  if (m_menuRoute == MenuRoute::NONE)
+  // A screenshot's plain pass draws straight into the surface it reads back.
+  if (m_menuRoute == MenuRoute::NONE || m_plainGuiCapture)
     return true;
   m_guiTarget = CaptureRenderTarget();
   m_guiResources = GetTextureResources();
@@ -1331,7 +1341,7 @@ void CWinSystemAmlogicGLESContext::CancelGuiComposite()
 bool CWinSystemAmlogicGLESContext::EndGuiComposite()
 {
   if (!m_guiFboBound)
-    return CanRender() && m_menuRoute == MenuRoute::NONE;
+    return CanRender() && (m_menuRoute == MenuRoute::NONE || m_plainGuiCapture);
   if (!IsRenderTargetCurrent(m_guiTarget))
   {
     CancelGuiComposite();

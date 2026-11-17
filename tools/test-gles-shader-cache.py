@@ -26,6 +26,8 @@ def main():
         r'std::array<ShaderSet, 8> m_shaderVariants;'])
     methods = '\n'.join(function(gles, signature) for signature in [
         'bool CRenderSystemGLES::BeginRender()',
+        'void CRenderSystemGLES::SetPlainGuiEncoding(',
+        'void CRenderSystemGLES::SelectGuiEncoding()',
         'void CRenderSystemGLES::EnableGUIShader(',
         'void CRenderSystemGLES::InitialiseShaders()',
         'void CRenderSystemGLES::ReleaseShaderSet(',
@@ -56,7 +58,7 @@ def main():
         run(methods, 'production')
         print('GLES shader cache: PASS (four legacy/eight tuned-state identity/defines/reuse, stable frames, '
               'menu suppression, frame colour snapshots/forwarding, failed-set retries, '
-              'release/abandon; ASan/UBSan)')
+              'release/abandon, plain screenshot pass; ASan/UBSan)')
         if '--mutations' in sys.argv:
             mutations = {
                 'no-cache-hit': ('if (!m_shaderVariants[variant].empty())', 'if (false)'),
@@ -65,11 +67,13 @@ def main():
                 'no-invalidation': ('InvalidateRenderTarget();', ''),
                 'leak-inactive': ('ReleaseShaderSet(shaders, abandon);', '(void)shaders;'),
                 'delete-abandoned': ('shader.second->Abandon();', '(void)shader;'),
-                'no-colour-snapshot': ('m_guiColour = CServiceBroker::GetWinSystem()->GetGuiColourAdjustment();', ''),
+                'no-colour-snapshot': (': CServiceBroker::GetWinSystem()->GetGuiColourAdjustment();',
+                                       ': m_guiColour;'),
                 'no-colour-forwarding': ('m_pShader[m_method]->SetGuiColourAdjustment(m_guiColour);', ''),
                 'live-colour-at-bind': ('SetGuiColourAdjustment(m_guiColour)',
                                        'SetGuiColourAdjustment(CServiceBroker::GetWinSystem()->GetGuiColourAdjustment())'),
                 'lose-colour-key': ('(m_guiColourEnabled ? 4 : 0)', '0'),
+                'plain-ignored': ('const bool plain = m_plainGuiEncoding;', 'const bool plain = false;'),
             }
             for name, (old, new) in mutations.items():
                 assert old in methods
@@ -136,7 +140,7 @@ struct CRenderSystemGLES
 {
   bool m_limitedColorRange=false,m_transferPQ=false,renderable=true,oes=false;
   std::pair<float,float> m_guiColour{1.0f,1.0f};
-  bool m_guiColourEnabled=false;
+  bool m_guiColourEnabled=false,m_plainGuiEncoding=false;
   ShaderMethodGLES m_method=ShaderMethodGLES::SM_DEFAULT;
   int generation=1;
   bool CanRender(){return renderable && currentContext;}
@@ -144,6 +148,7 @@ struct CRenderSystemGLES
   void DrainTextureResources(){}
   void InvalidateRenderTarget(){++generation;}
   bool BeginRender();void InitialiseShaders();void ReleaseShaders(bool abandon=false);
+  void SetPlainGuiEncoding(bool plain);void SelectGuiEncoding();
   void EnableGUIShader(ShaderMethodGLES);
   @FIELDS@
   static void ReleaseShaderSet(ShaderSet&,bool);
@@ -287,6 +292,20 @@ int main()
   currentContext=0;r.ReleaseShaders(true);
   assert(deletions==beforeDelete && abandons-beforeAbandon==4*(allCount-2) && livePrograms.empty());
   currentContext=1;checkFrameColour(false);checkFrameColour(true);
+  // A screenshot's plain GUI pass takes the plain set at once, whatever the output, without reading
+  // the colour adjustment, and the output's set again, from the cache, once switched back.
+  {
+    CRenderSystemGLES p;p.oes=true;select(7);p.InitialiseShaders();
+    assert(p.BeginRender());checkDefines(p,7);const auto tuned=programs(p);
+    const int reads=win.colourReads;
+    p.SetPlainGuiEncoding(true);checkDefines(p,0);
+    assert(p.BeginRender());checkDefines(p,0);assert(win.colourReads==reads);
+    const auto plain=programs(p);const int warm=compiles;
+    p.SetPlainGuiEncoding(false);checkDefines(p,7);
+    assert(programs(p)==tuned && win.colourReads==reads+1);
+    p.SetPlainGuiEncoding(true);assert(programs(p)==plain && compiles==warm);
+    p.SetPlainGuiEncoding(false);p.ReleaseShaders();assert(livePrograms.empty());
+  }
 }
 '''
 

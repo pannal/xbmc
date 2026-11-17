@@ -294,19 +294,19 @@ struct CLog {template<class... T>static void Log(int,const char*,const T&...) {}
 '''
 PROBE_TESTS = r'''
 int main(){
- for(const auto& name:{"hpd_state","rxsense_state","rhpd_state","hdmi_used","disp_mode","sink_type"})
+ for(const auto& name:{"hpd_state","rhpd_state","hdmi_used","disp_mode","sink_type"})
   values[std::string("/sys/class/amhdmitx/amhdmitx0/")+name]="1";
- assert(aml_hdmi_link_probe("test")==AMLHDMILinkSample::CHANGED&&reads==6);
+ assert(aml_hdmi_link_probe("test")==AMLHDMILinkSample::CHANGED&&reads==5);
  Clock::now+=std::chrono::milliseconds(999);
- assert(aml_hdmi_link_probe("test")==AMLHDMILinkSample::SKIPPED&&reads==6);
+ assert(aml_hdmi_link_probe("test")==AMLHDMILinkSample::SKIPPED&&reads==5);
  Clock::now+=std::chrono::milliseconds(1);
- assert(aml_hdmi_link_probe("test")==AMLHDMILinkSample::UNCHANGED&&reads==12);
+ assert(aml_hdmi_link_probe("test")==AMLHDMILinkSample::UNCHANGED&&reads==10);
  values["/sys/class/amhdmitx/amhdmitx0/hpd_state"]="0";
- assert(aml_hdmi_link_probe("test")==AMLHDMILinkSample::SKIPPED&&reads==12);
+ assert(aml_hdmi_link_probe("test")==AMLHDMILinkSample::SKIPPED&&reads==10);
  Clock::now+=std::chrono::seconds(1);
- assert(aml_hdmi_link_probe("test")==AMLHDMILinkSample::CHANGED&&reads==18);
+ assert(aml_hdmi_link_probe("test")==AMLHDMILinkSample::CHANGED&&reads==15);
  Clock::now+=std::chrono::seconds(1);
- assert(aml_hdmi_link_probe("test")==AMLHDMILinkSample::UNCHANGED&&reads==24);
+ assert(aml_hdmi_link_probe("test")==AMLHDMILinkSample::UNCHANGED&&reads==20);
 }
 '''
 
@@ -387,7 +387,7 @@ def main():
     probe = function(aml, 'AMLHDMILinkSample aml_hdmi_link_probe(').replace(
         'std::chrono::steady_clock::now()', 'Clock::Now()')
     probe_code = PROBE_PRELUDE.replace('@ENUM@', function(aml_header, 'enum class AMLHDMILinkSample') + ';') + probe + PROBE_TESTS
-    run(probe_code, 'actual probe 1Hz boundary/SKIPPED/UNCHANGED/CHANGED; six existing sampled reads')
+    run(probe_code, 'actual probe 1Hz boundary/SKIPPED/UNCHANGED/CHANGED; five sampled reads, receiver sense not read')
     lifecycle = runpy.run_path(str(ROOT / 'tools/test-aml-window-lifecycle.py'))['harness']()
     main_function = function(lifecycle, 'int main()')
     hooks = lifecycle.replace(main_function, HOOK_TESTS + main_function.replace('{', '{HDRHooks();', 1))

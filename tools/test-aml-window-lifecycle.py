@@ -136,6 +136,7 @@ CAMLVideoMute& aml_video_mute_controller(){static CAMLVideoMute c([](bool){});re
 #include "utils/PlaybackEndDiagnostics.h"
 #include "utils/AMLFrameL5.h"
 #include <cassert>
+#include <sys/socket.h>
 #include <cmath>
 #include <functional>
 #include <optional>
@@ -309,17 +310,23 @@ public:
   bool CreateNewWindow(const std::string&,bool,RESOLUTION_INFO&);bool DestroyWindow();
   bool SetFullScreen(bool,RESOLUTION_INFO&,bool);bool ResetRenderSystem(int,int);
   bool ResizeWindow(int,int,int,int);void BeginHandoff();uint64_t m_videoMuteHandoff{0};void PresentRenderImpl(bool);
+  static constexpr char VNC_GUI_READY = 'R';
+  bool m_vncGuiFramePending = false;
+  int m_vncGuiViewer = -1;
   bool m_afbcFrame{false};
   struct {
     void Destroy(bool) {}
-    bool Present() { return false; }
+    uint64_t Present() { return 0; }
     bool Shown() const { return false; }
     void ReturnToLinear() {}
   } m_afbcPresenter;
-  struct {
-    bool pending{false}, displayReady{false}, fullscreenVideo{false};
-    uint64_t videoMuteHandoff{0};
-  } m_afbcPresented;
+  struct AFBCPresented {
+    uint64_t frame;
+    uint64_t videoMuteHandoff;
+    bool displayReady;
+    bool fullscreenVideo;
+  };
+  std::vector<AFBCPresented> m_afbcPresented;
   void TakeAFBCOutcome() {}
   void AbandonAFBCScanoutFrame() { m_afbcFrame = false; }
   void MarkGuiDirty() {}

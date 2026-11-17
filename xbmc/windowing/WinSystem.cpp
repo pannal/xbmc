@@ -299,7 +299,7 @@ std::shared_ptr<CDPMSSupport> CWinSystemBase::GetDPMSManager()
 
 bool CWinSystemBase::IsGuiOutputHdr()
 {
-  return GetGfxContext().IsTransferPQ();
+  return !m_plainGuiCapture && GetGfxContext().IsTransferPQ();
 }
 
 bool CWinSystemBase::IsHDRDisplaySettingEnabled()
