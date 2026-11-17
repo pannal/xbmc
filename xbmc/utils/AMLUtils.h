@@ -219,6 +219,8 @@ bool aml_dv_deferred_disc_pending(const std::shared_ptr<const void>& session, bo
 // display-ready renderer continuation; neither is physical HDMI acknowledgement.
 bool aml_dv_output_transition_pending(const std::shared_ptr<const void>& session);
 void aml_dv_complete_output_transition(const std::shared_ptr<const void>& session);
+void aml_dv_begin_startup_output_transition(const std::shared_ptr<const void>& session,
+                                          bool startupBlackout);
 // Last resort, polled per GUI frame: engage a deferral no mode set took up.
 void aml_dv_engage_stale_deferred_disc(const std::shared_ptr<const void>& session);
 void aml_dv_set_osd_max(int max);
