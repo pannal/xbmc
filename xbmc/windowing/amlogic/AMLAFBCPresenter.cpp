@@ -68,7 +68,8 @@ bool CAMLAFBCPresenter::KernelQueuesFlips(const char* path)
   return yes;
 }
 
-bool CAMLAFBCPresenter::Create(const std::string& framebuffer, int width, int height, int depthBits, int stencilBits)
+bool CAMLAFBCPresenter::Create(const std::string& framebuffer, int width, int height, int depthBits,
+                             int stencilBits, bool allowThirdBuffer)
 {
   if (!CAMLAFBCImport::Supported())
     return Reject("requires the verified ARM32 G52 r12p0 fbdev library", 0, true);
@@ -112,7 +113,7 @@ bool CAMLAFBCPresenter::Create(const std::string& framebuffer, int width, int he
   // A third buffer only helps if a flip queued right after the previous one
   // is shown with the next vsync; otherwise every second one waits a vsync.
   const bool queued = KernelQueuesFlips(m_queuedFlipsParameter.c_str());
-  const unsigned int wanted = queued ? MAX_BUFFERS : 2;
+  const unsigned int wanted = queued && allowThirdBuffer ? MAX_BUFFERS : 2;
   m_count = 0;
   for (unsigned int i = 0; i < wanted; ++i)
   {
@@ -164,18 +165,14 @@ bool CAMLAFBCPresenter::Create(const std::string& framebuffer, int width, int he
     }
     if (i < 2)
       return Reject(failure, error, false);
-    // The third buffer is optional: the codec pool it may come from can be
-    // short while video plays. Its kernel allocation goes with the session.
-    if (buffer.framebuffer)
-      glDeleteFramebuffers(1, &buffer.framebuffer);
-    if (buffer.texture)
-      glDeleteTextures(1, &buffer.texture);
-    buffer.framebuffer = buffer.texture = 0;
-    buffer.import.Release();
-    if (buffer.fd >= 0)
-      close(buffer.fd);
-    buffer.fd = -1;
     CLog::Log(LOGWARNING, "AFBC scanout: {} (errno {}); using two buffers", failure, error);
+    // Closing the exported fd leaves the kernel session's allocation alive.
+    // Recreate the session with two buffers if the third could not be used.
+    if (buffer.fd >= 0)
+    {
+      Destroy(true);
+      return Create(framebuffer, width, height, depthBits, stencilBits, false);
+    }
     break;
   }
 

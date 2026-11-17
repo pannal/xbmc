@@ -101,7 +101,8 @@ public:
 private:
   static constexpr unsigned int MAX_BUFFERS = 3;
 
-  bool Create(const std::string& framebuffer, int width, int height, int depthBits, int stencilBits);
+  bool Create(const std::string& framebuffer, int width, int height, int depthBits, int stencilBits,
+              bool allowThirdBuffer = true);
   // Records why Create() failed; returns false.
   bool Reject(std::string reason, int error, bool permanent);
   void Fail(const char* reason, int error);
