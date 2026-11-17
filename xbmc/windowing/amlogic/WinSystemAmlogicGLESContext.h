@@ -245,9 +245,12 @@ private:
   bool m_afbcDirtyRegionsReported = false;
 
   void StartVncGuiListener();
+  void StopVncGuiListener();
   void PollVncGuiViewer();
   int m_vncGuiListener = -1;
+  int m_vnc1080GuiListener = -1;
   int m_vncGuiViewer = -1;
+  bool m_vncGuiWants1080p = false;
   bool m_vncGuiFramePending = false;
 };
 

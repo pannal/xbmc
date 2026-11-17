@@ -71,6 +71,8 @@ namespace
 // The fbdev VNC addon keeps one connection open from its first viewer to its
 // last. An abstract socket disappears with Kodi, including after a crash.
 constexpr char VNC_GUI_SOCKET[] = "\0kodi.aml-vnc.fb0.v1";
+// Only addons that can resize their remote desktop request a 1080p GUI.
+constexpr char VNC_1080_GUI_SOCKET[] = "\0kodi.aml-vnc.fb0.v2";
 constexpr char VNC_GUI_READY = 'R';
 
 void CloseVncGuiSocket(int& fd)
@@ -293,15 +295,22 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
 
 CWinSystemAmlogicGLESContext::~CWinSystemAmlogicGLESContext()
 {
+  StopVncGuiListener();
+}
+
+void CWinSystemAmlogicGLESContext::StopVncGuiListener()
+{
   CloseVncGuiSocket(m_vncGuiViewer);
   CloseVncGuiSocket(m_vncGuiListener);
+  CloseVncGuiSocket(m_vnc1080GuiListener);
+  m_vncGuiFramePending = false;
+  if (std::exchange(m_vncGuiWants1080p, false))
+    aml_native_gui_set_vnc_viewers(false);
 }
 
 bool CWinSystemAmlogicGLESContext::PrepareForShutdown()
 {
-  CloseVncGuiSocket(m_vncGuiViewer);
-  CloseVncGuiSocket(m_vncGuiListener);
-  m_vncGuiFramePending = false;
+  StopVncGuiListener();
   m_pGLContext.CloseTextureUploadContext();
   GuiABFinish("shutdown");
   m_shutdownRequested = true;
@@ -765,7 +774,11 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
       TakeAFBCOutcome();
     }
     presented = m_pGLContext.TrySwapBuffers(diagnostics);
+    // The message pump runs after this iteration's resolution processing.
+    // A v2 viewer must wait for the swap after any pending GUI downsize.
     if (presented && m_vncGuiFramePending &&
+        (!m_vncGuiWants1080p || (IsDisplayReadyForVideo() &&
+                                !aml_native_gui_needs_update(GetGfxContext().GetVideoResolution()))) &&
         send(m_vncGuiViewer, &VNC_GUI_READY, 1, MSG_NOSIGNAL) == 1)
       m_vncGuiFramePending = false;
   }
@@ -1720,30 +1733,38 @@ bool CWinSystemAmlogicGLESContext::MessagePump()
   }
 }
 
-void CWinSystemAmlogicGLESContext::StartVncGuiListener()
+namespace
 {
-  if (m_vncGuiListener >= 0)
-    return;
-
+template<size_t Length>
+int OpenVncGuiListener(const char (&name)[Length])
+{
   int listener = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
   sockaddr_un address{};
   address.sun_family = AF_UNIX;
-  std::memcpy(address.sun_path, VNC_GUI_SOCKET, sizeof(VNC_GUI_SOCKET));
-  const socklen_t length = offsetof(sockaddr_un, sun_path) + sizeof(VNC_GUI_SOCKET) - 1;
+  std::memcpy(address.sun_path, name, Length);
+  const socklen_t length = offsetof(sockaddr_un, sun_path) + Length - 1;
   if (listener < 0 || bind(listener, reinterpret_cast<const sockaddr*>(&address), length) < 0 ||
       listen(listener, 1) < 0)
   {
     const int error = errno;
     CloseVncGuiSocket(listener);
     CLog::Log(LOGWARNING, "AFBC scanout: could not open the VNC GUI socket (errno {})", error);
-    return;
   }
-  m_vncGuiListener = listener;
+  return listener;
+}
+} // namespace
+
+void CWinSystemAmlogicGLESContext::StartVncGuiListener()
+{
+  if (m_vncGuiListener < 0)
+    m_vncGuiListener = OpenVncGuiListener(VNC_GUI_SOCKET);
+  if (m_vnc1080GuiListener < 0)
+    m_vnc1080GuiListener = OpenVncGuiListener(VNC_1080_GUI_SOCKET);
 }
 
 void CWinSystemAmlogicGLESContext::PollVncGuiViewer()
 {
-  if (m_vncGuiListener < 0)
+  if (m_vncGuiListener < 0 && m_vnc1080GuiListener < 0)
     return;
 
   if (m_vncGuiViewer >= 0)
@@ -1755,6 +1776,8 @@ void CWinSystemAmlogicGLESContext::PollVncGuiViewer()
     if (received >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
     {
       CloseVncGuiSocket(m_vncGuiViewer);
+      if (std::exchange(m_vncGuiWants1080p, false))
+        aml_native_gui_set_vnc_viewers(false);
       m_vncGuiFramePending = false;
       MarkGuiDirty();
       CLog::Log(LOGDEBUG, "AFBC scanout: final VNC viewer disconnected");
@@ -1763,7 +1786,10 @@ void CWinSystemAmlogicGLESContext::PollVncGuiViewer()
 
   if (m_vncGuiViewer < 0)
   {
-    const int viewer = accept4(m_vncGuiListener, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    int viewer = accept4(m_vnc1080GuiListener, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    const bool wants1080p = viewer >= 0;
+    if (!wants1080p)
+      viewer = accept4(m_vncGuiListener, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (viewer < 0)
       return;
 
@@ -1777,6 +1803,8 @@ void CWinSystemAmlogicGLESContext::PollVncGuiViewer()
     }
 
     m_vncGuiViewer = viewer;
+    m_vncGuiWants1080p = wants1080p;
+    aml_native_gui_set_vnc_viewers(wants1080p);
     m_vncGuiFramePending = true;
     CLog::Log(LOGDEBUG, "AFBC scanout: serving VNC from the linear GUI framebuffer");
   }

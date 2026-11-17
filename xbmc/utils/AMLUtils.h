@@ -399,6 +399,7 @@ bool aml_display_mode_changing(const RESOLUTION_INFO &res);
 void aml_handle_scale(const RESOLUTION_INFO &res);
 // Playback properties used to decide whether to suspend the native GUI on kernel 4.9.
 void aml_native_gui_set_video(bool above1080p, bool fel);
+void aml_native_gui_set_vnc_viewers(bool connected);
 bool aml_native_gui_needs_update(RESOLUTION res);
 void aml_native_gui_prepare(RESOLUTION res);
 void aml_native_gui_prepare_failed();

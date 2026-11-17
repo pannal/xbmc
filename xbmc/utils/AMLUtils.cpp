@@ -7339,6 +7339,12 @@ enum class NativeGuiVideo
 
 static std::atomic<NativeGuiVideo> s_nativeGuiVideo{NativeGuiVideo::None};
 static std::atomic<bool> s_nativeGuiSuspended{false}; // written on the main thread only
+static bool s_nativeGuiVncViewers = false; // main thread only
+
+void aml_native_gui_set_vnc_viewers(bool connected)
+{
+  s_nativeGuiVncViewers = connected;
+}
 
 struct NativeGuiCalibration
 {
@@ -7375,6 +7381,11 @@ static bool aml_native_gui_suspend_wanted(RESOLUTION res)
   const auto guiSettings = settings->GetSettings();
   if (!guiSettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING))
     return false;
+
+  // Hardware frame packing dictates a different framebuffer height.
+  if (s_nativeGuiVncViewers && CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() !=
+                                  RENDER_STEREO_MODE_HARDWAREBASED)
+    return true;
 
   if (s_nativeGuiVideo.load() == NativeGuiVideo::Above1080p &&
       guiSettings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K))
