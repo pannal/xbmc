@@ -114,6 +114,7 @@ void aml_dv_apply_l5_override_sysfs(){effect("override");}
 void aml_dv_apply_l5_sysfs(){effect("l5");}
 void aml_dv_detect_active_area_stop(){effect("stop");}
 void set_vsvdb_payload_ver(DV_TYPE,int,int, const AMLDVCapability&){effect("payload");}
+void aml_dv_refresh_vsvdb_live(){effect("refresh");}
 @BOOST@
 #define private public
 @CLASS@;
@@ -157,9 +158,9 @@ void ordered_fresh_apply(){
  until([&]{return !s.AcquireDecoder();});assert(snapshot().empty());
  settings()->Put(KEY(MODE_ON_LUMINANCE),400); // latest read occurs after admission
  std::promise<void> done;auto finished=done.get_future();
- effectHook=[&](const std::string& name,int){if(name=="payload")done.set_value();};
+ effectHook=[&](const std::string& name,int){if(name=="refresh")done.set_value();};
  permit.reset();assert(finished.wait_for(3s)==std::future_status::ready);drain(dv);
- const std::vector<std::pair<std::string,int>> expected={{"osd",50},{"gui",400},{"payload",0}};
+ const std::vector<std::pair<std::string,int>> expected={{"osd",50},{"gui",400},{"payload",0},{"refresh",0}};
  assert(snapshot()==expected);assert(!dv.m_deferredWork.Failure());
 }
 void later_batch_and_retirement(){
@@ -224,9 +225,15 @@ void policy_cases(){
  for(const auto* key:{KEY(LEVEL5),KEY(STD_SOURCE_LEVEL_5),KEY(STD_SOURCE_LEVEL_5_OSDST),KEY(LEVEL5_SIGNAL_SUBS),KEY(DETECT_ACTIVE_AREA),KEY(L5_AUTO_LETTERBOX),KEY(LEVEL5_OVERRIDE)}){
   CDolbyVisionAML dv;CAMLSession s;init(dv,s);overrideActive=true;
   std::promise<void> done;auto completed=done.get_future();
-  effectHook=[&](const std::string& name,int){if(name=="payload"||name=="stop")done.set_value();};
+  effectHook=[&](const std::string& name,int){if(name=="refresh"||name=="stop")done.set_value();};
   changed(key,1);assert(completed.wait_for(3s)==std::future_status::ready);drain(dv);
-  const std::vector<std::pair<std::string,int>> expected={{"override",0},{"l5",0},{std::string(key)==KEY(LEVEL5_OVERRIDE)?"stop":"payload",0}};
+  std::vector<std::pair<std::string,int>> expected={{"override",0},{"l5",0}};
+  if(std::string(key)==KEY(LEVEL5_OVERRIDE))
+   expected.emplace_back("stop",0);
+  else {
+   expected.emplace_back("payload",0);
+   expected.emplace_back("refresh",0);
+  }
   assert(snapshot()==expected);
  }
 }

@@ -68,6 +68,8 @@ std::function<void(int,int,int)> payloadHook;
 struct AMLDVCapability {};
 AMLDVCapability aml_read_dv_cap(){return {};}
 void set_vsvdb_payload_ver(DV_TYPE t,int lum,int pq,const AMLDVCapability&){assert(payloadHook);payloadHook(t,lum,pq);}
+std::atomic<int> liveRefreshes{0};
+void aml_dv_refresh_vsvdb_live(){++liveRefreshes;}
 struct CDolbyVisionAML {
  CAMLDeferredWork m_deferredWork;
  std::atomic<bool> m_vsvdb_apply_scheduled{false},m_applying_vsvdb{false};
@@ -176,13 +178,13 @@ void payload_freshness(){
  auto firstDone=first.get_future(),secondDone=second.get_future();
  assert(firstDone.wait_for(3s)==std::future_status::ready);
  assert(secondDone.wait_for(3s)==std::future_status::ready);
- drain(dv.m_deferredWork);assert(calls==2&&!dv.m_applying_vsvdb&&!dv.m_deferredWork.Failure());
+ drain(dv.m_deferredWork);assert(calls==2&&liveRefreshes==2&&!dv.m_applying_vsvdb&&!dv.m_deferredWork.Failure());
  // A failed payload releases both the suppression flag and native admission.
  CDolbyVisionAML failed;std::promise<void> failing;
  payloadHook=[&](int,int,int){failing.set_value();throw std::runtime_error("payload");};
  failed.schedule_vsvdb_payload_apply();auto called=failing.get_future();assert(called.wait_for(3s)==std::future_status::ready);
  drain(failed.m_deferredWork);assert(failed.m_deferredWork.Failure()&&!failed.m_applying_vsvdb);
- assert(session.AcquireDecoder());
+ assert(liveRefreshes==2&&session.AcquireDecoder());
 }
 void hdr10_setup_without_dv(){
  ready();supported=false;values.overrideEdid=false;
