@@ -18,7 +18,7 @@ function = fixture['function']
 
 
 def source():
-    code = '#include <iostream>\n#include "utils/AMLFrameL5.h"\n' + fixture['harness']()
+    code = '#include <iostream>\n#include "utils/AMLFrameL5.h"\n#include "utils/AMLActiveAreaVDIN.h"\n' + fixture['harness']()
     code = code.replace('  double GetNumber(int)', '  bool GetBool(int){return false;}\n  double GetNumber(int)')
     code = code.replace('SETTING_SUBTITLES_BITMAPMARGIN=4;', 'SETTING_SUBTITLES_BITMAPMARGIN=4,SETTING_COREELEC_AMLOGIC_DV_RESTRICT_SUBS_USER_POS=5,SETTING_COREELEC_AMLOGIC_DV_LEVEL5=6;')
     code = code.replace('struct CServiceBroker {', '''struct Metadata {
@@ -167,6 +167,26 @@ int main(){
   r.conversion=[&](const CDVDOverlay& o){return &o==high->GetPublishedRenderContent().get()?first:second;};
   CRenderer::OverlayBatch batch{{1,high},{1,low}};
   services={};services.position=0;
+  // Compare final SDR subtitle positions on full frame and repeated live edge noise.
+  services.position=1;
+  r.m_activePicture=screen;
+  const auto fullFrameItems=r.PrepareRenderItems(batch);
+  using AML_ACTIVE_AREA_VDIN::Borders;
+  for(Borders noise : {Borders{0,0,0,4}, Borders{0,4,0,0}}){
+    AML_ACTIVE_AREA_VDIN::Consensus live{AML_ACTIVE_AREA_VDIN::Source::H264};
+    for(uint64_t stamp=1;stamp<=6;++stamp){
+      const auto sample=live.Observe(AML_ACTIVE_AREA_VDIN::Sample{stamp,noise});
+      if(stamp<3){assert(!sample);continue;}
+      assert(sample);
+      const auto [top,bottom,left,right]=*sample;
+      detectedTop=top;detectedBottom=bottom;detectedLeft=left;detectedRight=right;
+      r.m_activePicture=manager.CalcOverlayActiveArea(src,dst,view,true,stamp);
+      assert(r.m_activePicture==screen);
+      const auto items=r.PrepareRenderItems(batch);
+      assert(items[0].bounds==fullFrameItems[0].bounds && items[1].bounds==fullFrameItems[1].bounds);
+    }
+  }
+  services.position=0;r.m_activePicture=active;
   auto original=r.PrepareRenderItems(batch);
   rect(original[0].bounds,760,850,1160,890);rect(original[1].bounds,760,910,1160,950);
   assert(CRenderer::HasImageSubOutsideActiveArea(original,active));

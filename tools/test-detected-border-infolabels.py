@@ -30,6 +30,7 @@ def production_switch():
 PREAMBLE = r'''
 #define FMT_HEADER_ONLY
 #include <fmt/format.h>
+#include "utils/AMLActiveAreaVDIN.h"
 #include "guilib/guiinfo/GUIInfoLabels.h"
 #include <cstdint>
 #include <cassert>
@@ -54,7 +55,9 @@ struct Cache {
 } cache;
 namespace CServiceBroker { Cache& GetDataCacheCore() { return cache; } }
 struct Player { bool playing=true; bool IsPlayingVideo() { return playing; } } player;
-bool available=true,fullFrame=false;
+using namespace AML_ACTIVE_AREA_VDIN;
+bool available=true;
+Borders reported{140,142,3,5};
 bool nativeDV=true,manual=false,autoLb=false,additive=true,hc=true,stable=true;
 uint16_t manualTop=0,manualBottom=0,nativeTop=140,nativeBottom=140;
 bool aml_subtitle_native_dv() { return nativeDV; }
@@ -80,7 +83,7 @@ bool aml_subtitle_detect_active_area_get(int w,int h,uint16_t& t,uint16_t& b,
   ++calls;
   t=b=l=r=0;
   if(!available || w!=1920 || h!=1080 || !estimate) return false;
-  if(!fullFrame) { t=140;b=142;l=3;r=5; }
+  t=reported[0];b=reported[1];l=reported[2];r=reported[3];
   return true;
 }
 struct Info { int m_info; };
@@ -112,9 +115,56 @@ void expectL5(const std::vector<std::string>& expected) {
     std::string value="stale";assert(label(ids[i],value));assert(value==expected[i]);
   }
 }
+void checkLiveConsensus() {
+ const Borders full{};
+ // Full-frame and one noisy edge count towards the same consensus.
+ for (Source source : {Source::VDIN, Source::H264, Source::HEVC})
+ {
+  for (size_t edge = 0; edge < full.size(); ++edge)
+  {
+   Consensus live{source};
+   Borders measured{};
+   measured[edge] = 1;
+   assert(!live.Observe(Sample{1, measured}));
+   assert(!live.Observe(Sample{2, full}));
+   measured[edge] = 4;
+   assert(live.Observe(Sample{3, measured}) == full);
+   for (uint16_t jitter : {1, 2, 3, 4})
+   {
+    measured[edge] = jitter;
+    assert(live.Observe(Sample{static_cast<uint64_t>(3 + jitter), measured}) == full);
+   }
+
+   live.Reset();
+   measured[edge] = 5;
+   assert(!live.Observe(Sample{5, measured}));
+   assert(!live.Observe(Sample{6, measured}));
+   assert(live.Observe(Sample{7, measured}) == measured);
+  }
+ }
+ // Refined output is in coded pixels too. Preserve multi-edge geometry.
+ for (Borders published : {Borders{0, 0, 0, 4}, Borders{0, 0, 0, 5}, Borders{0, 0, 1, 4}})
+ {
+  Consensus live{Source::HEVC};
+  const Borders measured{0, 0, 0, 5};
+  assert(!live.Observe(Sample{1, measured, published}));
+  assert(!live.Observe(Sample{2, measured, published}));
+  assert(live.Observe(Sample{3, measured, published}) ==
+         (published == Borders{0, 0, 0, 4} ? full : published));
+ }
+
+}
 int main() {
-  dump();fullFrame=true;dump();available=false;dump();
-  available=true;fullFrame=false;cache.width=1280;dump();cache.width=1920;
+  checkLiveConsensus();
+  dump();
+  Consensus live{Source::H264};
+  for(uint64_t stamp=1;stamp<=6;++stamp){
+    const auto result=live.Observe(Sample{stamp,{0,0,0,4}});
+    if(stamp<3) assert(!result);
+    else { assert(result); reported=*result; }
+  }
+  dump();available=false;dump();
+  available=true;cache.width=1280;dump();cache.width=1920;
   player.playing=false;const int before=calls;dump();
   if(calls!=before) return 2;
   player.playing=true;

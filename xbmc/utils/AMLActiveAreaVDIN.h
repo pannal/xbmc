@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -89,6 +90,15 @@ inline std::optional<Sample> Read(std::istream& stream, int width, int height,
   return sample;
 }
 
+// One isolated edge of up to four coded pixels is noise on full-frame video.
+inline Borders NormalizeSubtitleBorders(const Borders& borders)
+{
+  if (std::all_of(borders.begin(), borders.end(), [](uint16_t edge) { return edge <= 4; }) &&
+      std::count_if(borders.begin(), borders.end(), [](uint16_t edge) { return edge != 0; }) == 1)
+    return {};
+  return borders;
+}
+
 class Consensus
 {
 public:
@@ -111,22 +121,22 @@ public:
       return {};
     m_stamp = sample->stamp;
 
+    const Borders measured = NormalizeSubtitleBorders(sample->borders);
     const int tolerance = m_source != Source::VDIN ? sample->tapStep : 2;
     bool matches = m_count != 0;
     if (matches && m_source != Source::VDIN)
     {
-      const auto& b = sample->borders;
       // A one-step bar and an uncropped axis are distinct geometries.
       matches = m_tapStep == sample->tapStep &&
-                ((m_candidate[0] || m_candidate[1]) == (b[0] || b[1])) &&
-                ((m_candidate[2] || m_candidate[3]) == (b[2] || b[3]));
+                ((m_candidate[0] || m_candidate[1]) == (measured[0] || measured[1])) &&
+                ((m_candidate[2] || m_candidate[3]) == (measured[2] || measured[3]));
     }
     for (std::size_t i = 0; matches && i < m_candidate.size(); ++i)
-      matches = std::abs(static_cast<int>(m_candidate[i]) - sample->borders[i]) <= tolerance;
+      matches = std::abs(static_cast<int>(m_candidate[i]) - measured[i]) <= tolerance;
     if (!matches)
     {
-      m_candidate = sample->borders;
-      m_output = sample->snapped.value_or(sample->borders);
+      m_candidate = measured;
+      m_output = sample->snapped ? NormalizeSubtitleBorders(*sample->snapped) : measured;
       m_tapStep = sample->tapStep;
       m_count = 1;
     }
