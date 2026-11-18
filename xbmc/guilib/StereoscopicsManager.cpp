@@ -504,7 +504,7 @@ void CStereoscopicsManager::Notify()
 
 void CStereoscopicsManager::ApplyStereoMode(const RENDER_STEREO_MODE &mode, bool notify)
 {
-  RENDER_STEREO_MODE currentMode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
+  RENDER_STEREO_MODE currentMode = CServiceBroker::GetWinSystem()->GetGfxContext().GetRequestedStereoMode();
   CLog::Log(LOGDEBUG,
             "StereoscopicsManager::ApplyStereoMode: trying to apply stereo mode. Current: {} | "
             "Target: {}",

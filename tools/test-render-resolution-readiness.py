@@ -115,7 +115,7 @@ constexpr int STEREOSCOPIC_PLAYBACK_MODE_ASK=1,RENDER_STEREO_MODE_UNDEFINED=-1;
 constexpr int ADJUST_REFRESHRATE_OFF=0,LOGINFO=1,RES_DESKTOP=1;
 constexpr int RENDER_STEREO_MODE_HARDWAREBASED=3,RENDER_STEREO_VIEW_OFF=0;
 constexpr int TMSG_SETVIDEORESOLUTION=1,GUI_MSG_NOTIFY_ALL=1,GUI_MSG_WINDOW_RESIZE=2;
-struct RESOLUTION_INFO {int resolution=1,iWidth=1920,iHeight=1080,iScreenHeight=1080,iBlanking=0;};
+struct RESOLUTION_INFO {int resolution=1,iWidth=1920,iHeight=1080,iScreenHeight=1080,iBlanking=0;unsigned dwFlags=0;};
 struct CDisplaySettings {
  static CDisplaySettings& GetInstance(){static CDisplaySettings settings;return settings;}
  RESOLUTION_INFO GetResolutionInfo(int res){RESOLUTION_INFO info;info.resolution=res;return info;}
@@ -150,7 +150,9 @@ struct CGraphicContext:CCriticalSection {
  RESOLUTION m_Resolution=RES_DESKTOP;bool m_bFullScreenRoot=true;
  int m_iScreenWidth=1920,m_iScreenHeight=1080;float m_fFPSOverride=0.f;Rect m_scissors;
  bool IsFullScreenVideo(){return fullscreen;}bool IsFullScreenRoot(){return fullscreen&&m_bFullScreenRoot;}
- int GetStereoMode(){return stereo;}
+ unsigned m_videoModeFlags=0;
+ int GetRequestedStereoMode(){return stereo;}
+ int GetStereoModeForResolution(unsigned){return stereo;}
  RESOLUTION GetVideoResolution(){return m_Resolution;}
  void SetHDRType(StreamHdrType value){++hdrSets;hdr=value;}
  bool IsValidResolution(int res){return res>=0;}

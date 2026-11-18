@@ -404,7 +404,7 @@ bool CWinSystemAmlogicGLESContext::CreateNewWindow(const std::string& name,
   RefreshHDRCapabilities();
   RESOLUTION_INFO current_resolution;
   current_resolution.iWidth = current_resolution.iHeight = 0;
-  RENDER_STEREO_MODE stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
+  const auto stereo_mode = GetGfxContext().GetStereoModeForResolution(res.dwFlags);
 
   // check for frac_rate_policy change
   int fractional_rate = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;

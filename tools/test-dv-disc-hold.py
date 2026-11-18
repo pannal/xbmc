@@ -248,7 +248,7 @@ struct CGfxContext {
   bool IsFullScreenVideo() { return g_fullscreen; }
   bool IsFullScreenRoot() { return true; }
   void SetHDRType(StreamHdrType) {}
-  int GetStereoMode() const { return 0; }
+  int GetRequestedStereoMode() const { return 0; }
   bool SetVideoResolution(RESOLUTION, bool, bool = true) { if (!g_windowReady) return false; CreateNewWindow(RESOLUTION_INFO{}); ++g_displayGeneration; return true; }
 };
 struct CWinSystem {

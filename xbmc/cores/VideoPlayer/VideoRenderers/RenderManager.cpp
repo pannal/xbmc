@@ -1688,7 +1688,7 @@ void CRenderManager::UpdateResolution(bool force)
             m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
         AppliedResolution applied{m_fps, m_picture.iWidth, m_picture.iHeight,
                                   m_picture.stereoMode, actual_hdrType, res,
-                                  static_cast<int>(gfx.GetStereoMode()),
+                                  static_cast<int>(gfx.GetRequestedStereoMode()),
                                   window->GetDisplayGeneration()};
         if (!m_appliedResolution || !m_appliedResolution->Matches(applied))
         {

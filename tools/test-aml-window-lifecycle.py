@@ -27,6 +27,7 @@ def harness():
         'window': 'xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp',
         'base': 'xbmc/windowing/amlogic/WinSystemAmlogic.cpp',
         'gfx': 'xbmc/windowing/GraphicContext.cpp',
+        'resolution': 'xbmc/windowing/Resolution.cpp',
         'render': 'xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp',
     }
     signatures = {
@@ -43,6 +44,7 @@ def harness():
                 'void CGraphicContext::RequestVideoResolutionRefresh()',
                 'void CGraphicContext::ProcessPendingVideoResolution()',
                 'bool CGraphicContext::SetVideoResolutionInternal('],
+        'resolution': ['void CResolutionUtils::FindResolutionFromWhitelist('],
         'render': ['void CRenderManager::UpdateResolution(', 'void CRenderManager::FrameMove()'],
     }
     methods = []
@@ -57,7 +59,10 @@ def harness():
     applied = function(render_header, 'struct AppliedResolution') + ';'
     result = function((ROOT / 'xbmc/windowing/WinSystem.h').read_text(),
                       'enum class NativeGuiWaitResult') + ';'
-    return (PRELUDE.replace('@READY_QUERY@', query).replace('@APPLIED_RESOLUTION@', applied)
+    gfx_header = (ROOT / 'xbmc/windowing/GraphicContext.h').read_text()
+    return (PRELUDE.replace('@STEREO_MODE@', function(gfx_header, 'RENDER_STEREO_MODE GetStereoMode()'))
+            .replace('@STEREO_MODE_FOR_RESOLUTION@', function(gfx_header, 'RENDER_STEREO_MODE GetStereoModeForResolution('))
+            .replace('@READY_QUERY@', query).replace('@APPLIED_RESOLUTION@', applied)
             .replace('@NATIVE_WAIT_RESULT@', result) + '\n'.join(methods) + TESTS)
 
 
@@ -84,6 +89,10 @@ def main():
     source = harness()
     if args.negative_controls:
         controls = [
+            ('desktop size excludes advertised frame packing',
+             'meetsSizeFloor || (dwFlags & D3DPRESENTFLAG_MODE3DFP)', 'meetsSizeFloor'),
+            ('unflagged timing enables hardware stereo',
+             'return RENDER_STEREO_MODE_MONO;', 'return RENDER_STEREO_MODE_HARDWAREBASED;'),
             ('old frame releases handoff', 'm_videoMuteHandoff, true,', 'aml_video_mute_controller().HandoffGeneration(), true,'),
             ('unready display releases handoff', 'IsDisplayReadyForVideo(), GetGfxContext().IsFullScreenVideo()', 'true, GetGfxContext().IsFullScreenVideo()'),
             ('skipped renders never expire handoff', '  aml_video_mute_controller().Expire(std::chrono::steady_clock::now());', ''),
@@ -148,14 +157,23 @@ using CCriticalSection=std::recursive_mutex;
 using RESOLUTION=int;
 constexpr int RES_WINDOW=0,RES_DESKTOP=1;
 constexpr int LOGDEBUG=0,LOGERROR=1,LOGINFO=2,LOGWARNING=3,DV_MODE_OFF=0;
-constexpr unsigned D3DPRESENTFLAG_MODEMASK=255;
+constexpr unsigned D3DPRESENTFLAG_MODEMASK=255, D3DPRESENTFLAG_MODE3DFP=32,
+    D3DPRESENTFLAG_MODE3DSBS=8, D3DPRESENTFLAG_MODE3DTB=16,
+    D3DPRESENTFLAG_INTERLACED=1, D3DPRESENTFLAG_PROGRESSIVE=4;
+constexpr int SETTING_VIDEOSCREEN_WHITELIST_PULLDOWN=4, SETTING_VIDEOSCREEN_WHITELIST_DOUBLEREFRESHRATE=5;
+struct MathUtils{static bool FloatEquals(float a,float b,float tolerance){return std::abs(a-b)<=tolerance;}};
+struct CVariant{
+  std::string value;
+  CVariant(const std::string& mode):value(mode){}
+  const std::string& asString() const{return value;}
+};
 constexpr int TMSG_SETVIDEORESOLUTION=1,GUI_MSG_NOTIFY_ALL=2,GUI_MSG_WINDOW_RESIZE=3;
-enum RENDER_STEREO_MODE{RENDER_STEREO_MODE_OFF,RENDER_STEREO_MODE_HARDWAREBASED,RENDER_STEREO_MODE_UNDEFINED};
+enum RENDER_STEREO_MODE{RENDER_STEREO_MODE_OFF,RENDER_STEREO_MODE_HARDWAREBASED,RENDER_STEREO_MODE_MONO,RENDER_STEREO_MODE_SPLIT_VERTICAL,RENDER_STEREO_MODE_SPLIT_HORIZONTAL,RENDER_STEREO_MODE_UNDEFINED};
 constexpr int RENDER_STEREO_VIEW_OFF=0;
 enum STEREOSCOPIC_PLAYBACK_MODE{STEREOSCOPIC_PLAYBACK_MODE_OFF,STEREOSCOPIC_PLAYBACK_MODE_ASK};
 constexpr int ADJUST_REFRESHRATE_OFF=0;
 enum class StreamHdrType{HDR_TYPE_NONE,HDR_TYPE_HDR10,HDR_TYPE_DOLBYVISION};
-struct RESOLUTION_INFO{int iWidth{1920},iHeight{1080},iScreenWidth{1920},iScreenHeight{1080},iBlanking{0};float fRefreshRate{60.0f};unsigned dwFlags{0};std::string strId;};
+struct RESOLUTION_INFO{int iWidth{1920},iHeight{1080},iScreenWidth{1920},iScreenHeight{1080},iBlanking{0};float fRefreshRate{60.0f};unsigned dwFlags{0};std::string strId,strMode;};
 struct CLog{template<class... T>static void Log(T&&...) {}};
 namespace fmt{template<class... T>std::string format(T&&...){return {};}}
 struct CStreamDetails{static const char* DynamicRangeToString(StreamHdrType){return "hdr";}};
@@ -191,8 +209,10 @@ AMLHDMILinkSample linkSample=AMLHDMILinkSample::SKIPPED;
 AMLHDMILinkSample aml_hdmi_link_probe(const char*){event("link-probe");return linkSample;}
 struct CSysfsPath{explicit CSysfsPath(const char*){}template<class T>std::optional<T> Get(){return static_cast<T>(fracValue);}};
 struct Rect{void SetRect(float,float,float,float){event("scissor");}};
-struct CSettings{static constexpr int SETTING_VIDEOPLAYER_STEREOSCOPICPLAYBACKMODE=1,SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE=2,SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS=3;};
+struct CSettings{static constexpr int SETTING_VIDEOPLAYER_STEREOSCOPICPLAYBACKMODE=1,SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE=2,SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS=3,SETTING_VIDEOSCREEN_WHITELIST=6;};
 struct Settings{
+  std::vector<CVariant> whitelist;
+  auto GetList(int){return whitelist;}
   bool m_fullScreen=true;int delay=0,adjust=1,stereo=0;
   Settings* GetAdvancedSettings(){return this;}Settings* GetSettings(){return this;}
   bool GetBool(int){return false;} // Normal DV handshake; preserve existing fixture behavior.
@@ -209,7 +229,13 @@ struct CGUIComponent{
 }gui;
 struct CDisplaySettings{
   static CDisplaySettings& GetInstance(){static CDisplaySettings instance;return instance;}
-  RESOLUTION_INFO GetResolutionInfo(int res){RESOLUTION_INFO info;if(res==0){info.iWidth=info.iScreenWidth=1280;info.iHeight=info.iScreenHeight=720;}if(res==2){info.iWidth=info.iScreenWidth=2560;info.iHeight=info.iScreenHeight=1440;}if(res==3)info.fRefreshRate=59.94f;return info;}
+  std::string GetStringFromRes(int res){return std::to_string(res);}
+  int GetResFromString(const std::string& mode){return std::stoi(mode);}
+  int GetCurrentResolution(){return 4;}
+  RESOLUTION_INFO GetResolutionInfo(int res){RESOLUTION_INFO info;if(res==0){info.iWidth=info.iScreenWidth=1280;info.iHeight=info.iScreenHeight=720;}if(res==2){info.iWidth=info.iScreenWidth=2560;info.iHeight=info.iScreenHeight=1440;}if(res==3)info.fRefreshRate=59.94f;
+    if(res==4){info.dwFlags=D3DPRESENTFLAG_PROGRESSIVE;info.iScreenWidth=3840;info.iScreenHeight=2160;info.fRefreshRate=30.0f;}
+    if(res==5){info.dwFlags=D3DPRESENTFLAG_PROGRESSIVE|D3DPRESENTFLAG_MODE3DFP;info.iBlanking=45;info.fRefreshRate=24.0f/1.001f;}
+    return info;}
 };
 class CWinSystemAmlogicGLESContext;
 CWinSystemAmlogicGLESContext* window=nullptr;
@@ -232,9 +258,15 @@ public:
   void ProcessPendingVideoResolution();
   void RequestVideoResolutionRefresh();
   RESOLUTION GetVideoResolution(){return m_Resolution;}
-  bool IsValidResolution(int res){return res>=0&&res<=3;}
+  auto GetResInfo(int res){return CDisplaySettings::GetInstance().GetResolutionInfo(res);}
+  void GetAllowedResolutions(std::vector<RESOLUTION>& modes){modes={4,5};}
+  bool IsValidResolution(int res){return res>=0&&res<=5;}
   void UpdateInternalStateWithResolution(int res){m_Resolution=res;auto info=CDisplaySettings::GetInstance().GetResolutionInfo(res);m_iScreenWidth=info.iWidth;m_iScreenHeight=info.iHeight;m_fFPSOverride=info.fRefreshRate;event("provisional:"+std::to_string(res));}
-  RENDER_STEREO_MODE GetStereoMode(){return stereo;}StreamHdrType GetHDRType(){return hdr;}
+  std::atomic<unsigned> m_videoModeFlags{0};
+  RENDER_STEREO_MODE GetRequestedStereoMode() const{return stereo;}
+  @STEREO_MODE@
+  @STEREO_MODE_FOR_RESOLUTION@
+  StreamHdrType GetHDRType(){return hdr;}
   void SetHDRType(StreamHdrType type){hdr=type;event("set-hdr");}
   void SetStereoView(int){event("stereo-view");}
   bool fullscreenVideo{true};
@@ -290,6 +322,7 @@ public:
   void GuiABPresented(bool){}
   void EngageDolbyVisionAtStartup(){} // Startup policy is outside this window fixture.
   CAMLDisplayLifecycle m_displayLifecycle;bool m_displayGeometryReady{true};bool m_shutdownRequested=false;
+  bool m_vncGuiWants1080p=false;
   bool m_vsyncFailureReported=false;
   @NATIVE_WAIT_RESULT@
   NativeGuiWaitResult SetNativeGuiWait(bool enabled){assert(!enabled);event("disable-native-wait");return NativeGuiWaitResult::READY;}
@@ -333,7 +366,8 @@ public:
   void QueueKernelSwitch(const char*,int);void ApplyPendingKernelSwitch();
 };
 void SetKernelSwitch(const char* path,int value){event(std::string("kernel:")+path+":"+std::to_string(value));}
-struct CResolutionUtils{static inline int chosen=2;static RESOLUTION ChooseBestResolution(float,int,int,bool){return chosen;}};
+struct CResolutionUtils{static void FindResolutionFromWhitelist(float,int,int,bool,RESOLUTION&);
+  static inline int chosen=2;static RESOLUTION ChooseBestResolution(float,int,int,bool){return chosen;}};
 // FrameMove is extracted whole; independent-presentation bodies must compile,
 // but are outside this window/readiness fixture and may never execute here.
 struct CRendererAML{void Update(){event("renderer-update");}void SetPresentationEpoch(uint64_t){assert(false);}};
@@ -468,6 +502,39 @@ void OwnCaptureAndDirectWindow(){
   assert(!f.win.m_displayGeometryReady);f.win.PresentRenderImpl(false);assert(f.session.DisplayBlocked());
   assert(f.win.ResizeWindow(info.iWidth,info.iHeight,-1,-1));assert(!f.session.DisplayBlocked());
 }
+void FramePackingTiming(){
+  Fixture f;
+  constexpr int gui4k=4, framePacking1080p=5;
+  f.gfx.stereo=RENDER_STEREO_MODE_HARDWAREBASED;
+  assert(f.gfx.SetVideoResolution(gui4k,false));
+  assert(f.gfx.GetStereoMode()==RENDER_STEREO_MODE_MONO);
+  assert(f.win.m_stereo_mode==RENDER_STEREO_MODE_MONO && currentNative.iHeight==1080);
+
+  auto select=[&] {
+    RESOLUTION target=gui4k;
+    CResolutionUtils::FindResolutionFromWhitelist(24.0f/1.001f,1920,1080,true,target);
+    return target;
+  };
+  settings.whitelist={std::to_string(gui4k)};
+  assert(select()==gui4k);
+  settings.whitelist={std::to_string(framePacking1080p)};
+  assert(select()==framePacking1080p);
+  settings.whitelist.clear();
+  assert(select()==framePacking1080p);
+  {
+    auto decoder=f.session.AcquireDecoder();assert(decoder);
+    assert(!f.gfx.SetVideoResolution(select(),false));
+    assert(f.gfx.GetStereoMode()==RENDER_STEREO_MODE_MONO);
+  }
+  f.gfx.ProcessPendingVideoResolution();
+  assert(f.gfx.GetStereoMode()==RENDER_STEREO_MODE_HARDWAREBASED);
+  assert(f.win.m_stereo_mode==RENDER_STEREO_MODE_HARDWAREBASED && currentNative.iHeight==2205);
+
+  f.gfx.stereo=RENDER_STEREO_MODE_OFF;
+  assert(f.gfx.SetVideoResolution(gui4k,false));
+  assert(f.win.m_stereo_mode==RENDER_STEREO_MODE_OFF && currentNative.iHeight==1080);
+  assert(currentNative.iScreenHeight==2160 && currentNative.fRefreshRate==30.0f);
+}
 void FailedRebind(){
   Fixture f;f.win.m_pGLContext.bindOk=false;
   assert(!f.gfx.SetVideoResolution(2,false));
@@ -589,7 +656,7 @@ void CloseHandoffPresentation(){
   owner=mute.Acquire();mute.Handoff(owner,std::chrono::steady_clock::now()-std::chrono::seconds(1));
   f.win.PresentRenderImpl(false);assert(!mute.HandoffGeneration()); // skipped renders still expire
 }
-int main(){CloseHandoffPresentation();ExactNativeParents();PendingAndLatestPayload();OwnCaptureAndDirectWindow();FailedRebind();FailedGeometry();DelayedResetAndSwap();RenderIntentAndEngage();NoModeAndForcedFrac();GuiResizeKeepsRequiredHandshake();NoModeNeedsReadiness();OffMainDispatch();}
+int main(){FramePackingTiming();CloseHandoffPresentation();ExactNativeParents();PendingAndLatestPayload();OwnCaptureAndDirectWindow();FailedRebind();FailedGeometry();DelayedResetAndSwap();RenderIntentAndEngage();NoModeAndForcedFrac();GuiResizeKeepsRequiredHandshake();NoModeNeedsReadiness();OffMainDispatch();}
 '''
 
 if __name__ == '__main__':

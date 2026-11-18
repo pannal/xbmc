@@ -253,22 +253,23 @@ void CGraphicContext::RestoreViewPort()
 CPoint CGraphicContext::StereoCorrection(const CPoint &point) const
 {
   CPoint res(point);
+  const auto stereoMode = GetStereoMode();
 
-  if(m_stereoMode == RENDER_STEREO_MODE_SPLIT_HORIZONTAL)
+  if (stereoMode == RENDER_STEREO_MODE_SPLIT_HORIZONTAL)
   {
     const RESOLUTION_INFO info = GetResInfo();
 
     if(m_stereoView == RENDER_STEREO_VIEW_RIGHT)
       res.y += info.iHeight + info.iBlanking;
   }
-  if (m_stereoMode == RENDER_STEREO_MODE_HARDWAREBASED)
+  if (stereoMode == RENDER_STEREO_MODE_HARDWAREBASED)
   {
     const RESOLUTION_INFO info = GetResInfo();
 
     if(m_stereoView == RENDER_STEREO_VIEW_RIGHT)
       res.y += info.iHeight + info.iBlanking;
   }
-  if(m_stereoMode == RENDER_STEREO_MODE_SPLIT_VERTICAL)
+  if (stereoMode == RENDER_STEREO_MODE_SPLIT_VERTICAL)
   {
     const RESOLUTION_INFO info = GetResInfo();
 
@@ -492,9 +493,7 @@ bool CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
 #endif
   UpdateInternalStateWithResolution(res);
   RESOLUTION_INFO info_org  = CDisplaySettings::GetInstance().GetResolutionInfo(res);
-  RENDER_STEREO_MODE stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
-
-  if (stereo_mode == RENDER_STEREO_MODE_HARDWAREBASED)
+  if (GetStereoModeForResolution(info_org.dwFlags) == RENDER_STEREO_MODE_HARDWAREBASED)
     info_org.iHeight = info_org.iScreenHeight * 2 + info_org.iBlanking;
 
   bool switched = false;
@@ -514,6 +513,7 @@ bool CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
 
   if (switched)
   {
+    m_videoModeFlags = info_org.dwFlags;
     m_scissors.SetRect(0, 0, (float)m_iScreenWidth, (float)m_iScreenHeight);
 
     // make sure all stereo stuff are correctly setup
@@ -581,6 +581,8 @@ void CGraphicContext::ApplyVideoResolution(RESOLUTION res)
   std::unique_lock<CCriticalSection> lock(*this);
 
   UpdateInternalStateWithResolution(res);
+  const RESOLUTION_INFO info = CDisplaySettings::GetInstance().GetResolutionInfo(res);
+  m_videoModeFlags = info.dwFlags;
 
   m_scissors.SetRect(0, 0, (float)m_iScreenWidth, (float)m_iScreenHeight);
 
@@ -588,8 +590,7 @@ void CGraphicContext::ApplyVideoResolution(RESOLUTION res)
   SetStereoView(RENDER_STEREO_VIEW_OFF);
 
   // update anyone that relies on sizing information
-  RESOLUTION_INFO info_org  = CDisplaySettings::GetInstance().GetResolutionInfo(res);
-  CServiceBroker::GetInputManager().SetMouseResolution(info_org.iWidth, info_org.iHeight, 1, 1);
+  CServiceBroker::GetInputManager().SetMouseResolution(info.iWidth, info.iHeight, 1, 1);
   CServiceBroker::GetGUI()->GetWindowManager().SendMessage(GUI_MSG_NOTIFY_ALL, 0, 0, GUI_MSG_WINDOW_RESIZE);
 }
 
@@ -673,8 +674,9 @@ void CGraphicContext::ApplyStateBlock()
 const RESOLUTION_INFO CGraphicContext::GetResInfo(RESOLUTION res) const
 {
   RESOLUTION_INFO info = CDisplaySettings::GetInstance().GetResolutionInfo(res);
+  const auto stereoMode = GetRequestedStereoMode();
 
-  if(m_stereoMode == RENDER_STEREO_MODE_SPLIT_HORIZONTAL)
+  if (stereoMode == RENDER_STEREO_MODE_SPLIT_HORIZONTAL)
   {
     if((info.dwFlags & D3DPRESENTFLAG_MODE3DTB) == D3DPRESENTFLAG_MODE3DTB)
     {
@@ -687,7 +689,7 @@ const RESOLUTION_INFO CGraphicContext::GetResInfo(RESOLUTION res) const
     }
   }
 
-  if (m_stereoMode == RENDER_STEREO_MODE_HARDWAREBASED)
+  if (stereoMode == RENDER_STEREO_MODE_HARDWAREBASED)
   {
     if((info.dwFlags & D3DPRESENTFLAG_MODE3DFP) == D3DPRESENTFLAG_MODE3DFP)
     {
@@ -696,7 +698,7 @@ const RESOLUTION_INFO CGraphicContext::GetResInfo(RESOLUTION res) const
     }
   }
 
-  if(m_stereoMode == RENDER_STEREO_MODE_SPLIT_VERTICAL)
+  if (stereoMode == RENDER_STEREO_MODE_SPLIT_VERTICAL)
   {
     if((info.dwFlags & D3DPRESENTFLAG_MODE3DSBS) == D3DPRESENTFLAG_MODE3DSBS)
     {
@@ -832,7 +834,7 @@ void CGraphicContext::SetStereoView(RENDER_STEREO_VIEW view)
   m_viewStack.push(viewport);
 
   viewport = StereoCorrection(viewport);
-  CServiceBroker::GetRenderSystem()->SetStereoMode(m_stereoMode, m_stereoView);
+  CServiceBroker::GetRenderSystem()->SetStereoMode(GetStereoMode(), m_stereoView);
   CServiceBroker::GetRenderSystem()->SetViewPort(viewport);
   CServiceBroker::GetRenderSystem()->SetScissors(viewport);
 }
@@ -1019,9 +1021,9 @@ CRect CGraphicContext::GenerateAABB(const CRect &rect) const
 void CGraphicContext::UpdateCameraPosition(const CPoint &camera, const float &factor)
 {
   float stereoFactor = 0.f;
-  if ( m_stereoMode != RENDER_STEREO_MODE_OFF
-    && m_stereoMode != RENDER_STEREO_MODE_MONO
-    && m_stereoView != RENDER_STEREO_VIEW_OFF)
+  const auto stereoMode = GetStereoMode();
+  if (stereoMode != RENDER_STEREO_MODE_OFF && stereoMode != RENDER_STEREO_MODE_MONO &&
+      m_stereoView != RENDER_STEREO_VIEW_OFF)
   {
     RESOLUTION_INFO res = GetResInfo();
     RESOLUTION_INFO desktop = GetResInfo(RES_DESKTOP);

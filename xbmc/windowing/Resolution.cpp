@@ -89,7 +89,7 @@ RESOLUTION CResolutionUtils::ChooseBestResolution(float fps, int width, int heig
 void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int height, bool is3D, RESOLUTION &resolution)
 {
   RESOLUTION_INFO curr = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo(resolution);
-  RENDER_STEREO_MODE stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode();
+  const auto stereo_mode = CServiceBroker::GetWinSystem()->GetGfxContext().GetRequestedStereoMode();
   uint32_t dwFlags = D3DPRESENTFLAG_PROGRESSIVE;
   const RESOLUTION_INFO desktop_info = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo(CDisplaySettings::GetInstance().GetCurrentResolution());
   std::vector<CVariant> indexList = CServiceBroker::GetSettingsComponent()->GetSettings()->GetList(CSettings::SETTING_VIDEOSCREEN_WHITELIST);
@@ -110,8 +110,8 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
         dwFlags |= D3DPRESENTFLAG_MODE3DTB;
         break;
       case RENDER_STEREO_MODE_HARDWAREBASED:
-        CLog::Log(LOGDEBUG, "[WHITELIST] Search for 3D Frame Packaging mode with {:d}x{:d}{} @ {:.3f} Hz",
-          curr.iScreenWidth, curr.iScreenHeight, dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "", fps);
+        CLog::Log(LOGDEBUG, "[WHITELIST] Searching for a frame-packing timing for {:d}x{:d} @ {:.3f} Hz",
+                  width, height, fps);
         dwFlags |= D3DPRESENTFLAG_MODE3DFP;
         break;
       default:
@@ -134,9 +134,12 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
     for (const auto& c : candidates)
     {
       info = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo(c);
-      if (((info.iScreenWidth >= desktop_info.iScreenWidth) ||
-           (info.iScreenHeight >= curr.iScreenHeight && info.iScreenWidth >= curr.iScreenWidth)) &&
-           (info.dwFlags & dwFlags) == dwFlags)
+      // Frame-packing timings can be smaller than the HDMI desktop.
+      const bool meetsSizeFloor = info.iScreenWidth >= desktop_info.iScreenWidth ||
+                                  (info.iScreenHeight >= curr.iScreenHeight &&
+                                   info.iScreenWidth >= curr.iScreenWidth);
+      if ((meetsSizeFloor || (dwFlags & D3DPRESENTFLAG_MODE3DFP)) &&
+          (info.dwFlags & dwFlags) == dwFlags)
       {
         resString = CDisplaySettings::GetInstance().GetStringFromRes(c);
         indexList.emplace_back(resString);
@@ -434,6 +437,18 @@ bool CResolutionUtils::FindResolutionFromOverride(float fps, int width, bool is3
 {
   RESOLUTION_INFO curr = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo(resolution);
 
+  uint32_t modeMask = D3DPRESENTFLAG_MODEMASK;
+  uint32_t requiredFlags = curr.dwFlags & modeMask;
+#if defined(HAS_LIBAMCODEC)
+  // Keep same-size refresh overrides eligible when entering frame packing.
+  if (is3D && CServiceBroker::GetWinSystem()->GetGfxContext().GetRequestedStereoMode() ==
+                  RENDER_STEREO_MODE_HARDWAREBASED)
+  {
+    modeMask = D3DPRESENTFLAG_PROGRESSIVE | D3DPRESENTFLAG_MODE3DFP;
+    requiredFlags = modeMask;
+  }
+#endif
+
   //try to find a refreshrate from the override
   for (int i = 0; i < (int)CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoAdjustRefreshOverrides.size(); i++)
   {
@@ -452,7 +467,7 @@ bool CResolutionUtils::FindResolutionFromOverride(float fps, int width, bool is3
 
       if (info.iScreenWidth  == curr.iScreenWidth &&
           info.iScreenHeight == curr.iScreenHeight &&
-          (info.dwFlags & D3DPRESENTFLAG_MODEMASK) == (curr.dwFlags & D3DPRESENTFLAG_MODEMASK))
+          (info.dwFlags & modeMask) == requiredFlags)
       {
         if (info.fRefreshRate <= override.refreshmax &&
             info.fRefreshRate >= override.refreshmin)

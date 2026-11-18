@@ -16,6 +16,7 @@
 #include "utils/StreamDetails.h"
 #include "utils/TransformMatrix.h" // for the members m_guiTransform etc.
 
+#include <atomic>
 #include <map>
 #include <optional>
 #include <stack>
@@ -169,8 +170,26 @@ public:
   void SetCameraPosition(const CPoint &camera);
   void SetStereoView(RENDER_STEREO_VIEW view);
   RENDER_STEREO_VIEW GetStereoView()  { return m_stereoView; }
-  void SetStereoMode(RENDER_STEREO_MODE mode) { m_stereoMode = mode; }
-  RENDER_STEREO_MODE GetStereoMode()  { return m_stereoMode; }
+  void SetStereoMode(RENDER_STEREO_MODE mode) { m_requestedStereoMode = mode; }
+  RENDER_STEREO_MODE GetRequestedStereoMode() const
+  {
+    return m_requestedStereoMode.load(std::memory_order_relaxed);
+  }
+  RENDER_STEREO_MODE GetStereoMode() const
+  {
+    return GetStereoModeForResolution(m_videoModeFlags.load(std::memory_order_relaxed));
+  }
+  RENDER_STEREO_MODE GetStereoModeForResolution(uint32_t flags) const
+  {
+    const auto mode = GetRequestedStereoMode();
+#if defined(HAS_LIBAMCODEC)
+    // Keep the request for mode selection. Only a frame-packing timing can
+    // drive the packed GUI, MVC output and HDMI transmitter together.
+    if (mode == RENDER_STEREO_MODE_HARDWAREBASED && !(flags & D3DPRESENTFLAG_MODE3DFP))
+      return RENDER_STEREO_MODE_MONO;
+#endif
+    return mode;
+  }
   void SetHDRType(StreamHdrType hdrType)  { m_hdrType = hdrType; }
   StreamHdrType GetHDRType()  { return m_hdrType; }
   void RestoreCameraPosition();
@@ -301,7 +320,8 @@ protected:
   UITransform m_finalTransform;
   std::stack<UITransform> m_transforms;
   RENDER_STEREO_VIEW m_stereoView = RENDER_STEREO_VIEW_OFF;
-  RENDER_STEREO_MODE m_stereoMode = RENDER_STEREO_MODE_OFF;
+  std::atomic<RENDER_STEREO_MODE> m_requestedStereoMode{RENDER_STEREO_MODE_OFF};
+  std::atomic<uint32_t> m_videoModeFlags{0};
   StreamHdrType m_hdrType = StreamHdrType::HDR_TYPE_NONE;
 
   bool m_isTransferPQ{false};
