@@ -20884,7 +20884,7 @@ msgstr ""
 #. Description of setting with label #169 "Resolution"
 #: system/settings/settings.xml
 msgctxt "#36352"
-msgid "Changes the resolution that the user interface is displayed in. A 4K (2160p) desktop can make high-resolution skin artwork look sharper, but 2160p at 50/60Hz uses far more HDMI bandwidth than lower modes. Some TVs, AVRs or projectors cannot handle it, and a near-limit cable in a long chain can struggle too, so the picture keeps dropping out (loss of sync). If 2160p60 does not sync, either stay at 1080p60 (smooth, not 4K) or pick 2160p at 24/25Hz (4K, less smooth). Video still switches to its native mode through the whitelist, whatever you set here."
+msgid "Choose the resolution Kodi sends to your display for its menus. With 4K selected, your display receives a 4K signal even if Kodi draws the menus at 1080p. If the whitelist is empty, Kodi normally scales lower-resolution videos up to the selected resolution too. For example, a 1080p film is sent to your TV in 4K."
 msgstr ""
 
 #. Description of setting with label #243 "Refresh Rate"
@@ -21418,7 +21418,7 @@ msgstr ""
 #. Description of setting with label #14126 "Whitelist"
 #: system/settings/settings.xml
 msgctxt "#36443"
-msgid "Sets which display modes (resolution and refresh rate) Kodi is allowed to switch to during video playback. When a video's resolution and frame rate match a mode on this list, it is sent to the display at native resolution and refresh rate (no scaling or frame-rate conversion); otherwise Kodi falls back to the closest available mode and scales / frame-rate-converts to fit. Leave the list empty to let Kodi choose automatically from all modes at or above the desktop resolution. Has no effect unless \"Adjust display refresh rate\" is enabled. Only add 2160p 50/60Hz here if you actually play 50/60fps 4K video and your display/AVR chain handles it reliably - those modes use the most HDMI bandwidth and can drop sync. Lower-frame-rate video (24/25/30fps) does not need them."
+msgid "Choose which resolutions and refresh rates Kodi may switch to when \"Adjust display refresh rate\" is on. With an empty list, Kodi normally upscales lower-resolution videos to the current output resolution. The refresh rate can still change to match the video. To let your 4K TV upscale 1080p films, select the matching 1080p modes here. For 3D frame packing, Kodi can use a lower resolution even when the list is empty."
 msgstr ""
 
 #. Description of setting with label #14127 "Whitelist"
