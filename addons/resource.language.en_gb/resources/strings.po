@@ -8761,7 +8761,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#14291"
-msgid "On by default. In a 4K display mode, Kodi renders the interface at native 4K for sharper artwork and text. With this setting off, Kodi renders the interface at up to 1080p and scales it to the display resolution. On Amlogic systems with kernel 4.9, Kodi automatically uses a 1080p interface during video playback when the 4K output is above 30 Hz. Changing this setting requires a reboot."
+msgid "Draw menus in 4K. When off, Kodi scales menus up from at most 1080p. Playback or VNC can temporarily use 1080p. Reboot to apply."
 msgstr ""
 
 #: system/settings/settings.xml
@@ -8771,7 +8771,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#60668"
-msgid "Render the interface at 1080p when playing video above 1080p in a 4K display mode, including at film refresh rates. Kodi keeps the selected HDMI mode and restores the native 4K interface after playback. Applies from the next playback."
+msgid "Use a 1080p interface while playing video above 1080p on a 4K output, even at film frame rates. HDMI stays at 4K. Applies from the next playback."
 msgstr ""
 
 #. Force colour subsampling
@@ -8867,7 +8867,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#14312"
-msgid "Show the debug overlay while debug logging is enabled. Leave this off to collect a full debug log without covering playback."
+msgid "Show debug information on screen while debug logging is on. Leave off to log without an overlay."
 msgstr ""
 
 #empty strings from id 14313 to 15010
@@ -20884,7 +20884,7 @@ msgstr ""
 #. Description of setting with label #169 "Resolution"
 #: system/settings/settings.xml
 msgctxt "#36352"
-msgid "Choose the resolution Kodi sends to your display for its menus. With 4K selected, your display receives a 4K signal even if Kodi draws the menus at 1080p. If the whitelist is empty, Kodi normally scales lower-resolution videos up to the selected resolution too. For example, a 1080p film is sent to your TV in 4K."
+msgid "Set the output resolution for Kodi menus. At 4K, menus can still be drawn at 1080p. With an empty whitelist, Kodi normally upscales lower-resolution video to this output resolution."
 msgstr ""
 
 #. Description of setting with label #243 "Refresh Rate"
@@ -20943,7 +20943,7 @@ msgstr ""
 #. Description of setting with label #34100 "Number of channels"
 #: system/settings/settings.xml
 msgctxt "#36362"
-msgid "Select the number of channels supported by the audio connection, or the number of speakers if connected by analogue connections. This setting does not apply to passthrough audio. Note: S/PDIF supports 2.0 channels only but can still output multichannel audio using a format supported by passthrough."
+msgid "Choose the channel layout your audio connection supports. Use 2.0 for S/PDIF. Passthrough sends the soundtrack in its own channel layout."
 msgstr ""
 
 #: system/settings/settings.xml
@@ -20977,7 +20977,7 @@ msgstr ""
 #. Description of setting with label #348 "Enable passthrough"
 #: system/settings/settings.xml
 msgctxt "#36368"
-msgid "Select to allow passthrough audio for playback of compressed audio such as Dolby Digital (AC3), DTS, etc. The Client of the AudioEngine, for example Videoplayer, might decide to decode the audio stream under certain conditions. In Videoplayer case, passthrough won't be used for live streams and when you sync playback to display."
+msgid "Send supported audio formats to your receiver for decoding. Enabling passthrough turns off binaural headphone audio."
 msgstr ""
 
 #. Description of setting with label #349 "TrueHD capable receiver"
@@ -21418,7 +21418,7 @@ msgstr ""
 #. Description of setting with label #14126 "Whitelist"
 #: system/settings/settings.xml
 msgctxt "#36443"
-msgid "Choose which resolutions and refresh rates Kodi may switch to when \"Adjust display refresh rate\" is on. With an empty list, Kodi normally upscales lower-resolution videos to the current output resolution. The refresh rate can still change to match the video. To let your 4K TV upscale 1080p films, select the matching 1080p modes here. For 3D frame packing, Kodi can use a lower resolution even when the list is empty."
+msgid "Choose resolutions and refresh rates for “Adjust display refresh rate”. With an empty list, refresh rate can still change, but Kodi normally upscales lower-resolution videos to the current output resolution. Select matching 1080p modes to let your 4K TV upscale 1080p films. 3D frame packing can use a lower resolution automatically."
 msgstr ""
 
 #. Description of setting with label #14127 "Whitelist"
@@ -21672,7 +21672,7 @@ msgstr ""
 #. Description of setting with label #36097 "System / Display / OSD base brightness (HDR/DV)"
 #: system/settings/settings.xml
 msgctxt "#36547"
-msgid "Sets the base brightness level for OSD, text-based subtitles and GUI elements. Applies to both native HDR10 and DV VS10 playback. In VS10 mode, this does not affect the DV OSD peak nits setting — it scales the overall OSD brightness independently."
+msgid "Adjust menu, on-screen control and text subtitle brightness during HDR playback. Dolby Vision also has a separate OSD peak brightness setting."
 msgstr ""
 
 #. Description of setting with label #37021 "Set GUI resolution limit"
@@ -22901,7 +22901,7 @@ msgstr ""
 #. Description for the setting with label #38094
 #: system/settings/settings.xml
 msgctxt "#38095"
-msgid "Allow 44.1 kHz, 88.2 kHz and 176.4 kHz PCM output on G12B devices using HDMI Multi Ch PCM. Enabled by default. Turn off to convert to the 48 kHz family if your HDMI setup has audio cutouts. Changes briefly interrupt active audio; if audio is suspended, they apply when it resumes. Passthrough is unaffected."
+msgid "Use 44.1, 88.2 and 176.4 kHz PCM on G12B HDMI Multi Ch PCM output. Turn this off if audio cuts out. Changing it briefly interrupts active audio."
 msgstr ""
 
 #. Used for the rating selection
@@ -24328,7 +24328,7 @@ msgstr ""
 #. Help text for Bluetooth audio codec selection setting
 #: system/settings/settings.xml
 msgctxt "#39211"
-msgid "Select the Bluetooth audio codec to use when connected to Bluetooth headphones or speakers. Higher quality codecs require device support."
+msgid "Automatic keeps the codec negotiated with your Bluetooth device. Select another supported codec to use it instead."
 msgstr ""
 
 #. Label for Bluetooth A2DP volume boost setting
@@ -24340,7 +24340,7 @@ msgstr ""
 #. Help text for Bluetooth A2DP volume boost setting
 #: system/settings/settings.xml
 msgctxt "#39213"
-msgid "Apply a 25% volume boost when using Bluetooth (A2DP) audio output. This can help improve volume levels with quieter Bluetooth devices."
+msgid "Boost volume by 25% on Bluetooth A2DP output."
 msgstr ""
 
 #. Bluetooth codec choice that keeps the codec PulseAudio negotiated with the headset
@@ -24365,7 +24365,7 @@ msgstr ""
 #. Omniphony: help text for the setting
 #: system/settings/settings.xml
 msgctxt "#39311"
-msgid "Uses the positions stored in Dolby Atmos and DTS:X soundtracks, and the height channels of Auro-3D, so each sound is placed exactly where it was mixed, including above you. If playback stutters, try Cascade mode (shown at the Advanced settings level) first: it keeps the height sounds, while turning this off loses them."
+msgid "Use Atmos and DTS:X object positions and Auro-3D height channels for headphone audio. If playback stutters, try Cascade mode to keep the height effects."
 msgstr ""
 
 #. Omniphony: label of the room simulation setting
@@ -24377,7 +24377,7 @@ msgstr ""
 #. Omniphony: help text for the room simulation setting
 #: system/settings/settings.xml
 msgctxt "#39313"
-msgid "Adds the echoes of a virtual room around you. These early reflections make sound seem to come from outside your head, so this setting makes the biggest difference. The presets use different room sizes and shapes. The room grows with Speaker distance up to a maximum size. Off gives the driest sound."
+msgid "Add room reflections to make headphone audio sound more spacious. Choose a room size or Off for dry sound."
 msgstr ""
 
 #. Omniphony: label of the level setting
@@ -24387,7 +24387,7 @@ msgstr ""
 
 #. Omniphony: help text for the level setting
 msgctxt "#39315"
-msgid "How loud the 3D sound is. The default matches Kodi's normal stereo playback of the same film, so switching binaural on does not change the volume. Raise it if everything sounds too quiet; lower it if loud scenes sound harsh or squashed. It also follows the \"Maintain original volume on downmix\" setting on its own."
+msgid "Adjust headphone surround volume. Lower it if loud scenes sound distorted."
 msgstr ""
 
 #. Room simulation preset: no room at all
@@ -24423,7 +24423,7 @@ msgstr ""
 #. help text for setting audiooutput.omniphonydistance
 #: system/settings/settings.xml
 msgctxt "#39321"
-msgid "How far away the virtual speakers are placed. Larger values push the sound further out and make it wider; smaller values bring it closer. Reverb grows with distance, echoes slightly and then more once the room is at its largest, so larger values sound louder. It changes little with Room simulation off, and nothing with a custom room."
+msgid "Set how far away the virtual speakers sound. A greater distance widens the sound, especially with room simulation."
 msgstr ""
 
 #. label for setting audiooutput.omniphonyreverb
@@ -24435,7 +24435,7 @@ msgstr ""
 #. help text for setting audiooutput.omniphonyreverb
 #: system/settings/settings.xml
 msgctxt "#39323"
-msgid "How much lingering reverberation the simulated room adds after its first echoes. Raise it for a bigger, more spacious and more distant sound; lower it for a drier, closer one, which can make dialogue clearer. It only works while Room simulation is on, and does nothing with a custom room, which brings its own reverb."
+msgid "Add more reverb for a spacious sound or less for clearer dialogue."
 msgstr ""
 
 #. label for setting audiooutput.omniphonyhrtfmode
@@ -24447,7 +24447,7 @@ msgstr ""
 #. help text for setting audiooutput.omniphonyhrtfmode
 #: system/settings/settings.xml
 msgctxt "#39325"
-msgid "Chooses what shapes the 3D sound. Built-in HRTF: a standard head that suits most people. Custom HRTF: a head measured in a SOFA file, ideally your own, for the most convincing placement. Custom Room: a real listening room measured with loudspeakers, used instead of the simulated room. The custom choices ask you for a file."
+msgid "Use the built-in head model, a measured head (custom HRTF) or a measured room (BRIR). Custom options use a SOFA file."
 msgstr ""
 
 #. Binaural response: the engine's own measurements
@@ -24471,7 +24471,7 @@ msgstr ""
 #. help text for setting audiooutput.omniphonyhrtf
 #: system/settings/settings.xml
 msgctxt "#39329"
-msgid "Pick a SOFA file holding the HRTF measurements of a head (SOFA type SimpleFreeFieldHRIR). It is checked straight away and a message tells you what is inside. If it cannot be used, your previous choice stays. Measured rooms belong under Custom Room (BRIR) instead; very large files are rooms, not HRTF sets, and are refused."
+msgid "Choose a SOFA head measurement in SimpleFreeFieldHRIR format. Kodi checks the file before using it."
 msgstr ""
 
 #. label for setting audiooutput.omniphonycascade
@@ -24483,7 +24483,7 @@ msgstr ""
 #. help text for setting audiooutput.omniphonycascade
 #: system/settings/settings.xml
 msgctxt "#39331"
-msgid "Places sounds on twelve virtual speakers around you instead of positioning every sound on its own. It needs less processing power, so switch it on if playback stutters or the sound breaks up; placement becomes slightly less precise. It has no effect with a custom room, which always uses the room's own loudspeakers."
+msgid "Route objects through 12 virtual speakers to reduce processing load. Use this if playback stutters. Sound placement is slightly less precise."
 msgstr ""
 
 #. heading for the custom HRTF file browser and its result dialog
@@ -24533,7 +24533,7 @@ msgstr ""
 #. help text for setting audiooutput.omniphonylfe
 #: system/settings/settings.xml
 msgctxt "#39342"
-msgid "Turns up the LFE channel: the deep rumble of explosions and engines that a cinema sends to its subwoofer. Headphones have no subwoofer to turn up, so this is the way to get more of it. Only that channel changes, so films with little LFE will barely sound different. Too much makes the limiter turn everything down."
+msgid "Boost low-frequency effects such as explosions in the headphone mix. Too much boost can lower the overall volume in loud scenes."
 msgstr ""
 
 #. label for setting audiooutput.omniphony
@@ -24545,7 +24545,7 @@ msgstr ""
 #. help text for setting audiooutput.omniphony
 #: system/settings/settings.xml
 msgctxt "#39344"
-msgid "Turns any soundtrack, film or music, into 3D sound for headphones: voices and effects seem to come from around and above you instead of from inside your head. Use it only with headphones. While it is on, passthrough is switched off, and it does nothing when the audio output is set to more than two channels."
+msgid "Create surround sound for headphones. Enabling this turns off passthrough. With multichannel output, the headphone mix uses the front left and right channels. Settings apply when a track opens."
 msgstr ""
 
 #. Binaural response: a measured listening room
@@ -24563,7 +24563,7 @@ msgstr ""
 #. help text for setting audiooutput.omniphonybrir
 #: system/settings/settings.xml
 msgctxt "#39347"
-msgid "Pick a SOFA file of a measured listening room, such as the BBC or IoSR rooms. It is prepared once when you pick it, which can take a moment for a large file; after that it loads instantly. Keep the original file: if the prepared copy is ever lost, it is made again from it. Room simulation, distance, reverb and Cascade mode do not apply."
+msgid "Choose a SOFA measurement of a listening room. It supplies its own speakers and reverb. Keep the original file so Kodi can rebuild its prepared copy."
 msgstr ""
 
 #. heading for the custom Room file browser and its result dialog
@@ -25827,7 +25827,7 @@ msgstr ""
 #. Setting help for TrueHD Atmos dialogue normalisation defeat
 #: system/settings/settings.xml
 msgctxt "#55002"
-msgid "Force dialogue normalisation to 0 dB in TrueHD Atmos streams without Evolution metadata, disabling receiver-side volume reduction. Streams declaring Evolution metadata retain their original normalisation so protected frame data stays unchanged."
+msgid "Prevent receivers from lowering TrueHD Atmos volume through dialogue normalisation. Tracks with Evolution metadata keep their original level."
 msgstr ""
 
 #. Setting label for AC3/EAC3 dialogue normalisation defeat
@@ -25885,7 +25885,7 @@ msgstr ""
 #. Setting help for DTS / DTS-HD dialogue normalisation defeat
 #: system/settings/settings.xml
 msgctxt "#55012"
-msgid "Force the dialogue normalisation value to (0 dB) in DTS, DTS-HD High Resolution and DTS-HD Master Audio bitstreams (including DTS:X). This disables receiver-side dialogue normalisation, preventing unwanted volume reduction during passthrough playback. Many DTS titles carry no dialogue normalisation, so this has no effect on them."
+msgid "Disable dialogue normalisation during DTS and DTS-HD passthrough, including DTS:X. Only tracks that use it become louder."
 msgstr ""
 
 #. "Dolby Vision"
@@ -26173,7 +26173,7 @@ msgstr ""
 #. Help text for setting "Use the newer Dolby library for SDR conversion" of label #60665
 #: system/settings/settings.xml
 msgctxt "#60666"
-msgid "Experimental. Converts native Dolby Vision to SDR with the newer Dolby library (dovi5, CMv4.0 display management: Level 3 and Level 8 trims) instead of the original one (CMv2.9, Level 2 trims only), and shows the CMv4.0 options for SDR output. Only shown when the kernel provides the xbmc_dv_new_sdr_route parameter; if the newer library rejects a title, playback falls back to the original one. With this route, Smart compares each frame's Level 1 peak with the 100-nit VS10 SDR target. Applies from the next playback."
+msgid "Try CMv4.0 tone mapping when converting Dolby Vision to SDR. If the newer Dolby library rejects a title, Kodi uses the original library. Applies from the next playback."
 msgstr ""
 
 #. "Dolby Vision VS10 SDR Per-Frame Metadata"
@@ -26263,7 +26263,7 @@ msgstr ""
 #. "Dolby Vision VSVDB"
 #: system/settings/settings.xml
 msgctxt "#60076"
-msgid "Peak brightness (nits) of your display, reported to the DV engine. Auto-detected from EDID when DV VSVDB is Off. Set manually when DV VSVDB is On or when the display has no EDID DV data."
+msgid "Set the display peak in nits for Dolby Vision. With VSVDB injection off, Kodi uses the peak reported by the display if available. Manual changes apply during playback."
 msgstr ""
 
 #. "Dolby Vision VSVDB"
@@ -26317,7 +26317,7 @@ msgstr ""
 #. "Dolby Vision HDR10+"
 #: system/settings/settings.xml
 msgctxt "#60102"
-msgid "Converts HDR10+ dynamic metadata to DV profile 8.1 in real time, allowing the DV engine to apply scene-by-scene tonemapping for HDR10+ content."
+msgid "Convert HDR10+ metadata to Dolby Vision Profile 8.1 for scene-by-scene tone mapping during playback."
 msgstr ""
 
 #. "Dolby Vision HDR10+"
@@ -26329,7 +26329,7 @@ msgstr ""
 #. "Dolby Vision HDR10+"
 #: system/settings/settings.xml
 msgctxt "#60104"
-msgid "Method used to determine scene peak brightness during HDR10+ to DV conversion. Histogram uses the brightness distribution, max-scl uses the brightest pixel per channel, histogram-plus combines both approaches."
+msgid "Histogram uses the scene’s brightness distribution. Max-SCL uses colour channel peaks. Histogram-plus can also estimate average brightness from the histogram."
 msgstr ""
 
 #. "Dolby Vision HDR10+"
@@ -26419,7 +26419,7 @@ msgstr ""
 #. "Dolby Vision Level 5 OSD Handling"
 #: system/settings/settings.xml
 msgctxt "#60153"
-msgid "Dynamically sets Level 5 metadata to zero while the OSD is on screen, and restores it when the OSD disappears. This prevents the display from cropping or dimming content outside the active area."
+msgid "Clear Level 5 while on-screen controls or player diagnostics are visible so the TV can show them in the black bars."
 msgstr ""
 
 #. "Dolby Vision Level 5 Active Area Handling"
@@ -26431,7 +26431,7 @@ msgstr ""
 #. "Dolby Vision Level 5 Active Area Handling"
 #: system/settings/settings.xml
 msgctxt "#60155"
-msgid "Enable Level 5 active area handling for Display-Led DV playback. Level 5 metadata defines the active content area within the frame (e.g., letterbox boundaries for scope content). When enabled, shows options for sending source L5 metadata, setting L5 to zero for OSD/subtitles, and restricting subtitles to the active area."
+msgid "Use Level 5 metadata to tell the TV where the active picture ends and black bars begin during display-led Dolby Vision playback."
 msgstr ""
 
 #. "Dolby Vision Level 5 Subtitle Handling"
@@ -26443,7 +26443,7 @@ msgstr ""
 #. "Dolby Vision Level 5 Subtitle Handling"
 #: system/settings/settings.xml
 msgctxt "#60157"
-msgid "Sets Dolby Vision Level 5 metadata to zero to prevent the display from cropping or dimming subtitles in the black bars. 'Subtitle track enabled' keeps L5 at zero while a subtitle track is enabled, including between cues. 'Subtitles on screen' sets L5 to zero only while rendered text or bitmap subtitles overlap a bar."
+msgid "Clear Level 5 so subtitles in black bars stay visible. Choose whether this applies while a subtitle track is enabled or only when a subtitle overlaps a bar."
 msgstr ""
 
 #. "Dolby Vision Level 5 Subtitle Handling - Subtitle track active"
@@ -26521,7 +26521,7 @@ msgstr ""
 #. "Dolby Vision Display Led Restrict Overlays"
 #: system/settings/settings.xml
 msgctxt "#60191"
-msgid "Keep bitmap subtitles horizontally and vertically, and text subtitles such as SRT vertically, within the active picture. Applies to SDR, HDR and Dolby Vision. The picture area comes from the video rectangle, Dolby Vision picture metadata or detected black borders. Authored ASS positions and forced margins are preserved. Oversized dialogue keeps its size and may extend beyond the picture. Enable 'Detect active picture for subtitles' to scan for encoded black borders."
+msgid "Move subtitles out of black bars where they fit. Enable border detection for bars encoded in the video. Authored ASS positions are preserved."
 msgstr ""
 
 #. "Dolby Vision Display Led Restrict Overlays - User Position"
@@ -26533,7 +26533,7 @@ msgstr ""
 #. "Dolby Vision Display Led Restrict Overlays - User Position"
 #: system/settings/settings.xml
 msgctxt "#60193"
-msgid "Apply the configured text subtitle margin within the active picture. Also honors manual text positioning where supported. Bitmap dialogue uses its own scaled margin and keeps split regions together."
+msgid "Use the configured text subtitle margin inside the active picture. Bitmap subtitles have a separate margin."
 msgstr ""
 
 #. "Dolby Vision Detect Active Area"
@@ -26545,7 +26545,7 @@ msgstr ""
 #. "Dolby Vision Detect Active Area Help"
 #: system/settings/settings.xml
 msgctxt "#60195"
-msgid "Use live black-border detection for supported native Dolby Vision Profile 8.1 video and follow aspect-ratio changes during playback. If the decoder cannot provide live detection, scan the file for stable borders. Both Profile 8.1 paths fill missing or zero Level 5 offsets and preserve authored nonzero offsets. For other Dolby Vision profiles, a high-confidence file scan can override embedded Level 5. Explicit Level 5 overrides take priority. Known cropped video, disc playback, MPEG-TS and unsupported streams can bypass the file scan. File scans use the cache, startup pause, I/O throttling, A53 core, HTTP exclusion and timeout settings under Subtitles. Dolby Vision detection can run independently of subtitle detection. An addon request to skip automatic detection applies to both."
+msgid "Detect black bars for Dolby Vision Level 5. Profile 8.1 fills missing or zero borders live when supported, otherwise from a file scan. Other profiles can replace existing borders after a reliable scan. Manual overrides take priority."
 msgstr ""
 
 #. "Dolby Vision Detect Active Area Throttle Label"
@@ -26557,7 +26557,7 @@ msgstr ""
 #. "Dolby Vision Detect Active Area Throttle Help"
 #: system/settings/settings.xml
 msgctxt "#60197"
-msgid "Throttle background Dolby Vision border detection using the playback cache. Waits for sufficient buffered data before each scan position and skips slow sources. Recommended for slow network shares or USB storage. Disabling this setting lets the Dolby Vision probe run without cache protection. Background non-Dolby-Vision subtitle detection always uses cache protection. While playback is held by 'Pause for black-border or L5 detection', both detectors scan without I/O throttling regardless of this setting."
+msgid "Wait for enough playback data to buffer before a background Dolby Vision scan. This can prevent stutter on slow drives or network shares. Startup scans while playback is paused run at full speed."
 msgstr ""
 
 #. "Dolby Vision Display LL Dolby VSVDB Limit"
@@ -26615,7 +26615,7 @@ msgid "Append CMv4.0 metadata"
 msgstr ""
 
 msgctxt "#60321"
-msgid "Append CMv4.0 metadata during native Dolby Vision playback on display-led output or supported player-led output. Existing CMv4.0 metadata is preserved. Smart uses each frame's Level 1 peak; Auto (source peak) uses the stream's source peak metadata."
+msgid "Add missing CMv4.0 metadata to native Dolby Vision video. Smart uses each frame’s peak brightness. Auto uses the peak for the whole video."
 msgstr ""
 
 msgctxt "#60322"
@@ -26641,7 +26641,7 @@ msgid "Convert CMv4.0 to CMv2.9"
 msgstr ""
 
 msgctxt "#60329"
-msgid "Strip CMv4.0 extension blocks from Dolby Vision RPU metadata during playback, leaving a CMv2.9-only stream. For old DV TVs that fail to fall back from CMv4.0 (e.g. black screen on CMv4.0 content). Mutually exclusive with CMv4.0 append."
+msgid "Convert CMv4.0 metadata to CMv2.9 for older Dolby Vision TVs that show a black screen. This takes priority over adding CMv4.0."
 msgstr ""
 
 #. Level 5 active-area override channel (written by service.p3i.sb override.ini)
@@ -26661,7 +26661,7 @@ msgid "Auto Level 5 for cropped video"
 msgstr ""
 
 msgctxt "#60331"
-msgid "For Dolby Vision video whose black bars are cropped off (non-16:9 resolution, e.g. 3840x1600), synthesise the Level 5 active-area offsets from the coded aspect and send them to the display, so the letterbox bars added when scaling to a 16:9 output are masked black instead of being raised to grey by a positive lift. Matches how the TV's internal player handles cropped content. No file scanning is involved. Disable if your display crops or mispositions cropped Dolby Vision content."
+msgid "Keep added black bars dark on cropped Dolby Vision video. Kodi calculates the bars from the video dimensions. Turn off if your TV crops or shifts the picture."
 msgstr ""
 
 #. CMv4.0 smart bypass threshold
@@ -26671,7 +26671,7 @@ msgid "CMv4.0 smart bypass threshold (%)"
 msgstr ""
 
 msgctxt "#60333"
-msgid "Only applies to Smart. Bypass CMv4.0 append when a frame's Level 1 peak exceeds the display's peak brightness plus this percentage. The display peak uses reported Dolby Vision luminance, then HDR luminance, or 1000 nits if neither is available. Custom VSVDB injection or EDID override uses the configured peak instead. With the newer Dolby library for SDR conversion, the 100-nit VS10 SDR target is used instead. This does not change the VSVDB payload. At 20%, a frame above 1200 nits bypasses append on a 1000-nit display. Metadata without L2 trims or usable peak information is still upgraded. Existing CMv4.0 metadata is preserved."
+msgid "Smart skips CMv4.0 conversion when a frame’s Level 1 peak exceeds the display peak by more than this percentage. Frames without Level 2 trims still qualify. The newer SDR converter uses a 100-nit target."
 msgstr ""
 
 msgctxt "#60334"
@@ -26683,7 +26683,7 @@ msgid "CMv4.0 source peak threshold"
 msgstr ""
 
 msgctxt "#60336"
-msgid "Only applies to Auto (source peak). Append CMv4.0 when the stream's source peak metadata is at or below the display peak or selected threshold. Metadata without L2 trims and streams with unavailable peak information are also upgraded. Existing CMv4.0 metadata is preserved."
+msgid "Auto adds CMv4.0 when the source peak is at or below this limit, or when peak data or Level 2 trims are missing."
 msgstr ""
 
 msgctxt "#60337"
@@ -27426,7 +27426,7 @@ msgstr ""
 #. TV preset help
 #: system/settings/settings.xml
 msgctxt "#60617"
-msgid "Apply a pipeline preset based on your TV's HDR capabilities. Auto uses the EDID (DV + HDR10+ support bits) to pick the best pipeline. Brand presets set the pipeline for typical behaviour of that brand: LG/Sony assume DV but no HDR10+ (enables HDR10+→DV P8.1 conversion); Samsung assumes HDR10+ only, no DV (uses Player-LED LLDV for DV sources); Panasonic/Philips/TCL assume all formats supported (no conversion). Sets DV type, HDR10+ conversion, and the 12-bit Deep Color pipeline. Leave as Manual if you want full control."
+msgid "Auto configures Dolby Vision and HDR10+ using the formats your display reports. Brand presets assume typical formats for that brand. Choose Manual to set the options yourself."
 msgstr ""
 
 #. TV preset — Manual
@@ -27498,7 +27498,7 @@ msgstr ""
 #. "Dolby Vision HDR Bypass"
 #: system/settings/settings.xml
 msgctxt "#60645"
-msgid "Skips the HDMI mode switch when entering or leaving Dolby Vision playback. Only avoids the black screen if the GUI and the video use the same output: with DV mode On Demand set EVERY DV VS10 mode to SDR, with DV mode On set every one to DV. Some TVs need the mode switch to pick up the Dolby Vision signalling correctly."
+msgid "Skip the extra HDMI switch when starting or stopping Dolby Vision. To avoid a black screen, set all VS10 outputs to SDR for On Demand or Dolby Vision for On. Turn off if colours look wrong."
 msgstr ""
 
 #. "Keep SDR state on stop"
@@ -27510,7 +27510,7 @@ msgstr ""
 #. "Keep SDR output state on playback stop"
 #: system/settings/settings.xml
 msgctxt "#60647"
-msgid "Under On Demand, keeps the SDR output on playback stop instead of shutting down the Dolby Vision pipeline, avoiding a blink when returning to the GUI. Only effective when EVERY DV VS10 mode is set to SDR, so the GUI and the video share the same output."
+msgid "In On Demand mode, keep SDR output active when playback stops to avoid a blink in the menus. For consistent SDR output, set all VS10 video modes to SDR."
 msgstr ""
 
 #. "Engage Dolby Vision at startup"
@@ -27522,7 +27522,7 @@ msgstr ""
 #. "Engage Dolby Vision at startup"
 #: system/settings/settings.xml
 msgctxt "#60649"
-msgid "Under On Demand, prepares SDR output at Kodi startup when \"DV VS10 for DV video\" is set to SDR. Set every DV VS10 mode to SDR and enable \"Disable DV black screen when starting or stopping playback\" and \"Keep SDR output state on playback stop\" to keep the same output during playback and in the GUI. Resolution or refresh-rate changes can still cause a black screen."
+msgid "In On Demand mode, prepare SDR output when Kodi starts. Requires VS10 output for Dolby Vision video to be set to SDR."
 msgstr ""
 
 #: system/settings/settings.xml
@@ -27532,7 +27532,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#60651"
-msgid "Use only if your TV's scene-dependent dimming of subtitles and the OSD is unwanted. This SDR-only compatibility option overrides dovi5's native graphics tone mapping during native display-led Dolby Vision playback. Leave disabled to preserve native behavior."
+msgid "Use only if scene-dependent dimming of SDR subtitles or controls is unwanted in display-led Dolby Vision. Leave disabled for dovi5’s native graphics tone mapping (SDR-only adjustment)."
 msgstr ""
 
 
@@ -27575,7 +27575,7 @@ msgstr ""
 #. Help text for setting "Use correct colors for PGS"
 #: system/settings/settings.xml
 msgctxt "#69199"
-msgid "Convert PGS subtitles, and Blu-ray navigation graphics that are not passed through as authored (see HDR disc menu graphics), from BT.2020 PQ to SDR BT.709 for correct display. This switch and the settings below are shared by both. In Dolby Vision mode, the DV compositor reprocesses OSD colors, so the fine-tuning settings below may have limited effect. Disable if colors appear wrong on non-HDR content."
+msgid "Convert HDR PGS subtitles and eligible Blu-ray menus to SDR colours. Menus shown as authored use their original colours."
 msgstr ""
 
 #. Label for setting "PGS brightness"
@@ -27587,7 +27587,7 @@ msgstr ""
 #. Help text for setting "PGS brightness"
 #: system/settings/settings.xml
 msgctxt "#69201"
-msgid "Controls brightness of converted PGS subtitles and converted Blu-ray navigation graphics (shared setting). 100% is accurate per BT.2408 (203 nits reference). Increase if they appear too dim, decrease if they are too bright."
+msgid "Adjust the brightness of converted HDR subtitles and disc menus. 100% uses reference brightness."
 msgstr ""
 
 #. Label for setting "PGS color saturation"
@@ -27599,7 +27599,7 @@ msgstr ""
 #. Help text for setting "PGS color saturation"
 #: system/settings/settings.xml
 msgctxt "#69203"
-msgid "Adjust color saturation of converted PGS subtitles and converted Blu-ray navigation graphics (shared setting). 100% is accurate. Increase if colors appear washed out, decrease to desaturate."
+msgid "Adjust colour saturation for converted HDR subtitles and disc menus. 100% keeps the reference colours."
 msgstr ""
 
 #. Label for setting "PGS Reinhard tonemap"
@@ -27611,7 +27611,7 @@ msgstr ""
 #. Help text for setting "PGS Reinhard tonemap"
 #: system/settings/settings.xml
 msgctxt "#69205"
-msgid "Use Reinhard soft rolloff instead of hard clipping when converting PGS subtitles and Blu-ray navigation graphics (shared setting). Preserves more detail in bright highlights but makes the overall image slightly darker."
+msgid "Preserve highlight detail when converting HDR subtitles and disc menus. The result looks slightly darker."
 msgstr ""
 
 #. Group label for image-based subtitle settings
@@ -27629,7 +27629,7 @@ msgstr ""
 #. Help text for setting "PGS tonemap mode"
 #: system/settings/settings.xml
 msgctxt "#69208"
-msgid "Select the tonemapping algorithm for PGS subtitles and converted Blu-ray navigation graphics (shared setting). Classic: BT.709 gamut + per-channel tonemap. Linear: BT.709 gamut + luminance-based tonemap (preserves color ratios). Luma: BT.2020 native + luminance-based tonemap (no gamut conversion)."
+msgid "Classic maps each colour channel separately. Linear preserves colour ratios in BT.709. Luma uses the original BT.2020 colours."
 msgstr ""
 
 #. Option label for PGS tonemap mode "Classic"
@@ -27671,7 +27671,7 @@ msgstr ""
 #. Help text for setting "HDR disc menu graphics"
 #: system/settings/settings.xml
 msgctxt "#69215"
-msgid "How Blu-ray menu graphics authored in HDR (BT.2020 PQ) are shown on an HDR10 or Dolby Vision output. As authored: while such a menu is on screen, its graphics reach the display unconverted and Kodi's own controls keep their usual brightness; the graphics settings above do not apply to them. As authored, HDMV menus only: Java (BD-J) menus are shown as SDR, as before; use this if a disc's Java menu looks too bright. Convert: HDMV menus use the PGS HDR conversion above when it is enabled, and Java menus are shown as SDR. Needs kernel support; not used for 3D, for SDR output from the Dolby Vision core, or in Dolby Vision video processor mode. A change applies from the next playback."
+msgid "On supported HDR10 or Dolby Vision outputs, show HDR Blu-ray menus as authored. Choose HDMV only if Java menus look too bright. Convert uses the PGS correction setting for HDMV and shows Java menus in SDR. Applies next playback."
 msgstr ""
 
 #. Option for setting "HDR disc menu graphics"
@@ -27713,7 +27713,7 @@ msgstr ""
 
 #: system/peripherals.xml
 msgctxt "#36063"
-msgid "For a direct TV connection without an AVR or soundbar. Off by default: control a detected audio system, otherwise Kodi volume. On: send volume and mute keys to the TV. When the CEC target becomes available, Kodi's local volume is set to maximum and unmuted. If the target is unavailable or sending fails, subsequent keys control Kodi volume at its current level. Incoming CEC volume keys are ignored to prevent feedback. TV mute status is not reported."
+msgid "Send volume and mute keys to the TV over HDMI-CEC. Leave off for an AVR or soundbar. Kodi unmutes and sets its volume to maximum when CEC control starts. If CEC fails, the keys control Kodi."
 msgstr ""
 
 msgctxt "#69240"
@@ -27729,7 +27729,7 @@ msgid "Allow BD-J menus during playback"
 msgstr ""
 
 msgctxt "#69243"
-msgid "Allow opening BD-J top and popup menus during playback. This can interrupt navigation on some discs. Startup menus work with this setting disabled."
+msgid "Allow BD-J main and pop-up menus during playback. Some discs may stop responding. Startup menus work with this off."
 msgstr ""
 
 msgctxt "#69244"
@@ -27741,7 +27741,7 @@ msgid "Simulate 3D display"
 msgstr ""
 
 msgctxt "#69246"
-msgid "Tells a Blu-ray 3D disc that the connected display can show 3D, whether or not it can. Some 3D discs refuse to start on a display that answers no and park on a single still frame with no menu, picture or sound. Turning this on lets them run their normal path; the film then plays in 2D, because only the base view is presented. It does not enable 3D output: a 3D display whose capability is lost through an AV receiver or scaler that rewrites EDID also plays these discs in 2D. Affects Blu-ray 3D discs only."
+msgid "If a 3D Blu-ray refuses to start because no 3D display is detected, report 3D support to the disc so it can play in 2D."
 msgstr ""
 
 msgctxt "#60350"
@@ -27765,7 +27765,7 @@ msgstr ""
 #. Subtitle placement
 #: system/settings/settings.xml
 msgctxt "#69315"
-msgid "Position PGS and VobSub dialogue as one block after zoom. Original keeps authored placement. Picture-edge modes use the active picture; screen-edge modes use the screen. Active-area restriction takes precedence over screen modes and manual offsets. Custom positioning excludes top captions, large graphics, disc menus and stereo content. Existing confinement still applies to other bitmap overlays. Oversized dialogue keeps its size and layout and may extend beyond the active area."
+msgid "Keep the original PGS or VobSub dialogue position, move it to a picture or screen edge, or set an offset. Active-picture restriction limits movement. Custom placement skips top captions, menus and 3D video."
 msgstr ""
 
 #. Subtitle placement
@@ -27813,7 +27813,7 @@ msgstr ""
 #. Subtitle placement
 #: system/settings/settings.xml
 msgctxt "#69323"
-msgid "Move bitmap dialogue by a percentage of screen height. Positive values move it up; negative values move it down. Kodi subtitle shift actions use the same offset in Manual mode. Actions are temporary unless explicitly saved; GUI changes are saved. Active-area restriction takes precedence."
+msgid "Move bitmap dialogue up (+) or down (−) by a percentage of screen height. This slider saves the offset. Subtitle shift actions are temporary unless saved."
 msgstr ""
 
 #. Subtitle placement
@@ -27825,7 +27825,7 @@ msgstr ""
 #. Subtitle placement
 #: system/settings/settings.xml
 msgctxt "#69325"
-msgid "Refine the active picture aspect for picture-edge positioning. Auto uses the visible video rectangle, Dolby Vision picture metadata or detected black borders. An override can narrow this area but cannot enlarge it. This affects bitmap placement only, not detection, video output or text subtitles."
+msgid "Auto uses the visible picture for bitmap subtitle placement. Choose an aspect ratio to narrow the area used by picture-edge positions."
 msgstr ""
 
 #. Subtitle placement
@@ -27879,7 +27879,7 @@ msgstr ""
 #. Subtitle placement
 #: system/settings/settings.xml
 msgctxt "#69334"
-msgid "Minimum vertical padding as a percentage of screen height for positioned or confined bitmap dialogue. Picture-edge modes also preserve scaled authoring padding where possible. Original without active-area restriction is unchanged. Oversized blocks retain their layout instead of being shrunk or clipped."
+msgid "Set the minimum gap between bitmap dialogue and the chosen edge, as a percentage of screen height."
 msgstr ""
 
 #. Subtitle placement
@@ -27891,7 +27891,7 @@ msgstr ""
 #. Subtitle placement
 #: system/settings/settings.xml
 msgctxt "#69336"
-msgid "Detect black borders encoded in video files during Amlogic SDR, HDR and Dolby Vision playback. Enable 'Restrict subtitles to active picture' to use the detected area for subtitle confinement. Player-added bars need no scan. Known already-cropped square-pixel video skips the background file scan, detection cache and startup wait. Missing or non-square pixel-aspect information does not prove a crop. Blu-ray/BDMV and DVD playback, and MPEG-TS (.ts/.m2ts) files, are not scanned. The file scan samples several positions. When available, live detection follows aspect-ratio changes during playback without a startup wait. If detection is inconclusive, existing picture bounds are used. Manual Dolby Vision active-area overrides take priority. Extra file reads and software decoding can compete with playback. This setting enables subtitle detection only; 'Detect Dolby Vision active area' enables native L5 detection independently. Both detectors share the cache, startup pause, A53 core, HTTP exclusion and per-position timeout settings. Turning this off leaves enabled L5 detection and those shared settings active. Changes apply on next playback. An addon request to skip automatic detection applies to both."
+msgid "Detect black bars for subtitle placement. Enable “Restrict subtitles to active picture” to keep dialogue out of the bars. Dolby Vision L5 detection can be enabled separately. File scans skip discs and MPEG-TS. Applies next playback."
 msgstr ""
 
 #. SDR bitmap subtitle colour
@@ -27903,7 +27903,7 @@ msgstr ""
 #. SDR bitmap subtitle colour
 #: system/settings/settings.xml
 msgctxt "#69338"
-msgid "Adjust SDR PGS and VobSub brightness before output conversion. 100% preserves the original intensity; higher values brighten up to the SDR white limit. Transparency is unchanged. Applies on SDR and HDR output. HDR-source PGS and disc menu graphics are excluded, even when HDR correction is disabled."
+msgid "Adjust SDR PGS and VobSub subtitle brightness on any output. 100% keeps the original brightness."
 msgstr ""
 
 #. SDR bitmap subtitle colour
@@ -27915,7 +27915,7 @@ msgstr ""
 #. SDR bitmap subtitle colour
 #: system/settings/settings.xml
 msgctxt "#69340"
-msgid "Adjust SDR PGS and VobSub colour saturation. 100% preserves the original colours; 0% gives grayscale. Transparency is unchanged. Text subtitles, HDR-source PGS and disc menu graphics retain their existing colour handling."
+msgid "Adjust SDR PGS and VobSub subtitle colours. 100% keeps the original colours. 0% gives grayscale."
 msgstr ""
 
 #. Bitmap subtitle output colour
@@ -27927,7 +27927,7 @@ msgstr ""
 #. Bitmap subtitle output colour
 #: system/settings/settings.xml
 msgctxt "#69342"
-msgid "Set SDR PGS and VobSub output white after brightness and saturation adjustment. 100% keeps the existing output; lower values dim even highlights clipped by input brightness. Percentages are relative linear-light white, not nits. Existing GUI/HDR output scaling still applies. Transparency, text and disc menu colours are unchanged."
+msgid "Lower the final brightness of SDR PGS and VobSub subtitles, including bright whites. 100% keeps the normal output."
 msgstr ""
 
 #. Bitmap subtitle output colour
@@ -27939,7 +27939,7 @@ msgstr ""
 #. Bitmap subtitle output colour
 #: system/settings/settings.xml
 msgctxt "#69344"
-msgid "Limit the brightest channel after HDR PGS correction and tone mapping, preserving colour ratios. 100% keeps the existing output; lower values cap bright colours without dimming darker pixels. Percentages are relative linear-light white, not nits. Requires HDR correction and leaves correction-disabled PGS, transparency and disc menus unchanged."
+msgid "Limit bright highlights in colour-corrected HDR PGS subtitles. Lower values leave darker colours intact. 100% applies no limit."
 msgstr ""
 
 #. HDR10 output metadata limits
@@ -27951,7 +27951,7 @@ msgstr ""
 #. HDR10 output metadata limits
 #: system/settings/settings.xml
 msgctxt "#69346"
-msgid "Cap mastering-display maximum luminance and MaxCLL in outgoing static HDR10 metadata. Disabled by default. Covers native HDR10, the static part of HDR10+ and VS10 HDR10 output. Source metadata used for conversion, dynamic metadata, Dolby Vision, HLG and SDR signaling are unchanged. Changes take effect when metadata is next sent; restart playback after changing limits."
+msgid "Limit the peak brightness values sent to your display in static HDR10 metadata, including HDR10+ and VS10 HDR10 output. Restart playback after changing the limits."
 msgstr ""
 
 #. HDR10 output metadata limits
@@ -27963,7 +27963,7 @@ msgstr ""
 #. HDR10 output metadata limits
 #: system/settings/settings.xml
 msgctxt "#69348"
-msgid "Upper limit for the mastering-display maximum luminance sent to the display, in nits. 0 disables this cap. Values below the cap and unknown zero values are preserved. Minimum luminance, MaxFALL and colour primaries are unchanged. Does not set display brightness or change video pixels."
+msgid "Cap the mastering display’s reported peak brightness in nits. Set to 0 to disable this limit."
 msgstr ""
 
 #. HDR10 output metadata limits
@@ -27975,7 +27975,7 @@ msgstr ""
 #. HDR10 output metadata limits
 #: system/settings/settings.xml
 msgctxt "#69350"
-msgid "Upper limit for the maximum content light level (MaxCLL) sent to the display, in nits. 0 disables this cap. Lower and unknown zero values are preserved. The two caps are independent; saved limits are retained when the master switch is disabled."
+msgid "Cap the video’s reported peak brightness (MaxCLL) in nits. Set to 0 to disable this limit."
 msgstr ""
 
 #. Relative GUI colour controls
@@ -27987,7 +27987,7 @@ msgstr ""
 #. Relative GUI colour controls
 #: system/settings/settings.xml
 msgctxt "#69352"
-msgid "Adjust GUI artwork and labels on SDR or HDR10 output, including VS10 SDR/HDR10 output. 100% preserves the existing colours; 0% gives grayscale. HLG and Dolby Vision output use their separate GUI controls. Video, subtitle colour controls and disc menu graphics are unchanged."
+msgid "Adjust menu colours on SDR or HDR10 output. 100% gives the original colours, 0% gives greyscale."
 msgstr ""
 
 #. Relative GUI colour controls
@@ -27999,7 +27999,7 @@ msgstr ""
 #. Relative GUI colour controls
 #: system/settings/settings.xml
 msgctxt "#69354"
-msgid "Dim GUI artwork and labels during native HLG playback. 100% keeps the existing output. This is relative linear-light white, not nits; existing HDR GUI brightness and downstream processing still apply. Video, subtitles and disc menu graphics retain their existing colour handling. HLG converted by VS10 uses the controls for its output mode."
+msgid "Dim menus during native HLG playback. 100% keeps the original white level (relative brightness, not nits)."
 msgstr ""
 
 #. Relative GUI colour controls
@@ -28011,7 +28011,7 @@ msgstr ""
 #. Relative GUI colour controls
 #: system/settings/settings.xml
 msgctxt "#69356"
-msgid "Adjust GUI colour saturation during native HLG playback. 100% preserves the existing colours; 0% gives grayscale. Does not change video, subtitle colour settings or disc menu graphics. Applies when Kodi uses native HLG on an HLG-capable display."
+msgid "Adjust menu colours during native HLG playback. 100% gives the original colours, 0% gives greyscale."
 msgstr ""
 
 #. Relative GUI colour controls
@@ -28023,7 +28023,7 @@ msgstr ""
 #. Relative GUI colour controls
 #: system/settings/settings.xml
 msgctxt "#69358"
-msgid "Dim only GUI artwork and labels when Kodi selects Dolby Vision IPT output, including VS10 and Dolby Vision output in Kodi menus. 100% keeps the existing output. This is relative linear-light white, not nits. Existing DV OSD peak and processing still apply to the graphics plane; subtitle and disc menu colour handling is unchanged. VS10 HDR10/SDR output uses the SDR/HDR10 GUI control."
+msgid "Dim menus on Dolby Vision output, including VS10. 100% keeps the original white level (relative brightness, not nits)."
 msgstr ""
 
 #. Relative GUI colour controls
@@ -28035,7 +28035,7 @@ msgstr ""
 #. Relative GUI colour controls
 #: system/settings/settings.xml
 msgctxt "#69360"
-msgid "Adjust only GUI colour saturation when Kodi selects Dolby Vision IPT output. 100% preserves the existing colours; 0% gives grayscale. Applies to GUI labels and artwork before existing DV processing. Video, subtitle colour controls and disc menu graphics are unchanged."
+msgid "Adjust menu colours on Dolby Vision output, including VS10. 100% gives the original colours, 0% gives greyscale."
 msgstr ""
 
 msgctxt "#69361"
@@ -28043,7 +28043,7 @@ msgid "Preserve progressive MPEG-2 frames"
 msgstr ""
 
 msgctxt "#69362"
-msgid "Keep progressive pictures in interlaced MPEG-2 sequences when using Amlogic hardware decoding. Alternating repeat-field film cadence is handled by the decoder. Disabled by default. Takes effect when playback starts. Requires a compatible media module."
+msgid "Keep progressive frames intact in interlaced MPEG-2 video. Requires a compatible Amlogic decoder module. Applies from the next playback."
 msgstr ""
 
 msgctxt "#69363"
@@ -28093,7 +28093,7 @@ msgstr ""
 #. Active picture detection cache
 #: system/settings/settings.xml
 msgctxt "#69371"
-msgid "Shared by 'Detect active picture for subtitles' and 'Detect Dolby Vision active area', which are enabled separately. This setting still applies to enabled native Dolby Vision L5 detection when subtitle detection is off. Known already-cropped video bypasses detection and this cache. Save successful detections in the Kodi profile and reuse them without scanning when the validated file identity and selected video stream match. Validation uses file size together with timestamps or a strong HTTP ETag. HTTP sources without a usable modification timestamp or strong ETag are scanned again. Incompatible cache or detector versions are invalidated and their old cache files are removed automatically; results are recalculated on next playback. Enabled by default. This cache setting also controls explicit detector API jobs: validated results return without sampling, and successful new results are saved. Changes apply to new playback or API jobs."
+msgid "Reuse saved black-border and Dolby Vision L5 file scans when the file and video track still match. Unverifiable files are scanned again."
 msgstr ""
 
 #. Optional active picture detection CPU isolation
@@ -28105,7 +28105,7 @@ msgstr ""
 #. Optional active picture detection CPU isolation
 #: system/settings/settings.xml
 msgctxt "#69373"
-msgid "Shared by 'Detect active picture for subtitles' and 'Detect Dolby Vision active area', which are enabled separately. This setting still applies to enabled native Dolby Vision L5 detection when subtitle detection is off. Run detection and its decoder threads on the two slower Cortex-A53 cores (CPUs 0-1) of the S922X, keeping this work off the faster Cortex-A73 cores used for video output and presentation. Detection takes longer. Current playback CPU masks are checked; detection is skipped if no separate CPU can be used. Cached results still avoid scanning. Disabled by default. Changes apply to the next scan. This setting also applies to explicit detector API jobs."
+msgid "Use the slower A53 cores for border and Dolby Vision L5 file scans to leave faster cores free for playback. Scans take longer and are skipped if no separate core is available."
 msgstr ""
 
 #. Optional startup wait for black-border detection
@@ -28117,7 +28117,7 @@ msgstr ""
 #. Optional startup wait for black-border detection
 #: system/settings/settings.xml
 msgctxt "#69375"
-msgid "Shared by 'Detect active picture for subtitles' and 'Detect Dolby Vision active area', which are enabled separately. This setting still applies to enabled native Dolby Vision L5 detection when subtitle detection is off. Known already-cropped video starts without a detector pause or progress notification. After startup seeks finish and the current video is synchronized, pause until enabled detection finishes, fails or is skipped. A still frame and detection progress may be visible while waiting. Cached results are reused after file validation and avoid a new scan. While detection holds playback, scanning runs without the playback I/O throttle. A pause you request is preserved. Enabled by default. Changes apply on next playback. This pause applies to automatic playback detection only; explicit detector API jobs never pause playback. Live hardware subtitle detection skips this pause when no file scan is needed. A Dolby Vision Level 5 scan can still pause playback while live FEL subtitle detection is active. A file scan started after the decoder rejects the stream runs in the background."
+msgid "Pause at startup while Kodi scans the file for black bars for subtitle placement or Dolby Vision L5. Cached results and live detection can avoid the wait. Applies next playback."
 msgstr ""
 
 #. Optional startup wait for black-border detection
@@ -28151,7 +28151,7 @@ msgstr ""
 
 #. Shared border detector controls
 msgctxt "#69381"
-msgid "Shared by subtitle black-border and native Dolby Vision L5 detection, which are enabled separately. Skip automatic detection and its cache, startup pause and progress for resolved HTTP(S) inputs, including supported HTTP wrappers. Local files and mapped NFS/SMB paths remain eligible. Geometry-generated padding, manual overrides and authored metadata are unaffected. Off by default. Changes apply to the next playback. Explicit detector API jobs respect this exclusion unless they request an HTTP override."
+msgid "Skip automatic subtitle border and Dolby Vision L5 detection on HTTP and HTTPS streams. Local files and SMB or NFS shares remain eligible. Applies next playback."
 msgstr ""
 
 #. Shared border detector controls
@@ -28161,7 +28161,7 @@ msgstr ""
 
 #. Shared border detector controls
 msgctxt "#69383"
-msgid "Shared by subtitle black-border detection, native Dolby Vision L5 detection and explicit detector API jobs. Maximum time in seconds for each requested scan position, including seeking, reads, decoding and all retries. Admission and deliberate pre-position cache waiting are excluded. A timeout abandons the whole scan without caching partial results; automatic detection stays stopped for this playback. Default: 5 seconds; range: 1–60. Blocking storage, network backends or decoder calls may return after the deadline; detection then stops without visiting further positions. Opening and initial stream probing are separate and are not bounded by this per-position limit. Changes apply to new playback or API requests."
+msgid "Stop a black-border or Dolby Vision L5 file scan if one sample takes longer than this many seconds. Partial results are discarded."
 msgstr ""
 
 #. Subtitle settings group for black-border detection and shared active-picture controls
@@ -28179,7 +28179,7 @@ msgstr ""
 #. Help text of setting "Interface -> Skin -> Delay background images during motion"
 #: system/settings/settings.xml
 msgctxt "#69386"
-msgid "Waits until lists stop scrolling and interface animations finish before showing a newly selected full-screen background image (such as fanart), at most three seconds. Enable this if loading such a large image during motion drops frames, for example with a 4K display."
+msgid "Delay new full-screen backgrounds until scrolling and animations stop, for up to three seconds. This can make scrolling smoother."
 msgstr ""
 
 #. Label of setting "Interface -> Skin -> Delay background images during motion -> Also delay images of the selected item"
@@ -28191,7 +28191,7 @@ msgstr ""
 #. Help text of setting "Interface -> Skin -> Delay background images during motion -> Also delay images of the selected item"
 #: system/settings/settings.xml
 msgctxt "#69388"
-msgid "Also waits for motion to stop before showing a large image that follows the selected item outside the list, such as the poster in an info panel. Images in the list itself are not delayed. Requires delaying background images during motion."
+msgid "Also delay large images outside the list, such as the selected film’s poster. List images appear as usual."
 msgstr ""
 
 #. Subtitle live black-border detection setting
@@ -28203,7 +28203,7 @@ msgstr ""
 #. Help for subtitle live black-border detection
 #: system/settings/settings.xml
 msgctxt "#69390"
-msgid "Follow changes in the active picture during playback on supported Amlogic decoders. Live detection supports eligible progressive HEVC streams and progressive 8-bit SDR H.264 streams up to 1080p. SDR must use limited range or leave the range unspecified, with BT.709 or unspecified color tags. Eligible files use a background scan when live detection is unavailable. Turn this off to prefer file-wide estimates and the startup wait setting. Applies when opening a video."
+msgid "Follow changing black bars live on supported progressive HEVC or 8-bit SDR H.264 video (up to 1080p for H.264). Otherwise Kodi scans eligible files. Turn off to use a file-wide estimate. Applies from the next playback."
 msgstr ""
 
 #. Label of the live black-border scan resolution setting
@@ -28215,5 +28215,5 @@ msgstr ""
 #. Help for the live black-border scan resolution setting
 #: system/settings/settings.xml
 msgctxt "#69392"
-msgid "Use the 1080p scan for eligible 4K video at known frame rates up to 30 fps. Faster video and video with an unknown or explicitly variable frame rate use the 540p scan. Affects live subtitle positioning and Dolby Vision L5. Applies when opening a video."
+msgid "Scan eligible 4K video at 1080p for finer live borders used by subtitles and Dolby Vision L5. Requires a known, fixed frame rate of 30 fps or less. Other rates use 540p. Applies next playback."
 msgstr ""
