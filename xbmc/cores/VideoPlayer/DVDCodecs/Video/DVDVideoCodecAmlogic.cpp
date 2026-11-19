@@ -845,6 +845,15 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
 
   m_has_keyframe = false;
 
+  // Signal plain HDR10 (including a DV base layer played without DV) while the stream loads,
+  // so the display finishes its HDR switch behind black instead of over the first frames.
+  if (m_hints.colorTransferCharacteristic == AVCOL_TRC_SMPTE2084 &&
+      m_hints.colorPrimaries == AVCOL_PRI_BT2020 &&
+      (m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
+       m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION) &&
+      aml_hdr10_prearm_plain_route(m_hints.hdrType))
+    m_hdrPrearm = aml_hdr10_prearm();
+
   CLog::Log(LOGINFO, "{}: Opened Amlogic Codec", __MODULE_NAME__);
   return true;
 FAIL:
@@ -855,6 +864,13 @@ FAIL:
 void CDVDVideoCodecAmlogic::Close(void)
 {
   CLog::Log(LOGINFO, "{}::{}", __MODULE_NAME__, __FUNCTION__);
+
+  // A pre-arm that never saw video returns the output to SDR; a released one ignores this.
+  if (m_hdrPrearm)
+  {
+    aml_hdr10_prearm_cancel(m_hdrPrearm);
+    m_hdrPrearm = 0;
+  }
 
   auto restore = [this] {
     // Keep the original order under admission, including synchronous settings

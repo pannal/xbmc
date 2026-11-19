@@ -15,6 +15,7 @@ extern "C" {
 #include <libavutil/pixfmt.h>
 }
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -370,6 +371,17 @@ void aml_dv_send_hdr10_data();
 unsigned int aml_gui_dv_output_mode();
 bool aml_hdr10_metadata_limits_supported();
 void aml_apply_hdr10_metadata_limits();
+bool aml_hdr10_seamless_transitions_supported();
+void aml_apply_hdr10_seamless_transitions();
+// Signal HDR10 before the first frame. The kernel keeps the screen black (and HDMI audio muted)
+// for its legacy HDR entry hold, hdr_mute_frame frames, after the HDR10 video starts.
+// Whether the stream's output stays plain HDR10, never DV, VS10 or HDR10+ to DV conversion.
+bool aml_hdr10_prearm_plain_route(StreamHdrType hdrType);
+// Returns an ownership token (0: not armed) for aml_hdr10_prearm_cancel(token).
+uint64_t aml_hdr10_prearm();
+void aml_hdr10_prearm_cancel(uint64_t token);
+// Unconditional cancel, e.g. when the setting is turned off.
+void aml_hdr10_prearm_cancel();
 void aml_dv_send_el_type();
 void aml_dv_send_profile(int dvprofile);
 void set_vsvdb_payload_ver(enum DV_TYPE dv_type, int max_lum_nits_value, int source_max_pq,
