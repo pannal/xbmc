@@ -845,6 +845,12 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
 
   m_has_keyframe = false;
 
+  if (!m_dvCodecPending)
+  {
+    aml_dv_codec_pending(true);
+    m_dvCodecPending = true;
+  }
+
   CLog::Log(LOGINFO, "{}: Opened Amlogic Codec", __MODULE_NAME__);
   return true;
 FAIL:
@@ -855,6 +861,12 @@ FAIL:
 void CDVDVideoCodecAmlogic::Close(void)
 {
   CLog::Log(LOGINFO, "{}::{}", __MODULE_NAME__, __FUNCTION__);
+
+  if (m_dvCodecPending)
+  {
+    aml_dv_codec_pending(false);
+    m_dvCodecPending = false;
+  }
 
   auto restore = [this] {
     // Keep the original order under admission, including synchronous settings
@@ -1058,6 +1070,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       CAMLCodec::SetCaptureSource(m_Codec);
 
       m_opened = true;
+      if (m_dvCodecPending)
+      {
+        aml_dv_codec_pending(false);
+        m_dvCodecPending = false;
+      }
       set_osd_max = true;
     }
   }
