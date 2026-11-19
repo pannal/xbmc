@@ -90,6 +90,7 @@ public:
   CAMLSession session;
   std::atomic<int> releases{0}, drops{0}, polls{0}, geometry{0};
   std::atomic<int> pollPacing{1};
+  std::shared_future<void> releasePoll;
   std::atomic<int> qbufResult{0};
   std::shared_ptr<const void> lifetime;
   CAMLCodec() {auto r=session.Fence(); assert(session.BeginMutation(r)); assert(session.Complete(r,true));}
@@ -116,7 +117,10 @@ public:
   void RefreshDecoderRate(const CAMLSession::Permit&) {}
   int PollFrame(const CAMLSession::Permit& permit) {
     assert(!permit.IsControl()&&!permit.IsRetirement()&&session.Matches(permit,session.Epoch()));
-    ++polls; return pollPacing;
+    ++polls;
+    if (releasePoll.valid())
+      releasePoll.wait();
+    return pollPacing;
   }
 };
 '''
@@ -131,6 +135,7 @@ struct VideoPicture {
 };
 enum EFIELDSYNC {FS_NONE,FS_TOP,FS_BOT};
 namespace OVERLAY {struct CRenderer {using OverlayBatch=std::vector<int>;};}
+bool IsAMLTimedText(int item) {return item>=0;}
 struct CDVDClock {
   std::chrono::steady_clock::time_point start=std::chrono::steady_clock::now();
   double GetClock() const {return std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();}
@@ -238,6 +243,42 @@ void IndependentProgress() {
   assert(session.Stop());
   assert(codec->AcquirePresentation(codec->GetOperationEpoch()));
   auto frames=session.queue->TakeFrames(); frames.clear(); assert(buffers==0);
+}
+void OverlayDuringNativePoll() {
+  auto codec=std::make_shared<CAMLCodec>(); CDVDClock clock;
+  std::promise<void> release;
+  codec->releasePoll=release.get_future().share();
+  CAMLPresenterSession session(codec,clock,4,std::make_shared<int>(1));
+  session.Authorize();
+  session.SetTiming(24,24,0); session.queue->Show(true);
+  Put(session,codec,clock,1,17);
+  Await([&] {return bool(session.queue->PendingControl().frame);});
+  double submittedPts;
+  assert(!session.queue->ObserveForGui(true,submittedPts).payload);
+  Acknowledge(session);
+  Await([&] {return codec->polls>0;});
+  const auto observed=session.queue->ObserveForGui(true,submittedPts);
+  auto content=std::static_pointer_cast<const CAMLPresenterSession::OverlayObservation>(observed.payload);
+  assert(content && content->overlays.front()==17);
+  assert(session.queue->Stats().queued==1);
+  const double firstPts=submittedPts;
+  auto guiMenu=[&](bool playing) {
+    const auto gui=session.queue->ObserveForGui(playing,submittedPts);
+    assert(submittedPts==firstPts);
+    return std::static_pointer_cast<const CAMLPresenterSession::OverlayObservation>(
+        gui.payload)->overlays.front();
+  };
+  Put(session,codec,clock,3,19,CAMLPresenter::Method::SINGLE,-250000);
+  assert(guiMenu(true)==17); // The next refresh repeats the current picture.
+  Put(session,codec,clock,2,18,CAMLPresenter::Method::SINGLE,-30000);
+  assert(guiMenu(true)==18 && guiMenu(false)==17);
+  assert(!session.queue->Observe().payload); // Still inside the first poll.
+  session.queue->ResetClock();
+  assert(guiMenu(true)==17);
+  session.queue->Discard();
+  assert(guiMenu(true)==17);
+  release.set_value();
+  assert(session.queue->WaitIdle(1s));
 }
 void ControlsAndEpochs() {
   auto codec=std::make_shared<CAMLCodec>(); CDVDClock clock;
@@ -370,7 +411,7 @@ void UnapprovedStartup() {
 void RouteProgress();
 int main(int argc,char**) {
   PLAYBACK_DIAGNOSTICS::SetEnabled(argc>1);
-  AdapterPacing(); UnapprovedStartup(); RouteProgress(); IndependentProgress(); ControlsAndEpochs(); HeldBobDrain(); PendingHandoffAndDrain(); CancelAfterSubmit(); LateFramesAndNativeFence();
+  AdapterPacing(); UnapprovedStartup(); RouteProgress(); IndependentProgress(); OverlayDuringNativePoll(); ControlsAndEpochs(); HeldBobDrain(); PendingHandoffAndDrain(); CancelAfterSubmit(); LateFramesAndNativeFence();
   std::cout<<"production presenter scenarios passed\n";
 }
 '''

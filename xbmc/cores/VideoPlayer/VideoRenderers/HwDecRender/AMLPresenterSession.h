@@ -10,6 +10,13 @@
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
 #include "cores/VideoPlayer/VideoRenderers/OverlayRenderer.h"
 
+inline bool IsAMLTimedText(const OVERLAY::CRenderer::SElement& item)
+{
+  return item.overlay_dvd && !item.overlay_dvd->IsDiscMenuOverlay() &&
+         (item.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_SSA) ||
+          item.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_TEXT));
+}
+
 // Original-session adapter. Destruction joins before releasing the clock owner;
 // codecs keep ProcessInfo alive even if a deferred pool return outlives playback.
 class CAMLPresenterSession
@@ -33,6 +40,10 @@ public:
       pts = source.pts;
       epoch = buffer->OperationEpoch();
       method = overlays->method;
+      if (!overlays->overlays.empty())
+        overlayContent = std::all_of(overlays->overlays.begin(), overlays->overlays.end(), IsAMLTimedText)
+                             ? CAMLPresenter::OverlayContent::TEXT
+                             : CAMLPresenter::OverlayContent::OTHER;
       observation = std::move(overlays);
     }
     Submission Submit(int& previousPts) override
@@ -54,7 +65,9 @@ public:
       auto permit = buffer->AcquirePresentation();
       if (!permit)
         return false;
+      pollingSubmitted = buffer->WasSubmitted();
       m_nativePaced = buffer->Poll(permit);
+      pollingSubmitted = false;
       return true;
     }
     bool PollPaces() const override { return m_nativePaced; }

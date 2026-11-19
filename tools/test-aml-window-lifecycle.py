@@ -375,7 +375,7 @@ struct CAMLPresenterSession{
   struct OverlayObservation{int field,method;std::vector<int> overlays;AML_FRAME_L5::Bounds liveL5;};
   struct Queue{
     struct Observation{std::shared_ptr<void> payload;uint64_t epoch;double pts;};
-    Observation Observe(){assert(false);return {};}
+    Observation ObserveForGui(bool,double&){assert(false);return {};}
     struct Control{bool frame;};Control PendingControl(){assert(false);return {};}
   };
   std::shared_ptr<Queue> queue;
@@ -385,6 +385,8 @@ public:
   @APPLIED_RESOLUTION@
   std::optional<AppliedResolution> m_appliedResolution;
   std::shared_ptr<CAMLPresenterSession> m_amlPresenter;
+  struct AppPlayer{int GetPlaySpeed(){return 1;} bool IsCaching(){return false;}};
+  AppPlayer* m_appPlayer=nullptr;
   void LogAMLPresenter(const char*,bool){assert(false);}void StopAMLPresenter(bool){assert(false);}
   bool UpdateAMLPresenter(){assert(false);return false;}
   enum EPRESENTMETHOD{SINGLE};struct SPresent{double pts;int field;EPRESENTMETHOD method;AML_FRAME_L5::Bounds liveL5;};

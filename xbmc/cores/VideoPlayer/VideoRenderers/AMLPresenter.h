@@ -50,6 +50,12 @@ public:
     double latency{0};
     bool sync{false};
   };
+  enum class OverlayContent
+  {
+    EMPTY,
+    TEXT,
+    OTHER
+  };
   struct Frame
   {
     double pts{0};
@@ -58,6 +64,9 @@ public:
     bool force{false};
     bool presented{false};
     std::atomic<bool> selected{false};
+    // A submitted picture may supply the GUI during an admitted native pacing wait.
+    std::atomic<bool> pollingSubmitted{false};
+    OverlayContent overlayContent{OverlayContent::EMPTY};
     std::shared_ptr<const void> observation; // CPU only; never holds the video lease
     virtual ~Frame() = default;
     // No permit is retained on return. SUBMITTED includes a failed QBUF attempt;
@@ -82,6 +91,7 @@ public:
     std::shared_ptr<const void> payload;
     double pts{0};
     uint64_t epoch{0};
+    OverlayContent overlayContent{OverlayContent::EMPTY};
   };
   struct ControlRequest
   {
@@ -242,6 +252,38 @@ public:
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_observation;
   }
+  Observation ObserveForGui(bool playing, double& submittedPts) const
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    submittedPts = m_observation.pts;
+    if (!m_current || !m_current->pollingSubmitted || m_pending.frame ||
+        m_control != m_applied || m_current->epoch != m_appliedEpoch ||
+        m_current->overlayContent == OverlayContent::OTHER ||
+        m_observation.overlayContent == OverlayContent::OTHER)
+      return m_observation;
+
+    const Frame* gui = m_current.get();
+    // GUI drawn in this refresh will be scanned with the next video tick.
+    // Use a real queued composition only if that tick can select its picture.
+    if (playing && m_show && !m_forceNext && m_guiTimingGeneration == m_timingGeneration &&
+        m_guiRefreshPeriod > 0 && !gui->force && gui->method == Method::SINGLE && !m_queue.empty())
+    {
+      const auto nextFrame = std::min_element(
+          m_queue.begin(), m_queue.end(), [](const auto& a, const auto& b) { return a->pts < b->pts; });
+      const Frame& next = **nextFrame;
+      if (next.epoch == gui->epoch && next.method == Method::SINGLE && !next.force &&
+          next.overlayContent != OverlayContent::OTHER && next.pts > gui->pts &&
+          (gui->overlayContent == OverlayContent::TEXT || next.overlayContent == OverlayContent::TEXT) &&
+          !ShouldSkip(m_nextRefreshPts - next.pts, m_queue.size()) &&
+          (m_nextRefreshPts >= next.pts || CanCombine(m_nextRefreshPts, next.pts, m_guiRefreshPeriod, bool(m_past))))
+        gui = &next;
+    }
+    if (gui == m_current.get() && gui->overlayContent == OverlayContent::EMPTY &&
+        m_observation.overlayContent == OverlayContent::EMPTY)
+      return m_observation;
+    submittedPts = m_current->pts;
+    return {gui->observation, gui->pts, gui->epoch, gui->overlayContent};
+  }
   size_t Outstanding() const
   {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -390,6 +432,14 @@ private:
       m_queue.pop_front();
     }
   }
+  static bool ShouldSkip(double lateness, size_t queued)
+  {
+    return lateness > 62000 && queued > 2;
+  }
+  static bool CanCombine(double render, double next, double duration, bool combined)
+  {
+    return !combined && render > next - duration;
+  }
   void Select(const Timing& timing) // worker, mutex held
   {
     if (m_queue.empty() || (!m_show && !m_forceNext && !m_queue.front()->force))
@@ -425,7 +475,7 @@ private:
       const auto queued = m_queue.size();
       const auto epoch = m_queue.front()->epoch;
       const int skipped = m_skipped;
-      while (diff > 62000 && m_queue.size() > 2)
+      while (ShouldSkip(diff, m_queue.size()))
       {
         m_retired.push_back(std::move(m_queue.front()));
         m_queue.pop_front();
@@ -449,7 +499,7 @@ private:
       m_queue.pop_front();
       m_renderPts = m_current->pts - timing.latency;
     }
-    else if (!combined && render > next - duration)
+    else if (CanCombine(render, next, duration, combined))
     {
       m_late = 0;
       m_past = std::move(m_current);
@@ -492,6 +542,7 @@ private:
       std::chrono::steady_clock::time_point nextTick{}, previousIteration{};
       double scheduledRefresh = 0;
       bool firstIteration = true;
+      double previousClock = DVD_NOPTS_VALUE;
       while (started && !m_stop)
       {
         const auto iterationStart = std::chrono::steady_clock::now();
@@ -570,6 +621,16 @@ private:
               m_changed.notify_all();
             }
           }
+          // Project the same media clock, latency and phase used by Select
+          // through one output refresh, including refreshes that repeat video.
+          m_guiTimingGeneration = timingGeneration;
+          m_guiRefreshPeriod = timing.speed > 0 && timing.clock > previousClock
+                                   ? static_cast<double>(DVD_TIME_BASE) / timing.refresh
+                                   : 0;
+          previousClock = timing.clock;
+          m_nextRefreshPts = timing.clock + timing.latency + m_guiRefreshPeriod * timing.speed;
+          if (timing.sync)
+            m_nextRefreshPts += m_guiRefreshPeriod / 2 - m_syncOffset;
           frame = m_current;
           retired.swap(m_retired);
         }
@@ -654,7 +715,7 @@ private:
                 break;
               --passes;
               ++m_progress.polls;
-              m_observation = {frame->observation, frame->pts, frame->epoch};
+              m_observation = {frame->observation, frame->pts, frame->epoch, frame->overlayContent};
               advance = passes == 0;
               if (advance && !frame->presented)
               {
@@ -745,6 +806,8 @@ private:
   std::shared_ptr<Frame> m_current, m_past;
   std::vector<std::shared_ptr<Frame>> m_retired;
   Observation m_observation;
+  uint64_t m_guiTimingGeneration{0};
+  double m_guiRefreshPeriod{0}, m_nextRefreshPts{0};
   ControlRequest m_pending;
   uint64_t m_control{1}, m_applied{0}, m_appliedEpoch{0};
   double m_error{0}, m_syncOffset{0}, m_renderPts{DVD_NOPTS_VALUE};

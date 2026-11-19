@@ -130,6 +130,43 @@ void bounded_events()
  for(const auto& e:events)assert(e.count==4&&e.queued==6&&e.render-e.pts==1000000&&e.serial==e.epoch);
  assert(q.TakeSkipEpisodes().empty());q.TakeFrames();
 }
+void gui_refresh_selection()
+{
+ using Content=CAMLPresenter::OverlayContent;
+ CAMLPresenter q(4,{});
+ auto current=std::make_shared<Frame>(), next=std::make_shared<Frame>();
+ current->epoch=next->epoch=1;
+ current->pts=1000000;next->pts=1041667; // 24 fps content
+ q.m_current=current;q.m_queue.push_back(next);
+ q.m_observation={nullptr,958333,1,Content::TEXT};
+ current->overlayContent=next->overlayContent=Content::TEXT;
+ q.m_applied=q.m_control;q.m_appliedEpoch=1;q.m_show=true;
+ q.m_guiRefreshPeriod=1000000.0/60;
+ double submitted;
+ auto gui=[&]{return q.ObserveForGui(true,submitted).pts;};
+ assert(gui()==958333); // Poll has no admission.
+ current->pollingSubmitted=true;
+ q.m_nextRefreshPts=current->pts+q.m_guiRefreshPeriod;
+ assert(gui()==current->pts && submitted==current->pts);
+ q.m_nextRefreshPts+=q.m_guiRefreshPeriod;
+ assert(gui()==next->pts && submitted==current->pts);
+ q.m_past=std::make_shared<Frame>(); // A combined pass cannot combine again.
+ assert(gui()==current->pts);
+ q.m_past.reset();
+ next->overlayContent=Content::OTHER;
+ assert(gui()==current->pts);
+ next->overlayContent=Content::EMPTY;
+ assert(gui()==next->pts); // End of a timed cue.
+ current->overlayContent=Content::EMPTY;
+ q.m_observation.overlayContent=Content::OTHER;
+ assert(gui()==958333); // Keep the completed menu until the native pass completes.
+ q.m_observation.overlayContent=Content::EMPTY;
+ assert(gui()==958333); // No timed overlay involved.
+ next->overlayContent=Content::TEXT;
+ assert(gui()==next->pts); // Start of a cue in a previously empty batch.
+ next->epoch=2;
+ assert(gui()==958333);
+}
 int main(){
   PLAYBACK_DIAGNOSTICS::SetEnabled(true);
  steady(24000.0/1001,false,CAMLPresenter::Method::SINGLE);
@@ -141,6 +178,7 @@ int main(){
  steady(60,false,CAMLPresenter::Method::SINGLE,true);
  steady(24000.0/1001,true,CAMLPresenter::Method::SINGLE,false,true);
  bounded_events();
+ gui_refresh_selection();
  std::cout<<"PASS cadence/reset/refresh/stall recovery and bounded skip events\n";
 }
 '''

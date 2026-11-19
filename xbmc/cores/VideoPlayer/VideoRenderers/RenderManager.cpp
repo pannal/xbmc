@@ -539,7 +539,9 @@ void CRenderManager::FrameMove()
     }
     else if (UpdateAMLPresenter())
     {
-      const auto observed = m_amlPresenter->queue->Observe();
+      double submittedPts;
+      const auto observed = m_amlPresenter->queue->ObserveForGui(
+          m_appPlayer->GetPlaySpeed() == 1 && !m_appPlayer->IsCaching(), submittedPts);
       if (observed.payload)
       {
         static_cast<CRendererAML*>(m_pRenderer)->SetPresentationEpoch(observed.epoch);
@@ -550,7 +552,7 @@ void CRenderManager::FrameMove()
         m_frameSelection = std::make_shared<const FrameSelection>(FrameSelection{
             -1, -1, info, content->overlays});
         m_presentstarted = true;
-        m_presentpts = observed.pts;
+        m_presentpts = submittedPts;
         m_presentTimer.Set(1000ms);
       }
     }
@@ -1325,7 +1327,14 @@ void CRenderManager::UpdateActivePicture()
     m_pRenderer->UpdateVideoRect();
     CRect src, dst, view;
     m_pRenderer->GetVideoRect(src, dst, view);
-    picture.bounds = CalcPictureActiveArea(src, dst, view, m_frameSelection->present.pts, true);
+    // The public active picture follows submitted video. Its GUI overlay may
+    // already be prepared for the next refresh of independent playback.
+    double picturePts = m_frameSelection->present.pts;
+#if defined(HAS_LIBAMCODEC)
+    if (m_amlPresenter)
+      picturePts = m_presentpts;
+#endif
+    picture.bounds = CalcPictureActiveArea(src, dst, view, picturePts, true);
 
     // Use a fresh reference transform rather than the current window/group's
     // final matrix. Include overscan, GUI insets, skin zoom and pixel ratio.
