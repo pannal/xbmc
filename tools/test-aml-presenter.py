@@ -22,7 +22,8 @@ def main():
         'void CAMLVideoBuffer::Commit(', 'bool CAMLVideoBuffer::Submit(', 'void CAMLVideoBuffer::ApplyGeometry(',
         'bool CAMLVideoBuffer::Poll(', 'bool CAMLVideoBuffer::Drop()'])
     code = PRELUDE + extract(header, 'class CAMLVideoBuffer :') + ';\n' + methods
-    code += PICTURE + extract(adapter, 'class CAMLPresenterSession\n') + ';\n'
+    code += PICTURE + extract(adapter, 'inline bool IsAMLTimedTextBatch(') + '\n'
+    code += extract(adapter, 'class CAMLPresenterSession\n') + ';\n'
     rm = (base / 'VideoRenderers/RenderManager.cpp').read_text()
     rh = (base / 'VideoRenderers/RenderManager.h').read_text()
     reservation = extract(rh, 'class BufferReservation') + ';'

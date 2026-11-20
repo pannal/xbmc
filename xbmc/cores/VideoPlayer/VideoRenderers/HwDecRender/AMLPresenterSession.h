@@ -17,6 +17,11 @@ inline bool IsAMLTimedText(const OVERLAY::CRenderer::SElement& item)
           item.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_TEXT));
 }
 
+inline bool IsAMLTimedTextBatch(const OVERLAY::CRenderer::OverlayBatch& overlays)
+{
+  return !overlays.empty() && std::all_of(overlays.begin(), overlays.end(), IsAMLTimedText);
+}
+
 // Original-session adapter. Destruction joins before releasing the clock owner;
 // codecs keep ProcessInfo alive even if a deferred pool return outlives playback.
 class CAMLPresenterSession
@@ -41,7 +46,7 @@ public:
       epoch = buffer->OperationEpoch();
       method = overlays->method;
       if (!overlays->overlays.empty())
-        overlayContent = std::all_of(overlays->overlays.begin(), overlays->overlays.end(), IsAMLTimedText)
+        overlayContent = IsAMLTimedTextBatch(overlays->overlays)
                              ? CAMLPresenter::OverlayContent::TEXT
                              : CAMLPresenter::OverlayContent::OTHER;
       observation = std::move(overlays);

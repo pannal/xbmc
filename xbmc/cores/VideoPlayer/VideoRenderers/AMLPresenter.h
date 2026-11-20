@@ -284,6 +284,22 @@ public:
     submittedPts = m_current->pts;
     return {gui->observation, gui->pts, gui->epoch, gui->overlayContent};
   }
+  static double TextPrerollEnd(double pts, double refresh, double fps)
+  {
+    const double picture = fps > 0 ? DVD_TIME_BASE / fps + DVD_MSEC_TO_TIME(1) : 0;
+    return pts + std::max(4 * DVD_TIME_BASE / refresh, picture);
+  }
+
+  bool HasUpcomingText(double pts, double until) const
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!m_show || m_pending.frame || m_control != m_applied)
+      return false;
+    return std::any_of(m_queue.begin(), m_queue.end(), [&](const auto& frame) {
+      return frame->epoch == m_appliedEpoch && frame->overlayContent == OverlayContent::TEXT &&
+             frame->pts > pts && frame->pts <= until;
+    });
+  }
   size_t Outstanding() const
   {
     std::lock_guard<std::mutex> lock(m_mutex);

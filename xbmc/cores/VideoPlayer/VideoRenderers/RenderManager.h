@@ -285,6 +285,9 @@ protected:
     EFIELDSYNC     presentfield;
     EPRESENTMETHOD presentmethod;
     AML_FRAME_L5::Bounds liveL5;
+#if defined(HAS_LIBAMCODEC)
+    bool timedText{false};
+#endif
   } m_Queue[NUM_BUFFERS]{};
 
   // Selection identity and list membership are stable until the next FrameMove
@@ -377,6 +380,7 @@ private:
   bool m_amlIndependentPresenter{false};
   std::shared_ptr<CAMLPresenterSession> m_amlPresenter;
   bool UpdateAMLPresenter();
+  bool HasUpcomingAMLText(double pts);
   void StopAMLPresenter(bool migrate);
   void RestoreAMLPresenter(uint64_t lifecycle, uint64_t flush,
                            const std::shared_ptr<CAMLCodec>& codec, uint64_t epoch);

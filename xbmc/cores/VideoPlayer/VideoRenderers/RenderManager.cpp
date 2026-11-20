@@ -660,8 +660,41 @@ void CRenderManager::UpdateGuiPresentationState(bool firstFrame)
     aml_dv_set_subtitles(subsSignalMode == 1 && m_subtitleEnabled.load() &&
                          m_appPlayer->GetSubtitleCount() > 0);
 
-  m_playerPort->UpdateGuiRender(IsGuiLayer() || firstFrame);
+  bool drawGui = firstFrame || IsGuiLayer();
+#if defined(HAS_LIBAMCODEC)
+  if (!drawGui)
+    drawGui = HasUpcomingAMLText(frame->present.pts);
+#endif
+  m_playerPort->UpdateGuiRender(drawGui);
 }
+
+#if defined(HAS_LIBAMCODEC)
+bool CRenderManager::HasUpcomingAMLText(double pts)
+{
+  if (!dynamic_cast<CRendererAML*>(m_pRenderer) || pts == DVD_NOPTS_VALUE ||
+      m_appPlayer->GetPlaySpeed() != 1 || m_appPlayer->IsCaching())
+    return false;
+
+  const double refresh = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
+  if (refresh <= 0)
+    return false;
+
+  // Fullscreen GUI processing consumes the redraw request on the next iteration.
+  // Allow that iteration and three scanout buffers to run before the first glyph.
+  // When the output repeats video frames, the selected PTS advances in source
+  // frame steps. Include the next such step, allowing for millisecond mux timing.
+  const double fps = static_cast<double>(m_dataCacheCore.GetVideoFps());
+  const double until = CAMLPresenter::TextPrerollEnd(pts, refresh, fps);
+  if (m_amlPresenter)
+    return m_amlPresenter->queue->HasUpcomingText(pts, until);
+
+  std::unique_lock<CCriticalSection> lock(m_presentlock);
+  return m_showVideo && std::any_of(m_queued.begin(), m_queued.end(), [&](int slot) {
+    const auto& frame = m_Queue[slot];
+    return frame.timedText && frame.pts > pts && frame.pts <= until;
+  });
+}
+#endif
 
 void CRenderManager::PreInitOnMain()
 {
@@ -1860,6 +1893,9 @@ bool CRenderManager::AddVideoPicture(BufferReservation& reservation,
       return false;
 
     m_pRenderer->AddVideoPicture(picture, index);
+#if defined(HAS_LIBAMCODEC)
+    m_Queue[index].timedText = IsAMLTimedTextBatch(overlays);
+#endif
     m_overlays.SetOverlays(std::move(overlays), index);
   }
 
@@ -2558,7 +2594,8 @@ void CRenderManager::StopAMLPresenter(bool migrate)
       m_pRenderer->AddVideoPicture(frame->picture, index);
       m_overlays.SetOverlays(overlays->overlays, index);
       m_Queue[index] = {frame->pts, overlays->field, static_cast<EPRESENTMETHOD>(frame->method),
-                        frame->picture.amlFrameL5};
+                        frame->picture.amlFrameL5,
+                        frame->overlayContent == CAMLPresenter::OverlayContent::TEXT};
       if (!m_presentstarted)
       {
         m_presentsource = index;

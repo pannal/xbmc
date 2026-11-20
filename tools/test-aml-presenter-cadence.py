@@ -130,6 +130,42 @@ void bounded_events()
  for(const auto& e:events)assert(e.count==4&&e.queued==6&&e.render-e.pts==1000000&&e.serial==e.epoch);
  assert(q.TakeSkipEpisodes().empty());q.TakeFrames();
 }
+void queued_text_wakes_gui_before_onset()
+{
+ using Content = CAMLPresenter::OverlayContent;
+ const double pts = 1000000;
+ // Four refreshes at 24 Hz. At 120 Hz a repeatedly selected 24p picture
+ // still needs to see the next Matroska timestamp, rounded to milliseconds.
+ const double until = CAMLPresenter::TextPrerollEnd(pts, 24, 24);
+ assert(std::abs(until - pts - 4 * DVD_TIME_BASE / 24.0) < 1);
+ assert(CAMLPresenter::TextPrerollEnd(pts, 120, 24) >= pts + 42000);
+ assert(CAMLPresenter::TextPrerollEnd(pts, 60, 0) < pts + 67000);
+
+ CAMLPresenter queue(4, {});
+ auto next = std::make_shared<Frame>();
+ queue.m_appliedEpoch = next->epoch = 1;
+ queue.m_applied = queue.m_control;
+ queue.m_show = true;
+ queue.m_queue.push_back(next);
+ next->pts = until;
+ for (auto content : {Content::EMPTY, Content::OTHER, Content::TEXT})
+ {
+   next->overlayContent = content;
+   assert(queue.HasUpcomingText(pts, until) == (content == Content::TEXT));
+ }
+ // A wake requests a redraw only. Nothing was submitted, selected or published.
+ assert(!queue.Observe().payload && !next->selected && queue.m_queue.front() == next);
+ assert(!queue.HasUpcomingText(until, until));
+ assert(!queue.HasUpcomingText(pts, until - 1));
+ queue.m_show = false;
+ assert(!queue.HasUpcomingText(pts, until));
+ queue.m_show = true;
+ next->epoch = 2;
+ assert(!queue.HasUpcomingText(pts, until));
+ next->epoch = 1;
+ ++queue.m_control;
+ assert(!queue.HasUpcomingText(pts, until));
+}
 void gui_refresh_selection()
 {
  using Content=CAMLPresenter::OverlayContent;
@@ -178,6 +214,7 @@ int main(){
  steady(60,false,CAMLPresenter::Method::SINGLE,true);
  steady(24000.0/1001,true,CAMLPresenter::Method::SINGLE,false,true);
  bounded_events();
+ queued_text_wakes_gui_before_onset();
  gui_refresh_selection();
  std::cout<<"PASS cadence/reset/refresh/stall recovery and bounded skip events\n";
 }
