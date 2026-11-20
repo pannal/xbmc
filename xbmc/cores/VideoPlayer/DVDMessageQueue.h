@@ -101,6 +101,18 @@ public:
            std::any_of(m_prioMessages.begin(), m_prioMessages.end(), other);
   }
   unsigned GetPacketCount(CDVDMsg::Message type);
+  unsigned GetUserTimeSeekCount() const
+  {
+    std::unique_lock<CCriticalSection> lock(m_section);
+    if (!m_bInitialized)
+      return 0;
+    const auto userSeek = [](const auto& item) {
+      return item.message->IsType(CDVDMsg::PLAYER_SEEK) &&
+             !std::static_pointer_cast<CDVDMsgPlayerSeek>(item.message)->GetTrickPlay();
+    };
+    return std::count_if(m_messages.begin(), m_messages.end(), userSeek) +
+           std::count_if(m_prioMessages.begin(), m_prioMessages.end(), userSeek);
+  }
   bool ReceivedAbortRequest() { return m_bAbortRequest; }
   void WaitUntilEmpty();
 
