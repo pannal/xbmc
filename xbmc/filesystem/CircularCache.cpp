@@ -211,16 +211,14 @@ int64_t CCircularCache::Seek(int64_t pos)
 
   // if seek is a bit over what we have, try to wait a few seconds for the data to be available.
   // we try to avoid a (heavy) seek on the source
-  if (pos >= m_end && pos < m_end + 100000)
+  if (pos > m_end && pos - m_end < 100000 &&
+      static_cast<uint64_t>(pos - m_end) <= GetMaxWriteSize(100000))
   {
-    /* Make everything in the cache (back & forward) back-cache, to make sure
-     * there's sufficient forward space. Increasing it with only 100000 may not be
-     * sufficient due to variable filesystem chunksize
-     */
-    m_cur = m_end;
-
+    // Keep the read cursor intact if the writer reaches EOF or the seek times out.
+    const auto minimum = static_cast<uint32_t>(
+        std::min<int64_t>(pos - m_cur, UINT32_MAX));
     lock.unlock();
-    WaitForData((size_t)(pos - m_cur), 5s);
+    WaitForData(minimum, 5s);
     lock.lock();
 
     if (pos < m_beg || pos > m_end)
@@ -255,6 +253,7 @@ bool CCircularCache::Reset(int64_t pos)
 
 int64_t CCircularCache::CachedDataEndPosIfSeekTo(int64_t iFilePosition)
 {
+  std::unique_lock lock(m_sync);
   if (IsCachedPosition(iFilePosition))
     return m_end;
   return iFilePosition;
@@ -262,16 +261,19 @@ int64_t CCircularCache::CachedDataEndPosIfSeekTo(int64_t iFilePosition)
 
 int64_t CCircularCache::CachedDataStartPos()
 {
+  std::unique_lock lock(m_sync);
   return m_beg;
 }
 
 int64_t CCircularCache::CachedDataEndPos()
 {
+  std::unique_lock lock(m_sync);
   return m_end;
 }
 
 bool CCircularCache::IsCachedPosition(int64_t iFilePosition)
 {
+  std::unique_lock lock(m_sync);
   return iFilePosition >= m_beg && iFilePosition <= m_end;
 }
 

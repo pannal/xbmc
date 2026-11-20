@@ -31,6 +31,7 @@ HARNESS = r'''
 #include <cassert>
 #include <chrono>
 #include <climits>
+#include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -53,6 +54,7 @@ enum ECacheState {CACHESTATE_FULL=1,CACHESTATE_INIT=2,CACHESTATE_PLAY=3,CACHESTA
 namespace StreamFlags {constexpr int FLAG_STILL_IMAGES=1;}
 struct CLog {template<class... T> static void Log(T&&...) {}}
 ;
+void SetLastError(int error){errno=error;}
 int64_t nowMs=0;
 std::function<void()> tick;
 int eventWaits=0;
@@ -105,6 +107,7 @@ struct Disk {
  ssize_t Read(char* data,size_t size){auto count=std::min(size,bytes.size()-pos);std::memcpy(data,bytes.data()+pos,count);pos+=count;return count;}
 };
 struct CSimpleFileCache : CCacheStrategy {
+ CCriticalSection m_sync;
  int64_t m_nWritePosition=0,m_nReadPosition=0;
  Disk disk;Disk* m_cacheFileRead=&disk;Disk* m_cacheFileWrite=&disk;
  Event event,m_space;Event* m_hDataAvailEvent=&event;
@@ -115,8 +118,10 @@ struct CSimpleFileCache : CCacheStrategy {
  int64_t WaitForData(uint32_t,std::chrono::milliseconds)override;
 };
 struct CDoubleCache : CCacheStrategy {
+ CCriticalSection m_swapLock;
  std::shared_ptr<CCacheStrategy> owner;CCacheStrategy* m_pCache;
  explicit CDoubleCache(std::shared_ptr<CCacheStrategy> cache):owner(cache),m_pCache(cache.get()){}
+ bool IsEndOfInput()override{return m_pCache->IsEndOfInput();}
  int WriteToCache(const char*,size_t)override;
  int ReadFromCache(char*,size_t)override;
  int64_t WaitForData(uint32_t,std::chrono::milliseconds)override;
@@ -128,6 +133,7 @@ struct CFileCache {
  std::shared_ptr<CCacheStrategy> m_pCache=ring;
  std::string m_sourcePath="test";
  int64_t m_readPos=0,m_maxForward=256;
+ bool m_readError=false;
  int m_seekPossible=1;
  uint32_t m_writeRate=0,m_writeRateActual=0,m_writeRateLowSpeed=0;
  std::chrono::milliseconds m_processWait{100ms};
