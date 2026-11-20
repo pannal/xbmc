@@ -247,12 +247,16 @@ bool g_fullscreen=true;
 struct CGfxContext {
   bool IsFullScreenVideo() { return g_fullscreen; }
   bool IsFullScreenRoot() { return true; }
-  void SetHDRType(StreamHdrType) {}
+  StreamHdrType hdr{};
+  void SetHDRType(StreamHdrType value) { hdr = value; }
+  StreamHdrType GetHDRType() const { return hdr; }
+  void ReleaseFullscreenResolutionRetry() {}
   int GetRequestedStereoMode() const { return 0; }
   bool SetVideoResolution(RESOLUTION, bool, bool = true) { if (!g_windowReady) return false; CreateNewWindow(RESOLUTION_INFO{}); ++g_displayGeneration; return true; }
 };
 struct CWinSystem {
   bool IsDisplayReadyForVideo() const { return g_windowReady; }
+  bool IsDisplayChangePending() const { return !g_windowReady; }
   uint64_t GetDisplayGeneration() const { return g_displayGeneration; }
   CGfxContext g;
   CGfxContext& GetGfxContext() { return g; }

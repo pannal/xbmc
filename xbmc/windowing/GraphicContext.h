@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <map>
+#include <cstdint>
 #include <optional>
 #include <stack>
 #include <string>
@@ -89,6 +90,7 @@ public:
   // Main thread only: re-evaluate window sizing without retaining an old output mode.
   void RequestVideoResolutionRefresh();
   void ProcessPendingVideoResolution();
+  void ReleaseFullscreenResolutionRetry();
   void ApplyModeChange(RESOLUTION res);
   void ApplyWindowResize(int newWidth, int newHeight);
   RESOLUTION GetVideoResolution() const;
@@ -273,6 +275,7 @@ protected:
     bool forceUpdate;
   };
   std::optional<ResolutionRequest> m_pendingVideoResolution; // main only; one latest request
+  std::optional<uint64_t> m_fullscreenResolutionGeneration; // main only; renderer owns the retry
   bool m_videoResolutionRefreshPending{false}; // main only; coalesced refresh intent
   void ApplyVideoResolution(RESOLUTION res);
   void UpdateInternalStateWithResolution(RESOLUTION res);

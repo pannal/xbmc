@@ -1739,11 +1739,16 @@ void CRenderManager::UpdateResolution(bool force)
                     __FUNCTION__, m_fps, m_picture.iWidth, m_picture.iHeight,
                     m_picture.stereoMode.empty(), CStreamDetails::DynamicRangeToString(actual_hdrType));
           m_appliedResolution.reset();
+          const auto previousHdrType = gfx.GetHDRType();
           gfx.SetHDRType(actual_hdrType);
           CancelDeferredDV(); // Release a pending native fence before display work.
           // This trigger owns retries; the graphics pump must not also apply it.
           if (!gfx.SetVideoResolution(res, false, false))
+          {
+            if (window->IsDisplayChangePending())
+              gfx.SetHDRType(previousHdrType);
             return; // Failed/pending window work must still retry.
+          }
           UpdateLatencyTweak();
           if (m_pRenderer)
             m_pRenderer->Update();
@@ -1772,6 +1777,8 @@ void CRenderManager::UpdateResolution(bool force)
         }
       }
 #endif
+      // A changed playback policy can withdraw a pending mode request even in fullscreen.
+      CServiceBroker::GetWinSystem()->GetGfxContext().ReleaseFullscreenResolutionRetry();
       if (!CServiceBroker::GetWinSystem()->IsDisplayReadyForVideo())
       {
         CancelDeferredDV();

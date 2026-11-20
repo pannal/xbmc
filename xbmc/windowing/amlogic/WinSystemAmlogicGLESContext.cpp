@@ -601,6 +601,8 @@ bool CWinSystemAmlogicGLESContext::ResizeWindow(int newWidth, int newHeight, int
 bool CWinSystemAmlogicGLESContext::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays)
 {
   GuiABFinish("fullscreen_change");
+  if (m_shutdownRequested)
+    return false;
   CAMLDisplayLifecycle::Mutation display(m_displayLifecycle);
   if (!display || !CreateNewWindow("", fullScreen, res) ||
       !ResetRenderSystem(res.iWidth, res.iHeight))

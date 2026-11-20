@@ -42,6 +42,7 @@ def harness():
         'base': ['bool CWinSystemAmlogic::CreateNativeWindow('],
         'gfx': ['bool CGraphicContext::SetVideoResolution(',
                 'void CGraphicContext::RequestVideoResolutionRefresh()',
+                'void CGraphicContext::ReleaseFullscreenResolutionRetry()',
                 'void CGraphicContext::ProcessPendingVideoResolution()',
                 'bool CGraphicContext::SetVideoResolutionInternal('],
         'resolution': ['void CResolutionUtils::FindResolutionFromWhitelist('],
@@ -250,11 +251,13 @@ class CGraphicContext:public CCriticalSection{
 public:
   struct ResolutionRequest{RESOLUTION resolution;bool forceUpdate;};
   std::optional<ResolutionRequest> m_pendingVideoResolution;
+ std::optional<uint64_t> m_fullscreenResolutionGeneration;
   bool m_videoResolutionRefreshPending{false};
   RESOLUTION m_Resolution{RES_DESKTOP};bool m_bFullScreenRoot{true};
   int m_iScreenWidth{1920},m_iScreenHeight{1080};float m_fFPSOverride{0};Rect m_scissors;
   StreamHdrType hdr{StreamHdrType::HDR_TYPE_NONE};RENDER_STEREO_MODE stereo{RENDER_STEREO_MODE_OFF};
   bool SetVideoResolution(RESOLUTION,bool,bool retryPending=true);bool SetVideoResolutionInternal(RESOLUTION,bool,bool retryPending=true);
+  void ReleaseFullscreenResolutionRetry();
   void ProcessPendingVideoResolution();
   void RequestVideoResolutionRefresh();
   RESOLUTION GetVideoResolution(){return m_Resolution;}
@@ -337,7 +340,7 @@ public:
   bool IsRenderTargetCurrent(uint64_t token){return CanRender()&&token==target;}
   void InvalidateRenderTarget(){++target;event("invalidate");}
   void CancelGuiComposite(){event("cancel-composite");}
-  bool IsDisplayChangePending(){return m_displayLifecycle.Pending();}
+  bool IsDisplayChangePending() const {return m_displayLifecycle.Pending();}
   uint64_t GetDisplayGeneration()const{return m_displayLifecycle.Serial();}
   @READY_QUERY@
   bool CreateNewWindow(const std::string&,bool,RESOLUTION_INFO&);bool DestroyWindow();
@@ -611,6 +614,21 @@ void GuiResizeKeepsRequiredHandshake(){
     assert(!f.session.DisplayBlocked());
   }
 }
+void ShutdownOwnsPendingDisplay()
+{
+  Fixture f;
+  auto target = CDisplaySettings::GetInstance().GetResolutionInfo(2);
+  {
+    auto decoder = f.session.AcquireDecoder();
+    assert(decoder && !f.win.SetFullScreen(true, target, false));
+  }
+  f.win.m_shutdownRequested = true;
+  assert(!f.win.SetFullScreen(true, target, false));
+  assert(f.win.IsDisplayChangePending() && f.session.DisplayBlocked());
+  CAMLDisplayLifecycle::Mutation shutdown(f.win.m_displayLifecycle);
+  assert(shutdown);
+  shutdown.Finish(CAMLDisplayLifecycle::Phase::READY);
+}
 void NoModeNeedsReadiness(){
   Fixture f;CRenderManager renderer;settings.adjust=0;
   {
@@ -658,7 +676,7 @@ void CloseHandoffPresentation(){
   owner=mute.Acquire();mute.Handoff(owner,std::chrono::steady_clock::now()-std::chrono::seconds(1));
   f.win.PresentRenderImpl(false);assert(!mute.HandoffGeneration()); // skipped renders still expire
 }
-int main(){FramePackingTiming();CloseHandoffPresentation();ExactNativeParents();PendingAndLatestPayload();OwnCaptureAndDirectWindow();FailedRebind();FailedGeometry();DelayedResetAndSwap();RenderIntentAndEngage();NoModeAndForcedFrac();GuiResizeKeepsRequiredHandshake();NoModeNeedsReadiness();OffMainDispatch();}
+int main(){FramePackingTiming();CloseHandoffPresentation();ExactNativeParents();PendingAndLatestPayload();OwnCaptureAndDirectWindow();FailedRebind();FailedGeometry();DelayedResetAndSwap();RenderIntentAndEngage();NoModeAndForcedFrac();GuiResizeKeepsRequiredHandshake();ShutdownOwnsPendingDisplay();NoModeNeedsReadiness();OffMainDispatch();}
 '''
 
 if __name__ == '__main__':

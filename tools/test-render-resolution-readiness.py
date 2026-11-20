@@ -40,6 +40,7 @@ def harness():
     graphics = '\n'.join(function(gfx, signature) for signature in [
         'bool CGraphicContext::SetVideoResolution(',
         'void CGraphicContext::RequestVideoResolutionRefresh()',
+        'void CGraphicContext::ReleaseFullscreenResolutionRetry()',
         'void CGraphicContext::ProcessPendingVideoResolution()',
         'bool CGraphicContext::SetVideoResolutionInternal('])
     gfx_header = (ROOT / 'xbmc/windowing/GraphicContext.h').read_text()
@@ -82,6 +83,8 @@ def main():
              '{ m_bTriggerUpdateResolution = false; return; }'),
             ('lose deferred-DV reentrant intent', 'm_playerPort->VideoParamsChange();',
              'm_bTriggerUpdateResolution = false; m_playerPort->VideoParamsChange();'),
+            ('abandon pending windowed playback',
+             'if (!IsFullScreenVideo() || !IsFullScreenRoot())', 'if (false)'),
             ('duplicate graphics retry owner', 'gfx.SetVideoResolution(res, false, false)',
              'gfx.SetVideoResolution(res, false)'),
             ('reuse configuration completion', 'void CRenderManager::ConfigureEntry() {\n  m_appliedResolution.reset();',
@@ -146,6 +149,7 @@ struct CGraphicContext:CCriticalSection {
  std::vector<std::pair<int,StreamHdrType>> intents;
  struct ResolutionRequest {RESOLUTION resolution;bool forceUpdate;};
  std::optional<ResolutionRequest> m_pendingVideoResolution;
+ std::optional<uint64_t> m_fullscreenResolutionGeneration;
  bool m_videoResolutionRefreshPending=false;
  RESOLUTION m_Resolution=RES_DESKTOP;bool m_bFullScreenRoot=true;
  int m_iScreenWidth=1920,m_iScreenHeight=1080;float m_fFPSOverride=0.f;Rect m_scissors;
@@ -154,6 +158,7 @@ struct CGraphicContext:CCriticalSection {
  int GetRequestedStereoMode(){return stereo;}
  int GetStereoModeForResolution(unsigned){return stereo;}
  RESOLUTION GetVideoResolution(){return m_Resolution;}
+ StreamHdrType GetHDRType() const{return hdr;}
  void SetHDRType(StreamHdrType value){++hdrSets;hdr=value;}
  bool IsValidResolution(int res){return res>=0;}
  void UpdateInternalStateWithResolution(int res){m_Resolution=res;}
@@ -161,7 +166,8 @@ struct CGraphicContext:CCriticalSection {
  @PUBLIC_RESOLUTION@
  @INTERNAL_RESOLUTION@
  void RequestVideoResolutionRefresh();
- void ProcessPendingVideoResolution();
+ void ReleaseFullscreenResolutionRetry();
+  void ProcessPendingVideoResolution();
 };
 struct Win {
  CAMLDisplayLifecycle display;CGraphicContext context{this};bool immediate=false;int presents=0;
@@ -270,6 +276,64 @@ void pending_admission(){
  assert(f.win.context.sets==3 && f.render.latency==1 && f.render.renderer.updates==1);
  f.ready();assert(f.session.Acquire(f.session.Epoch()));
 }
+enum class PlaybackModeChange { LeaveFullscreen, SelectGuiMode, DisableRefreshSwitching };
+
+void abandoned_fullscreen_request(PlaybackModeChange change)
+{
+  Fixture f;
+  auto& gfx = f.win.context;
+  const auto guiResolution = gfx.GetVideoResolution();
+  const auto guiHdr = gfx.GetHDRType();
+  constexpr int newGuiMode = 25;
+  {
+    auto decoder = f.session.AcquireDecoder();
+    assert(decoder);
+    f.render.UpdateResolution();
+    assert(f.win.display.Pending() && !f.render.m_appliedResolution);
+
+    if (change == PlaybackModeChange::SelectGuiMode)
+      assert(!gfx.SetVideoResolution(newGuiMode, false));
+    if (change == PlaybackModeChange::DisableRefreshSwitching)
+      CServiceBroker::settings.settings.adjust = ADJUST_REFRESHRATE_OFF;
+    else
+      gfx.fullscreen = false;
+    f.render.UpdateResolution();
+    gfx.ProcessPendingVideoResolution();
+    assert(f.session.DisplayBlocked());
+  }
+  gfx.ProcessPendingVideoResolution();
+  const auto expected = change == PlaybackModeChange::SelectGuiMode ? newGuiMode : guiResolution;
+  assert(gfx.GetVideoResolution() == expected && gfx.GetHDRType() == guiHdr);
+  assert(!f.win.display.Pending() && !f.win.IsDisplayReadyForVideo());
+  f.win.Present();
+  assert(f.session.AcquireDecoder() && !f.render.m_appliedResolution);
+
+  gfx.fullscreen = true;
+  CServiceBroker::settings.settings.adjust = 2;
+  f.render.UpdateResolution();
+  f.ready();
+  assert(gfx.GetVideoResolution() != guiResolution && f.render.latency == 1);
+}
+void completed_display_is_not_retried()
+{
+  Fixture f;
+  auto& gfx = f.win.context;
+  {
+    auto decoder = f.session.AcquireDecoder();
+    assert(decoder);
+    f.render.UpdateResolution();
+    assert(f.win.display.Pending());
+  }
+  RESOLUTION_INFO info = CDisplaySettings::GetInstance().GetResolutionInfo(25);
+  assert(f.win.SetFullScreen(true, info, false));
+  int attempts = gfx.sets;
+  gfx.fullscreen = false;
+  gfx.ProcessPendingVideoResolution();
+  assert(gfx.sets == attempts && !f.win.IsDisplayReadyForVideo());
+  f.win.Present();
+  assert(f.session.AcquireDecoder());
+}
+
 void automatic_graphics_retry(){
  Fixture f;std::optional<CAMLSession::Permit> held(f.session.Acquire(f.session.Epoch()));assert(*held);
  auto& gfx=f.win.context;
@@ -333,7 +397,11 @@ void unchanged_trigger_and_adjust_off(){
  f.render.UpdateResolution();assert(f.win.context.sets==1 && f.render.m_bTriggerUpdateResolution);
  f.ready();assert(f.win.context.sets==1);
 }
-int main(){apply_once();failed_applies();pending_admission();automatic_graphics_retry();changed_intents();replaced_display();
+int main(){apply_once();failed_applies();pending_admission();automatic_graphics_retry();
+ completed_display_is_not_retried();
+ abandoned_fullscreen_request(PlaybackModeChange::LeaveFullscreen);
+ abandoned_fullscreen_request(PlaybackModeChange::SelectGuiMode);
+ abandoned_fullscreen_request(PlaybackModeChange::DisableRefreshSwitching);changed_intents();replaced_display();
  replaced_configuration();deferred_dv();unchanged_trigger_and_adjust_off();
  std::cout<<"apply once, failures, pending admission, supersession, display/config replacement, DV reentrancy and admission: PASS\n";}
 '''

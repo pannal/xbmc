@@ -28,18 +28,17 @@ def harness():
     types += function(resolution, 'struct EdgeInsets') + ';\n'
     types += function((ROOT / 'xbmc/windowing/Resolution.cpp').read_text(),
                       'EdgeInsets::EdgeInsets(') + '\n'
-    replace('struct RESOLUTION_INFO{', types + 'struct RESOLUTION_INFO{')
-    replace('std::string strId;};',
-            'std::string strId, strMode; OVERSCAN Overscan; EdgeInsets guiInsets; int iSubtitles{0};};')
+    replace('struct RESOLUTION_INFO{', types + 'struct RESOLUTION_INFO{\n'
+            '  OVERSCAN Overscan; EdgeInsets guiInsets; int iSubtitles{0};\n')
     replace('#define HAS_LIBAMCODEC 1',
             '#define HAS_LIBAMCODEC 1\n#define LINUX_VERSION_CODE ((4 << 16) | (9 << 8))\n#include <algorithm>')
     for signature in ('void aml_native_gui_prepare(RESOLUTION)', 'void aml_native_gui_commit()',
                       'void aml_native_gui_prepare_failed()', 'void aml_native_gui_osd_present(bool)',
                       'bool aml_native_gui_needs_update(RESOLUTION)', 'bool aml_native_gui_size_changing()'):
         replace(function(source, signature), signature + ';')
-    replace('SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS=3;',
-            'SETTING_COREELEC_AMLOGIC_DV_HANDSHAKE_BYPASS=3,SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING=4,'
-            'SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K=5;')
+    replace('struct CSettings{', 'struct CSettings{\n'
+            '  static constexpr int SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING=4,'
+            'SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K=5;\n')
     replace('bool m_fullScreen=true;',
             'bool nativeGui=true,gui1080pFor4k=false,m_gui1080pForHighRefreshVideo=true;'
             'bool m_fullScreen=true;')
@@ -49,14 +48,12 @@ def harness():
     replace('explicit CSysfsPath(const char*){}',
             'explicit CSysfsPath(const char*){} CSysfsPath(const std::string& path,int value){'
             'assert(path=="/sys/class/graphics/fb0/blank");event("blank:"+std::to_string(value));}')
-    replace(function(source, 'struct CDisplaySettings') + ';', r'''
-struct CDisplaySettings {
+    replace(function(source, 'RESOLUTION_INFO GetResolutionInfo(int res)'), r'''
   std::vector<RESOLUTION_INFO> resolutions;
-  static CDisplaySettings& GetInstance(){static CDisplaySettings instance;return instance;}
   RESOLUTION_INFO& GetResolutionInfo(int res){return resolutions.at(res);}
   const RESOLUTION_INFO& GetResolutionInfo(int res)const{return resolutions.at(res);}
   size_t ResolutionInfoSize()const{return resolutions.size();}
-};''')
+''')
     utils = (ROOT / 'xbmc/utils/AMLUtils.cpp').read_text()
     start = utils.index('enum class NativeGuiVideo')
     end = utils.index('\nvoid aml_handle_display_stereo_mode(', start)

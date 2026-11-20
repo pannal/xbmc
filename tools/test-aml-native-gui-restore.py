@@ -20,6 +20,8 @@ args = parser.parse_args()
 utils = (args.utils_source or ROOT / 'xbmc/utils/AMLUtils.cpp').read_text()
 gfx = (args.gfx_source or ROOT / 'xbmc/windowing/GraphicContext.cpp').read_text()
 production = function(utils, 'void aml_native_gui_playback_stopped()')
+if 'void CGraphicContext::ReleaseFullscreenResolutionRetry()' in gfx:
+    production += '\n' + function(gfx, 'void CGraphicContext::ReleaseFullscreenResolutionRetry()')
 production += '\n' + function(gfx, 'void CGraphicContext::ProcessPendingVideoResolution()')
 if 'void CGraphicContext::RequestVideoResolutionRefresh()' in gfx:
     production += '\n' + function(gfx, 'void CGraphicContext::RequestVideoResolutionRefresh()')
@@ -48,6 +50,10 @@ static int failures=0, checks=0;
 struct CGraphicContext {
     struct ResolutionRequest { RESOLUTION resolution; bool forceUpdate; };
     std::optional<ResolutionRequest> m_pendingVideoResolution;
+    std::optional<uint64_t> m_fullscreenResolutionGeneration;
+    bool IsFullScreenVideo(){return false;}
+    bool IsFullScreenRoot(){return true;}
+    void ReleaseFullscreenResolutionRetry();
     bool m_videoResolutionRefreshPending=false;
     RESOLUTION m_Resolution=50;
     void RequestVideoResolutionRefresh();
@@ -61,7 +67,11 @@ struct CGraphicContext {
     }
 };
 static CGraphicContext graphics;
-struct Window { CGraphicContext& GetGfxContext(){return graphics;} };
+struct Window {
+    CGraphicContext& GetGfxContext(){return graphics;}
+    bool IsDisplayChangePending() const{return blocked;}
+    uint64_t GetDisplayGeneration() const{return 1;}
+};
 struct Messenger {
     void PostMsg(int message,int res,int force) {
         CHECK(message==TMSG_SETVIDEORESOLUTION&&force==1);queued.push_back(res);

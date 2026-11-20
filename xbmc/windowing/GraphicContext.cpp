@@ -425,8 +425,26 @@ void CGraphicContext::RequestVideoResolutionRefresh()
   m_videoResolutionRefreshPending = true;
 }
 
+void CGraphicContext::ReleaseFullscreenResolutionRetry()
+{
+  if (!m_fullscreenResolutionGeneration)
+    return;
+
+  const auto* window = CServiceBroker::GetWinSystem();
+  if (window->IsDisplayChangePending() &&
+      window->GetDisplayGeneration() == *m_fullscreenResolutionGeneration)
+  {
+    // The renderer withdrew its request before the native mode switch began.
+    // Finish the pending display transition at the current GUI resolution.
+    m_pendingVideoResolution = ResolutionRequest{m_Resolution, false};
+  }
+  m_fullscreenResolutionGeneration.reset();
+}
+
 void CGraphicContext::ProcessPendingVideoResolution()
 {
+  if (!IsFullScreenVideo() || !IsFullScreenRoot())
+    ReleaseFullscreenResolutionRetry();
 #if defined(HAS_LIBAMCODEC)
   // Playback can start or end at the current HDMI mode, including windowed video.
   if (!m_pendingVideoResolution && aml_native_gui_needs_update(m_Resolution))
@@ -446,6 +464,7 @@ bool CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   // A newer main-thread request supersedes the one pending quiescence. No
   // native mutation from that old request has started; storage stays bounded.
   m_pendingVideoResolution.reset();
+  m_fullscreenResolutionGeneration.reset();
   RESOLUTION lastRes = m_Resolution;
   const bool lastFullScreen = m_bFullScreenRoot;
   const bool lastSettingFullScreen = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_fullScreen;
@@ -528,7 +547,10 @@ bool CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
   }
   else
   {
-    bool retry = CServiceBroker::GetWinSystem()->IsDisplayChangePending();
+    const auto* window = CServiceBroker::GetWinSystem();
+    bool retry = window->IsDisplayChangePending();
+    if (retry && !retryPending)
+      m_fullscreenResolutionGeneration = window->GetDisplayGeneration();
     // Reset provisional state while admission is pending or rebinding failed.
 #if defined(HAS_LIBAMCODEC)
     retry = retry || aml_native_gui_size_changing();
