@@ -21,7 +21,6 @@ source = source.replace('PLAYER_SEEK, PLAYER_VIDEO_RECOVERY',
                         'PLAYER_SEEK, PLAYER_SEEK_CHAPTER, PLAYER_VIDEO_RECOVERY')
 source = source.replace('  void Flush(bool sync);\n  bool Recover', '  bool opens=true; bool OpenStream(int) {return opens;}\n  void Flush(bool sync);\n  bool Recover')
 source = source.replace('struct CVideoPlayerAudio {',
-                        f.block(messages, 'class CDVDMsgPlayerSeek :') + ';\n' +
                         f.block(messages, 'class CDVDMsgPlayerSeekChapter :') + ';\nstruct CVideoPlayerAudio {')
 source = source.replace('struct CCurrentStream {', 'using IDVDStreamPlayerVideo=CVideoPlayerVideo;\nstruct CCurrentStream {')
 source = source.replace('struct CCurrentStream {', '''

@@ -26,7 +26,6 @@ source = source.replace('bool IsInited() const', '''
   bool IsInited() const''')
 source = source.replace('struct CVideoPlayerAudio {', '\n'.join((
     f.block(queue, 'bool CDVDMessageQueue::PutIfNoMessages('),
-    f.block(messages, 'class CDVDMsgPlayerSeek :') + ';',
     f.block(messages, 'class CDVDMsgPlayerSeekChapter :') + ';',
     'struct CVideoPlayerAudio {')))
 source = source.replace('struct {bool streamsReady=false; double time_offset=0;} m_State;',
@@ -162,14 +161,12 @@ int main() {
     go=true;p.QueueAudioRecoverySeek();producer.join();
     p.DrainControls();assert(p.targets==std::vector<double>{50});finish(p,v);
   }
-  // Startup trickplay guard may reject recovery; retry remains one per pump.
+  // Synchronized recovery is not a scan: a recent seek cannot discard it.
   {
     CVideoPlayerVideo v;Parent p(v);p.m_clock.absolute=2100000;
     p.queue.Put(audioChange());p.DrainControls();p.DrainControls();
-    assert(p.targets.empty() && p.m_audioRecoveryPending);
-    assert(p.queue.GetPacketCount(CDVDMsg::PLAYER_SEEK)==1);
-    p.m_clock.absolute=6000000;p.DrainControls();
-    assert(p.targets==std::vector<double>{-76});finish(p,v);
+    assert(p.targets==std::vector<double>{-76} && !p.m_audioRecoveryPending);
+    assert(p.queue.GetPacketCount(CDVDMsg::PLAYER_SEEK)==0);finish(p,v);
   }
   // Refused chapter and non-sync scan do not discharge audio recovery.
   for(bool chapter : {false,true}) {

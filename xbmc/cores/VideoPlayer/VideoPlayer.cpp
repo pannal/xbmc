@@ -3889,7 +3889,7 @@ CVideoSeekQueueState CVideoPlayer::GetVideoSeekQueueState()
 {
   // The recovery seek has its own message type so it cannot coalesce away a user seek.
   CVideoSeekQueueState state;
-  state.userTimeSeeks = m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK);
+  state.userTimeSeeks = m_messenger.GetUserTimeSeekCount();
   state.userChapterSeeks = m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER);
   return state;
 }
@@ -4122,9 +4122,10 @@ void CVideoPlayer::HandleMessages()
           m_CurrentVideo.syncState != IDVDStreamPlayer::SYNC_INSYNC)
       {
         double now = m_clock.GetAbsoluteClock();
-        // A recovery reseek is trickplay only to stay silent; it is not a scan to coalesce.
+        // Synchronized return/recovery seeks are trickplay only to stay silent;
+        // they must reanchor playback even while the previous scan is starting.
         if (m_playSpeed == DVD_PLAYSPEED_NORMAL && (now - m_State.lastSeek) / 1000 < 2000 &&
-            msg.GetTrickPlay() && !msg.IsVideoRecovery())
+            msg.GetTrickPlay() && !msg.GetSync() && !msg.IsVideoRecovery())
         {
           m_processInfo->SetStateSeeking(false);
           continue;
@@ -4522,10 +4523,12 @@ void CVideoPlayer::HandleMessages()
         pvrinputstream->Pause(speed == 0);
       }
 
-      // do a seek after rewind, clock is not in sync with current pts
-      if ((speed == DVD_PLAYSPEED_NORMAL) &&
+      // Reanchor when leaving trickplay, including for a real pause. Otherwise
+      // pause -> normal resumes the old trickplay timeline without a seek.
+      if ((speed == DVD_PLAYSPEED_NORMAL || speed == DVD_PLAYSPEED_PAUSE) &&
           (m_playSpeed != DVD_PLAYSPEED_NORMAL) &&
-          (m_playSpeed != DVD_PLAYSPEED_PAUSE))
+          (m_playSpeed != DVD_PLAYSPEED_PAUSE) &&
+          !GetVideoSeekQueueState().HasQueuedUserSeek())
       {
         double iTime = m_VideoPlayerVideo->GetCurrentPts();
         if (iTime == DVD_NOPTS_VALUE)
