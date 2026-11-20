@@ -25,6 +25,15 @@ public:
 
   void Pack(CAEStreamInfo &info, uint8_t* data, int size);
   bool PackPause(CAEStreamInfo &info, unsigned int millis, bool iecBursts);
+  /*!
+   * \brief Pack a silent packet shaped like the last AC-3, E-AC-3 or DTS packet.
+   * \return false if there is no such packet or no silent version of it can be built
+   */
+  bool PackSilence(CAEStreamInfo& info);
+  /*!
+   * \brief Forget the last packet, so PackSilence fails until the next one is packed.
+   */
+  void ResetSilence();
   void Reset();
   uint8_t* GetBuffer();
   unsigned int GetSize() const;
@@ -32,6 +41,7 @@ public:
   static CAEChannelInfo GetOutputChannelMap(const CAEStreamInfo& info);
 
 private:
+  void PackFrame(CAEStreamInfo& info, uint8_t* data, int size);
   void PackDTSHD(CAEStreamInfo &info, uint8_t* data, int size);
   void PackEAC3(CAEStreamInfo &info, uint8_t* data, int size);
 
@@ -43,8 +53,12 @@ private:
   unsigned int m_eac3FramesCount = 0;
   unsigned int m_eac3FramesPerBurst = 0;
 
+  std::vector<uint8_t> m_lastPacket;
+  std::vector<uint8_t> m_silence;
+
   unsigned int  m_dataSize = 0;
   uint8_t       m_packedBuffer[MAX_IEC61937_PACKET];
   unsigned int m_pauseDuration = 0;
+  bool m_pauseIecBursts = false;
 };
 

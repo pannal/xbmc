@@ -263,7 +263,7 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           m_extError = false;
           m_extSilenceTimer.Set(0ms);
           m_extStreaming = false;
-          m_extPaused = false;
+          SetPaused(false);
           ReturnBuffers();
           OpenSink();
 
@@ -295,7 +295,7 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           return;
 
         case CSinkControlProtocol::UNCONFIGURE:
-          m_extPaused = false;
+          SetPaused(false);
           ReturnBuffers();
           if (m_sink)
           {
@@ -314,6 +314,8 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
 
         case CSinkControlProtocol::PAUSE:
           ReturnBuffers(true);
+          // Arm before STREAMING(false) and PAUSED(true) follow, so no gap precedes the bridge.
+          m_pauseBridge = true;
           msg->Reply(CSinkControlProtocol::ACC);
           return;
 
@@ -330,7 +332,7 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           return;
 
         case CSinkControlProtocol::PAUSED:
-          m_extPaused = *(bool*)msg->data;
+          SetPaused(*(bool*)msg->data);
           return;
 
         case CSinkControlProtocol::SETSILENCETIMEOUT:
@@ -418,7 +420,7 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           m_extTimeout = 0ms;
           return;
         case CSinkControlProtocol::PAUSED:
-          m_extPaused = *(bool*)msg->data;
+          SetPaused(*(bool*)msg->data);
           SetSilenceTimer();
           if (!m_extSilenceTimer.IsTimePast())
             m_state = S_TOP_CONFIGURED_SILENCE;
@@ -492,7 +494,7 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           m_extTimeout = 0ms;
           return;
         case CSinkControlProtocol::PAUSED:
-          m_extPaused = *(bool*)msg->data;
+          SetPaused(*(bool*)msg->data);
           SetSilenceTimer();
           m_extTimeout = 0ms;
           return;
@@ -1072,13 +1074,26 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
       {
         m_packer->Reset();
         m_packer->Pack(m_sinkFormat.m_streamInfo, buffer[0], frames);
+        // Resume padding is queued ahead of the first packet that plays after a pause.
+        if (!m_extPaused)
+          m_pauseBridge = false;
       }
       else if (samples->pkt->pause_burst_ms > 0)
       {
-        // construct a pause burst if we have already output valid audio
-        bool burst = m_extStreaming && (m_packer->GetBuffer()[0] != 0);
-        if (!m_packer->PackPause(m_sinkFormat.m_streamInfo, samples->pkt->pause_burst_ms, burst))
-          skipSwap = true;
+        // Across a pause, whole-packet gaps carry silent packets of the same format, because
+        // some receivers discard the audio they still hold when the bitstream stops.
+        const bool silence =
+            m_pauseBridge &&
+            samples->pkt->pause_burst_ms ==
+                static_cast<int>(m_sinkFormat.m_streamInfo.GetDuration()) &&
+            m_packer->PackSilence(m_sinkFormat.m_streamInfo);
+        if (!silence)
+        {
+          // construct a pause burst if we have already output valid audio
+          bool burst = m_extStreaming && (m_packer->GetBuffer()[0] != 0);
+          if (!m_packer->PackPause(m_sinkFormat.m_streamInfo, samples->pkt->pause_burst_ms, burst))
+            skipSwap = true;
+        }
       }
       else
         m_packer->Reset();
@@ -1239,6 +1254,14 @@ void CActiveAESink::GenerateNoise()
                      (uint8_t**)&noise, m_sampleOfSilence.pkt->max_nb_samples, 1.0);
 
   KODI::MEMORY::AlignedFree(noise);
+}
+
+void CActiveAESink::SetPaused(bool paused)
+{
+  m_extPaused = paused;
+  m_pauseBridge = paused;
+  if (!paused && m_packer)
+    m_packer->ResetSilence();
 }
 
 void CActiveAESink::SetSilenceTimer()

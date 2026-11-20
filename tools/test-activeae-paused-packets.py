@@ -94,6 +94,7 @@ void Message::Reply(int value, void* buffer, size_t) {
 }
 struct CActiveAESink {
   Port m_dataPort;
+  bool m_pauseBridge = false;
   void ReturnBuffers(bool preserve = false);
   void Pause(Message* msg) {@SINK_PAUSE@}
 };
@@ -229,6 +230,8 @@ int main() {
   stream.buffers.m_outputSamples.push_back(&e);
   engine.Pause(&stream);
   assert(stream.m_paused && !engine.m_extError);
+  // The pause reply arms silent packets before the sink can see a gap.
+  assert(engine.sink.m_pauseBridge);
   assert(played.returns == 1 && a.returns == 0 && b.returns == 0);
   assert(engine.m_stats.resets == 1 && engine.m_stats.updates == 1);
   AEDelayStatus delay;
@@ -354,6 +357,7 @@ def main():
         if args.negative_control:
             variants.extend([
                 ("discard-pending", engine, sink.replace("ReturnBuffers(true);", "ReturnBuffers();")),
+                ("unarmed-pause-bridge", engine, sink.replace("m_pauseBridge = true;", "")),
                 ("reordered-packets", engine.replace("output.insert(output.begin(), packets.begin()",
                                                     "output.insert(output.end(), packets.begin()"), sink),
                 ("duplicated-ownership", engine.replace("queue->clear();", ""), sink),

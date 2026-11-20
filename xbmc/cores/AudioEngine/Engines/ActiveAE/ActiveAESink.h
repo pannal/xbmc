@@ -118,6 +118,7 @@ protected:
   void GetDeviceFriendlyName(const std::string& device);
   void OpenSink();
   void ReturnBuffers(bool preserve = false);
+  void SetPaused(bool paused);
   void SetSilenceTimer();
   bool NeedIECPacking();
 
@@ -137,6 +138,7 @@ protected:
   bool m_extAppFocused;
   bool m_extStreaming;
   bool m_extPaused{false};
+  bool m_pauseBridge{false};
   XbmcThreads::EndTime<> m_extSilenceTimer;
 
   CSampleBuffer m_sampleOfSilence;

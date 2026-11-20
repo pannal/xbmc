@@ -107,6 +107,7 @@ struct CActiveAESink {
   Protocol m_controlPort,m_dataPort;
   int m_state=S_TOP_CONFIGURED_PLAY,m_sinkLatency=0;
   bool m_extError=false,m_extStreaming=true,m_extPaused=false,m_extAppFocused=true;
+  bool m_pauseBridge=false;
   bool m_streamNoise=false,m_needIecPack=true,m_bStateMachineSelfTrigger=false;
   std::chrono::milliseconds m_extTimeout{0},m_extSilenceTimeout{0};
   std::chrono::minutes m_silenceTimeOut{1};
@@ -118,6 +119,8 @@ struct CActiveAESink {
   CSampleBuffer m_sampleOfSilence;
   TransportStats transport;
   std::unique_ptr<Transport> m_sink=std::make_unique<Transport>(Transport{&transport});
+  struct Packer {int silenceResets=0;void ResetSilence(){++silenceResets;}};
+  std::unique_ptr<Packer> m_packer=std::make_unique<Packer>();
   bool openFails=false,writeFails=false;
   void OpenSink() {
     if(openFails){m_extError=true;return;}
@@ -134,6 +137,7 @@ struct CActiveAESink {
     return 20;
   }
   void SetSilenceTimer();
+  void SetPaused(bool);
   void StateMachine(int,Protocol*,Message*);
   void Control(int signal,bool value) {
     Message msg;msg.data=&value;StateMachine(signal,&m_controlPort,&msg);
@@ -153,6 +157,7 @@ struct CActiveAESink {
   }
 };
 @TIMER@
+@SET_PAUSED@
 @STATES@
 struct CAESyncInfo {enum AESyncState {SYNC_START,SYNC_INSYNC};};
 struct CActiveAEStream {
@@ -191,14 +196,18 @@ int main(){
     now=0ms;CActiveAE engine;CActiveAEStream stream;
     engine.Pause(&stream);
     auto& sink=engine.sink;
+    assert(sink.m_pauseBridge);
     sink.Tick(paused);sink.Tick(paused+1ms);
     assert(configured(sink) && sink.transport.closes==0 && sink.transport.drains==0);
     engine.ResumeIdle(&stream);
     assert(sink.m_extStreaming && !sink.m_extPaused);
+    // Padding ahead of the first resumed packet is still bridged.
+    assert(sink.m_pauseBridge && sink.m_packer->silenceResets==0);
     sink.Sample();
     assert(sink.transport.opens==1 && sink.transport.audio==1);
     engine.Pause(&stream);
     engine.FreeStream();
+    assert(!sink.m_pauseBridge && sink.m_packer->silenceResets==1);
     sink.Tick(paused+60002ms);sink.Tick(paused+60003ms);sink.Tick(paused+70003ms);
     assert(sink.transport.drains==1 && sink.transport.closes==1);
   }
@@ -235,6 +244,7 @@ int main(){
     Message msg;engine.sink.StateMachine(CSinkControlProtocol::UNCONFIGURE,
                                         &engine.sink.m_controlPort,&msg);
     assert(!engine.sink.m_extPaused && engine.sink.transport.closes==1);
+    assert(!engine.sink.m_pauseBridge && engine.sink.m_packer->silenceResets==1);
   }
   {
     now=0ms;CActiveAE engine;CActiveAEStream stream;engine.Pause(&stream);
@@ -253,6 +263,7 @@ int main(){
     Message msg;msg.data=&config;
     engine.sink.StateMachine(CSinkControlProtocol::CONFIGURE,&engine.sink.m_controlPort,&msg);
     assert(!engine.sink.m_extPaused && !engine.sink.m_extStreaming);
+    assert(!engine.sink.m_pauseBridge && engine.sink.m_packer->silenceResets==1);
     assert(msg.reply==CSinkControlProtocol::ACC);
   }
   std::cout<<"production long-pause transport ownership, resume and power management passed\n";
@@ -260,6 +271,7 @@ int main(){
 '''.replace("@ENUMS@", enums).replace("@PARENTS@", parents).replace(
         "@STATES@", block(sink, "void CActiveAESink::StateMachine(")).replace(
         "@TIMER@", block(sink, "void CActiveAESink::SetSilenceTimer(")).replace(
+        "@SET_PAUSED@", block(sink, "void CActiveAESink::SetPaused(")).replace(
         "@PAUSE@", pause).replace("@RESUME@", resume).replace("@FREE@", free)
 
 
@@ -285,6 +297,10 @@ def main():
             ("live-keepalive-disable-ignored", sink.replace(
                 "if (m_extPaused)\n          {", "if (false)\n          {"), engine),
             ("focus-leaks-transport", sink.replace("else if (m_extAppFocused)", "else if (true)"), engine),
+            ("bridge-survives-unpause", sink.replace(
+                "m_pauseBridge = paused;", "m_pauseBridge = m_pauseBridge || paused;"), engine),
+            ("unpause-keeps-silence-source", sink.replace(
+                "if (!paused && m_packer)", "if (paused && m_packer)"), engine),
         ))
     with tempfile.TemporaryDirectory(prefix="ae-long-pause-") as directory:
         root = Path(directory)
