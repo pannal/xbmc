@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise production sink states/timers through long TrueHD pauses.
+"""Exercise production sink states/timers through long PCM and passthrough pauses.
 
 Clock, actor delivery and transport are controlled host boundaries. This tests
 transport ownership and power management, not receiver lock or MAT validity.
@@ -191,9 +191,19 @@ struct CActiveAE {
 static bool configured(const CActiveAESink& sink) {
   return sink.m_state==S_TOP_CONFIGURED_PLAY || sink.m_state==S_TOP_CONFIGURED_SILENCE;
 }
+// Formats: 0 IEC TrueHD, 1 IEC AC3, 2 PCM, 3 AudioTrack RAW TrueHD, 4 AudioTrack RAW AC3.
+static void Setup(CActiveAE& engine,int format,bool keepalive){
+  if(format==2){engine.m_mode=CActiveAE::MODE_PCM;engine.sink.m_requestedFormat.m_dataFormat=AE_FMT_FLOAT;}
+  if(format==1||format==4){engine.m_sinkFormat.m_streamInfo.m_type=CAEStreamInfo::STREAM_TYPE_AC3;
+                           engine.sink.m_sinkFormat.m_streamInfo.m_type=CAEStreamInfo::STREAM_TYPE_AC3;}
+  if(format>=3)engine.sink.m_needIecPack=false;
+  if(!keepalive)engine.sink.m_silenceTimeOut=0min;
+}
 int main(){
+  // A paused PCM or IEC-packed stream keeps its transport for the whole pause.
+  for(int format=0;format<3;++format)
   for(auto paused:{65001ms,75000ms,3600000ms}){
-    now=0ms;CActiveAE engine;CActiveAEStream stream;
+    now=0ms;CActiveAE engine;CActiveAEStream stream;Setup(engine,format,true);
     engine.Pause(&stream);
     auto& sink=engine.sink;
     assert(sink.m_pauseBridge);
@@ -211,14 +221,11 @@ int main(){
     sink.Tick(paused+60002ms);sink.Tick(paused+60003ms);sink.Tick(paused+70003ms);
     assert(sink.transport.drains==1 && sink.transport.closes==1);
   }
-  // PCM, AC3, AudioTrack RAW and disabled keepalive retain their silence policy.
-  for(int mode=0;mode<4;++mode){
-    now=0ms;CActiveAE engine;CActiveAEStream stream;
-    if(mode==0){engine.m_mode=CActiveAE::MODE_PCM;engine.sink.m_requestedFormat.m_dataFormat=AE_FMT_FLOAT;}
-    if(mode==1){engine.m_sinkFormat.m_streamInfo.m_type=CAEStreamInfo::STREAM_TYPE_AC3;
-               engine.sink.m_sinkFormat.m_streamInfo.m_type=CAEStreamInfo::STREAM_TYPE_AC3;}
-    if(mode==2)engine.sink.m_needIecPack=false;
-    if(mode==3)engine.sink.m_silenceTimeOut=0min;
+  // AudioTrack RAW and disabled keepalive retain their silence policy.
+  for(int format=0;format<5;++format)
+  for(bool keepalive:{false,true}){
+    if(keepalive && format<3)continue;
+    now=0ms;CActiveAE engine;CActiveAEStream stream;Setup(engine,format,keepalive);
     engine.Pause(&stream);
     engine.sink.Tick(75000ms);engine.sink.Tick(75001ms);engine.sink.Tick(85001ms);
     assert(engine.sink.transport.drains==1 && engine.sink.transport.closes==1);
@@ -289,9 +296,15 @@ def main():
             ("idle-resume-not-streaming", sink, engine.replace(
                 "streaming = true;", "streaming = false;")),
             ("stop-leaks-transport", sink, engine.replace("bool paused = false;", "bool paused = true;")),
-            ("pcm-retains-transport", sink.replace(
-                "m_needIecPack &&\n        m_requestedFormat.m_dataFormat == AE_FMT_RAW &&",
-                ""), engine),
+            ("pcm-releases-transport", sink.replace(
+                "(m_requestedFormat.m_dataFormat != AE_FMT_RAW || m_needIecPack)",
+                "m_requestedFormat.m_dataFormat == AE_FMT_RAW && m_needIecPack"), engine),
+            ("only-truehd-keeps-transport", sink.replace(
+                "(m_requestedFormat.m_dataFormat != AE_FMT_RAW || m_needIecPack)",
+                "m_needIecPack && m_requestedFormat.m_dataFormat == AE_FMT_RAW &&\n"
+                "        m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD"), engine),
+            ("audiotrack-raw-keeps-transport", sink.replace(
+                "(m_requestedFormat.m_dataFormat != AE_FMT_RAW || m_needIecPack)", "true"), engine),
             ("disabled-keepalive-ignored", sink.replace(
                 "m_silenceTimeOut > std::chrono::minutes::zero() &&", ""), engine),
             ("live-keepalive-disable-ignored", sink.replace(
