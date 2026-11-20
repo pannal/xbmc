@@ -54,8 +54,11 @@ void CGLTexture::DestroyTextureObject()
 {
   if (m_texture)
   {
-    CServiceBroker::GetGUI()->GetTextureManager().ReleaseHwTexture(m_texture,
-                                                                std::move(m_externalBacking));
+    if (auto* gui = CServiceBroker::GetGUI())
+      gui->GetTextureManager().ReleaseHwTexture(m_texture, std::move(m_externalBacking));
+    else
+      // GL context teardown reclaims the name after the deletion queue is gone.
+      m_externalBacking.reset();
     m_texture = 0;
   }
 }

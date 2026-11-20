@@ -749,16 +749,20 @@ bool CGUITexture::CalculateSize()
 
 void CGUITexture::FreeResources(bool immediately /* = false */)
 {
-  if (m_isAllocated == LARGE || m_isAllocated == LARGE_FAILED)
-    CServiceBroker::GetGUI()->GetLargeTextureManager().ReleaseImage(
-        m_info.filename, immediately || (m_isAllocated == LARGE_FAILED), m_directConsumer);
-  else if (m_isAllocated == NORMAL && m_texture.size())
-    CServiceBroker::GetGUI()->GetTextureManager().ReleaseTexture(m_info.filename, immediately);
+  // A window can retain its list-item textures past GUI shutdown.
+  if (auto* gui = CServiceBroker::GetGUI())
+  {
+    if (m_isAllocated == LARGE || m_isAllocated == LARGE_FAILED)
+      gui->GetLargeTextureManager().ReleaseImage(
+          m_info.filename, immediately || (m_isAllocated == LARGE_FAILED), m_directConsumer);
+    else if (m_isAllocated == NORMAL && m_texture.size())
+      gui->GetTextureManager().ReleaseTexture(m_info.filename, immediately);
 
-  if (m_diffuse.size())
-    CServiceBroker::GetGUI()->GetTextureManager().ReleaseTexture(m_info.diffuse, immediately);
+    if (m_diffuse.size())
+      gui->GetTextureManager().ReleaseTexture(m_info.diffuse, immediately);
+  }
+
   m_diffuse.Reset();
-
   m_texture.Reset();
 
   ResetAnimState();
