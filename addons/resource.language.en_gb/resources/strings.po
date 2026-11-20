@@ -27489,6 +27489,16 @@ msgctxt "#60627"
 msgid "For Player-Led output on projectors whose automatic dynamic-range detection flip-flops between SDR and HDR. Re-applies the Dolby Vision / VS10 output after the resolution switches at playback start (the same effect as manually toggling the VS10 mode). May cause a brief blip at playback start, so leave this off unless you actually see SDR/HDR flickering."
 msgstr ""
 
+#: system/settings/settings.xml
+msgctxt "#60628"
+msgid "Seamless SDR/HDR10 switching"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60629"
+msgid "Avoids display resyncs when switching between SDR and HDR10 at the same resolution and refresh rate. SDR is sent with BT.2020 colourimetry (colour-converted, so it should look unchanged), and HDR10 is signalled while the video loads so the display can switch before the picture appears. Only plain HDR10 (or a Dolby Vision base layer when Dolby Vision output is off) is affected; HDR10+, HLG, Dolby Vision output and display mode changes use the normal path. Turn off if menus show wrong colours, the display fails to enter HDR, or the picture is corrupted."
+msgstr ""
+
 #. "Dolby Vision HDR Bypass"
 #: system/settings/settings.xml
 msgctxt "#60644"

@@ -318,8 +318,11 @@ namespace KODI {namespace MEMORY {
 void AlignedFree(uint8_t* data) {++freed; delete[] data;}
 }}
 using DLDemuxPacket=std::tuple<uint8_t*,uint32_t,bool,double>;
+int hdrPrearmCancels=0;
+void aml_hdr10_prearm_cancel(uint64_t) {++hdrPrearmCancels;}
 class CDVDVideoCodecAmlogic {
 public:
+  uint64_t m_hdrPrearm{0};
   std::shared_ptr<CAMLCodec> m_Codec{std::make_shared<CAMLCodec>()};
   struct {DOVIELType dovi_el_type{DOVIELType::NONE}; int codec{AV_CODEC_ID_H264};} m_hints;
   struct {float speed{1.0f}; float GetSpeed() const {return speed;}} m_dataCacheCore;
