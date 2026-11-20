@@ -11,6 +11,8 @@
 #include "File.h"
 #include "IFile.h"
 
+#include <functional>
+
 namespace XFILE
 {
   class CImageFile: public IFile
@@ -27,8 +29,11 @@ namespace XFILE
     void Close() override;
     int64_t GetPosition() override;
     int64_t GetLength() override;
+    // IOCTRL_READ_INTERRUPT reaches the fetch of an image that is not cached yet.
+    int IoControl(EIoControl request, void* param) override;
 
   protected:
     CFile m_file;
+    std::function<bool()> m_readInterrupt;
   };
 }

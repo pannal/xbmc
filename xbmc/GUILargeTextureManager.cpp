@@ -10,6 +10,7 @@
 
 #include "ServiceBroker.h"
 #include "TextureCache.h"
+#include "TextureDatabase.h"
 #include "commons/ilog.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/Texture.h"
@@ -26,14 +27,17 @@
 #include <cassert>
 #include <chrono>
 #include <exception>
+#include <functional>
 #include <mutex>
 
 CImageLoader::CImageLoader(const std::string& path,
-                         bool useCache,
-                         std::shared_ptr<std::atomic_bool> cancelled,
-                         std::shared_ptr<PERFORMANCE_CORES::CDecodePlacement> placement)
+                           bool useCache,
+                           std::shared_ptr<std::atomic_bool> cancelled,
+                           std::shared_ptr<PERFORMANCE_CORES::CDecodePlacement> placement,
+                           bool download)
   : m_path(path),
     m_texture(nullptr),
+    m_download(download),
     m_cancelled(std::move(cancelled)),
     m_placement(std::move(placement))
 {
@@ -73,6 +77,13 @@ bool CImageLoader::DoWork()
 {
   if (ShouldCancel(0, 0))
     return false;
+  if (m_start)
+  {
+    // Dropped before it ran: another request cached the image.
+    auto queued = DownloadStart::QUEUED;
+    if (!m_start->compare_exchange_strong(queued, DownloadStart::STARTED))
+      return false;
+  }
   // Until a foreground control draws this image, decode it off the render
   // thread's CPUs. The worker's CPUs are restored when the decode returns.
   PERFORMANCE_CORES::CDecodePlacement::Scope placement(m_placement);
@@ -84,9 +95,28 @@ bool CImageLoader::DoWork()
   if (texturePath.empty())
     return false;
 
+  // A decode job never waits on a server that a download job can stop waiting on; it
+  // leaves the image to one. Other network reads (generated thumbnails, VFS add-ons)
+  // stay on the decode workers.
+  const bool internet = CTextureCacheJob::IsInterruptibleDownload(texturePath);
+  // A download stops reading when the manager stops it (its token is the
+  // download's stop flag, see CDownload), or at shutdown.
+  std::function<bool()> interrupt;
+  if (m_download)
+  {
+    interrupt = [this]
+    { return (m_cancelled && m_cancelled->load(std::memory_order_acquire)) || ShouldCancel(0, 0); };
+    // Stopped while it waited for a worker: not even a request to the server.
+    if (interrupt())
+      return false;
+  }
+
+  // Before the cache check: the manager compares the reports since (see CachedSince).
+  if (internet && !m_download && m_cachedGeneration)
+    m_checkedGeneration = m_cachedGeneration->load();
   if (m_use_cache)
     loadPath = CServiceBroker::GetTextureCache()->CheckCachedImage(texturePath, needsChecking);
-  else
+  else if (!internet || m_download)
     loadPath = texturePath;
 
   if (!loadPath.empty())
@@ -95,7 +125,8 @@ bool CImageLoader::DoWork()
     auto start = std::chrono::steady_clock::now();
     m_texture =
         CTexture::LoadFromFile(loadPath, CServiceBroker::GetWinSystem()->GetGfxContext().GetWidth(),
-                               CServiceBroker::GetWinSystem()->GetGfxContext().GetHeight());
+                               CServiceBroker::GetWinSystem()->GetGfxContext().GetHeight(), false,
+                               "", interrupt);
 
     auto end = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
@@ -115,14 +146,24 @@ bool CImageLoader::DoWork()
     }
 
     // Fallthrough on failure:
-    CLog::Log(LOGERROR, "{} - Direct texture file loading failed for {}", __FUNCTION__, loadPath);
+    if (!interrupt || !interrupt())
+      CLog::Log(LOGERROR, "{} - Direct texture file loading failed for {}", __FUNCTION__, loadPath);
+  }
+
+  if (internet && !m_download)
+  {
+    m_needsDownload = true;
+    // The texture cache reports this URL when any request caches the image.
+    if (m_use_cache)
+      m_cacheURL = CTextureUtils::UnwrapImageURL(texturePath);
+    return false;
   }
 
   if (!m_use_cache)
     return false; // We're done
 
   // not in our texture cache or it failed to load from it, so try and load directly and then cache the result
-  CServiceBroker::GetTextureCache()->CacheImage(texturePath, &m_texture);
+  CServiceBroker::GetTextureCache()->CacheImage(texturePath, &m_texture, nullptr, interrupt);
 
   if (!m_texture)
     return false;
@@ -191,7 +232,14 @@ void CGUILargeTextureManager::CLargeTexture::SetTexture(std::shared_ptr<CTexture
 
 CGUILargeTextureManager::CGUILargeTextureManager() = default;
 
-CGUILargeTextureManager::~CGUILargeTextureManager() = default;
+CGUILargeTextureManager::~CGUILargeTextureManager()
+{
+  if (m_cachedLink)
+  {
+    std::unique_lock<CCriticalSection> lock(m_cachedLink->section);
+    m_cachedLink->manager = nullptr;
+  }
+}
 
 void CGUILargeTextureManager::CleanupUnusedImages(bool immediately)
 {
@@ -460,21 +508,51 @@ void CGUILargeTextureManager::ReleaseImage(const std::string& path, bool immedia
     CLargeTexture *image = queueIt->second;
     if (direct && image->m_directRefs)
       image->m_directRefs--;
-    if (image->DecrRef(true))
+    bool released = false;
+    if (image->m_refCount == 1)
     {
       // Find and cancel the job, remove from queue vector
       for (queueIterator it = m_queued.begin(); it != m_queued.end(); ++it)
       {
         if (it->second == image)
         {
-          if (it->first != 0)
+          if (image->m_downloadState == CLargeTexture::Download::RUNNING)
+          {
+            // The download goes on to fill the disk cache and keeps its
+            // callback, which returns its slot (see MAX_DOWNLOADS). Without
+            // the cache nothing would use it: drop it, or stop it if it runs.
+            for (auto download = m_downloadJobs.begin(); download != m_downloadJobs.end();
+                 ++download)
+            {
+              if (download->jobID != it->first)
+                continue;
+              download->wanted = false;
+              if (!download->useCache)
+              {
+                auto queued = DownloadStart::QUEUED;
+                if (download->start->compare_exchange_strong(queued, DownloadStart::DROPPED))
+                  m_downloadJobs.erase(download);
+                else
+                  download->stop->store(true, std::memory_order_release);
+              }
+              break;
+            }
+            released = true;
+          }
+          else if (it->first != 0)
             CServiceBroker::GetJobManager()->CancelJob(it->first);
           m_queued.erase(it);
           break;
         }
       }
+      m_downloadQueue.erase(std::remove(m_downloadQueue.begin(), m_downloadQueue.end(), image),
+                            m_downloadQueue.end());
       m_queuedLookup.erase(queueIt);
     }
+    image->DecrRef(true);
+    // A waiting image may now take this download's slot.
+    if (released)
+      StartNextDownload();
   }
 }
 
@@ -525,6 +603,9 @@ void CGUILargeTextureManager::QueueImage(const std::string& path,
     return; // already queued
   }
 
+  // Before the image's first cache check (see CachedSince).
+  WatchCachedImages();
+
   // queue the item
   CLargeTexture *image = new CLargeTexture(path);
   image->m_asyncUpload =
@@ -547,10 +628,13 @@ void CGUILargeTextureManager::QueueImage(const std::string& path,
 CGUILargeTextureManager::queueIterator CGUILargeTextureManager::StartQueuedImage(queueIterator it)
 {
   CLargeTexture* image = it->second;
-  it->first = CServiceBroker::GetJobManager()->AddJob(
-      new CImageLoader(image->GetPath(), image->m_useCache, image->GetCancellationToken(),
-                       image->m_decodePlacement),
-      this, CJob::PRIORITY_NORMAL);
+  // Its decode job already ran; the download queue starts the rest.
+  if (image->m_downloadState != CLargeTexture::Download::NONE)
+    return ++it;
+  auto* loader = new CImageLoader(image->GetPath(), image->m_useCache,
+                                  image->GetCancellationToken(), image->m_decodePlacement);
+  loader->m_cachedGeneration = m_cachedGeneration;
+  it->first = CServiceBroker::GetJobManager()->AddJob(loader, this, CJob::PRIORITY_NORMAL);
   if (it->first == 0)
   {
     // A stopped job manager cannot complete this request. Expose a load failure
@@ -655,12 +739,56 @@ void CGUILargeTextureManager::OnJobComplete(unsigned int jobID, bool success, CJ
     StartNextUpload();
     return;
   }
+  // A download returns its slot whether or not its image is still queued.
+  const auto download =
+      std::find_if(m_downloadJobs.begin(), m_downloadJobs.end(),
+                   [jobID](const CDownload& running) { return running.jobID == jobID; });
+  const bool downloadEnded = jobID != 0 && download != m_downloadJobs.end();
+  if (downloadEnded)
+    m_downloadJobs.erase(download);
   for (queueIterator it = m_queued.begin(); it != m_queued.end(); ++it)
   {
     if (it->first == jobID)
     { // found our job
       CImageLoader *loader = static_cast<CImageLoader*>(job);
       CLargeTexture *image = it->second;
+      if (!success && loader->m_needsDownload)
+      {
+        // The decode job found an internet image that is not cached.
+        it->first = 0;
+        image->m_cacheURL = loader->m_cacheURL;
+        if (CachedSince(loader->m_checkedGeneration, image->m_cacheURL))
+        {
+          // Cached by another request after the job's check: decode it from the cache,
+          // also rather than take over a download that may already have failed.
+          StartQueuedImage(it);
+          return;
+        }
+        // A download of it that was left running for the disk cache is taken over.
+        const auto running = std::find_if(
+            m_downloadJobs.begin(), m_downloadJobs.end(),
+            [image](const CDownload& d)
+            {
+              return !d.wanted && !d.stop->load() && d.path == image->GetPath() &&
+                     d.useCache == image->m_useCache;
+            });
+        if (running != m_downloadJobs.end())
+        {
+          running->wanted = true;
+          it->first = running->jobID;
+          image->m_downloadState = CLargeTexture::Download::RUNNING;
+          // A foreground request, before or after this, widens the running job's decode.
+          if (image->m_decodePlacement->IsNeededNow())
+            running->placement->NeededNow();
+          image->m_decodePlacement = running->placement;
+          return;
+        }
+        image->m_downloadState = CLargeTexture::Download::WAITING;
+        m_downloadQueue.push_back(image);
+        StartNextDownload();
+        return;
+      }
+      image->m_downloadState = CLargeTexture::Download::NONE;
       if (success)
       {
         loader->m_texture->SetBackgroundTexture(image->m_backgroundTexture);
@@ -688,7 +816,150 @@ void CGUILargeTextureManager::OnJobComplete(unsigned int jobID, bool success, CJ
       }
       QueueUpload(image);
       StartNextUpload();
+      break;
+    }
+  }
+  if (downloadEnded)
+    StartNextDownload();
+}
+
+void CGUILargeTextureManager::WatchCachedImages()
+{
+  if (m_cachedLink)
+    return;
+  auto cache = CServiceBroker::GetTextureCache();
+  if (!cache)
+    return;
+  m_cachedLink = std::make_shared<CCachedLink>();
+  m_cachedLink->manager = this;
+  cache->SetCachedObserver(
+      [link = m_cachedLink](const std::string& url)
+      {
+        std::unique_lock<CCriticalSection> lock(link->section);
+        if (link->manager)
+          link->manager->OnImageCached(url);
+      });
+}
+
+bool CGUILargeTextureManager::CachedSince(uint64_t generation, const std::string& url) const
+{
+  if (url.empty() || m_recentCached.empty())
+    return false;
+  // Reports after the check were dropped: the cache may have it.
+  if (m_recentCached.front().first > generation + 1)
+    return true;
+  return std::any_of(m_recentCached.begin(), m_recentCached.end(),
+                     [generation, &url](const auto& report)
+                     { return report.first > generation && report.second == url; });
+}
+
+void CGUILargeTextureManager::OnImageCached(const std::string& url)
+{
+  std::unique_lock<CCriticalSection> lock(m_listSection);
+  m_recentCached.emplace_back(++*m_cachedGeneration, url);
+  if (m_recentCached.size() > MAX_RECENT_CACHED)
+    m_recentCached.pop_front();
+
+  for (auto waiting = m_downloadQueue.begin(); waiting != m_downloadQueue.end();)
+  {
+    CLargeTexture* image = *waiting;
+    if (image->m_cacheURL.empty() || image->m_cacheURL != url)
+    {
+      ++waiting;
+      continue;
+    }
+    // Cached by another request: a decode job reads it from the cache.
+    waiting = m_downloadQueue.erase(waiting);
+    image->m_downloadState = CLargeTexture::Download::NONE;
+    auto it = std::find_if(m_queued.begin(), m_queued.end(),
+                           [image](const auto& entry) { return entry.second == image; });
+    if (it != m_queued.end() && it->first == 0)
+      StartQueuedImage(it);
+  }
+
+  // A download job that has not started would only read the cache, at low priority.
+  bool freed = false;
+  for (auto download = m_downloadJobs.begin(); download != m_downloadJobs.end();)
+  {
+    auto queued = DownloadStart::QUEUED;
+    if (download->cacheURL.empty() || download->cacheURL != url ||
+        !download->start->compare_exchange_strong(queued, DownloadStart::DROPPED))
+    {
+      ++download;
+      continue;
+    }
+    // Its job returns at once whenever it runs; its slot returns now.
+    if (download->wanted)
+    {
+      const unsigned int jobID = download->jobID;
+      auto it = std::find_if(m_queued.begin(), m_queued.end(),
+                             [jobID](const auto& entry) { return entry.first == jobID; });
+      if (it != m_queued.end())
+      {
+        it->first = 0;
+        it->second->m_downloadState = CLargeTexture::Download::NONE;
+        StartQueuedImage(it);
+      }
+    }
+    download = m_downloadJobs.erase(download);
+    freed = true;
+  }
+  if (freed)
+    StartNextDownload();
+}
+
+void CGUILargeTextureManager::StartNextDownload()
+{
+  while (!m_downloadQueue.empty())
+  {
+    if (m_downloadJobs.size() >= MAX_DOWNLOADS)
+    {
+      // Stop downloads whose images are released, one per waiting image, the
+      // most recently started (least far along) first. Their slots return when
+      // their jobs end.
+      auto stopping = static_cast<std::size_t>(
+          std::count_if(m_downloadJobs.begin(), m_downloadJobs.end(),
+                        [](const CDownload& d) { return d.stop->load(); }));
+      for (auto d = m_downloadJobs.rbegin();
+           d != m_downloadJobs.rend() && stopping < m_downloadQueue.size(); ++d)
+      {
+        if (!d->wanted && !d->stop->load())
+        {
+          d->stop->store(true, std::memory_order_release);
+          ++stopping;
+        }
+      }
       return;
     }
+    CLargeTexture* image = m_downloadQueue.front();
+    m_downloadQueue.erase(m_downloadQueue.begin());
+    auto it = std::find_if(m_queued.begin(), m_queued.end(),
+                           [image](const auto& entry) { return entry.second == image; });
+    if (it == m_queued.end())
+      continue;
+    CDownload download;
+    download.path = image->GetPath();
+    download.useCache = image->m_useCache;
+    download.cacheURL = image->m_cacheURL;
+    download.placement = image->m_decodePlacement;
+    auto* loader = new CImageLoader(image->GetPath(), image->m_useCache, download.stop,
+                                    image->m_decodePlacement, true);
+    loader->m_start = download.start;
+    // Low priority: a download starts only while fewer than three jobs run, so
+    // decodes of cached images go first.
+    it->first = CServiceBroker::GetJobManager()->AddJob(loader, this, CJob::PRIORITY_LOW);
+    if (it->first == 0)
+    {
+      // A stopped job manager cannot complete this request; fail it like StartQueuedImage.
+      image->m_downloadState = CLargeTexture::Download::NONE;
+      m_allocated.push_back(image);
+      m_allocatedLookup[image->GetPath()] = image;
+      m_queuedLookup.erase(image->GetPath());
+      m_queued.erase(it);
+      continue;
+    }
+    image->m_downloadState = CLargeTexture::Download::RUNNING;
+    download.jobID = it->first;
+    m_downloadJobs.push_back(std::move(download));
   }
 }

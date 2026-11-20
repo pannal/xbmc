@@ -268,7 +268,9 @@ int NestDetect::m_nest = 0;
 class ProgressDialogHelper
 {
 public:
-  explicit ProgressDialogHelper(const std::string& heading)
+  explicit ProgressDialogHelper(const std::string& heading,
+                                const std::function<bool()>& interrupt = {})
+    : m_interrupt(interrupt)
   {
     if (CServiceBroker::GetAppMessenger()->IsProcessThread())
     {
@@ -310,6 +312,10 @@ public:
 
     while (!end_time.IsTimePast())
     {
+      // Before the check, which may block in a host name lookup.
+      if (m_interrupt && m_interrupt())
+        return Canceled;
+
       if (waitObj.SuccessWaiting())
         return Success;
 
@@ -337,6 +343,7 @@ public:
 
 private:
   CGUIDialogProgress* m_dialog = 0;
+  std::function<bool()> m_interrupt;
 };
 
 class NetworkStartWaiter : public WaitCondition
@@ -445,12 +452,12 @@ CWakeOnAccess &CWakeOnAccess::GetInstance()
   return sWakeOnAccess;
 }
 
-bool CWakeOnAccess::WakeUpHost(const CURL& url)
+bool CWakeOnAccess::WakeUpHost(const CURL& url, const std::function<bool()>& interrupt)
 {
   const std::string& hostName = url.GetHostName();
 
   if (!hostName.empty())
-    return WakeUpHost(hostName, url.Get(), url.IsProtocol("upnp"));
+    return WakeUpHost(hostName, url.Get(), url.IsProtocol("upnp"), interrupt);
 
   return true;
 }
@@ -460,7 +467,10 @@ bool CWakeOnAccess::WakeUpHost(const std::string& hostName, const std::string& c
   return WakeUpHost(hostName, customMessage, false);
 }
 
-bool CWakeOnAccess::WakeUpHost(const std::string& hostName, const std::string& customMessage, bool upnpMode)
+bool CWakeOnAccess::WakeUpHost(const std::string& hostName,
+                               const std::string& customMessage,
+                               bool upnpMode,
+                               const std::function<bool()>& interrupt)
 {
   if (!IsEnabled())
     return true; // bail if feature is turned off
@@ -478,7 +488,11 @@ bool CWakeOnAccess::WakeUpHost(const std::string& hostName, const std::string& c
       CLog::Log(LOGWARNING, "WakeOnAccess recursively called on gui-thread [{}]",
                 NestDetect::Level());
 
-    bool ret = WakeUpHost(server);
+    bool ret = WakeUpHost(server, interrupt);
+
+    // The caller gave up, perhaps before a wake packet went out: the next access tries again.
+    if (!ret && interrupt && interrupt())
+      return false;
 
     if (!ret) // extra log if we fail for some reason
       CLog::Log(LOGWARNING, "WakeOnAccess failed to bring up [{}] - there may be trouble ahead !",
@@ -491,11 +505,11 @@ bool CWakeOnAccess::WakeUpHost(const std::string& hostName, const std::string& c
   return true;
 }
 
-bool CWakeOnAccess::WakeUpHost(const WakeUpEntry& server)
+bool CWakeOnAccess::WakeUpHost(const WakeUpEntry& server, const std::function<bool()>& interrupt)
 {
   std::string heading = StringUtils::Format(LOCALIZED(13027), server.friendlyName);
 
-  ProgressDialogHelper dlg (heading);
+  ProgressDialogHelper dlg(heading, interrupt);
 
   {
     NetworkStartWaiter waitObj (m_netsettle_ms, server.host); // wait until network connected before sending wake-on-lan
@@ -551,7 +565,7 @@ bool CWakeOnAccess::WakeUpHost(const WakeUpEntry& server)
   // we have ping response ; just add extra wait-for-services before returning if requested
 
   {
-    WaitCondition waitObj ; // wait uninterruptible fixed time for services ..
+    WaitCondition waitObj ; // wait fixed time for services (ends early on the caller's interrupt)
 
     dlg.ShowAndWait (waitObj, server.wait_services_sec, LOCALIZED(13032));
 

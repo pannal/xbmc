@@ -16,6 +16,7 @@
 #include "addons/kodi-dev-kit/include/kodi/c-api/addon-instance/audiodecoder.h"
 #include "commons/ilog.h"
 #include "filesystem/File.h"
+#include "filesystem/FileFactory.h"
 #include "guilib/Texture.h"
 #include "imagefiles/SpecialImageLoaderFactory.h"
 #include "pictures/Picture.h"
@@ -62,8 +63,15 @@ bool CTextureCacheJob::DoWork()
   std::string path(CServiceBroker::GetTextureCache()->CheckCachedImage(m_url, needsRecaching));
   if (!path.empty() && !needsRecaching)
     return false;
-  if (CServiceBroker::GetTextureCache()->StartCacheImage(m_url))
-    return CacheTexture();
+  const auto cache = CServiceBroker::GetTextureCache();
+  if (cache->StartCacheImage(m_url, &m_fill))
+  {
+    // Ended here, not in the completion callback: cancelling a running job, as a skin
+    // unload does, removes the callback, and the fill would stay open for good.
+    const bool success = CacheTexture();
+    cache->OnCachingComplete(success, this);
+    return success;
+  }
 
   return false;
 }
@@ -84,6 +92,16 @@ bool IsPVROwnedImage(const std::string& additional_info)
 bool IsControl(const std::string& additional_info)
 {
   return additional_info == "flipped";
+}
+
+// An image:// owner that DecodeImageURL keeps and that CacheTexture treats as a special
+// generated image
+bool IsGeneratorOwner(const std::string& owner)
+{
+  const bool kept = owner == "music" || owner == "video" || owner == "picturefolder" ||
+                    StringUtils::StartsWith(owner, "video_") ||
+                    StringUtils::StartsWith(owner, "pvr") || StringUtils::StartsWith(owner, "epg");
+  return kept && !IsPVROwnedImage(owner);
 }
 
 // special generated images and images served via HTTP should not be regularly checked for changes
@@ -113,7 +131,7 @@ bool CTextureCacheJob::CacheTexture(std::unique_ptr<CTexture>* out_texture)
   if (m_details.updateable)
   {
     // generate the hash
-    m_details.hash = GetImageHash(image);
+    m_details.hash = GetImageHash(image, m_readInterrupt);
     if (m_details.hash.empty())
       return false;
 
@@ -124,7 +142,8 @@ bool CTextureCacheJob::CacheTexture(std::unique_ptr<CTexture>* out_texture)
     }
   }
 
-  std::unique_ptr<CTexture> texture = LoadImage(image, width, height, additional_info, true);
+  std::unique_ptr<CTexture> texture =
+      LoadImage(image, width, height, additional_info, true, m_readInterrupt);
   if (texture)
   {
     if (texture->HasAlpha())
@@ -146,6 +165,25 @@ bool CTextureCacheJob::CacheTexture(std::unique_ptr<CTexture>* out_texture)
     }
   }
   return false;
+}
+
+bool CTextureCacheJob::IsInterruptibleDownload(const std::string& image)
+{
+  std::string source = image;
+  if (StringUtils::StartsWith(image, "image://"))
+  {
+    // As DecodeImageURL: flipped overrides the owner
+    const CURL url(image);
+    if (!url.HasOption("flipped") && IsGeneratorOwner(url.GetUserName()))
+      return false;
+    source = url.GetHostName();
+  }
+  // As CFile opens it: after path substitution, through curl, which polls the read
+  // interrupt, unless a VFS add-on serves the protocol.
+  const CURL url(URIUtils::SubstitutePath(source));
+  const bool curl = url.IsProtocol("http") || url.IsProtocol("https") || url.IsProtocol("ftp") ||
+                    url.IsProtocol("ftps") || url.IsProtocol("dav") || url.IsProtocol("davs");
+  return curl && !XFILE::CFileFactory::IsVFSAddonProtocol(url);
 }
 
 bool CTextureCacheJob::ResizeTexture(const std::string &url, uint8_t* &result, size_t &result_size)
@@ -237,7 +275,8 @@ std::unique_ptr<CTexture> CTextureCacheJob::LoadImage(const std::string& image,
                                                       unsigned int width,
                                                       unsigned int height,
                                                       const std::string& additional_info,
-                                                      bool requirePixels)
+                                                      bool requirePixels,
+                                                      const std::function<bool()>& interrupt)
 {
   if (!additional_info.empty())
   {
@@ -249,13 +288,16 @@ std::unique_ptr<CTexture> CTextureCacheJob::LoadImage(const std::string& image,
 
   // Validate file URL to see if it is an image
   CFileItem file(image, false);
-  file.FillInMimeType();
+  file.FillInMimeType(true, interrupt);
+  // A stopped lookup leaves an unknown type; never go on to the download.
+  if (interrupt && interrupt())
+    return NULL;
   if (!(file.IsPicture() && !(file.IsZIP() || file.IsRAR() || file.IsCBR() || file.IsCBZ() ))
       && !StringUtils::StartsWithNoCase(file.GetMimeType(), "image/") && !StringUtils::EqualsNoCase(file.GetMimeType(), "application/octet-stream")) // ignore non-pictures
     return NULL;
 
   std::unique_ptr<CTexture> texture =
-      CTexture::LoadFromFile(image, width, height, requirePixels, file.GetMimeType());
+      CTexture::LoadFromFile(image, width, height, requirePixels, file.GetMimeType(), interrupt);
   if (!texture)
     return NULL;
 
@@ -268,7 +310,8 @@ std::unique_ptr<CTexture> CTextureCacheJob::LoadImage(const std::string& image,
   return texture;
 }
 
-std::string CTextureCacheJob::GetImageHash(const std::string &url)
+std::string CTextureCacheJob::GetImageHash(const std::string& url,
+                                           const std::function<bool()>& interrupt)
 {
   // silently ignore - we cannot stat these
   // in the case of upnp thumbs are/should be provided when filling the directory list, there's no reason to stat all object ids
@@ -277,7 +320,7 @@ std::string CTextureCacheJob::GetImageHash(const std::string &url)
     return "";
 
   struct __stat64 st;
-  if (XFILE::CFile::Stat(url, &st) == 0)
+  if (XFILE::CFile::Stat(CURL(url), &st, interrupt) == 0)
   {
     int64_t time = st.st_mtime;
     if (!time)

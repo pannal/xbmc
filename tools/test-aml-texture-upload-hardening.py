@@ -89,8 +89,12 @@ EGLBoolean eglReleaseThread()
 '''
 
 PUBLICATION_CLASSES = r'''
+#include <algorithm>
+#include <cstdint>
+namespace PERFORMANCE_CORES { struct CDecodePlacement { void NeededNow() {} bool IsNeededNow() { return false; } }; }
+enum class DownloadStart { QUEUED, STARTED, DROPPED };
 struct CJob { virtual ~CJob()=default; };
-struct CImageLoader : CJob { std::unique_ptr<CTexture> m_texture; };
+struct CImageLoader : CJob { std::unique_ptr<CTexture> m_texture; bool m_needsDownload=false; std::string m_cacheURL; uint64_t m_checkedGeneration=0; };
 struct CGUILargeTextureManager
 {
  struct CLargeTexture
@@ -99,6 +103,12 @@ struct CGUILargeTextureManager
   std::shared_ptr<CTexture> texture,m_pendingTexture;
   bool m_asyncUpload=false,m_gpuDemand=false,m_background=false,m_held=false,m_backgroundTexture=false;
   unsigned m_uploadJobID=0;
+  // Downloads execute separately in test-image-download-lane.
+  enum class Download { NONE, WAITING, RUNNING };
+  Download m_downloadState=Download::NONE;
+  bool m_useCache=true;
+  std::string m_cacheURL;
+  std::shared_ptr<PERFORMANCE_CORES::CDecodePlacement> m_decodePlacement=std::make_shared<PERFORMANCE_CORES::CDecodePlacement>();
   void SetTexture(std::shared_ptr<CTexture> value) { texture=std::move(value); }
   const std::string& GetPath() const { return path; }
  };
@@ -114,6 +124,14 @@ struct CGUILargeTextureManager
  // One admitted upload: OnJobComplete retires it and asks for the next.
  unsigned m_activeUploadJobID=0;
  void StartNextUpload() {}
+ struct CDownload { unsigned jobID=0; std::string path; std::string cacheURL; bool useCache=true; std::shared_ptr<std::atomic_bool> stop;
+  std::shared_ptr<std::atomic<DownloadStart>> start; std::shared_ptr<PERFORMANCE_CORES::CDecodePlacement> placement; bool wanted=true; };
+ std::vector<CLargeTexture*> m_downloadQueue;
+ std::vector<CDownload> m_downloadJobs;
+ void StartNextDownload() {}
+ void WatchCachedImages() {}
+ bool CachedSince(uint64_t, const std::string&) const { return false; }
+ queueIterator StartQueuedImage(queueIterator it) { return ++it; }
  void OnJobComplete(unsigned,bool,CJob*);
 };
 '''

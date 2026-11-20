@@ -81,9 +81,23 @@ IFile* CFileFactory::CreateLoader(const std::string& strFileName)
   return CreateLoader(url);
 }
 
-IFile* CFileFactory::CreateLoader(const CURL& url)
+bool CFileFactory::IsVFSAddonProtocol(const CURL& url)
 {
-  if (!CWakeOnAccess::GetInstance().WakeUpHost(url))
+  if (url.GetProtocol().empty() || !CServiceBroker::IsAddonInterfaceUp())
+    return false;
+  for (const auto& vfsAddon : CServiceBroker::GetVFSAddonCache().GetAddonInstances())
+  {
+    const auto prots = StringUtils::Split(vfsAddon->GetProtocols(), "|");
+    if (vfsAddon->HasFiles() &&
+        std::find(prots.begin(), prots.end(), url.GetProtocol()) != prots.end())
+      return true;
+  }
+  return false;
+}
+
+IFile* CFileFactory::CreateLoader(const CURL& url, const std::function<bool()>& interrupt)
+{
+  if (!CWakeOnAccess::GetInstance().WakeUpHost(url, interrupt))
     return NULL;
 
   if (!url.GetProtocol().empty() && CServiceBroker::IsAddonInterfaceUp())

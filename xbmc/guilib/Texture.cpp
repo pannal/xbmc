@@ -18,6 +18,7 @@
 #include "guilib/TextureBase.h"
 #include "guilib/iimage.h"
 #include "guilib/imagefactory.h"
+#include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
@@ -99,7 +100,8 @@ std::unique_ptr<CTexture> CTexture::LoadFromFile(const std::string& texturePath,
                                                  unsigned int idealWidth,
                                                  unsigned int idealHeight,
                                                  bool requirePixels,
-                                                 const std::string& strMimeType)
+                                                 const std::string& strMimeType,
+                                                 const std::function<bool()>& interrupt)
 {
 #if defined(TARGET_ANDROID)
   CURL url(texturePath);
@@ -124,7 +126,8 @@ std::unique_ptr<CTexture> CTexture::LoadFromFile(const std::string& texturePath,
   }
 #endif
   std::unique_ptr<CTexture> texture = CTexture::CreateTexture();
-  if (texture->LoadFromFileInternal(texturePath, idealWidth, idealHeight, requirePixels, strMimeType))
+  if (texture->LoadFromFileInternal(texturePath, idealWidth, idealHeight, requirePixels,
+                                    strMimeType, interrupt))
     return texture;
   return {};
 }
@@ -145,12 +148,13 @@ bool CTexture::LoadFromFileInternal(const std::string& texturePath,
                                     unsigned int maxWidth,
                                     unsigned int maxHeight,
                                     bool requirePixels,
-                                    const std::string& strMimeType)
+                                    const std::string& strMimeType,
+                                    const std::function<bool()>& interrupt)
 {
   if (URIUtils::HasExtension(texturePath, ".dds"))
   { // special case for DDS images
     CDDSImage image;
-    if (image.ReadFile(texturePath))
+    if (image.ReadFile(texturePath, interrupt))
     {
       Update(image.GetWidth(), image.GetHeight(), 0, image.GetFormat(), image.GetData(), false);
       return true;
@@ -167,7 +171,13 @@ bool CTexture::LoadFromFileInternal(const std::string& texturePath,
   XFILE::CFile file;
   std::vector<uint8_t> buf;
 
+  if (interrupt)
+    file.SetReadInterrupt(interrupt);
   if (file.LoadFile(texturePath, buf) <= 0)
+    return false;
+  // An interrupted read ends like the end of the file. Never decode, or let a
+  // caller cache, the part that arrived.
+  if (interrupt && interrupt())
     return false;
 
   CURL url(texturePath);
@@ -192,7 +202,20 @@ bool CTexture::LoadFromFileInternal(const std::string& texturePath,
 
   IImage* pImage;
 
-  if(strMimeType.empty())
+  const CURL source(texturePath);
+  if (strMimeType.empty() && interrupt && source.GetFileType().empty() &&
+      (source.IsProtocol("http") || source.IsProtocol("https") || source.IsProtocol("shout")))
+  {
+    // The decoder's type lookup would ask the server again, without the interrupt.
+    // Take the type of the answer just read.
+    std::string mimeType = file.GetProperty(XFILE::FILE_PROPERTY_MIME_TYPE);
+    const size_t options = mimeType.find(';');
+    if (options != std::string::npos)
+      mimeType.erase(options);
+    StringUtils::Trim(mimeType);
+    pImage = ImageFactory::CreateLoaderFromMimeType(mimeType);
+  }
+  else if (strMimeType.empty())
     pImage = ImageFactory::CreateLoader(texturePath);
   else
     pImage = ImageFactory::CreateLoaderFromMimeType(strMimeType);

@@ -84,7 +84,11 @@ namespace XFILE
 
       /* static function that will get content type of a file */
       static bool GetHttpHeader(const CURL &url, CHttpHeader &headers);
-      static bool GetMimeType(const CURL &url, std::string &content, const std::string &useragent="");
+      // interrupt: if set and it returns true, the request stops and the lookup fails.
+      static bool GetMimeType(const CURL& url,
+                              std::string& content,
+                              const std::string& useragent = "",
+                              const std::function<bool()>& interrupt = {});
       static bool GetContentType(const CURL &url, std::string &content, const std::string &useragent = "");
 
       /* static function that will get cookies stored by CURL in RFC 2109 format */

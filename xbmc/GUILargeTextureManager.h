@@ -14,6 +14,9 @@
 #include "utils/Job.h"
 
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <string>
@@ -22,6 +25,15 @@
 #include <vector>
 
 class CTexture;
+
+// A download job's start, decided once: the job takes STARTED when it runs, the manager
+// DROPPED for one not yet running whose image another request has cached.
+enum class DownloadStart
+{
+  QUEUED,
+  STARTED,
+  DROPPED
+};
 
 /*!
  \ingroup textures,jobs
@@ -34,10 +46,15 @@ class CTexture;
 class CImageLoader : public CJob
 {
 public:
+  /*!
+   \param download false for a decode job, which leaves an internet image that is not
+          cached to a download job (see m_needsDownload); true for that download job.
+   */
   CImageLoader(const std::string& path,
                bool useCache,
                std::shared_ptr<std::atomic_bool> cancelled = {},
-               std::shared_ptr<PERFORMANCE_CORES::CDecodePlacement> placement = {});
+               std::shared_ptr<PERFORMANCE_CORES::CDecodePlacement> placement = {},
+               bool download = false);
   ~CImageLoader() override;
 
   /*!
@@ -48,6 +65,16 @@ public:
   bool          m_use_cache; ///< Whether or not to use any caching with this image
   std::string    m_path; ///< path of image to load
   std::unique_ptr<CTexture> m_texture; ///< Texture object to load the image into \sa CTexture.
+  const bool m_download;
+  // Set by a decode job that failed only because the image must be downloaded,
+  // with the URL the texture cache stores it under (empty without the cache).
+  bool m_needsDownload{false};
+  std::string m_cacheURL;
+  // Decode jobs: the manager's count of texture cache reports, read before the cache check.
+  std::shared_ptr<const std::atomic<uint64_t>> m_cachedGeneration;
+  uint64_t m_checkedGeneration{0};
+  // Download jobs: see DownloadStart.
+  std::shared_ptr<std::atomic<DownloadStart>> m_start;
 
 private:
   std::shared_ptr<std::atomic_bool> m_cancelled;
@@ -209,6 +236,17 @@ private:
     unsigned int m_directRefs{0};
     // The frame in which a direct consumer last requested or processed it.
     unsigned int m_directFrame{0};
+    // An internet image that is not cached waits for, or has, a download job.
+    // Its queue entry then has no decode job to start.
+    enum class Download
+    {
+      NONE,
+      WAITING,
+      RUNNING
+    };
+    Download m_downloadState{Download::NONE};
+    // The texture cache's URL of a waiting download's image (see OnImageCached).
+    std::string m_cacheURL;
   };
 
   static bool DeferBackgrounds();
@@ -220,6 +258,55 @@ private:
   void QueueUpload(CLargeTexture* image);
   void StartNextUpload(); // m_listSection held; at most one job owns the upload context
   void RemoveUpload(CLargeTexture* image);
+  void StartNextDownload(); // m_listSection held
+
+  // Downloads run in their own jobs, at most MAX_DOWNLOADS at once and at low
+  // priority, so that a slow server never holds every worker that decodes
+  // cached images: the job manager starts no normal job while four jobs of any
+  // priority run. A download whose image is released keeps filling the disk
+  // cache, and a new request for that image takes it over, until an image
+  // waits for its slot; then its read is interrupted. One without the cache is
+  // stopped at once. Its callback stays, so the slot returns when the job ends.
+  static constexpr std::size_t MAX_DOWNLOADS = 2;
+  struct CDownload
+  {
+    unsigned int jobID{0};
+    std::string path;
+    std::string cacheURL;
+    bool useCache{true};
+    // The job's interrupt: set to free the slot for a waiting image, or when the
+    // last consumer of a download without the cache leaves.
+    std::shared_ptr<std::atomic_bool> stop{std::make_shared<std::atomic_bool>(false)};
+    std::shared_ptr<std::atomic<DownloadStart>> start{
+        std::make_shared<std::atomic<DownloadStart>>(DownloadStart::QUEUED)};
+    // The job's; a request that takes the download over adopts it.
+    std::shared_ptr<PERFORMANCE_CORES::CDecodePlacement> placement;
+    // False once its image is released.
+    bool wanted{true};
+  };
+  std::vector<CLargeTexture*> m_downloadQueue;
+  std::vector<CDownload> m_downloadJobs;
+
+  // An image that any request caches, such as a scan or a python add-on reading
+  // image://, is decoded from the cache instead of waiting for a download: a
+  // waiting one at once, one whose download has not started yet by dropping it,
+  // one a decode job leaves just after its cache check by the reports since
+  // that check. The texture cache reports through a link that outlives us.
+  void OnImageCached(const std::string& url);
+  void WatchCachedImages(); // m_listSection held
+  bool CachedSince(uint64_t generation, const std::string& url) const; // m_listSection held
+  struct CCachedLink
+  {
+    CCriticalSection section;
+    CGUILargeTextureManager* manager{nullptr};
+  };
+  std::shared_ptr<CCachedLink> m_cachedLink; // under m_listSection; set with the first image
+  // The texture cache's reports: their count (raised under m_listSection, read by
+  // decode jobs) and the latest ones (under m_listSection).
+  std::shared_ptr<std::atomic<uint64_t>> m_cachedGeneration{
+      std::make_shared<std::atomic<uint64_t>>(0)};
+  std::deque<std::pair<uint64_t, std::string>> m_recentCached;
+  static constexpr std::size_t MAX_RECENT_CACHED = 64;
 
   std::vector<CLargeTexture*> m_uploadQueue;
   unsigned int m_activeUploadJobID{0};

@@ -26,7 +26,10 @@ PRELUDE=r'''
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdint>
+#include <deque>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <mutex>
@@ -36,7 +39,7 @@ PRELUDE=r'''
 #include <unordered_map>
 #include <utility>
 #include <vector>
-namespace PERFORMANCE_CORES{struct CDecodePlacement{void NeededNow(){}struct Scope{explicit Scope(const std::shared_ptr<CDecodePlacement>&){}};};}
+namespace PERFORMANCE_CORES{struct CDecodePlacement{std::atomic<bool> needed{false};void NeededNow(){needed=true;}bool IsNeededNow(){return needed;}struct Scope{explicit Scope(const std::shared_ptr<CDecodePlacement>&){}};};}
 using namespace std::chrono_literals;
 static thread_local int heldLocks=0;
 static unsigned checks=0,cases=0;
@@ -60,6 +63,10 @@ struct State {
  bool delaySelection=false;
  Barrier decodeBarrier,uploadBarrier;
  void Decode(int n){if(n==blockDecode)decodeBarrier.Wait();}
+ // Network fixture for http paths: called by cache fills and uncached direct loads with the
+ // caller's read interrupt; false means the fetch failed or was interrupted.
+ std::function<bool(const std::string&,const std::function<bool()>&)> fetch;
+ std::atomic<int>fills{0},interruptibleFills{0};
 };
 static thread_local State*currentState=nullptr;
 struct CTexture {
@@ -82,7 +89,20 @@ struct CTexture {
   --state->leases;++state->releases;
   if(state->throwUpload)throw std::runtime_error("upload fixture partial failure");
  }
- static std::unique_ptr<CTexture>LoadFromFile(const std::string&,int,int){auto&s=*currentState;int n=++s.decodes;s.Decode(n);return s.directFails?nullptr:std::make_unique<CTexture>(&s);}
+ static std::unique_ptr<CTexture>LoadFromFile(const std::string&p,int,int,bool=false,const std::string& ="",const std::function<bool()>&interrupt={}){
+  auto&s=*currentState;if(p.rfind("http",0)==0&&s.fetch&&!s.fetch(p,interrupt))return nullptr;
+  int n=++s.decodes;s.Decode(n);return s.directFails?nullptr:std::make_unique<CTexture>(&s);}
+};
+struct URIUtils {static bool IsInternetStream(const std::string&p,bool){return p.rfind("http",0)==0;}};
+// Fixture image:// syntax: "image://SOURCE" unwraps; "image://SOURCE|OPTIONS" stays wrapped;
+// "image://video@SOURCE" is a generated thumbnail.
+struct CTextureUtils {
+ static std::string UnwrapImageURL(const std::string&p){return p.rfind("image://",0)==0&&p.find('|')==std::string::npos?p.substr(8):p;}
+};
+struct CTextureCacheJob {
+ static bool IsInterruptibleDownload(const std::string&p){
+  std::string source=p;if(p.rfind("image://",0)==0){const auto inner=p.substr(8);if(inner.rfind("video@",0)==0)return false;source=inner.substr(0,inner.find('|'));}
+  return source.rfind("http",0)==0;}
 };
 struct CTextureArray {
  std::vector<std::shared_ptr<CTexture>>m_textures;unsigned m_width=0,m_height=0;
@@ -116,7 +136,11 @@ struct FakeGUI {FakeTextureManager manager;FakeTextureManager&GetTextureManager(
 struct FakeCache {
  std::string CheckCachedImage(const std::string&p,bool&checking){checking=currentState->needsChecking;return currentState->cacheHit?p:"";}
  void BackgroundCacheImage(const std::string&){++currentState->refreshes;}
- void CacheImage(const std::string&,std::unique_ptr<CTexture>*out){auto&s=*currentState;int n=++s.decodes;s.Decode(n);if(!s.cacheFails)*out=std::make_unique<CTexture>(&s);}
+ std::function<void(const std::string&)> observer;int observers=0;
+ void SetCachedObserver(std::function<void(const std::string&)> o){observer=std::move(o);++observers;}
+ void CacheImage(const std::string&p,std::unique_ptr<CTexture>*out,void* =nullptr,const std::function<bool()>&interrupt={}){
+  auto&s=*currentState;++s.fills;if(interrupt)++s.interruptibleFills;if(s.fetch&&!s.fetch(p,interrupt))return;
+  int n=++s.decodes;s.Decode(n);if(!s.cacheFails)*out=std::make_unique<CTexture>(&s);}
 };
 struct FakeGraphics {int GetWidth()const{return 3840;}int GetHeight()const{return 2160;}};
 struct FakeWindow {FakeGraphics gfx;FakeGraphics&GetGfxContext(){return gfx;}};

@@ -134,68 +134,141 @@ void CTextureCache::BackgroundCacheImage(const std::string &url)
   AddJob(new CTextureCacheJob(path, details.hash));
 }
 
-bool CTextureCache::StartCacheImage(const std::string& image)
+bool CTextureCache::StartCacheImage(const std::string& image, uint64_t* fill /* = nullptr */)
 {
   std::unique_lock<CCriticalSection> lock(m_processingSection);
   std::set<std::string>::iterator i = m_processinglist.find(image);
   if (i == m_processinglist.end())
   {
     m_processinglist.insert(image);
+    m_fillIDs[image] = ++m_lastFillID;
+    if (fill)
+      *fill = m_lastFillID;
     return true;
   }
   return false;
 }
 
+void CTextureCache::EndFill(const std::string& url, uint64_t fill)
+{
+  const auto current = m_fillIDs.find(url);
+  if (fill == 0 || current == m_fillIDs.end() || current->second != fill)
+    return;
+  m_fillIDs.erase(current);
+  m_processinglist.erase(url);
+}
+
 std::string CTextureCache::CacheImage(const std::string& image,
                                       std::unique_ptr<CTexture>* texture /*= nullptr*/,
-                                      CTextureDetails* details /*= nullptr*/)
+                                      CTextureDetails* details /*= nullptr*/,
+                                      const std::function<bool()>& interrupt /*= {}*/)
 {
   std::string url = CTextureUtils::UnwrapImageURL(image);
   if (url.empty())
     return "";
 
-  std::unique_lock<CCriticalSection> lock(m_processingSection);
-  if (m_processinglist.find(url) == m_processinglist.end())
+  // A waiter fetches the image itself after the request it waited for stopped on that
+  // request's interrupt, at most this many times.
+  constexpr int MAX_REFETCHES = 2;
+  for (int attempt = 0;; ++attempt)
   {
-    m_processinglist.insert(url);
+    std::unique_lock<CCriticalSection> lock(m_processingSection);
+    if (m_processinglist.find(url) == m_processinglist.end())
+    {
+      m_processinglist.insert(url);
+      const uint64_t fill = m_fillIDs[url] = ++m_lastFillID;
+      lock.unlock();
+      if (attempt > 0)
+      {
+        // Another caller of the stopped fill may have fetched the image since this one
+        // looked. Owning the fill, nothing else can cache it while this looks again.
+        CTextureDetails tempDetails;
+        std::string cachedpath = GetCachedImage(url, details ? *details : tempDetails, true);
+        if (!cachedpath.empty())
+        {
+          {
+            std::unique_lock<CCriticalSection> lock(m_processingSection);
+            EndFill(url, fill);
+          }
+          m_completeEvent.Set();
+          if (texture)
+            *texture = CTexture::LoadFromFile(cachedpath, 0, 0);
+          return cachedpath;
+        }
+      }
+      // cache the texture directly
+      CTextureCacheJob job(url);
+      job.m_readInterrupt = interrupt;
+      job.m_fill = fill;
+      bool success = job.CacheTexture(texture);
+      OnCachingComplete(success, &job, !success && interrupt && interrupt());
+      if (success && details)
+        *details = job.m_details;
+      return success ? GetCachedPath(job.m_details.file) : "";
+    }
+    // Waiters count in under this lock, while the fill they wait for runs.
+    const auto running = m_fillIDs.find(url);
+    const uint64_t fill = running != m_fillIDs.end() ? running->second : 0;
+    ++m_waiting[fill];
     lock.unlock();
-    // cache the texture directly
-    CTextureCacheJob job(url);
-    bool success = job.CacheTexture(texture);
-    OnCachingComplete(success, &job);
-    if (success && details)
-      *details = job.m_details;
-    return success ? GetCachedPath(job.m_details.file) : "";
-  }
-  lock.unlock();
 
-  // wait for currently processing job to end.
-  while (true)
-  {
-    m_completeEvent.Wait(1000ms);
+    // wait for currently processing job to end.
+    bool stopped = false;
+    while (true)
+    {
+      if (interrupt && interrupt())
+      {
+        stopped = true;
+        break;
+      }
+      m_completeEvent.Wait(interrupt ? 50ms : 1000ms);
+      {
+        // The fill it counted in for ended, also if a later one already runs.
+        std::unique_lock<CCriticalSection> lock(m_processingSection);
+        const auto current = m_fillIDs.find(url);
+        if (current == m_fillIDs.end() || current->second != fill)
+          break;
+      }
+    }
+    bool interrupted = false;
     {
       std::unique_lock<CCriticalSection> lock(m_processingSection);
-      if (m_processinglist.find(url) == m_processinglist.end())
-        break;
+      interrupted = m_interrupted.find(fill) != m_interrupted.end();
+      if (--m_waiting[fill] == 0)
+      {
+        m_waiting.erase(fill);
+        m_interrupted.erase(fill);
+      }
+    }
+    if (stopped)
+      return "";
+
+    CTextureDetails tempDetails;
+    CTextureDetails* found = details ? details : &tempDetails;
+
+    std::string cachedpath = GetCachedImage(url, *found, true);
+    if (!cachedpath.empty())
+    {
+      if (texture)
+        *texture = CTexture::LoadFromFile(cachedpath, 0, 0);
+      return cachedpath;
+    }
+
+    // A request that failed on its own is not repeated. One whose caller gave up, such as a
+    // GUI download stopped for another image, says nothing about the image: fetch it here.
+    if (!interrupted || attempt >= MAX_REFETCHES)
+    {
+      CLog::Log(LOGDEBUG, "CTextureCache::{} - Return NULL texture because cache is not ready",
+                __FUNCTION__);
+      return "";
     }
   }
-  CTextureDetails tempDetails;
-  if (!details)
-    details = &tempDetails;
+}
 
-  std::string cachedpath = GetCachedImage(url, *details, true);
-  if (!cachedpath.empty())
-  {
-    if (texture)
-      *texture = CTexture::LoadFromFile(cachedpath, 0, 0);
-  }
-  else
-  {
-    CLog::Log(LOGDEBUG, "CTextureCache::{} - Return NULL texture because cache is not ready",
-              __FUNCTION__);
-  }
-
-  return cachedpath;
+void CTextureCache::SetCachedObserver(std::function<void(const std::string& url)> observer)
+{
+  std::unique_lock<CCriticalSection> lock(m_observerSection);
+  m_cachedObserver = std::move(observer);
 }
 
 bool CTextureCache::CacheImage(const std::string &image, CTextureDetails &details)
@@ -296,7 +369,9 @@ std::string CTextureCache::GetCachedPath(const std::string &file)
   return URIUtils::AddFileToFolder(profileManager->GetThumbnailsFolder(), file);
 }
 
-void CTextureCache::OnCachingComplete(bool success, CTextureCacheJob *job)
+void CTextureCache::OnCachingComplete(bool success,
+                                      CTextureCacheJob* job,
+                                      bool interrupted /* = false */)
 {
   if (success)
   {
@@ -308,18 +383,29 @@ void CTextureCache::OnCachingComplete(bool success, CTextureCacheJob *job)
 
   { // remove from our processing list
     std::unique_lock<CCriticalSection> lock(m_processingSection);
-    std::set<std::string>::iterator i = m_processinglist.find(job->m_url);
-    if (i != m_processinglist.end())
-      m_processinglist.erase(i);
+    EndFill(job->m_url, job->m_fill);
+    // Waiters count in before they wait, under this lock, so none can miss this.
+    if (interrupted && job->m_fill != 0 && m_waiting.find(job->m_fill) != m_waiting.end())
+      m_interrupted.insert(job->m_fill);
   }
 
   m_completeEvent.Set();
+
+  if (success)
+  {
+    std::function<void(const std::string&)> observer;
+    {
+      std::unique_lock<CCriticalSection> lock(m_observerSection);
+      observer = m_cachedObserver;
+    }
+    if (observer)
+      observer(job->m_url);
+  }
 }
 
 void CTextureCache::OnJobComplete(unsigned int jobID, bool success, CJob *job)
 {
-  if (strcmp(job->GetType(), kJobTypeCacheImage) == 0)
-    OnCachingComplete(success, static_cast<CTextureCacheJob*>(job));
+  // A CTextureCacheJob ends its fill itself (OnCachingComplete).
   return CJobQueue::OnJobComplete(jobID, success, job);
 }
 

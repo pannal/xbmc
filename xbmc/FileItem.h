@@ -22,6 +22,7 @@
 #include "utils/ISortable.h"
 #include "utils/SortUtils.h"
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -550,8 +551,9 @@ public:
    If m_mimetype is already set (non-empty), this function has no effect. For
    http:// and shout:// streams, this will query the stream (blocking operation).
    Set lookup=false to skip any internet lookups and always return immediately.
+   If interrupt is set and returns true, a web lookup stops and finds no type.
    */
-  void FillInMimeType(bool lookup = true);
+  void FillInMimeType(bool lookup = true, const std::function<bool()>& interrupt = {});
 
   /*!
   \brief Some sources do not support HTTP HEAD request to determine i.e. mime type

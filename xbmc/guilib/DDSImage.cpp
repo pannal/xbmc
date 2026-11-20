@@ -71,10 +71,12 @@ unsigned char *CDDSImage::GetData() const
   return m_data;
 }
 
-bool CDDSImage::ReadFile(const std::string &inputFile)
+bool CDDSImage::ReadFile(const std::string& inputFile, const std::function<bool()>& interrupt)
 {
   // open the file
   CFile file;
+  if (interrupt)
+    file.SetReadInterrupt(interrupt);
   if (!file.Open(inputFile))
     return false;
 
@@ -94,6 +96,9 @@ bool CDDSImage::ReadFile(const std::string &inputFile)
 
   // and read it in
   if (file.Read(m_data, m_desc.linearSize) != static_cast<ssize_t>(m_desc.linearSize))
+    return false;
+  // An interrupted read ends like the end of the file.
+  if (interrupt && interrupt())
     return false;
 
   file.Close();
