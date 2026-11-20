@@ -7,6 +7,7 @@ import argparse
 import json
 from pathlib import Path
 import runpy
+import xml.etree.ElementTree as ET
 ROOT=Path(__file__).resolve().parents[1]
 f=runpy.run_path(str(ROOT/'tools/test-aml-native-continuation.py'))
 function,run=f['function'],f['run']
@@ -22,9 +23,10 @@ PREFIX=r'''
 #include <unistd.h>
 #include <map>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <vector>
-using CSharedSection=std::recursive_mutex;
+using CSharedSection=std::shared_mutex;
 enum class SettingType {Integer,List,String};
 struct CSetting {virtual ~CSetting()=default;virtual SettingType GetType()const{return SettingType::Integer;}};
 using SettingConstPtr=std::shared_ptr<const CSetting>;
@@ -34,7 +36,7 @@ using IntegerSettingOptionsFiller=void(*)(const SettingConstPtr&,IntegerSettingO
 struct Manager {void* GetSettingOptionsFiller(const SettingConstPtr&){return nullptr;}};
 struct Logger {template<class...T> void warn(T&&...) {}};
 struct CSettingInt: CSetting,std::enable_shared_from_this<CSettingInt> {
- CSharedSection m_critical;
+ mutable CSharedSection m_critical;
  IntegerSettingOptionsFiller m_optionsFiller=nullptr;
  std::string m_optionsFillerName,m_id;
  Manager* m_settingsManager=nullptr;void* m_optionsFillerData=nullptr;
@@ -46,12 +48,22 @@ struct CSettingInt: CSetting,std::enable_shared_from_this<CSettingInt> {
  void SetValue(int v){m_value=v;++writes;}
  void OnSettingPropertyChanged(const SettingConstPtr&,const char*){++notifications;}
  bool DynamicOptionsPending()const{return m_dynamicOptionsPending.load();}
+ @TRY_VALUE@
  IntegerSettingOptions UpdateDynamicOptions(bool* pending=nullptr);
 };
 struct CSettingList: CSetting {std::shared_ptr<CSetting> definition;SettingType GetType()const override{return SettingType::List;}auto GetDefinition(){return definition;}};
 @UPDATE@
 bool forceModes=false;
 static bool force_modes(){return forceModes;}
+struct CSettings {static constexpr auto SETTING_COREELEC_AMLOGIC_DV_TV_PRESET="preset";};
+struct Settings {
+ int preset=1;
+ int GetInt(const char*) const{return preset;}
+ std::shared_ptr<CSetting> GetSetting(const char*) const{
+   auto value=std::make_shared<CSettingInt>();value->m_value=preset;return value;
+ }
+} optionsSettings;
+Settings* settings(){return &optionsSettings;}
 struct Localize {std::string Get(int id){return std::to_string(id);}} g_localizeStrings;
 enum DV_TYPE {DV_TYPE_DISPLAY_LED,DV_TYPE_PLAYER_LED_LLDV,DV_TYPE_PLAYER_LED_HDR,DV_TYPE_PLAYER_LED_HDR2,DV_TYPE_VS10_ONLY};
 constexpr int DOLBY_VISION_OUTPUT_MODE_BYPASS=5,DOLBY_VISION_OUTPUT_MODE_SDR10=4,DOLBY_VISION_OUTPUT_MODE_HDR10=2,DOLBY_VISION_OUTPUT_MODE_IPT=1;
@@ -127,6 +139,26 @@ void policy(){
  expect(dv_type_filler,{0,1,2,3,4});expect(dv_processor_filler,{0,2,1,4,3});
  expect(vs10_sdr_filler,{5,4,2,1});expect(vs10_hdr10_filler,{5,4,2,1});expect(vs10_hdr_hlg_filler,{5,4,2,1});expect(vs10_dv_filler,{4,1});assert(reads==before);forceModes=false;
 }
+void manual_policy(){
+ files.clear();
+ optionsSettings.preset=TV_PRESET_MANUAL;
+ expect(dv_type_filler,{1,4});
+ expect(dv_processor_filler,{0});
+ expect(vs10_sdr_filler,{5,4});expect(vs10_dv_filler,{4});
+ files[dvPath]="The Rx don't support DolbyVision";files[hdrPath]="SMPTE ST 2084: 1";
+ expect(dv_type_filler,{1,2,3,4});
+ expect(dv_processor_filler,{0,2,1});
+ auto setting=std::make_shared<CSettingInt>();setting->m_optionsFiller=dv_type_filler;
+ setting->m_value=DV_TYPE_PLAYER_LED_LLDV;
+ assert(values(setting->UpdateDynamicOptions())==std::vector<int>({1,2,3,4}));
+ assert(setting->m_value==DV_TYPE_PLAYER_LED_LLDV&&setting->writes==0);
+ for(int preset=TV_PRESET_AUTO;preset<=TV_PRESET_TCL;++preset){
+  optionsSettings.preset=preset;expect(dv_type_filler,{2,3,4});
+ }
+ files[dvPath]="LL_YCbCr_422_12BIT";
+ expect(dv_type_filler,{1,2,3,4});
+ optionsSettings.preset=TV_PRESET_AUTO;
+}
 void pending(){
  files[dvPath]="DV_RGB_444_8BIT";files[hdrPath]="SMPTE ST 2084: 1";
  auto setting=std::make_shared<CSettingInt>();setting->m_optionsFiller=dv_type_filler;
@@ -163,7 +195,7 @@ void partial(const SettingConstPtr&,IntegerSettingOptions& options,int& current,
 int main(){
  auto display=CAMLSession::FenceDisplay();assert(CAMLSession::TryBeginDisplay(display));assert(CAMLSession::EndDisplay(display,CAMLSession::DisplayPhase::READY));
  auto stream=decoder.Fence();assert(decoder.BeginMutation(stream)&&decoder.Complete(stream,true));
- policy();pending();auto setting=std::make_shared<CSettingInt>();setting->m_optionsFiller=partial;
+ policy();manual_policy();pending();auto setting=std::make_shared<CSettingInt>();setting->m_optionsFiller=partial;
  bool resultPending=false;assert(setting->UpdateDynamicOptions(&resultPending).empty()&&resultPending&&setting->m_value==42&&setting->writes==0);
  assert(setting->DynamicOptionsPending());
  setting->m_optionsFiller=ready;assert(values(setting->UpdateDynamicOptions(&resultPending))==std::vector<int>({7}));
@@ -174,9 +206,11 @@ int main(){
 def source():
     dv=(ROOT/'xbmc/windowing/amlogic/DolbyVisionAML.cpp').read_text()
     setting=(ROOT/'xbmc/settings/lib/Setting.cpp').read_text()
+    header=(ROOT/'xbmc/settings/lib/Setting.h').read_text()
     dialog=(ROOT/'xbmc/settings/dialogs/GUIDialogSettingsBase.cpp').read_text()
     gui=(ROOT/'xbmc/settings/windows/GUIControlSettings.cpp').read_text()
-    parts=[function(dv,'struct AMLDVOptions')+';',
+    parts=[function(dv,'enum TV_PRESET : int')+';',
+           function(dv,'struct AMLDVOptions')+';',
            function(dv,'static std::string read_dv_option_file(').replace('std::ifstream stream(path);','FixtureFile stream(path);'),
            function(dv,'static AMLDVOptions read_dv_options()')]
     names=['dv_type_filler','dv_processor_filler','add_vs10_bypass','add_vs10_dv_bypass','add_vs10_sdr','add_vs10_hdr10','add_vs10_dv','vs10_sdr_filler','vs10_hdr10_filler','vs10_hdr_hlg_filler','vs10_dv_filler']
@@ -191,6 +225,11 @@ def source():
     assert 'obj["optionspending"] = pending;' in rpc
     schema=json.loads((ROOT/'xbmc/interfaces/json-rpc/schema/types.json').read_text())
     assert schema['Setting.Details.SettingInt']['properties']['optionspending']['type']=='boolean'
+    xml=ET.parse(ROOT/'system/settings/settings.xml')
+    dependencies=xml.findall(".//setting[@id='coreelec.amlogic.dolbyvision.type']/dependencies/dependency")
+    assert any(dep.get('type')=='update' and dep.get('setting')==
+               'coreelec.amlogic.dolbyvision.tv.preset' for dep in dependencies)
+    code=code.replace('@TRY_VALUE@',function(header,'bool TryGetValue(int& value) const'))
     return code+TESTS
 
 def main():
@@ -205,6 +244,8 @@ def main():
           ('cache prior sink','const auto dv = read_dv_option_file(','static const auto dv = read_dv_option_file('),
           ('force mode consults native','if (force_modes())','if (false && force_modes())'),
           ('failed open becomes unsupported','if (!stream.is_open())','if (false && !stream.is_open())'),
+          ('manual LLDV hidden','if (cap.lowLatency || manual)','if (cap.lowLatency || (manual && false))'),
+          ('automatic LLDV forced','if (cap.lowLatency || manual)','if (cap.lowLatency || manual || true)'),
         ]:
             assert old in code,label
             run(code.replace(old,new),negative=True);print('REJECTED:',label)
