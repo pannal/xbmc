@@ -434,28 +434,31 @@ bool CEGLContextUtils::CreateContext(CEGLAttributesVec contextAttribs)
   // Background uploads retain the caller's attributes instead of inheriting
   // the automatic priority boost reserved for rendering.
   const CEGLAttributesVec uploadContextAttribs{contextAttribs};
-  if (CEGLUtils::HasExtension(m_eglDisplay, "EGL_IMG_context_priority"))
+  const bool supportsPriority = CEGLUtils::HasExtension(m_eglDisplay, "EGL_IMG_context_priority");
+  if (supportsPriority)
     contextAttribs.Add({{EGL_CONTEXT_PRIORITY_LEVEL_IMG, EGL_CONTEXT_PRIORITY_HIGH_IMG}});
 
   m_eglContext = eglCreateContext(m_eglDisplay, eglConfig,
                                   EGL_NO_CONTEXT, contextAttribs.Get());
-
-  if (CEGLUtils::HasExtension(m_eglDisplay, "EGL_IMG_context_priority"))
-  {
-    EGLint value{EGL_CONTEXT_PRIORITY_MEDIUM_IMG};
-
-    if (eglQueryContext(m_eglDisplay, m_eglContext, EGL_CONTEXT_PRIORITY_LEVEL_IMG, &value) != EGL_TRUE)
-      CEGLUtils::Log(LOGERROR, "failed to query EGL context attribute EGL_CONTEXT_PRIORITY_LEVEL_IMG");
-
-    if (value != EGL_CONTEXT_PRIORITY_HIGH_IMG)
-      CLog::Log(LOGDEBUG, "Failed to obtain a high priority EGL context");
-  }
 
   if (m_eglContext == EGL_NO_CONTEXT)
   {
     // This is expected to fail under some circumstances, so log as debug
     CLog::Log(LOGDEBUG, "Failed to create EGL context (EGL error {})", eglGetError());
     return false;
+  }
+
+  bool rendererHigh = false;
+  if (supportsPriority)
+  {
+    EGLint granted{EGL_NONE};
+    if (eglQueryContext(m_eglDisplay, m_eglContext, EGL_CONTEXT_PRIORITY_LEVEL_IMG, &granted) == EGL_TRUE)
+      rendererHigh = granted == EGL_CONTEXT_PRIORITY_HIGH_IMG;
+    else
+      CEGLUtils::Log(LOGERROR, "failed to query EGL context attribute EGL_CONTEXT_PRIORITY_LEVEL_IMG");
+
+    if (!rendererHigh)
+      CLog::Log(LOGDEBUG, "Failed to obtain a high priority EGL context");
   }
 
   m_textureUploadDisabled = m_textureUploadPoisoned;
@@ -473,8 +476,7 @@ bool CEGLContextUtils::CreateContext(CEGLAttributesVec contextAttribs)
     m_eglUploadContext = EGL_NO_CONTEXT;
   }
 
-  if (m_eglUploadContext != EGL_NO_CONTEXT &&
-      CEGLUtils::HasExtension(m_eglDisplay, "EGL_IMG_context_priority"))
+  if (m_eglUploadContext != EGL_NO_CONTEXT && supportsPriority)
   {
     EGLint priority{EGL_CONTEXT_PRIORITY_MEDIUM_IMG};
     if (eglQueryContext(m_eglDisplay, m_eglUploadContext, EGL_CONTEXT_PRIORITY_LEVEL_IMG,
@@ -482,6 +484,27 @@ bool CEGLContextUtils::CreateContext(CEGLAttributesVec contextAttribs)
       CLog::Log(LOGDEBUG, "EGL texture upload context priority: {:#x}", priority);
     else
       CEGLUtils::Log(LOGWARNING, "Failed to query EGL texture upload context priority");
+  }
+
+  // EGL may grant different priorities to contexts in the same share group.
+  // Enable the extra upload context only when it can match the GUI's grant.
+  if (m_eglUploadContext != EGL_NO_CONTEXT && rendererHigh)
+  {
+    CEGLAttributesVec highAttribs{uploadContextAttribs};
+    highAttribs.Add({{EGL_CONTEXT_PRIORITY_LEVEL_IMG, EGL_CONTEXT_PRIORITY_HIGH_IMG}});
+    m_eglUploadContextHigh =
+        eglCreateContext(m_eglDisplay, m_eglConfig, m_eglContext, highAttribs.Get());
+    EGLint granted{EGL_CONTEXT_PRIORITY_MEDIUM_IMG};
+    if (m_eglUploadContextHigh != EGL_NO_CONTEXT &&
+        (eglQueryContext(m_eglDisplay, m_eglUploadContextHigh, EGL_CONTEXT_PRIORITY_LEVEL_IMG,
+                         &granted) != EGL_TRUE ||
+         granted != EGL_CONTEXT_PRIORITY_HIGH_IMG))
+    {
+      eglDestroyContext(m_eglDisplay, m_eglUploadContextHigh);
+      m_eglUploadContextHigh = EGL_NO_CONTEXT;
+    }
+    CLog::Log(LOGDEBUG, "EGL high-priority texture upload context: {}",
+              m_eglUploadContextHigh != EGL_NO_CONTEXT ? "available" : "unavailable");
   }
 
   m_bufferAgeSupport = CEGLUtils::HasExtension(m_eglDisplay, "EGL_EXT_buffer_age");
@@ -619,15 +642,17 @@ void CEGLContextUtils::DestroyContext()
   m_textureUploadDisabled = true;
 
 #if defined(TARGET_LINUX) && defined(HAS_LIBAMCODEC) && HAS_GLES >= 2
-  if (m_eglUploadContext != EGL_NO_CONTEXT &&
-      CAMLAFBCTexture::HasConversionResources(m_eglUploadContext))
+  for (EGLContext upload : {m_eglUploadContext, m_eglUploadContextHigh})
   {
+    if (upload == EGL_NO_CONTEXT || !CAMLAFBCTexture::HasConversionResources(upload))
+      continue;
     // The lease lock excludes workers. Delete context-local converter objects
-    // before either EGL context is destroyed; a failed bind only drops metadata.
+    // before any EGL context is destroyed; a failed bind only drops metadata.
+    const EGLSurface surface =
+        upload == m_eglUploadContextHigh ? m_eglUploadSurfaceHigh : m_eglUploadSurface;
     const bool bound = !m_textureUploadPoisoned &&
-        eglMakeCurrent(m_eglDisplay, m_eglUploadSurface, m_eglUploadSurface,
-                       m_eglUploadContext) == EGL_TRUE;
-    CAMLAFBCTexture::ReleaseConversionResources(m_eglUploadContext);
+                       eglMakeCurrent(m_eglDisplay, surface, surface, upload) == EGL_TRUE;
+    CAMLAFBCTexture::ReleaseConversionResources(upload);
     if (bound)
       eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
   }
@@ -646,10 +671,19 @@ void CEGLContextUtils::DestroyContext()
     m_eglUploadContext = EGL_NO_CONTEXT;
   }
 
-  if (m_eglUploadSurface != EGL_NO_SURFACE)
+  if (m_eglUploadContextHigh != EGL_NO_CONTEXT)
   {
-    eglDestroySurface(m_eglDisplay, m_eglUploadSurface);
-    m_eglUploadSurface = EGL_NO_SURFACE;
+    eglDestroyContext(m_eglDisplay, m_eglUploadContextHigh);
+    m_eglUploadContextHigh = EGL_NO_CONTEXT;
+  }
+
+  for (auto* surface : {&m_eglUploadSurface, &m_eglUploadSurfaceHigh})
+  {
+    if (*surface != EGL_NO_SURFACE)
+    {
+      eglDestroySurface(m_eglDisplay, *surface);
+      *surface = EGL_NO_SURFACE;
+    }
   }
 }
 
@@ -663,31 +697,25 @@ bool CEGLContextUtils::CreateTextureUploadSurface()
     return true;
   }
 
-  return CreateTextureUploadPbuffer();
+  m_eglUploadSurface = CreateTextureUploadPbuffer();
+  return m_eglUploadSurface != EGL_NO_SURFACE;
 }
 
-bool CEGLContextUtils::CreateTextureUploadPbuffer()
+EGLSurface CEGLContextUtils::CreateTextureUploadPbuffer()
 {
   // Keep the primary window's config selection unchanged. WINDOW_BIT alone
   // does not promise that this same config can create an upload pbuffer.
   EGLint surfaceTypes{0};
   if (eglGetConfigAttrib(m_eglDisplay, m_eglConfig, EGL_SURFACE_TYPE, &surfaceTypes) != EGL_TRUE ||
       !(surfaceTypes & EGL_PBUFFER_BIT))
-    return false;
+    return EGL_NO_SURFACE;
 
   CEGLAttributesVec attribs;
   attribs.Add({{EGL_WIDTH, 1}, {EGL_HEIGHT, 1}});
-  m_eglUploadSurface = eglCreatePbufferSurface(m_eglDisplay, m_eglConfig, attribs.Get());
-  if (m_eglUploadSurface == EGL_NO_SURFACE)
-  {
-    CLog::Log(LOGWARNING,
-              "No surface for the EGL upload context (no EGL_KHR_surfaceless_context, pbuffer "
-              "EGL error {:#x})",
-              eglGetError());
-    return false;
-  }
-
-  return true;
+  const EGLSurface surface = eglCreatePbufferSurface(m_eglDisplay, m_eglConfig, attribs.Get());
+  if (surface == EGL_NO_SURFACE)
+    CEGLUtils::Log(LOGWARNING, "Failed to create a pbuffer for the EGL upload context");
+  return surface;
 }
 
 void CEGLContextUtils::DestroySurface()
@@ -750,18 +778,68 @@ bool CEGLContextUtils::BindTextureUploadContext(const std::atomic_bool* cancelle
       m_eglDisplay == EGL_NO_DISPLAY || m_eglUploadContext == EGL_NO_CONTEXT)
     return false;
 
-  bool bound = eglMakeCurrent(m_eglDisplay, m_eglUploadSurface, m_eglUploadSurface,
-                              m_eglUploadContext) == EGL_TRUE;
-  // Extension advertisement is not proof of bindability. Try a compatible
-  // pbuffer once before retiring an unusable upload path for this generation.
-  if (!bound && m_eglUploadSurface == EGL_NO_SURFACE && CreateTextureUploadPbuffer())
-    bound = eglMakeCurrent(m_eglDisplay, m_eglUploadSurface, m_eglUploadSurface,
-                           m_eglUploadContext) == EGL_TRUE;
+  const auto bind = [this](EGLContext context, EGLSurface surface) {
+    return eglMakeCurrent(m_eglDisplay, surface, surface, context) == EGL_TRUE;
+  };
+  const auto allowHigh = [this] {
+    return m_textureUploadHighPriority.load(std::memory_order_relaxed);
+  };
+  bool bound = false;
+  bool retireHigh = false;
+  if (m_eglUploadContextHigh != EGL_NO_CONTEXT && allowHigh())
+  {
+    bound = bind(m_eglUploadContextHigh, m_eglUploadSurfaceHigh);
+    if (!bound)
+    {
+      const bool surfaceless = m_eglUploadSurfaceHigh == EGL_NO_SURFACE;
+      if (surfaceless)
+        m_eglUploadSurfaceHigh = CreateTextureUploadPbuffer();
+      const bool retry = surfaceless && m_eglUploadSurfaceHigh != EGL_NO_SURFACE;
+      // If frame eligibility was cleared while allocating the pbuffer,
+      // keep the HIGH context and use the ordinary context for this upload.
+      if (!retry || allowHigh())
+      {
+        bound = retry && bind(m_eglUploadContextHigh, m_eglUploadSurfaceHigh);
+        retireHigh = !bound;
+        if (retireHigh)
+          CLog::LogF(LOGWARNING, "High-priority texture upload context unavailable (EGL error {:#x})",
+                     eglGetError());
+      }
+    }
+  }
   if (!bound)
   {
-    m_textureUploadDisabled = true;
-    CLog::LogF(LOGWARNING, "Disabling unavailable texture upload context; using render-thread uploads");
-    return false;
+    bound = bind(m_eglUploadContext, m_eglUploadSurface);
+    const bool retryMedium = !bound && m_eglUploadSurface == EGL_NO_SURFACE;
+    // Give the ordinary upload path first claim on pbuffer resources. The
+    // optional context may be holding the only available pbuffer.
+    if ((retryMedium || retireHigh) && m_eglUploadSurfaceHigh != EGL_NO_SURFACE)
+    {
+      eglDestroySurface(m_eglDisplay, m_eglUploadSurfaceHigh);
+      m_eglUploadSurfaceHigh = EGL_NO_SURFACE;
+    }
+    // Extension advertisement is not proof of bindability. Retry with a
+    // compatible pbuffer before disabling uploads for this generation.
+    if (retryMedium)
+    {
+      m_eglUploadSurface = CreateTextureUploadPbuffer();
+      bound = m_eglUploadSurface != EGL_NO_SURFACE && bind(m_eglUploadContext, m_eglUploadSurface);
+    }
+    if (!bound)
+    {
+      // Teardown owns both contexts when no share-group member can bind here.
+      m_textureUploadDisabled = true;
+      CLog::LogF(LOGWARNING, "Disabling unavailable texture upload context; using render-thread uploads");
+      return false;
+    }
+    if (retireHigh)
+    {
+#if defined(TARGET_LINUX) && defined(HAS_LIBAMCODEC) && HAS_GLES >= 2
+      CAMLAFBCTexture::ReleaseConversionResources(m_eglUploadContextHigh, m_eglUploadContext);
+#endif
+      eglDestroyContext(m_eglDisplay, m_eglUploadContextHigh);
+      m_eglUploadContextHigh = EGL_NO_CONTEXT;
+    }
   }
 
   m_currentUploadContext = this;

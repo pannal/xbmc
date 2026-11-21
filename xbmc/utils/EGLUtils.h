@@ -233,6 +233,11 @@ public:
   }
 
   bool BindTextureUploadContext(const std::atomic_bool* cancelled = nullptr);
+  // Set eligibility for future uploads. A bound upload keeps its context.
+  void SetTextureUploadHighPriority(bool high)
+  {
+    m_textureUploadHighPriority.store(high, std::memory_order_relaxed);
+  }
   bool UnbindTextureUploadContext();
   bool HasContext();
   bool HasTextureUploadContext() const;
@@ -241,7 +246,7 @@ public:
 private:
   void SurfaceAttrib();
   bool CreateTextureUploadSurface();
-  bool CreateTextureUploadPbuffer();
+  EGLSurface CreateTextureUploadPbuffer();
 
   EGLenum m_platform{EGL_NONE};
   bool m_platformSupported{false};
@@ -251,8 +256,14 @@ private:
   EGLContext m_eglContext{EGL_NO_CONTEXT};
   EGLConfig m_eglConfig{}, m_eglHDRConfig{};
   EGLContext m_eglUploadContext{EGL_NO_CONTEXT};
-  // EGL_NO_SURFACE when the upload context is bound surfaceless
+  // Separate upload context kept only when EGL grants HIGH priority to
+  // both the renderer and this context.
+  EGLContext m_eglUploadContextHigh{EGL_NO_CONTEXT};
+  std::atomic<bool> m_textureUploadHighPriority{false};
+  // Each upload context binds its own surface. Release the HIGH pbuffer
+  // if MEDIUM needs to allocate one.
   EGLSurface m_eglUploadSurface{EGL_NO_SURFACE};
+  EGLSurface m_eglUploadSurfaceHigh{EGL_NO_SURFACE};
   mutable CCriticalSection m_textureUploadLock;
   bool m_textureUploadDisabled{false};
   bool m_textureUploadPoisoned{false};

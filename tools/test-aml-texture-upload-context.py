@@ -278,7 +278,15 @@ public:
   EGLContext m_eglContext{EGL_NO_CONTEXT};
   EGLConfig m_eglConfig{reinterpret_cast<EGLConfig>(0x2)};
   EGLContext m_eglUploadContext{EGL_NO_CONTEXT};
+  EGLContext m_eglUploadContextHigh{EGL_NO_CONTEXT};
+  std::atomic<bool> m_textureUploadHighPriority{false};
+  // as in EGLUtils.h
+  void SetTextureUploadHighPriority(bool high)
+  {
+    m_textureUploadHighPriority.store(high, std::memory_order_relaxed);
+  }
   EGLSurface m_eglUploadSurface{EGL_NO_SURFACE};
+  EGLSurface m_eglUploadSurfaceHigh{EGL_NO_SURFACE};
   mutable CCriticalSection m_textureUploadLock;
   PFNEGLSETDAMAGEREGIONKHRPROC m_eglSetDamageRegionKHR{nullptr};
   bool m_partialUpdateSupport{false};
@@ -550,7 +558,8 @@ int main()
 
 def upload_classes(egl):
     classes = CLASSES
-    if 'const std::atomic_bool* cancelled' in function(egl, 'bool CEGLContextUtils::BindTextureUploadContext('):
+    bind = function(egl, 'bool CEGLContextUtils::BindTextureUploadContext(')
+    if 'const std::atomic_bool* cancelled' in bind:
         classes = classes.replace('BindTextureUploadContext()',
                                   'BindTextureUploadContext(const std::atomic_bool* cancelled = nullptr)')
     return classes
@@ -606,7 +615,7 @@ MUTATIONS = {
         r'  if \(!m_pGLContext\.HasTextureUploadContext\(\)\)\n    return false;\n', ''),
     # the AML hook is not wired to the upload context
     'unwired-aml-bind': (AML_SOURCE,
-        r'return m_pGLContext\.BindTextureUploadContext\((?:cancelled)?\);', 'return false;'),
+        r'return m_pGLContext\.BindTextureUploadContext\([^;]*\);', 'return false;'),
 }
 
 
@@ -656,9 +665,13 @@ def main():
         mutations['destroy-without-lock'] = (EGL_SOURCE,
             r'(void CEGLContextUtils::DestroyContext\(\)\s*\{[\s\S]*?)\s*std::unique_lock<CCriticalSection> lock\(m_textureUploadLock\);',
             r'\1')
+        bind = function(current[EGL_SOURCE], 'bool CEGLContextUtils::BindTextureUploadContext(')
+        single_bind = 'const auto bind = ' in bind
+        context = 'context' if single_bind else 'm_eglUploadContext'
+        surface = 'surface' if 'EGLSurface surface)' in bind else 'm_eglUploadSurface'
         mutations['bind-without-surface'] = (EGL_SOURCE,
-            r'eglMakeCurrent\(m_eglDisplay,\s*m_eglUploadSurface,\s*m_eglUploadSurface,\s*m_eglUploadContext\)',
-            'eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, m_eglUploadContext)')
+            rf'eglMakeCurrent\(m_eglDisplay,\s*{surface},\s*{surface},\s*{context}\)',
+            f'eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, {context})')
         # Removing the outer AML precheck has become safe: the hardened EGL
         # method independently rejects unavailable contexts. Check that benign
         # control, then remove the underlying admission gate as the destructive
@@ -670,7 +683,7 @@ def main():
             # Current AML delegates directly to the locked helper. Reinsert
             # the redundant advisory check as the benign comparison instead.
             body = function(current[path], 'bool CWinSystemAmlogicGLESContext::BindTextureUploadContext(')
-            assert body.endswith('{\n  return m_pGLContext.BindTextureUploadContext(cancelled);\n}')
+            assert re.search(r'return m_pGLContext\.BindTextureUploadContext\(cancelled[^;]*\);', body)
             advisory = body.replace('{\n', '{\n  if (!m_pGLContext.HasTextureUploadContext())\n    return false;\n', 1)
             ungated[path] = ungated[path].replace(body, advisory, 1)
         else:
@@ -702,7 +715,7 @@ def main():
             mutated[path] = current[path][:start] + changed + current[path][end:]
         else:
             mutated[path], count = re.subn(pattern, replacement, current[path])
-        assert count == (2 if hardened and name == 'bind-without-surface' else 1), 'mutation did not apply: ' + name
+        assert count == (2 if hardened and not single_bind and name == 'bind-without-surface' else 1), 'mutation did not apply: ' + name
         bad = run_case(args.output, 'negative-' + name,
                        source_builder(*(mutated[p] for p in files), baseline=False))
         assert bad.returncode != 0, 'destructive mutation survived: ' + name
