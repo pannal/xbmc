@@ -59,14 +59,15 @@ void CDemuxMultiSource::ClearScheduling()
   ++m_scheduleGeneration;
 }
 
-void CDemuxMultiSource::EnableStream(int64_t demuxerId, int id, bool enable)
+bool CDemuxMultiSource::EnableStream(int64_t demuxerId, int id, bool enable)
 {
   auto iter = m_demuxerMap.find(demuxerId);
   if (iter != m_demuxerMap.end())
   {
     DemuxPtr demuxer = iter->second;
-    demuxer->EnableStream(demuxerId, id, enable);
+    return demuxer->EnableStream(demuxerId, id, enable);
   }
+  return false;
 }
 
 void CDemuxMultiSource::Flush()
