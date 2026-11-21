@@ -569,7 +569,8 @@ void CVideoPlayerAudio::Process()
     // Control messages clear onlyPrioMsgs, but a partially submitted frame still
     // borrows codec storage. Submit it before another AddData can overwrite it.
     const bool pendingOutput = audioframe.nb_frames > audioframe.framesOut && !m_paused &&
-        m_processInfo.IsTempoAllowed(static_cast<float>(m_speed) / DVD_PLAYSPEED_NORMAL);
+        (m_syncState != IDVDStreamPlayer::SYNC_INSYNC ||
+         m_processInfo.IsTempoAllowed(static_cast<float>(m_speed) / DVD_PLAYSPEED_NORMAL));
     if (onlyPrioMsgs || pendingOutput)
     {
       priority = 1;

@@ -26,7 +26,7 @@ harness = r'''
 using namespace std::chrono_literals;
 constexpr int DVD_PLAYSPEED_NORMAL = 1000, DVD_PLAYSPEED_PAUSE = 0;
 enum MsgQueueReturnCode { MSGQ_OK, MSGQ_TIMEOUT };
-struct CDVDMsg { enum Type { GENERAL_RESYNC, DEMUXER_PACKET } type; };
+struct CDVDMsg { enum Type { PLAYER_REQUEST_STATE, DEMUXER_PACKET } type; };
 struct IDVDStreamPlayer { enum { SYNC_STARTING, SYNC_WAITSYNC, SYNC_INSYNC }; };
 struct Queue {
   std::deque<std::shared_ptr<CDVDMsg>> controls, packets;
@@ -71,10 +71,15 @@ struct Player {
   }
 };
 
-void retainedFrameSurvivesControl(int alreadySubmitted) {
+void retainedFrameSurvivesControl(int alreadySubmitted,
+                                 int syncState = IDVDStreamPlayer::SYNC_INSYNC,
+                                 int speed = DVD_PLAYSPEED_NORMAL) {
   Player player;
+  player.m_syncState = syncState;
+  player.m_speed = speed;
+  player.m_processInfo.allowed = speed == DVD_PLAYSPEED_NORMAL;
   player.audioframe.framesOut = alreadySubmitted;
-  player.m_messageQueue.put(CDVDMsg::GENERAL_RESYNC);
+  player.m_messageQueue.put(CDVDMsg::PLAYER_REQUEST_STATE);
   player.m_messageQueue.put(CDVDMsg::DEMUXER_PACKET);
   std::array<unsigned char, 4> decoderStorage{0x10, 0x11, 0x12, 0x13};
   const auto original = decoderStorage;
@@ -82,10 +87,8 @@ void retainedFrameSurvivesControl(int alreadySubmitted) {
   std::shared_ptr<CDVDMsg> message;
 
   assert(player.next(message) == MSGQ_OK);
-  assert(message->type == CDVDMsg::GENERAL_RESYNC);
+  assert(message->type == CDVDMsg::PLAYER_REQUEST_STATE);
   assert(!player.onlyPrioMsgs);
-  // Resync handles control state, not consumption of the outstanding frame.
-  player.m_syncState = IDVDStreamPlayer::SYNC_INSYNC;
   const auto next = player.next(message);
   if (next == MSGQ_OK) {
     // Feeding the next packet would reuse storage still borrowed by the frame.
@@ -109,6 +112,9 @@ int main() {
   // Both an aborted first submission and a partial write retain decoder bytes.
   retainedFrameSurvivesControl(0);
   retainedFrameSurvivesControl(2);
+  for (int submitted : {0, 2})
+    for (int speed : {DVD_PLAYSPEED_PAUSE, -2000})
+      retainedFrameSurvivesControl(submitted, IDVDStreamPlayer::SYNC_STARTING, speed);
 
   Player player;
   player.onlyPrioMsgs = false;
@@ -131,6 +137,10 @@ int main() {
   assert(player.m_messageQueue.requestedTimeout == 0ms);
 
   player.m_syncState = IDVDStreamPlayer::SYNC_WAITSYNC;
+  player.m_speed = DVD_PLAYSPEED_PAUSE;
+  player.m_processInfo.allowed = false;
+  assert(player.next(message) == MSGQ_TIMEOUT);
+  assert(player.m_messageQueue.requestedTimeout == 0ms);
   player.audioframe.framesOut = player.audioframe.nb_frames;
   assert(player.next(message) == MSGQ_TIMEOUT);
   assert(player.m_messageQueue.requestedPriority == 1);
