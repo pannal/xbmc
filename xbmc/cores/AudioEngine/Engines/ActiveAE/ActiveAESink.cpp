@@ -263,6 +263,7 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           m_extError = false;
           m_extSilenceTimer.Set(0ms);
           m_extStreaming = false;
+          SetPaused(false);
           ReturnBuffers();
           OpenSink();
 
@@ -294,6 +295,7 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           return;
 
         case CSinkControlProtocol::UNCONFIGURE:
+          SetPaused(false);
           ReturnBuffers();
           if (m_sink)
           {
@@ -310,6 +312,13 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
           msg->Reply(CSinkControlProtocol::ACC);
           return;
 
+        case CSinkControlProtocol::PAUSE:
+          ReturnBuffers(true);
+          // Arm before STREAMING(false) and PAUSED(true) follow, so no gap precedes the bridge.
+          m_pauseBridge = true;
+          msg->Reply(CSinkControlProtocol::ACC);
+          return;
+
         case CSinkControlProtocol::APPFOCUSED:
           m_extAppFocused = *(bool*)msg->data;
           SetSilenceTimer();
@@ -318,10 +327,21 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
 
         case CSinkControlProtocol::STREAMING:
           m_extStreaming = *(bool*)msg->data;
+          if (m_extStreaming)
+            m_extPaused = false;
+          return;
+
+        case CSinkControlProtocol::PAUSED:
+          SetPaused(*(bool*)msg->data);
           return;
 
         case CSinkControlProtocol::SETSILENCETIMEOUT:
           m_silenceTimeOut = std::chrono::minutes(*reinterpret_cast<int*>(msg->data));
+          if (m_extPaused)
+          {
+            SetSilenceTimer();
+            m_extTimeout = 0ms;
+          }
           return;
 
         case CSinkControlProtocol::SETNOISETYPE:
@@ -390,11 +410,20 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
         {
         case CSinkControlProtocol::STREAMING:
           m_extStreaming = *(bool*)msg->data;
+          if (m_extStreaming)
+            m_extPaused = false;
           SetSilenceTimer();
           if (!m_extSilenceTimer.IsTimePast())
           {
             m_state = S_TOP_CONFIGURED_SILENCE;
           }
+          m_extTimeout = 0ms;
+          return;
+        case CSinkControlProtocol::PAUSED:
+          SetPaused(*(bool*)msg->data);
+          SetSilenceTimer();
+          if (!m_extSilenceTimer.IsTimePast())
+            m_state = S_TOP_CONFIGURED_SILENCE;
           m_extTimeout = 0ms;
           return;
         case CSinkControlProtocol::VOLUME:
@@ -459,6 +488,13 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
         {
         case CSinkControlProtocol::STREAMING:
           m_extStreaming = *(bool*)msg->data;
+          if (m_extStreaming)
+            m_extPaused = false;
+          SetSilenceTimer();
+          m_extTimeout = 0ms;
+          return;
+        case CSinkControlProtocol::PAUSED:
+          SetPaused(*(bool*)msg->data);
           SetSilenceTimer();
           m_extTimeout = 0ms;
           return;
@@ -1002,7 +1038,7 @@ void CActiveAESink::OpenSink()
   m_swapState = CHECK_SWAP;
 }
 
-void CActiveAESink::ReturnBuffers()
+void CActiveAESink::ReturnBuffers(bool preserve)
 {
   Message *msg = nullptr;
   CSampleBuffer *samples;
@@ -1011,7 +1047,8 @@ void CActiveAESink::ReturnBuffers()
     if (msg->signal == CSinkDataProtocol::SAMPLE)
     {
       samples = *((CSampleBuffer**)msg->data);
-      msg->Reply(CSinkDataProtocol::RETURNSAMPLE, &samples, sizeof(CSampleBuffer*));
+      msg->Reply(preserve ? CSinkDataProtocol::PAUSEDSAMPLE : CSinkDataProtocol::RETURNSAMPLE,
+                 &samples, sizeof(CSampleBuffer*));
     }
     msg->Release();
   }
@@ -1037,13 +1074,26 @@ unsigned int CActiveAESink::OutputSamples(CSampleBuffer* samples)
       {
         m_packer->Reset();
         m_packer->Pack(m_sinkFormat.m_streamInfo, buffer[0], frames);
+        // Resume padding is queued ahead of the first packet that plays after a pause.
+        if (!m_extPaused)
+          m_pauseBridge = false;
       }
       else if (samples->pkt->pause_burst_ms > 0)
       {
-        // construct a pause burst if we have already output valid audio
-        bool burst = m_extStreaming && (m_packer->GetBuffer()[0] != 0);
-        if (!m_packer->PackPause(m_sinkFormat.m_streamInfo, samples->pkt->pause_burst_ms, burst))
-          skipSwap = true;
+        // Across a pause, whole-packet gaps carry silent packets of the same format, because
+        // some receivers discard the audio they still hold when the bitstream stops.
+        const bool silence =
+            m_pauseBridge &&
+            samples->pkt->pause_burst_ms ==
+                static_cast<int>(m_sinkFormat.m_streamInfo.GetDuration()) &&
+            m_packer->PackSilence(m_sinkFormat.m_streamInfo);
+        if (!silence)
+        {
+          // construct a pause burst if we have already output valid audio
+          bool burst = m_extStreaming && (m_packer->GetBuffer()[0] != 0);
+          if (!m_packer->PackPause(m_sinkFormat.m_streamInfo, samples->pkt->pause_burst_ms, burst))
+            skipSwap = true;
+        }
       }
       else
         m_packer->Reset();
@@ -1206,18 +1256,36 @@ void CActiveAESink::GenerateNoise()
   KODI::MEMORY::AlignedFree(noise);
 }
 
+void CActiveAESink::SetPaused(bool paused)
+{
+  m_extPaused = paused;
+  m_pauseBridge = paused;
+  if (!paused && m_packer)
+    m_packer->ResetSilence();
+}
+
 void CActiveAESink::SetSilenceTimer()
 {
   if (m_extStreaming)
     m_extSilenceTimeout = XbmcThreads::EndTime<decltype(m_extSilenceTimeout)>::Max();
   else if (m_extAppFocused) // handles no playback/GUI and playback in pause and seek
   {
+    // A paused stream still owns the transport, unlike GUI idle. Keep it for the whole
+    // pause so resuming does not reopen the device and make the receiver lock on again.
+    // AudioTrack RAW passthrough (no IEC packing) keeps its own pause policy.
+    const bool keepPausedTransport =
+        m_extPaused && m_silenceTimeOut > std::chrono::minutes::zero() &&
+        (m_requestedFormat.m_dataFormat != AE_FMT_RAW || m_needIecPack);
+
     // only true with AudioTrack RAW + passthrough + TrueHD
     const bool noSilenceOnPause =
         !m_needIecPack && m_requestedFormat.m_dataFormat == AE_FMT_RAW &&
         m_sinkFormat.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD;
 
-    m_extSilenceTimeout = (noSilenceOnPause) ? 0ms : m_silenceTimeOut;
+    if (keepPausedTransport)
+      m_extSilenceTimeout = XbmcThreads::EndTime<decltype(m_extSilenceTimeout)>::Max();
+    else
+      m_extSilenceTimeout = (noSilenceOnPause) ? 0ms : m_silenceTimeOut;
   }
   else
   {

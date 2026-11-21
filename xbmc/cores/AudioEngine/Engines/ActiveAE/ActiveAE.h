@@ -330,8 +330,14 @@ protected:
   AEAudioFormat GetInputFormat(AEAudioFormat *desiredFmt = NULL);
   CActiveAEStream* CreateStream(MsgStreamNew *streamMsg);
   void DiscardStream(CActiveAEStream *stream);
+  void SResumeStream(CActiveAEStream* stream);
+  void SPreservePausedPackets(CActiveAEStream* stream);
   void SFlushStream(CActiveAEStream *stream);
-  void FlushEngine();
+  bool FlushEngine();
+  void ReleasePausedSinkSamples();
+  void AbandonPausePreservation();
+  void SendPausedSinkSamples();
+  bool RunResumeEpoch();
   void ClearDiscardedBuffers();
   void SStopSound(CActiveAESound *sound);
   void DiscardSound(CActiveAESound *sound);
@@ -357,6 +363,13 @@ protected:
   bool m_bStateMachineSelfTrigger;
   std::chrono::milliseconds m_extTimeout;
   bool m_extError;
+  bool m_sinkFlushPending{false};
+  // Sink-format PCM returned by an acknowledged PAUSE, oldest first.
+  std::deque<CSampleBuffer*> m_pausedSinkSamples;
+  bool m_pausePreserved{false};
+  bool m_resumeEpoch{false};
+  std::unique_ptr<CActiveAEBufferPool> m_resumePadBuffers;
+  XbmcThreads::EndTime<> m_resumeEpochTimer;
   bool m_extDrain;
   XbmcThreads::EndTime<> m_extDrainTimer;
   std::chrono::milliseconds m_extKeepConfig;

@@ -95,7 +95,7 @@ struct Stats {
 struct Packet {uint8_t*data[1]{};unsigned nb_samples=61440;int pause_burst_ms=0;};
 struct CSampleBuffer {Packet*pkt=nullptr;void*pool=nullptr;};
 struct CAEUtil {static bool S16NeedsByteSwap(int,int output){return output==AE_FMT_S16BE;}};
-struct CActiveAESink {enum SwapState{SKIP_SWAP,NEED_BYTESWAP,CHECK_SWAP};Format m_requestedFormat,m_sinkFormat;bool m_needIecPack=true,m_extStreaming=false,m_extError=false;SwapState m_swapState=SKIP_SWAP;CAEBitstreamPacker*m_packer=nullptr;FakeSink*m_sink=nullptr;Stats*m_stats=nullptr;unsigned OutputSamples(CSampleBuffer*);void SwapInit(CSampleBuffer*);};
+struct CActiveAESink {enum SwapState{SKIP_SWAP,NEED_BYTESWAP,CHECK_SWAP};Format m_requestedFormat,m_sinkFormat;bool m_needIecPack=true,m_extStreaming=false,m_extError=false,m_extPaused=false,m_pauseBridge=false;SwapState m_swapState=SKIP_SWAP;CAEBitstreamPacker*m_packer=nullptr;FakeSink*m_sink=nullptr;Stats*m_stats=nullptr;unsigned OutputSamples(CSampleBuffer*);void SwapInit(CSampleBuffer*);};
 @OUTPUT@
 @SWAP@
 struct FakeMat {std::vector<uint8_t>v;bool PackTrueHD(const uint8_t*,int){return true;}std::vector<uint8_t>GetOutputFrame(){return v;}uint64_t GetOutputFrameNumber(){return 17;}bool HadDiscontinuity(){return false;}};
@@ -190,7 +190,11 @@ def build(root,directory,ref=None,mutation=None,sanitize=False,require_diagnosti
     harness=harness.replace('struct FakeMat','constexpr unsigned TRUEHD_BUF_SIZE=61440;constexpr double LOCAL_NOPTS=-1;\nstruct FakeMat',1)
     harness=harness.replace('constexpr unsigned TRUEHD_BUF_SIZE=61440;constexpr double LOCAL_NOPTS=-1;\nvoid script','void script')
     (directory/'main.cpp').write_text(harness)
-    for p in ['AEBitstreamPacker.cpp','AEBitstreamPacker.h','AEPackIEC61937.cpp','AEPackIEC61937.h']:(directory/p).write_text(read(ae+'Utils/'+p))
+    utils=['AEBitstreamPacker.cpp','AEBitstreamPacker.h','AEPackIEC61937.cpp','AEPackIEC61937.h']
+    # Revisions that pack silent packets need the generator as well.
+    silence='AEBitstreamSilence.h' in read(ae+'Utils/AEBitstreamPacker.cpp')
+    if silence:utils+=['AEBitstreamSilence.cpp','AEBitstreamSilence.h']
+    for p in utils:(directory/p).write_text(read(ae+'Utils/'+p))
     for p in ['Crc32.cpp','Crc32.h','EndianSwap.cpp','EndianSwap.h']:(directory/p).write_text(read('xbmc/utils/'+p))
     (directory/'utils').mkdir(exist_ok=True)
     (directory/'utils/StringUtils.h').write_text('#include <string>\nstruct StringUtils {static void ToLower(std::string&) {}};\n')
@@ -208,9 +212,11 @@ struct CLog {inline static std::vector<LogRecord>records;template<class T>static
     (directory/'AEChannelInfo.h').write_text('#pragma once\nconstexpr int AE_CH_RAW=1;struct CAEChannelInfo{unsigned n=0;void operator+=(int){n++;}unsigned Count()const{return n;}};\n')
     (directory/'AEStreamInfo.h').write_text(r'''
 #pragma once
-struct CAEStreamInfo{enum Type {STREAM_TYPE_TRUEHD,STREAM_TYPE_AC3,STREAM_TYPE_EAC3,STREAM_TYPE_DTSHD,STREAM_TYPE_DTSHD_MA,STREAM_TYPE_DTSHD_CORE,STREAM_TYPE_DTS_512,STREAM_TYPE_DTS_1024,STREAM_TYPE_DTS_2048};Type m_type=STREAM_TYPE_TRUEHD;unsigned m_sampleRate=48000,m_repeat=1,m_dtsPeriod=512;bool m_dataIsLE=false;};
+struct CAEStreamInfo{enum Type {STREAM_TYPE_TRUEHD,STREAM_TYPE_AC3,STREAM_TYPE_EAC3,STREAM_TYPE_DTSHD,STREAM_TYPE_DTSHD_MA,STREAM_TYPE_DTSHD_CORE,STREAM_TYPE_DTS_512,STREAM_TYPE_DTS_1024,STREAM_TYPE_DTS_2048};typedef Type DataType;Type m_type=STREAM_TYPE_TRUEHD;unsigned m_sampleRate=48000,m_repeat=1,m_dtsPeriod=512;bool m_dataIsLE=false;
+double GetDuration()const{double samples=m_type==STREAM_TYPE_TRUEHD?3840:m_type==STREAM_TYPE_AC3||m_type==STREAM_TYPE_EAC3?1536:m_type==STREAM_TYPE_DTS_1024?1024:m_type==STREAM_TYPE_DTS_2048?2048:512;unsigned rate=m_type!=STREAM_TYPE_TRUEHD?m_sampleRate:m_sampleRate==48000||m_sampleRate==96000||m_sampleRate==192000?192000:176400;return samples*1000/rate;}};
 ''')
     cmd=['g++','-std=c++17','-O1','-g','-DTARGET_POSIX','-I'+str(directory),str(directory/'main.cpp'),str(directory/'AEBitstreamPacker.cpp'),str(directory/'AEPackIEC61937.cpp'),str(directory/'Crc32.cpp'),str(directory/'EndianSwap.cpp'),'-o',str(directory/'run')]
+    if silence:cmd[-2:-2]=[str(directory/'AEBitstreamSilence.cpp')]
     if sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
     subprocess.run(cmd,check=True,capture_output=True,text=True)
     result=directory/'behavior.bin'
@@ -243,6 +249,7 @@ int main(int argc,char**argv){assert(argc==3);std::ifstream f(argv[1],std::ios::
     (target/'libavutil/common.h').write_text('#define FFALIGN(x,a) (((x)+(a)-1)&~((a)-1))\n')
     (target/'libavutil/intreadwrite.h').write_text('#define AV_RB16(p) (((unsigned)(p)[0]<<8)|(p)[1])\n#define AV_RB32(p) (((unsigned)AV_RB16(p)<<16)|AV_RB16((p)+2))\n')
     command=['g++','-std=c++17','-O1','-g','-DTARGET_POSIX','-I'+str(target),*[str(target/x) for x in ['main.cpp','AEBitstreamPacker.cpp','AEPackIEC61937.cpp','Crc32.cpp','EndianSwap.cpp','PackerMAT.cpp']],'-o',str(target/'catalog')]
+    if (target/'AEBitstreamSilence.cpp').exists():command[-2:-2]=[str(target/'AEBitstreamSilence.cpp')]
     if sanitize:command[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
     subprocess.run(command,check=True,capture_output=True,text=True)
     executed=subprocess.run([str(target/'catalog'),str(media),str(target/'records.json')],capture_output=True,text=True)
