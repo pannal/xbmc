@@ -698,6 +698,30 @@ bool GenerateDTS(const CAEStreamInfo& info,
   }
   return true;
 }
+
+// A DTS-HD packet is a core frame followed by an extension substream. Its
+// silent packet is a silent copy of the core alone, which the packer still
+// sends as DTS-HD so the receiver sees no format change.
+bool GenerateDTSHD(const CAEStreamInfo& info,
+                   const uint8_t* data,
+                   unsigned int size,
+                   std::vector<uint8_t>& out)
+{
+  if (info.m_dataIsLE || size < 8)
+    return false;
+  if (data[0] != 0x7F || data[1] != 0xFE || data[2] != 0x80 || data[3] != 0x01)
+    return false;
+  const unsigned int coreSize =
+      (((data[5] & 0x03) << 12) | (data[6] << 4) | (data[7] >> 4)) + 1; // FSIZE
+  if (coreSize + 4 > size)
+    return false;
+  const uint8_t* exss = data + coreSize;
+  if (exss[0] != 0x64 || exss[1] != 0x58 || exss[2] != 0x20 || exss[3] != 0x25)
+    return false;
+
+  out.assign(coreSize, 0);
+  return GenerateDTSFrame(data, out.data(), coreSize);
+}
 } // namespace
 
 bool CAEBitstreamSilence::Generate(const CAEStreamInfo& info,
@@ -722,6 +746,11 @@ bool CAEBitstreamSilence::Generate(const CAEStreamInfo& info,
       case CAEStreamInfo::STREAM_TYPE_DTS_2048:
       case CAEStreamInfo::STREAM_TYPE_DTSHD_CORE:
         generated = GenerateDTS(info, data, size, out);
+        break;
+
+      case CAEStreamInfo::STREAM_TYPE_DTSHD:
+      case CAEStreamInfo::STREAM_TYPE_DTSHD_MA:
+        generated = GenerateDTSHD(info, data, size, out);
         break;
 
       default:

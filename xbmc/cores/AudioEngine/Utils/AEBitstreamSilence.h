@@ -21,7 +21,8 @@ class CAEStreamInfo;
  * the same format while paused keeps the decoder running. The silent packet
  * keeps the size and header of the source packet so the receiver sees no format
  * change, and AC-3 and E-AC-3 frames are filled with skip data because some
- * receivers also mute frames that are mostly empty.
+ * receivers also mute frames that are mostly empty. A DTS-HD packet becomes a
+ * silent copy of its core frame, without the extension substream.
  */
 class CAEBitstreamSilence
 {
@@ -31,7 +32,8 @@ public:
    * \param info stream info of the packet
    * \param data the packet
    * \param size packet size in bytes
-   * \param out receives the silent packet, which has the same size as the packet
+   * \param out receives the silent packet, which has the same size as the packet, or the
+   *            size of its core frame for DTS-HD
    * \return false with an empty out if the packet is not supported
    */
   static bool Generate(const CAEStreamInfo& info,

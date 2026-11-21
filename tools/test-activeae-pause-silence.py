@@ -2,9 +2,9 @@
 """Host test for the silent frames that bridge passthrough pauses.
 
 On the tested receiver chain, the audio the receiver has already decoded is
-discarded when an AC-3, E-AC-3 or DTS bitstream stops, so the end of what
-played before a pause is never heard. While paused, the sink therefore keeps
-sending silent frames built from the last real packet.
+discarded when an AC-3, E-AC-3, DTS or DTS-HD bitstream stops, so the end of
+what played before a pause is never heard. While paused, the sink therefore
+keeps sending silent frames built from the last real packet.
 
 This test compiles the real generator, packer and sink code on the host and
 checks that:
@@ -12,7 +12,10 @@ checks that:
 * silent frames keep the size and header of the source frame, have their
   AC-3 and E-AC-3 CRCs recomputed (DTS frames are sent without CRC) and
   dither switched off, and unsupported packets are rejected;
-* the packer only builds silence from the last AC-3, E-AC-3 or DTS packet;
+* a DTS-HD packet becomes a silent copy of its DTS core alone, packed with
+  the burst type and period of the DTS-HD stream;
+* the packer only builds silence from the last AC-3, E-AC-3, DTS or DTS-HD
+  packet;
 * the sink only sends silence while the pause bridge is armed and the gap is
   exactly one frame long, and sends pause data otherwise;
 * pause data is zero-filled once the stream has stopped, even when a real
@@ -21,7 +24,8 @@ checks that:
 If FFmpeg is available (on PATH or via --ffmpeg), FFmpeg also encodes
 AC-3, E-AC-3 and DTS streams in many channel layouts, sample rates and
 bitrates, and the silent frames generated from them must decode to exact
-zeros with CRC checking on.
+zeros with CRC checking on. With --dts-hd, silence built from the packets
+of a DTS-HD stream and from their DTS core is checked the same way.
 
 Run with --negative-control to check that broken copies of the code fail.
 """
@@ -244,6 +248,7 @@ using Bytes = std::vector<uint8_t>;
 constexpr auto kAc3 = CAEStreamInfo::STREAM_TYPE_AC3;
 constexpr auto kEac3 = CAEStreamInfo::STREAM_TYPE_EAC3;
 constexpr auto kDts = CAEStreamInfo::STREAM_TYPE_DTS_512;
+constexpr auto kDtsHd = CAEStreamInfo::STREAM_TYPE_DTSHD_MA;
 constexpr auto kTrueHd = CAEStreamInfo::STREAM_TYPE_TRUEHD;
 // bit positions where the headers written by the *Frame functions end
 constexpr unsigned int AC3_BSI_END = 67, EAC3_BSI_END = 54, DTS_HEADER_END = 104;
@@ -350,6 +355,23 @@ Bytes DtsFrame(uint32_t seed)
   return w.Finish(size, seed);
 }
 
+// a DTS core frame followed by an extension substream
+Bytes DtsHdPacket(uint32_t seed)
+{
+  const unsigned int exssSize = 64;
+  BitWriter w;
+  w.Put(32, 0x64582025);
+  w.Put(8, 0); // user defined bits
+  w.Put(2, 0); // substream index
+  w.Put(1, 0); // short size fields
+  w.Put(8, 15); // header size
+  w.Put(16, exssSize - 1);
+  Bytes packet = DtsFrame(seed);
+  const Bytes exss = w.Finish(exssSize, seed + 1);
+  packet.insert(packet.end(), exss.begin(), exss.end());
+  return packet;
+}
+
 CAEStreamInfo Info(CAEStreamInfo::DataType type, bool littleEndian = false)
 {
   CAEStreamInfo info;
@@ -357,6 +379,14 @@ CAEStreamInfo Info(CAEStreamInfo::DataType type, bool littleEndian = false)
   info.m_sampleRate = 48000;
   info.m_repeat = 1;
   info.m_dataIsLE = littleEndian;
+  return info;
+}
+
+// DTS-HD with 512 samples per frame, packed into bursts of 2048 frames
+CAEStreamInfo DtsHdInfo(bool littleEndian = false)
+{
+  CAEStreamInfo info = Info(kDtsHd, littleEndian);
+  info.m_dtsPeriod = 2048;
   return info;
 }
 
@@ -473,6 +503,9 @@ void TestGenerator()
          "DTS: the silent frame keeps the size and header");
   Expect(Generate(Info(kDts, true), Swap16(dts)) == Swap16(silentDts),
          "DTS: little-endian packets give the same frame");
+  const Bytes dtsHd = DtsHdPacket(3);
+  Expect(Generate(DtsHdInfo(), dtsHd) == silentDts,
+         "DTS-HD: the silent packet is the silent core alone");
   Expect(Generate(Info(kAc3), ac3) == Generate(Info(kAc3), ac3),
          "AC-3: the silent frame is deterministic");
 
@@ -483,6 +516,14 @@ void TestGenerator()
   oddLittleEndian.push_back(0);
   CAEStreamInfo collected = Info(kEac3);
   collected.m_repeat = 6;
+  Bytes otherData = dtsHd;
+  otherData[dts.size()] = 0x7F; // no extension substream after the core
+  const Bytes coreless(dtsHd.begin() + dts.size(), dtsHd.end());
+  Bytes core14 = dtsHd;
+  const uint8_t sync14[] = {0x1F, 0xFF, 0xE8, 0x00};
+  std::copy(sync14, sync14 + 4, core14.begin());
+  Bytes extended = dtsHd;
+  extended[10] |= 0x10; // EXT_AUDIO
   struct Rejected
   {
     const char* name;
@@ -491,7 +532,12 @@ void TestGenerator()
   };
   const Rejected rejected[] = {
       {"TrueHD", Info(kTrueHd), ac3},
-      {"DTS-HD MA", Info(CAEStreamInfo::STREAM_TYPE_DTSHD_MA), dts},
+      {"DTS-HD without an extension substream", DtsHdInfo(), dts},
+      {"DTS-HD with other data after the core", DtsHdInfo(), otherData},
+      {"DTS-HD without a core", DtsHdInfo(), coreless},
+      {"DTS-HD with a 14-bit core", DtsHdInfo(), core14},
+      {"DTS-HD with core extensions", DtsHdInfo(), extended},
+      {"little-endian DTS-HD", DtsHdInfo(true), Swap16(dtsHd)},
       {"a truncated AC-3 frame", Info(kAc3), truncated},
       {"an AC-3 frame without sync word", Info(kAc3), noSync},
       {"E-AC-3 packets collected into one burst", collected, eac3},
@@ -519,7 +565,8 @@ std::vector<Case> Cases()
   return {{"AC-3", Info(kAc3), Ac3Frame(1, 20)},
           {"E-AC-3", Info(kEac3), Eac3Frame(2)},
           {"DTS", Info(kDts), dts},
-          {"little-endian DTS", Info(kDts, true), Swap16(dts)}};
+          {"little-endian DTS", Info(kDts, true), Swap16(dts)},
+          {"DTS-HD", DtsHdInfo(), DtsHdPacket(3)}};
 }
 
 void TestPacker()
@@ -539,6 +586,11 @@ void TestPacker()
   Expect(SilenceBurst(Info(kDts), DtsFrame(3)) ==
              SilenceBurst(Info(kDts, true), Swap16(DtsFrame(3))),
          "DTS: the silent burst does not depend on byte order");
+  const Bytes dtsHdBurst = Packed(DtsHdInfo(), DtsHdPacket(3));
+  const Bytes dtsHdSilence = SilenceBurst(DtsHdInfo(), DtsHdPacket(3));
+  Expect(dtsHdBurst.size() == 4 * 2048 && dtsHdSilence.size() == dtsHdBurst.size() &&
+             std::equal(dtsHdBurst.begin(), dtsHdBurst.begin() + 6, dtsHdSilence.begin()),
+         "DTS-HD: the silent burst keeps the burst type and period");
 
   CAEStreamInfo ac3Info = Info(kAc3);
   Bytes first = Ac3Frame(1, 20), second = Ac3Frame(4, 16);
@@ -717,7 +769,10 @@ void TestStoppedStream()
 // silent frames as records to stdout, with size 0 for a rejected frame
 int GenerateStream(const std::string& type)
 {
-  const CAEStreamInfo info = Info(type == "eac3" ? kEac3 : type == "dts" ? kDts : kAc3);
+  const CAEStreamInfo info = Info(type == "eac3"    ? kEac3
+                                  : type == "dts"   ? kDts
+                                  : type == "dtshd" ? kDtsHd
+                                                    : kAc3);
   uint32_t size = 0;
   while (std::fread(&size, sizeof(size), 1, stdin) == 1)
   {
@@ -775,6 +830,14 @@ MUTANTS = [
      "info.m_repeat == 0", 1),
     ("wrong-crc1", "AEBitstreamSilence.cpp", "PowPoly(CRC16_INVERSE_X, 8 * size58 - 16)",
      "PowPoly(CRC16_INVERSE_X, 8 * size58 - 8)", 1),
+    ("dtshd-extension-unchecked", "AEBitstreamSilence.cpp",
+     "  if (exss[0] != 0x64 || exss[1] != 0x58 || exss[2] != 0x20 || exss[3] != 0x25)\n"
+     "    return false;\n", "", 1),
+    ("dtshd-whole-packet", "AEBitstreamSilence.cpp", "out.assign(coreSize, 0);",
+     "out.assign(size, 0);", 1),
+    ("dtshd-not-silenced", "AEBitstreamPacker.cpp",
+     "STREAM_TYPE_DTSHD_CORE:\n    case CAEStreamInfo::STREAM_TYPE_DTSHD:\n"
+     "    case CAEStreamInfo::STREAM_TYPE_DTSHD_MA:\n", "STREAM_TYPE_DTSHD_CORE:\n", 1),
 ]
 
 
@@ -805,6 +868,14 @@ def crc16(data):
 
 def header(kind, frame):
     """Returns the size, samples per channel, channels and mode of a frame."""
+    if kind == "dtshd":
+        core = header("dts", frame)
+        exss = frame[core["size"]:core["size"] + 12]
+        if exss[:4] != b"\x64\x58\x20\x25":
+            raise ValueError("no DTS-HD extension substream")
+        wide = bits(exss, 42, 1)
+        return dict(core, core=core["size"],
+                    size=core["size"] + bits(exss, 51 + 4 * wide, 20 if wide else 16) + 1)
     if kind == "dts":
         if frame[:4] != b"\x7f\xfe\x80\x01":
             raise ValueError("no DTS sync word")
@@ -833,7 +904,7 @@ def header(kind, frame):
 def split(kind, data):
     frames, pos = [], 0
     while pos < len(data):
-        size = header(kind, data[pos:pos + 16])["size"]
+        size = header(kind, data[pos:pos + 16400])["size"]
         if pos + size > len(data):
             raise ValueError("truncated frame")
         frames.append(data[pos:pos + size])
@@ -871,8 +942,8 @@ def generate(binary, kind, frames):
 
 def decode(ffmpeg, kind, data):
     result = run_ffmpeg(ffmpeg, ["-xerror", "-err_detect", "crccheck+bitstream+explode", "-f",
-                                 kind, "-i", "pipe:0", "-f", "f32le", "-c:a", "pcm_f32le",
-                                 "pipe:1"], data)
+                                 "dts" if kind == "dtshd" else kind, "-i", "pipe:0", "-f",
+                                 "f32le", "-c:a", "pcm_f32le", "pipe:1"], data)
     error = result.stderr.decode(errors="replace").strip()
     if result.returncode or error:
         return None, error or f"exit code {result.returncode}"
@@ -888,8 +959,9 @@ def check_case(binary, ffmpeg, case):
             name += f" {kbps} kbps"
             break
     if "file" in case:
+        core = [] if kind == "dtshd" else ["-bsf:a", "dca_core"]
         data = run_ffmpeg(ffmpeg, ["-i", case["file"], "-map", "0:a:0", "-t", "2", "-c:a",
-                                   "copy", "-bsf:a", "dca_core", "-f", "dts", "pipe:1"]).stdout
+                                   "copy", *core, "-f", "dts", "pipe:1"]).stdout
     if not data:
         return [f"{name}: FFmpeg could not produce the stream"], 0, ""
     frames = split(kind, data)
@@ -902,6 +974,8 @@ def check_case(binary, ffmpeg, case):
     silent = generate(binary, kind, frames)
     if [bool(s) for s in silent] != [not h.get("ext_audio") for h in headers]:
         failures.append(f"{name}: wrong frames rejected")
+    if any(s and len(s) != h.get("core", h["size"]) for s, h in zip(silent, headers)):
+        failures.append(f"{name}: a silent packet has the wrong size")
     kept = [(s, h) for s, h in zip(silent, headers) if s]
     if kind == "ac3":
         for s, h in kept:
@@ -959,6 +1033,7 @@ def decode_cases(dts_hd):
                       "rate": rate, "kbps": kbps, "expect": {"ext_audio": 0}})
     if dts_hd:
         cases.append({"name": "DTS-HD core", "kind": "dts", "file": dts_hd})
+        cases.append({"name": "DTS-HD packets", "kind": "dtshd", "file": dts_hd})
     for kind in ("ac3", "eac3", "dts"):
         next(case for case in cases if case["kind"] == kind)["controls"] = True
     return cases
@@ -985,8 +1060,8 @@ def main():
     parser.add_argument("--ffmpeg", default=shutil.which("ffmpeg"),
                         help="FFmpeg that decodes the silent frames (default: from PATH)")
     parser.add_argument("--dts-hd", metavar="FILE",
-                        help="also check the DTS core of the first audio stream in FILE, "
-                             "given as a path FFmpeg can open")
+                        help="also check the DTS-HD packets of the first audio stream in "
+                             "FILE and their DTS core, given as a path FFmpeg can open")
     args = parser.parse_args()
     files = read_sources()
     decoded = []

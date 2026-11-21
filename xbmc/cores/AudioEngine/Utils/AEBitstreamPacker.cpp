@@ -30,6 +30,8 @@ bool HasSilentPackets(CAEStreamInfo::DataType type)
     case CAEStreamInfo::STREAM_TYPE_AC3:
     case CAEStreamInfo::STREAM_TYPE_EAC3:
     case CAEStreamInfo::STREAM_TYPE_DTSHD_CORE:
+    case CAEStreamInfo::STREAM_TYPE_DTSHD:
+    case CAEStreamInfo::STREAM_TYPE_DTSHD_MA:
     case CAEStreamInfo::STREAM_TYPE_DTS_512:
     case CAEStreamInfo::STREAM_TYPE_DTS_1024:
     case CAEStreamInfo::STREAM_TYPE_DTS_2048:

@@ -26,7 +26,7 @@ public:
   void Pack(CAEStreamInfo &info, uint8_t* data, int size);
   bool PackPause(CAEStreamInfo &info, unsigned int millis, bool iecBursts);
   /*!
-   * \brief Pack a silent packet shaped like the last AC-3, E-AC-3 or DTS packet.
+   * \brief Pack a silent packet shaped like the last AC-3, E-AC-3, DTS or DTS-HD packet.
    * \return false if there is no such packet or no silent version of it can be built
    */
   bool PackSilence(CAEStreamInfo& info);
