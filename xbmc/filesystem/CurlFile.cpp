@@ -624,7 +624,9 @@ void CCurlFile::SetCommonOptions(CReadState* state, bool failOnError /* = true *
   else /* set some default agent as shoutcast doesn't return proper stuff otherwise */
     g_curlInterface.easy_setopt(h, CURLOPT_USERAGENT, CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_userAgent.c_str());
 
-  if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_curlDisableIPV6)
+  const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+  if (settingsComponent->GetAdvancedSettings()->m_curlDisableIPV6 ||
+      settingsComponent->GetSettings()->GetBool(CSettings::SETTING_NETWORK_FORCEIPV4))
     g_curlInterface.easy_setopt(h, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
 
   if (!m_proxyhost.empty())

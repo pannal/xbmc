@@ -20894,3 +20894,13 @@ msgstr "Schwarze Balken bei 4K live genauer erkennen"
 msgctxt "#69392"
 msgid "Scan eligible 4K video at 1080p for finer live borders used by subtitles and Dolby Vision L5. Requires a known, fixed frame rate of 30 fps or less. Other rates use 540p. Applies next playback."
 msgstr "Geeignete 4K-Videos für genauere Live-Bildgrenzen bei Untertiteln und Dolby Vision L5 in 1080p analysieren. Dafür ist eine bekannte, feste Bildrate bis 30 fps erforderlich. Bei anderen Bildraten erfolgt die Analyse in 540p. Gilt ab der nächsten Wiedergabe."
+
+#: system/settings/settings.xml
+msgctxt "#69393"
+msgid "Force IPv4"
+msgstr "IPv4 erzwingen"
+
+#: system/settings/settings.xml
+msgctxt "#69394"
+msgid "Use only IPv4 when Kodi’s curl file layer connects to a hostname. If disableipv6 is set to true in the network section of advancedsettings.xml, Kodi uses IPv4 for these requests even when this setting is off."
+msgstr "Nur IPv4 verwenden, wenn Kodis curl-Dateizugriff eine Verbindung über einen Hostnamen herstellt. Ist disableipv6 im Abschnitt network der Datei advancedsettings.xml auf true gesetzt, verwendet Kodi für diese Anfragen auch bei ausgeschalteter Option IPv4."

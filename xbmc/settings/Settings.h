@@ -494,6 +494,7 @@ public:
   static constexpr auto SETTING_NETWORK_HTTPPROXYUSERNAME = "network.httpproxyusername";
   static constexpr auto SETTING_NETWORK_HTTPPROXYPASSWORD = "network.httpproxypassword";
   static constexpr auto SETTING_NETWORK_BANDWIDTH = "network.bandwidth";
+  static constexpr auto SETTING_NETWORK_FORCEIPV4 = "network.forceipv4";
   static constexpr auto SETTING_POWERMANAGEMENT_DISPLAYSOFF = "powermanagement.displaysoff";
   static constexpr auto SETTING_POWERMANAGEMENT_SHUTDOWNTIME = "powermanagement.shutdowntime";
   static constexpr auto SETTING_POWERMANAGEMENT_SHUTDOWNSTATE = "powermanagement.shutdownstate";

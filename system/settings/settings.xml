@@ -4364,6 +4364,11 @@
             <formatlabel>14048</formatlabel>
           </control>
         </setting>
+        <setting id="network.forceipv4" type="boolean" label="69393" help="69394">
+          <level>1</level>
+          <default>false</default>
+          <control type="toggle" />
+        </setting>
       </group>
     </category>
     <category id="powermanagement" label="14095" help="36387">
