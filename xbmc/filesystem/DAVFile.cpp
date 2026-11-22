@@ -41,7 +41,8 @@ bool CDAVFile::Execute(const CURL& url)
 
   // setup common curl options
   SetCommonOptions(m_state);
-  SetRequestHeaders(m_state);
+  if (SetRequestHeaders(m_state) != CURLE_OK)
+    return false;
 
   m_lastResponseCode = m_state->Connect(m_bufferSize);
   if (m_lastResponseCode < 0 || m_lastResponseCode >= 400)

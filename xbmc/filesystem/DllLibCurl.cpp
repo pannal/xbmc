@@ -8,11 +8,16 @@
 
 #include "DllLibCurl.h"
 
+#include "network/DNSNameCache.h"
 #include "threads/SystemClock.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <assert.h>
+#include <chrono>
+#include <memory>
 #include <mutex>
+#include <thread>
 
 namespace XCURL
 {
@@ -58,7 +63,14 @@ CURL_HANDLE* DllLibCurl::easy_duphandle(CURL_HANDLE* handle)
 
 CURLM* DllLibCurl::multi_init()
 {
-  return curl_multi_init();
+  CURLM* multi = curl_multi_init();
+#if LIBCURL_VERSION_NUM >= 0x081400 // 8.20.0, CURLMOPT_QUICK_EXIT
+  // Let pending threaded DNS lookups finish in the background when the multi
+  // handle is destroyed, including during idle cleanup or exit.
+  if (multi)
+    curl_multi_setopt(multi, CURLMOPT_QUICK_EXIT, 1L);
+#endif
+  return multi;
 }
 
 CURLMcode DllLibCurl::multi_add_handle(CURLM* multi_handle, CURL_HANDLE* easy_handle)
@@ -85,6 +97,20 @@ CURLMcode DllLibCurl::multi_fdset(
 CURLMcode DllLibCurl::multi_timeout(CURLM* multi_handle, long* timeout)
 {
   return curl_multi_timeout(multi_handle, timeout);
+}
+
+CURLMcode DllLibCurl::multi_poll(CURLM* multi_handle, int timeout_ms)
+{
+#if LIBCURL_VERSION_NUM >= 0x074200 // 7.66.0
+  return curl_multi_poll(multi_handle, nullptr, 0, timeout_ms, nullptr);
+#else
+  // Avoid busy polling if curl_multi_wait() has no file descriptors to wait on.
+  int numfds = 0;
+  const CURLMcode result = curl_multi_wait(multi_handle, nullptr, 0, timeout_ms, &numfds);
+  if (result == CURLM_OK && numfds == 0)
+    std::this_thread::sleep_for(std::chrono::milliseconds(std::min(timeout_ms, 10)));
+  return result;
+#endif
 }
 
 CURLMsg* DllLibCurl::multi_info_read(CURLM* multi_handle, int* msgs_in_queue)
@@ -262,6 +288,135 @@ void DllLibCurlGlobal::easy_release(CURL_HANDLE** easy_handle, CURLM** multi_han
   }
 }
 
+DllLibCurlGlobal::SSession* DllLibCurlGlobal::FindBusySession(CURLM* multi_handle)
+{
+  for (auto& session : m_sessions)
+  {
+    if (session.m_busy && session.m_multi == multi_handle)
+      return &session;
+  }
+  return nullptr;
+}
+
+bool DllLibCurlGlobal::multi_renew(CURLM** multi_handle)
+{
+  if (!multi_handle || !*multi_handle)
+    return false;
+
+  CURLM* renewed = multi_init();
+  CURLM* old = nullptr;
+  {
+    std::unique_lock<CCriticalSection> lock(m_critSection);
+    if (auto* session = FindBusySession(*multi_handle))
+    {
+      if (!renewed)
+      {
+        // Retry before the next transfer, even if its address pins have stayed the same.
+        session->m_needsRenewal = true;
+        return false;
+      }
+
+      old = session->m_multi;
+      session->m_multi = renewed;
+      session->m_multiUsed = false;
+      session->m_needsRenewal = false;
+      // Keep the known ports so the next transfer can refresh and reseed their addresses.
+      *multi_handle = renewed;
+      CLog::Log(LOGDEBUG, "{} - Renewed the multi handle of the session to {}://{}", __FUNCTION__,
+                session->m_protocol, session->m_hostname);
+    }
+  }
+  // The session is still leased while the old handle is destroyed outside the lock.
+  const bool replaced = old != nullptr;
+  if (renewed)
+    multi_cleanup(replaced ? old : renewed);
+  return replaced;
+}
+
+CURLcode DllLibCurlGlobal::multi_attach(CURLM** multi_handle,
+                                       CURL_HANDLE* easy_handle,
+                                       const std::string& hostname,
+                                       int port,
+                                       curl_slist*& resolve_list)
+{
+  assert(!resolve_list);
+  if (!multi_handle || !*multi_handle || !easy_handle)
+    return CURLE_FAILED_INIT;
+
+  ResolvePins previous;
+  bool multiUsed;
+  bool needsRenewal;
+  {
+    std::unique_lock<CCriticalSection> lock(m_critSection);
+    const auto* session = FindBusySession(*multi_handle);
+    if (!session || session->m_easy != easy_handle)
+      return CURLE_FAILED_INIT;
+    previous = session->m_pinned;
+    multiUsed = session->m_multiUsed;
+    needsRenewal = session->m_needsRenewal;
+  }
+
+  // Refresh each pinned host once and keep its known ports for redirects.
+  ResolvePins current = previous;
+  for (auto it = current.begin(); it != current.end();)
+  {
+    auto& [host, pin] = *it;
+    if (CDNSNameCache::GetCached(host, pin.address) && !pin.address.empty())
+      ++it;
+    else
+      it = current.erase(it);
+  }
+  if (!hostname.empty())
+  {
+    if (auto request = current.find(hostname); request != current.end())
+      request->second.ports.insert(port);
+    else if (previous.find(hostname) == previous.end())
+    {
+      std::string address;
+      if (CDNSNameCache::GetCached(hostname, address) && !address.empty())
+        current.emplace(hostname, ResolveHost{std::move(address), {port}});
+    }
+  }
+
+  std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> list(nullptr, curl_slist_free_all);
+  for (const auto& [host, pin] : current)
+  {
+    for (int pinnedPort : pin.ports)
+    {
+      const std::string entry = fmt::format("{}:{}:{}", host, pinnedPort, pin.address);
+      curl_slist* appended = slist_append(list.get(), entry.c_str());
+      if (!appended)
+        return CURLE_OUT_OF_MEMORY;
+      list.release();
+      list.reset(appended);
+    }
+  }
+
+  const CURLcode result = easy_setopt(easy_handle, CURLOPT_RESOLVE, list.get());
+  if (result != CURLE_OK)
+    return result;
+
+  // Curl checks the connection pool before resolving. A new, changed, or withdrawn pin can
+  // invalidate an existing socket, including one opened through ordinary DNS.
+  if (((needsRenewal || (multiUsed && current != previous)) && !multi_renew(multi_handle)) ||
+      multi_add_handle(*multi_handle, easy_handle) != CURLM_OK)
+  {
+    easy_setopt(easy_handle, CURLOPT_RESOLVE, static_cast<curl_slist*>(nullptr));
+    return CURLE_FAILED_INIT;
+  }
+
+  {
+    std::unique_lock<CCriticalSection> lock(m_critSection);
+    auto* session = FindBusySession(*multi_handle);
+    // Record the pins that the attached transfer may install when it first runs.
+    assert(session);
+    session->m_pinned.swap(current);
+    session->m_multiUsed = true;
+  }
+  resolve_list = list.release();
+  return CURLE_OK;
+}
+
 CURL_HANDLE* DllLibCurlGlobal::easy_duphandle(CURL_HANDLE* easy_handle)
 {
   std::unique_lock<CCriticalSection> lock(m_critSection);
@@ -306,6 +461,10 @@ void DllLibCurlGlobal::easy_duplicate(CURL_HANDLE* easy,
         session.m_multi = *multi_out;
       else
         session.m_multi = NULL;
+      // A duplicate starts with its own empty connection pool and DNS cache.
+      session.m_pinned.clear();
+      session.m_multiUsed = false;
+      session.m_needsRenewal = false;
 
       m_sessions.push_back(session);
       return;
