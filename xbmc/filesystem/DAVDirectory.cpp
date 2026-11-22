@@ -198,14 +198,7 @@ bool CDAVDirectory::Create(const CURL& url)
 bool CDAVDirectory::Exists(const CURL& url)
 {
   CCurlFile dav;
-
-  // Set the PROPFIND custom request else we may not find folders, depending
-  // on the server's configuration
-  std::string strRequest = "PROPFIND";
-  dav.SetCustomRequest(strRequest);
-  dav.SetRequestHeader("depth", 0);
-
-  return dav.Exists(url);
+  return dav.ExistsDAVCollection(url);
 }
 
 bool CDAVDirectory::Remove(const CURL& url)

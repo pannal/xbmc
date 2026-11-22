@@ -816,10 +816,8 @@ void CCurlFile::SetCommonOptions(CReadState* state, bool failOnError, bool httpP
   }
 }
 
-static bool IsTransferOnlyHeader(const std::string& header)
+static bool IsTransferOnlyHeader(const std::string& name)
 {
-  // libcurl uses a trailing semicolon to send an explicitly empty header.
-  const std::string name = header.substr(0, header.find_first_of(":;"));
   constexpr const char* transferHeaders[] = {
       "Range", "If-Match", "If-None-Match", "If-Modified-Since", "If-Unmodified-Since",
       "If-Range", "If", "Content-Length", "Transfer-Encoding", "Expect", "Trailer",
@@ -828,13 +826,26 @@ static bool IsTransferOnlyHeader(const std::string& header)
                      [&name](const char* entry) { return StringUtils::EqualsNoCase(name, entry); });
 }
 
-CURLcode CCurlFile::SetRequestHeaders(CReadState* state, bool httpProbe)
+CURLcode CCurlFile::SetRequestHeaders(CReadState* state, RequestType type)
 {
   std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> headers(nullptr, curl_slist_free_all);
+  if (type == RequestType::DAVCollectionProbe)
+  {
+    headers.reset(g_curlInterface.slist_append(nullptr, "Depth: 0"));
+    if (!headers)
+      return CURLE_OUT_OF_MEMORY;
+  }
+
   for (const auto& [name, value] : m_requestheaders)
   {
-    if (httpProbe && IsTransferOnlyHeader(name))
-      continue;
+    if (type != RequestType::Transfer)
+    {
+      // libcurl also accepts a trailing semicolon for an explicitly empty header.
+      const std::string field = name.substr(0, name.find_first_of(":;"));
+      if (IsTransferOnlyHeader(field) ||
+          (type == RequestType::DAVCollectionProbe && StringUtils::EqualsNoCase(field, "Depth")))
+        continue;
+    }
 
     const std::string entry = name + ": " + value;
     curl_slist* appended = g_curlInterface.slist_append(headers.get(), entry.c_str());
@@ -922,11 +933,11 @@ static bool ProbeResponseOk(CURL_HANDLE* easy, long responseCode)
          !StringUtils::StartsWithNoCase(effectiveUrl, "https://");
 }
 
-CURLcode CCurlFile::SetProbeOptions(const CURL& url)
+CURLcode CCurlFile::SetProbeOptions(const CURL& url, RequestType type)
 {
   const bool httpProbe = IsHttp(url);
   SetCommonOptions(m_state, true, httpProbe);
-  const CURLcode result = SetRequestHeaders(m_state, httpProbe);
+  const CURLcode result = SetRequestHeaders(m_state, httpProbe ? type : RequestType::Transfer);
   if (result != CURLE_OK)
     return result;
 
@@ -1503,6 +1514,16 @@ bool CCurlFile::ReOpen(const CURL& url)
 
 bool CCurlFile::Exists(const CURL& url)
 {
+  return ProbeExists(url, RequestType::FileProbe);
+}
+
+bool CCurlFile::ExistsDAVCollection(const CURL& url)
+{
+  return ProbeExists(url, RequestType::DAVCollectionProbe);
+}
+
+bool CCurlFile::ProbeExists(const CURL& url, RequestType type)
+{
   if (m_opened)
   {
     CLog::Log(LOGWARNING, "CCurlFile::{} - <{}> Exist called on open file", __FUNCTION__,
@@ -1518,7 +1539,12 @@ bool CCurlFile::Exists(const CURL& url)
                                url2.GetHostName().c_str(), &m_state->m_easyHandle,
                                &m_state->m_multiHandle);
 
-  CURLcode result = SetProbeOptions(url2);
+  CURL_HANDLE* easy = m_state->m_easyHandle;
+  const bool collection = type == RequestType::DAVCollectionProbe;
+  CURLcode result = SetProbeOptions(url2, type);
+  if (result == CURLE_OK)
+    result = collection ? g_curlInterface.easy_setopt(easy, CURLOPT_CUSTOMREQUEST, "PROPFIND")
+                        : g_curlInterface.easy_setopt(easy, CURLOPT_NOBODY, 1L);
   if (result != CURLE_OK)
   {
     g_curlInterface.easy_release(&m_state->m_easyHandle, &m_state->m_multiHandle);
@@ -1526,9 +1552,7 @@ bool CCurlFile::Exists(const CURL& url)
     return false;
   }
 
-  CURL_HANDLE* easy = m_state->m_easyHandle;
-  g_curlInterface.easy_setopt(easy, CURLOPT_NOBODY, 1L);
-  // Stop a GET fallback as soon as body data arrives.
+  // The response headers suffice for PROPFIND and the GET fallback.
   g_curlInterface.easy_setopt(easy, CURLOPT_WRITEDATA, nullptr);
 
   if (url2.IsProtocol("ftp") || url2.IsProtocol("ftps"))
@@ -1544,7 +1568,8 @@ bool CCurlFile::Exists(const CURL& url)
   result = m_state->PerformOnSession();
   long responseCode = ProbeResponseCode(easy);
   bool emptyFile = false;
-  if (result == CURLE_HTTP_RETURNED_ERROR && (responseCode == 405 || responseCode == 501))
+  if (!collection && result == CURLE_HTTP_RETURNED_ERROR &&
+      (responseCode == 405 || responseCode == 501))
   {
     // Request at most two bytes if the server honors the range.
     result = g_curlInterface.easy_setopt(easy, CURLOPT_HTTPGET, 1L);

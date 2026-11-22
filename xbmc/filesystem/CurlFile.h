@@ -39,6 +39,7 @@ namespace XFILE
       bool OpenForWrite(const CURL& url, bool bOverWrite = false) override;
       bool ReOpen(const CURL& url) override;
       bool Exists(const CURL& url) override;
+      bool ExistsDAVCollection(const CURL& url);
       int64_t Seek(int64_t iFilePosition, int iWhence=SEEK_SET) override;
       int64_t GetPosition() override;
       int64_t GetLength() override;
@@ -155,8 +156,16 @@ namespace XFILE
     protected:
       void ParseAndCorrectUrl(CURL &url);
       void SetCommonOptions(CReadState* state, bool failOnError = true, bool httpProbe = false);
-      CURLcode SetRequestHeaders(CReadState* state, bool httpProbe = false);
-      CURLcode SetProbeOptions(const CURL& url);
+      enum class RequestType
+      {
+        Transfer,
+        FileProbe,
+        DAVCollectionProbe
+      };
+
+      bool ProbeExists(const CURL& url, RequestType type);
+      CURLcode SetRequestHeaders(CReadState* state, RequestType type = RequestType::Transfer);
+      CURLcode SetProbeOptions(const CURL& url, RequestType type = RequestType::FileProbe);
       void SetCorrectHeaders(CReadState* state);
       bool Service(const std::string& strURL, std::string& strHTML);
       std::string GetInfoString(int infoType);
