@@ -4803,6 +4803,20 @@
           <default>false</default>
           <control type="toggle" />
         </setting>
+        <setting id="coreelec.amlogic.lldv.vsif.suppress" type="boolean" label="60652" help="60653">
+          <requirement>HAVE_AMCODEC</requirement>
+          <visible>false</visible>
+          <level>2</level>
+          <default>false</default>
+          <control type="toggle" />
+        </setting>
+        <setting id="coreelec.amlogic.lldv.vsif.suppress.adopted" type="boolean" label="60652">
+          <requirement>HAVE_AMCODEC</requirement>
+          <visible>false</visible>
+          <level>4</level>
+          <default>false</default>
+          <control type="toggle" />
+        </setting>
         <setting id="coreelec.amlogic.dolbyvision.vsvdb.inject" type="boolean" label="60031" help="60032" parent="coreelec.amlogic.dolbyvision.type">
           <requirement>HAVE_AMCODEC</requirement>
           <visible>false</visible>

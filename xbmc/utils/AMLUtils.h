@@ -373,6 +373,10 @@ bool aml_hdr10_metadata_limits_supported();
 void aml_apply_hdr10_metadata_limits();
 bool aml_hdr10_seamless_transitions_supported();
 void aml_apply_hdr10_seamless_transitions();
+bool aml_lldv_vsif_suppress_supported();
+// Startup (userChange false) first adopts the kernel's current value, so a kernel built
+// with suppression on keeps it; afterwards the setting is written and read back.
+void aml_apply_lldv_vsif_suppress(bool userChange);
 // Signal HDR10 before the first frame. The kernel keeps the screen black (and HDMI audio muted)
 // for its legacy HDR entry hold, hdr_mute_frame frames, after the HDR10 video starts.
 // Whether the stream's output stays plain HDR10, never DV, VS10 or HDR10+ to DV conversion.

@@ -26,6 +26,7 @@
 #include <thread>
 
 #include "AMLUtils.h"
+#include "AMLLldvVsifPolicy.h"
 #include "AMLVideoMute.h"
 #include "utils/DetectorAdmission.h"
 #include "utils/ActiveAreaDetector.h"
@@ -1551,6 +1552,97 @@ void aml_apply_hdr10_seamless_transitions()
       sdrBt2020.Set(0);
     CSysfsPath(AML_NATIVE_HDR_MUTE_BYPASS).Set(0);
   }
+}
+
+static const char* const AML_LLDV_VSIF_SUPPRESS =
+    "/sys/module/hdmi_tx_hw/parameters/lldv_vsif_suppress";
+static std::mutex s_lldvVsifMutex;
+
+bool aml_lldv_vsif_suppress_supported()
+{
+  return CSysfsPath(AML_LLDV_VSIF_SUPPRESS).Exists();
+}
+
+static std::optional<bool> aml_lldv_vsif_suppress_read()
+{
+  const auto value = CSysfsPath(AML_LLDV_VSIF_SUPPRESS).Get<std::string>();
+  return value ? AML_LLDV_VSIF::ParseKernelBool(*value) : std::nullopt;
+}
+
+void aml_apply_lldv_vsif_suppress(bool userChange)
+{
+  using namespace AML_LLDV_VSIF;
+
+  // Independent of the seamless switching gate; only the LLDV Dolby VSIF is affected.
+  std::unique_lock<std::mutex> lock(s_lldvVsifMutex);
+  const bool supported = aml_lldv_vsif_suppress_supported();
+  const bool adopted =
+      settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS_ADOPTED);
+  const bool setting = settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS);
+  const Plan plan = Decide(supported, adopted, userChange, setting,
+                           supported ? aml_lldv_vsif_suppress_read() : std::nullopt);
+
+  switch (plan.action)
+  {
+    case Action::NONE:
+      return;
+    case Action::UNSUPPORTED:
+      CLog::Log(LOGWARNING, "{} - enabled, but the kernel lacks {}; the LLDV VSIF is still sent",
+                __FUNCTION__, AML_LLDV_VSIF_SUPPRESS);
+      CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Warning,
+                                            g_localizeStrings.Get(60652),
+                                            g_localizeStrings.Get(60655));
+      return;
+    case Action::READ_ERROR:
+      CLog::Log(LOGERROR, "{} - cannot read {}; kernel value left unchanged", __FUNCTION__,
+                AML_LLDV_VSIF_SUPPRESS);
+      CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Error,
+                                            g_localizeStrings.Get(60652),
+                                            g_localizeStrings.Get(60654));
+      return;
+    case Action::ADOPT_KERNEL:
+      settings()->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS_ADOPTED, true);
+      CLog::Log(LOGINFO, "{} - adopted kernel LLDV VSIF suppression {}", __FUNCTION__,
+                plan.value ? "on" : "off");
+      if (plan.value != setting)
+      {
+        lock.unlock();
+        settings()->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS, plan.value);
+      }
+      return;
+    case Action::WRITE:
+      break;
+  }
+
+  try
+  {
+    CSysfsPath(AML_LLDV_VSIF_SUPPRESS).Set(plan.value ? 1 : 0);
+  }
+  catch (const std::exception& e)
+  {
+    // A stale readback could match the request, so the failed write itself is the result.
+    CLog::Log(LOGERROR, "{} - write of LLDV VSIF suppression {} failed: {}", __FUNCTION__,
+              plan.value ? "on" : "off", e.what());
+    CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Error,
+                                          g_localizeStrings.Get(60652),
+                                          g_localizeStrings.Get(60654));
+    return;
+  }
+  const std::optional<bool> readback = aml_lldv_vsif_suppress_read();
+  if (!Verified(plan.value, readback))
+  {
+    CLog::Log(LOGERROR, "{} - kernel did not accept LLDV VSIF suppression {} (readback {})",
+              __FUNCTION__, plan.value ? "on" : "off",
+              readback ? (*readback ? "on" : "off") : "unreadable");
+    CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Error,
+                                          g_localizeStrings.Get(60652),
+                                          g_localizeStrings.Get(60654));
+    return;
+  }
+  CLog::Log(LOGINFO, "{} - LLDV VSIF suppression {}", __FUNCTION__, plan.value ? "on" : "off");
+  // Only a verified write takes ownership; a failure retries adoption at the next start.
+  if (!adopted)
+    settings()->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS_ADOPTED, true);
 }
 
 // Stream changes open the next decoder before closing the previous one, so only the latest
