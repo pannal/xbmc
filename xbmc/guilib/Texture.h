@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -45,13 +46,15 @@ public:
    \param idealWidth the ideal width of the texture (defaults to 0, no ideal width).
    \param idealHeight the ideal height of the texture (defaults to 0, no ideal height).
    \param strMimeType mimetype of the given texture if available (defaults to empty)
+   \param interrupt if set and it returns true, the read stops and the load fails
    \return a CTexture std::unique_ptr to the created texture - nullptr if the texture failed to load.
    */
   static std::unique_ptr<CTexture> LoadFromFile(const std::string& texturePath,
                                                 unsigned int idealWidth = 0,
                                                 unsigned int idealHeight = 0,
                                                 bool requirePixels = false,
-                                                const std::string& strMimeType = "");
+                                                const std::string& strMimeType = "",
+                                                const std::function<bool()>& interrupt = {});
 
   /*! \brief Load a texture from a file in memory
    Loads a texture from a file in memory, restricting in size if needed based on maxHeight and maxWidth.
@@ -114,7 +117,12 @@ protected:
   bool m_uploadingInWorker{false};
   bool LoadFromFileInMem(unsigned char* buffer, size_t size, const std::string& mimeType,
                          unsigned int maxWidth, unsigned int maxHeight);
-  bool LoadFromFileInternal(const std::string& texturePath, unsigned int maxWidth, unsigned int maxHeight, bool requirePixels, const std::string& strMimeType = "");
+  bool LoadFromFileInternal(const std::string& texturePath,
+                            unsigned int maxWidth,
+                            unsigned int maxHeight,
+                            bool requirePixels,
+                            const std::string& strMimeType = "",
+                            const std::function<bool()>& interrupt = {});
   bool LoadIImage(IImage* pImage,
                   unsigned char* buffer,
                   unsigned int bufSize,

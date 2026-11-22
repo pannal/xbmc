@@ -17,6 +17,7 @@
 #include "IFileTypes.h"
 #include "URL.h"
 
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <stdio.h>
@@ -99,6 +100,15 @@ public:
 
   int IoControl(EIoControl request, void* param);
 
+  /*!
+   * \brief Give the next Open a read interrupt (see IOCTRL_READ_INTERRUPT).
+   *
+   * Unlike IoControl after Open, this also covers a wake-on-access wait, the wait
+   * for a connection and the first data inside Open. Backends without support
+   * ignore it.
+   */
+  void SetReadInterrupt(std::function<bool()> interrupt) { m_readInterrupt = std::move(interrupt); }
+
   IFile* GetImplementation() const { return m_pFile.get(); }
 
   // CURL interface
@@ -114,9 +124,12 @@ public:
   * information will be set to zero (st_nlink can be set ether to 1 or zero).
   * @param file        specifies requested file
   * @param buffer      pointer to __stat64 buffer to receive information about file
+  * @param interrupt   optional read interrupt for the backend (see SetReadInterrupt)
   * @return zero of success, -1 otherwise.
   */
-  static int  Stat(const CURL& file, struct __stat64* buffer);
+  static int Stat(const CURL& file,
+                  struct __stat64* buffer,
+                  const std::function<bool()>& interrupt = {});
   static bool Rename(const CURL& file, const CURL& urlNew);
   static bool Copy(const CURL& file, const CURL& dest, XFILE::IFileCallback* pCallback = NULL, void* pContext = NULL);
   static bool SetHidden(const CURL& file, bool hidden);
@@ -171,8 +184,10 @@ private:
    * \param url Source file info as CULR class.
    */
   bool ShouldUseStreamBuffer(const CURL& url);
+  void ApplyReadInterrupt();
 
   unsigned int m_flags = 0;
+  std::function<bool()> m_readInterrupt;
   CURL                m_curl;
   std::unique_ptr<IFile> m_pFile;
   std::unique_ptr<CFileStreamBuffer> m_pBuffer;

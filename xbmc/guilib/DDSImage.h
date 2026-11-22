@@ -10,6 +10,7 @@
 
 #include "TextureFormats.h"
 
+#include <functional>
 #include <stdint.h>
 #include <string>
 
@@ -26,7 +27,8 @@ public:
   unsigned int GetSize() const;
   unsigned char *GetData() const;
 
-  bool ReadFile(const std::string &file);
+  // interrupt: if set and it returns true, the read stops and fails
+  bool ReadFile(const std::string& file, const std::function<bool()>& interrupt = {});
 
 private:
   void Allocate(unsigned int width, unsigned int height, XB_FMT format);

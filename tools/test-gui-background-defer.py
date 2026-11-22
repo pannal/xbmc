@@ -239,7 +239,7 @@ def mutations(files):
       ('missing-foreground-promotion',LARGE,'void CGUILargeTextureManager::QueueImage(','if (!defer)','if (false)','foreground consumer promotes shared deferred request'),
       ('overwrite-cache-policy',LARGE,'void CGUILargeTextureManager::QueueImage(','    it->second->AddRef();','    it->second->AddRef(); it->second->m_useCache=useCache;','promotion preserves first consumer cache policy'),
       ('rejected-decode-stranded',LARGE,'CGUILargeTextureManager::queueIterator CGUILargeTextureManager::StartQueuedImage(','if (it->first == 0)','if (false)','rejected immediate/deferred/promoted decoder becomes load failure, not stranded'),
-      ('cancel-job-zero',LARGE,'void CGUILargeTextureManager::ReleaseImage(','          if (it->first != 0)\n','', 'released deferred request never calls CancelJob zero'),
+      ('cancel-job-zero',LARGE,'void CGUILargeTextureManager::ReleaseImage(','else if (it->first != 0)','else', 'released deferred request never calls CancelJob zero'),
       ('queued-direct-not-counted',LARGE,'void CGUILargeTextureManager::QueueImage(','  image->m_directRefs = direct ? 1 : 0;\n','','queued direct consumer is reported'),
       ('joined-direct-not-counted',LARGE,'void CGUILargeTextureManager::QueueImage(','      it->second->m_directRefs++;\n','','joining direct consumer is counted'),
       ('loaded-direct-not-counted',LARGE,'bool CGUILargeTextureManager::GetImage(','        image->m_directRefs++;\n','','loaded direct consumer is reported'),

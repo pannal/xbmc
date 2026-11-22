@@ -14,6 +14,9 @@
 #include "threads/Event.h"
 #include "utils/JobManager.h"
 
+#include <cstdint>
+#include <functional>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -79,7 +82,7 @@ public:
    \return true if list updated, false otherwise
    \sa CacheImage
    */
-  bool StartCacheImage(const std::string& image);
+  bool StartCacheImage(const std::string& image, uint64_t* fill = nullptr);
 
   /*! \brief Cache an image to image cache, optionally return the texture
 
@@ -88,12 +91,33 @@ public:
    \param image url of the image to cache
    \param texture [out] the loaded image
    \param details [out] details of the cached image
+   \param interrupt if set, a caller that may give up: when it returns true, reading the image
+          and waiting for another request for the same image stop, and nothing is cached.
+          Any caller that waited for a request that stopped this way fetches the image itself;
+          a request that failed on its own shares its result as before.
    \return cached url of this image
    \sa CTextureCacheJob::CacheTexture
    */
   std::string CacheImage(const std::string& image,
                          std::unique_ptr<CTexture>* texture = nullptr,
-                         CTextureDetails* details = nullptr);
+                         CTextureDetails* details = nullptr,
+                         const std::function<bool()>& interrupt = {});
+
+  /*! \brief Be told of every image this cache stores.
+   The observer gets the image's unwrapped URL, on the thread that stored it, with no lock of
+   this cache held. There is one observer; an empty function removes it.
+   */
+  void SetCachedObserver(std::function<void(const std::string& url)> observer);
+
+  /*! \brief Called when a caching job has completed, by CacheImage or by the job itself.
+   Removes the job from our processing list, updates the database
+   and fires a DDS job if appropriate.
+   \param success whether the job was successful.
+   \param job the caching job.
+   \param interrupted the job's fill stopped on its caller's interrupt (see CacheImage).
+   A job that ran no fill, because another request was filling the image, releases nothing.
+   */
+  void OnCachingComplete(bool success, CTextureCacheJob* job, bool interrupted = false);
 
   /*! \brief Cache an image to image cache if not already cached, returning the image details.
    \param image url of the image to cache.
@@ -211,19 +235,22 @@ private:
 
   void OnJobComplete(unsigned int jobID, bool success, CJob *job) override;
 
-  /*! \brief Called when a caching job has completed.
-   Removes the job from our processing list, updates the database
-   and fires a DDS job if appropriate.
-   \param success whether the job was successful.
-   \param job the caching job.
-   */
-  void OnCachingComplete(bool success, CTextureCacheJob *job);
+  // Notify waiters once, only if this fill still owns the image.
+  void EndFill(const std::string& url, uint64_t fill, bool interrupted = false);
 
   CCriticalSection m_databaseSection;
   CTextureDatabase m_database;
-  std::set<std::string> m_processinglist; ///< currently processing list to avoid 2 jobs being processed at once
   CCriticalSection     m_processingSection;
   CEvent               m_completeEvent; ///< Set whenever a job has finished
+  // Under m_processingSection: the fill running for each processing image, the callers
+  // waiting in CacheImage for each fill, and the fills that stopped on their interrupt
+  // while callers waited. Fills, not images: a later fill of the image is another one.
+  std::map<std::string, uint64_t> m_fillIDs;
+  uint64_t m_lastFillID{0};
+  std::map<uint64_t, unsigned int> m_waiting;
+  std::set<uint64_t> m_interrupted;
+  CCriticalSection m_observerSection;
+  std::function<void(const std::string&)> m_cachedObserver;
   std::vector<CTextureDetails> m_useCounts; ///< Use count tracking
   CCriticalSection             m_useCountSection;
 };

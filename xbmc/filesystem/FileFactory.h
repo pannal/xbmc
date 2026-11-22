@@ -14,6 +14,7 @@
 
 #include "IFile.h"
 
+#include <functional>
 #include <string>
 
 namespace XFILE
@@ -24,6 +25,9 @@ public:
   CFileFactory();
   virtual ~CFileFactory();
   static IFile* CreateLoader(const std::string& strFileName);
-  static IFile* CreateLoader(const CURL& url);
+  // interrupt: optional read interrupt, also for a wake-on-access wait before the file opens
+  static IFile* CreateLoader(const CURL& url, const std::function<bool()>& interrupt = {});
+  // A VFS add-on serves the URL's protocol; CreateLoader picks it before the built-in backends.
+  static bool IsVFSAddonProtocol(const CURL& url);
 };
 }

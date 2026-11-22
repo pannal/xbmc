@@ -285,6 +285,12 @@ void MaintainRenderThread()
 #endif
 }
 
+bool CDecodePlacement::IsNeededNow()
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return m_neededNow;
+}
+
 void CDecodePlacement::NeededNow()
 {
   std::lock_guard<std::mutex> lock(m_mutex);

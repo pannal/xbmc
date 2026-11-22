@@ -12,6 +12,7 @@
 #include "utils/Job.h"
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <stdint.h>
 #include <string>
@@ -67,16 +68,31 @@ public:
 
   static bool ResizeTexture(const std::string &url, uint8_t* &result, size_t &result_size);
 
+  /*! \brief Whether loading the image is a download that a read interrupt can stop: a
+   plain read over HTTP(S), FTP(S) or WebDAV after path substitution, also inside image://
+   (with a transform, flipped, or a PVR owner). Not an image generated from a file, such as a
+   video thumbnail, or one read through a backend that ignores the interrupt, such as a VFS
+   add-on.
+   */
+  static bool IsInterruptibleDownload(const std::string& image);
+
   std::string m_url;
   std::string m_oldHash;
   CTextureDetails m_details;
+  // Set by a caller that may give up: CacheTexture then stops reading the image
+  // when it returns true, and caches nothing.
+  std::function<bool()> m_readInterrupt;
+  // The texture cache's fill this job runs, 0 if another request was filling the image.
+  uint64_t m_fill{0};
 private:
   /*! \brief retrieve a hash for the given image
    Combines the size, ctime and mtime of the image file into a "unique" hash
    \param url location of the image
    \return a hash string for this image
    */
-  static std::string GetImageHash(const std::string &url);
+  // interrupt: if set and it returns true, the lookup stops and gives no hash
+  static std::string GetImageHash(const std::string& url,
+                                  const std::function<bool()>& interrupt = {});
 
   /*! \brief Decode an image URL to the underlying image, width, height and orientation
    \param url wrapped URL of the image
@@ -97,13 +113,15 @@ private:
    \param width the desired maximum width.
    \param height the desired maximum height.
    \param additional_info extra info for loading, such as whether to flip horizontally.
+   \param interrupt if set and it returns true, reading the image file stops and the load fails.
    \return a pointer to a CTexture object, NULL if failed.
    */
   static std::unique_ptr<CTexture> LoadImage(const std::string& image,
                                              unsigned int width,
                                              unsigned int height,
                                              const std::string& additional_info,
-                                             bool requirePixels = false);
+                                             bool requirePixels = false,
+                                             const std::function<bool()>& interrupt = {});
 
   std::string    m_cachePath;
 };

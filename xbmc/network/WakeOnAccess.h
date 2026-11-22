@@ -15,6 +15,7 @@
 #include "threads/CriticalSection.h"
 #include "utils/Job.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -23,7 +24,8 @@ class CWakeOnAccess : private IJobCallback, public ISettingCallback, public ISet
 public:
   static CWakeOnAccess &GetInstance();
 
-  bool WakeUpHost (const CURL& fileUrl);
+  // interrupt: optional; when it returns true, the wait for the host ends and the wake fails
+  bool WakeUpHost(const CURL& fileUrl, const std::function<bool()>& interrupt = {});
   bool WakeUpHost (const std::string& hostName, const std::string& customMessage);
 
   void QueueMACDiscoveryForAllRemotes();
@@ -74,8 +76,11 @@ private:
 
   bool m_enabled = false;
 
-  bool WakeUpHost(const std::string& hostName, const std::string& customMessage, bool upnpMode);
-  bool WakeUpHost(const WakeUpEntry& server);
+  bool WakeUpHost(const std::string& hostName,
+                  const std::string& customMessage,
+                  bool upnpMode,
+                  const std::function<bool()>& interrupt = {});
+  bool WakeUpHost(const WakeUpEntry& server, const std::function<bool()>& interrupt = {});
 
   std::vector<struct UPnPServer> m_UPnPServers; // list of wakeable upnp servers
 };

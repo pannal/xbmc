@@ -313,15 +313,17 @@ bool CFile::Open(const CURL& file, const unsigned int flags)
         if (!m_pFile)
           return false;
 
+        ApplyReadInterrupt();
         return m_pFile->Open(url);
       }
     }
 
-    m_pFile.reset(CFileFactory::CreateLoader(url));
+    m_pFile.reset(CFileFactory::CreateLoader(url, m_readInterrupt));
 
     if (!m_pFile)
       return false;
 
+    ApplyReadInterrupt();
     CURL authUrl(url);
     if (CPasswordManager::GetInstance().IsURLSupported(authUrl) && authUrl.GetUserName().empty())
       CPasswordManager::GetInstance().AuthenticateURL(authUrl);
@@ -341,6 +343,7 @@ bool CFile::Open(const CURL& file, const unsigned int flags)
         std::unique_ptr<CURL> pNewUrl(pRedirectEx->m_pNewUrl);
         m_pFile.reset(pRedirectEx->m_pNewFileImp);
         delete pRedirectEx;
+        ApplyReadInterrupt();
 
         if (pNewUrl)
         {
@@ -382,6 +385,13 @@ bool CFile::Open(const CURL& file, const unsigned int flags)
   catch (...) { CLog::Log(LOGERROR, "{} - Unhandled exception", __FUNCTION__); }
   CLog::Log(LOGERROR, "{} - Error opening {}", __FUNCTION__, file.GetRedacted());
   return false;
+}
+
+void CFile::ApplyReadInterrupt()
+{
+  // Backends copy the callback; one that does not support it returns -1.
+  if (m_readInterrupt)
+    m_pFile->IoControl(IOCTRL_READ_INTERRUPT, &m_readInterrupt);
 }
 
 bool CFile::ShouldUseStreamBuffer(const CURL& url)
@@ -533,7 +543,9 @@ int CFile::Stat(const std::string& strFileName, struct __stat64* buffer)
   return Stat(pathToUrl, buffer);
 }
 
-int CFile::Stat(const CURL& file, struct __stat64* buffer)
+int CFile::Stat(const CURL& file,
+                struct __stat64* buffer,
+                const std::function<bool()>& interrupt /* = {} */)
 {
   if (!buffer)
     return -1;
@@ -545,9 +557,15 @@ int CFile::Stat(const CURL& file, struct __stat64* buffer)
 
   try
   {
-    std::unique_ptr<IFile> pFile(CFileFactory::CreateLoader(url));
+    std::unique_ptr<IFile> pFile(CFileFactory::CreateLoader(url, interrupt));
     if (!pFile)
       return -1;
+    if (interrupt)
+    {
+      // Backends copy the callback; one that does not support it returns -1.
+      std::function<bool()> copy = interrupt;
+      pFile->IoControl(IOCTRL_READ_INTERRUPT, &copy);
+    }
     return pFile->Stat(authUrl, buffer);
   }
   XBMCCOMMONS_HANDLE_UNCHECKED
@@ -561,6 +579,11 @@ int CFile::Stat(const CURL& file, struct __stat64* buffer)
       std::unique_ptr<IFile> pImp(pRedirectEx->m_pNewFileImp);
       std::unique_ptr<CURL> pNewUrl(pRedirectEx->m_pNewUrl);
       delete pRedirectEx;
+      if (pImp && interrupt)
+      {
+        std::function<bool()> copy = interrupt;
+        pImp->IoControl(IOCTRL_READ_INTERRUPT, &copy);
+      }
 
       if (pNewUrl)
       {

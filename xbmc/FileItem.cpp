@@ -1608,7 +1608,8 @@ bool CFileItem::IsParentFolder() const
   return m_bIsParentFolder;
 }
 
-void CFileItem::FillInMimeType(bool lookup /*= true*/)
+void CFileItem::FillInMimeType(bool lookup /*= true*/,
+                               const std::function<bool()>& interrupt /*= {}*/)
 {
   //! @todo adapt this to use CMime::GetMimeType()
   if (m_mimetype.empty())
@@ -1625,13 +1626,13 @@ void CFileItem::FillInMimeType(bool lookup /*= true*/)
       if (!lookup)
         return;
 
-      CCurlFile::GetMimeType(GetDynURL(), m_mimetype);
+      CCurlFile::GetMimeType(GetDynURL(), m_mimetype, "", interrupt);
 
       // try to get mime-type again but with an NSPlayer User-Agent
       // in order for server to provide correct mime-type.  Allows us
       // to properly detect an MMS stream
       if (StringUtils::StartsWithNoCase(m_mimetype, "video/x-ms-"))
-        CCurlFile::GetMimeType(GetDynURL(), m_mimetype, "NSPlayer/11.00.6001.7000");
+        CCurlFile::GetMimeType(GetDynURL(), m_mimetype, "NSPlayer/11.00.6001.7000", interrupt);
 
       // make sure there are no options set in mime-type
       // mime-type can look like "video/x-ms-asf ; charset=utf8"

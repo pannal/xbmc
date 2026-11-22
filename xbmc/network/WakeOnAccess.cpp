@@ -268,7 +268,9 @@ int NestDetect::m_nest = 0;
 class ProgressDialogHelper
 {
 public:
-  explicit ProgressDialogHelper(const std::string& heading)
+  explicit ProgressDialogHelper(const std::string& heading,
+                                const std::function<bool()>& interrupt = {})
+    : m_interrupt(interrupt)
   {
     if (CServiceBroker::GetAppMessenger()->IsProcessThread())
     {
@@ -310,6 +312,10 @@ public:
 
     while (!end_time.IsTimePast())
     {
+      // Before the check, which may block in a host name lookup.
+      if (m_interrupt && m_interrupt())
+        return Canceled;
+
       if (waitObj.SuccessWaiting())
         return Success;
 
@@ -337,6 +343,7 @@ public:
 
 private:
   CGUIDialogProgress* m_dialog = 0;
+  std::function<bool()> m_interrupt;
 };
 
 class NetworkStartWaiter : public WaitCondition
@@ -364,7 +371,10 @@ private:
 class PingResponseWaiter : public WaitCondition, private IJobCallback
 {
 public:
-  PingResponseWaiter(bool async, const CWakeOnAccess::WakeUpEntry& server) : m_server(server)
+  PingResponseWaiter(bool async,
+                     const CWakeOnAccess::WakeUpEntry& server,
+                     const std::function<bool()>& interrupt)
+    : m_server(server), m_interrupt(interrupt)
   {
     if (async)
     {
@@ -375,7 +385,7 @@ public:
   ~PingResponseWaiter() override { CServiceBroker::GetJobManager()->CancelJob(m_jobId); }
   bool SuccessWaiting () const override
   {
-    return m_jobId ? m_hostOnline : Ping(m_server);
+    return m_jobId ? m_hostOnline : Ping(m_server, 2000, m_interrupt);
   }
 
   void OnJobComplete(unsigned int jobID, bool success, CJob *job) override
@@ -383,11 +393,15 @@ public:
     m_hostOnline = success;
   }
 
-  static bool Ping(const CWakeOnAccess::WakeUpEntry& server, unsigned timeOutMs = 2000)
+  static bool Ping(const CWakeOnAccess::WakeUpEntry& server,
+                   unsigned timeOutMs = 2000,
+                   const std::function<bool()>& interrupt = {})
   {
     if (server.upnpUuid.empty())
     {
       unsigned long dst_ip = HostToIP(server.host);
+      if (interrupt && interrupt())
+        return false;
 
       return CServiceBroker::GetNetwork().PingHost(dst_ip, server.ping_port, timeOutMs, server.ping_mode & 1);
     }
@@ -398,6 +412,9 @@ public:
       if (host.empty())
       {
         KODI::TIME::Sleep(std::chrono::milliseconds(timeOutMs));
+
+        if (interrupt && interrupt())
+          return false;
 
         host = LookupUPnPHost(server.upnpUuid);
       }
@@ -427,6 +444,7 @@ private:
   };
 
   const CWakeOnAccess::WakeUpEntry& m_server;
+  const std::function<bool()>& m_interrupt;
   unsigned int m_jobId = 0;
   bool m_hostOnline = false;
 };
@@ -445,12 +463,12 @@ CWakeOnAccess &CWakeOnAccess::GetInstance()
   return sWakeOnAccess;
 }
 
-bool CWakeOnAccess::WakeUpHost(const CURL& url)
+bool CWakeOnAccess::WakeUpHost(const CURL& url, const std::function<bool()>& interrupt)
 {
   const std::string& hostName = url.GetHostName();
 
   if (!hostName.empty())
-    return WakeUpHost(hostName, url.Get(), url.IsProtocol("upnp"));
+    return WakeUpHost(hostName, url.Get(), url.IsProtocol("upnp"), interrupt);
 
   return true;
 }
@@ -460,10 +478,16 @@ bool CWakeOnAccess::WakeUpHost(const std::string& hostName, const std::string& c
   return WakeUpHost(hostName, customMessage, false);
 }
 
-bool CWakeOnAccess::WakeUpHost(const std::string& hostName, const std::string& customMessage, bool upnpMode)
+bool CWakeOnAccess::WakeUpHost(const std::string& hostName,
+                               const std::string& customMessage,
+                               bool upnpMode,
+                               const std::function<bool()>& interrupt)
 {
   if (!IsEnabled())
     return true; // bail if feature is turned off
+
+  if (interrupt && interrupt())
+    return false;
 
   WakeUpEntry server;
 
@@ -478,7 +502,19 @@ bool CWakeOnAccess::WakeUpHost(const std::string& hostName, const std::string& c
       CLog::Log(LOGWARNING, "WakeOnAccess recursively called on gui-thread [{}]",
                 NestDetect::Level());
 
-    bool ret = WakeUpHost(server);
+    // Remember a caller interrupt separately from dialog cancellation and ordinary wake failures.
+    bool interrupted = false;
+    const auto checkInterrupt = [&]
+    {
+      if (!interrupted)
+        interrupted = interrupt();
+      return interrupted;
+    };
+    const bool ret = interrupt ? WakeUpHost(server, checkInterrupt) : WakeUpHost(server);
+
+    // The caller gave up, perhaps before a wake packet went out: the next access tries again.
+    if (interrupt && checkInterrupt())
+      return false;
 
     if (!ret) // extra log if we fail for some reason
       CLog::Log(LOGWARNING, "WakeOnAccess failed to bring up [{}] - there may be trouble ahead !",
@@ -491,17 +527,20 @@ bool CWakeOnAccess::WakeUpHost(const std::string& hostName, const std::string& c
   return true;
 }
 
-bool CWakeOnAccess::WakeUpHost(const WakeUpEntry& server)
+bool CWakeOnAccess::WakeUpHost(const WakeUpEntry& server, const std::function<bool()>& interrupt)
 {
   std::string heading = StringUtils::Format(LOCALIZED(13027), server.friendlyName);
 
-  ProgressDialogHelper dlg (heading);
+  ProgressDialogHelper dlg(heading, interrupt);
 
   {
     NetworkStartWaiter waitObj (m_netsettle_ms, server.host); // wait until network connected before sending wake-on-lan
 
     if (dlg.ShowAndWait (waitObj, m_netinit_sec, LOCALIZED(13028)) != ProgressDialogHelper::Success)
     {
+      if (interrupt && interrupt())
+        return false;
+
       if (CServiceBroker::GetNetwork().IsConnected() && HostToIP(server.host) == INADDR_NONE)
       {
         // network connected (at least one interface) but dns-lookup failed (host by name, not ip-address), so dont abort yet
@@ -515,13 +554,24 @@ bool CWakeOnAccess::WakeUpHost(const WakeUpEntry& server)
     }
   }
 
-  if (PingResponseWaiter::Ping(server, 500)) // quick ping with short timeout to not block too long
+  if (interrupt && interrupt())
+    return false;
+
+  const bool alreadyAwake = PingResponseWaiter::Ping(server, 500, interrupt);
+  if (interrupt && interrupt())
+    return false;
+
+  if (alreadyAwake)
   {
     CLog::Log(LOGINFO, "WakeOnAccess success exit, server already running");
     return true;
   }
 
-  if (!CServiceBroker::GetNetwork().WakeOnLan(server.mac.c_str()))
+  const bool sent = CServiceBroker::GetNetwork().WakeOnLan(server.mac.c_str());
+  if (interrupt && interrupt())
+    return false;
+
+  if (!sent)
   {
     CLog::Log(LOGERROR,"WakeOnAccess failed to send. (Is it blocked by firewall?)");
 
@@ -533,7 +583,7 @@ bool CWakeOnAccess::WakeUpHost(const WakeUpEntry& server)
   }
 
   {
-    PingResponseWaiter waitObj (dlg.HasDialog(), server); // wait for ping response ..
+    PingResponseWaiter waitObj(dlg.HasDialog(), server, interrupt);
 
     ProgressDialogHelper::wait_result
       result = dlg.ShowAndWait (waitObj, server.wait_online1_sec, LOCALIZED(13030));
@@ -551,9 +601,11 @@ bool CWakeOnAccess::WakeUpHost(const WakeUpEntry& server)
   // we have ping response ; just add extra wait-for-services before returning if requested
 
   {
-    WaitCondition waitObj ; // wait uninterruptible fixed time for services ..
+    WaitCondition waitObj ; // wait fixed time for services (ends early on the caller's interrupt)
 
     dlg.ShowAndWait (waitObj, server.wait_services_sec, LOCALIZED(13032));
+    if (interrupt && interrupt())
+      return false;
 
     CLog::Log(LOGINFO, "WakeOnAccess sequence completed, server started");
   }

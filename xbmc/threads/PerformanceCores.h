@@ -95,6 +95,8 @@ class CDecodePlacement
 public:
   // A foreground consumer is waiting to draw this image. Permanent.
   void NeededNow();
+  // NeededNow was called.
+  bool IsNeededNow();
 
   // Held by the decoding worker for the duration of the decode.
   class Scope

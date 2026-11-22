@@ -29,7 +29,8 @@ bool CImageFile::Open(const CURL& url)
       CServiceBroker::GetTextureCache()->CheckCachedImage(file, needsRecaching);
   if (cachedFile.empty())
   { // not in the cache, so cache it
-    cachedFile = CServiceBroker::GetTextureCache()->CacheImage(file);
+    cachedFile = CServiceBroker::GetTextureCache()->CacheImage(file, nullptr, nullptr,
+                                                               m_readInterrupt);
   }
   if (!cachedFile.empty())
   { // in the cache, return what we have
@@ -37,6 +38,16 @@ bool CImageFile::Open(const CURL& url)
       return true;
   }
   return false;
+}
+
+int CImageFile::IoControl(EIoControl request, void* param)
+{
+  if (request == IOCTRL_READ_INTERRUPT)
+  {
+    m_readInterrupt = param ? *static_cast<std::function<bool()>*>(param) : std::function<bool()>{};
+    return 0;
+  }
+  return IFile::IoControl(request, param);
 }
 
 bool CImageFile::Exists(const CURL& url)
