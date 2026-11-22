@@ -189,12 +189,37 @@ static void ReportsLost(){State s;s.cacheHit=false;Harness h(s);h.Ask("http://a"
  for(int i=0;i<70;++i){Cache().observer("http://other"+std::to_string(i));}
  h.jobs.OnJobComplete(ok,job);
  Check(h.jobs.added[LOW]==0&&h.jobs.added[NORMAL]==2,"with reports lost since the check, the cache is checked again");++cases;}
-static void DropNotStarted(){State s;s.cacheHit=false;Harness h(s);
- for(auto p:{"http://a","http://b","http://c"}){h.Ask(p);h.Run(p);}
- const unsigned old=h.JobOf("http://a");Cache().observer("http://a");
- Check(h.StateOf("http://a")==Download::NONE&&h.jobs.added[NORMAL]==4&&h.StateOf("http://c")==Download::RUNNING&&h.jobs.added[LOW]==3,
-  "a download not yet running whose image was cached elsewhere is dropped and its slot reused");
- const int fills=s.fills;h.Work(h.jobs.Start(old));Check(s.fills==fills,"a dropped download makes no request");++cases;}
+// Exercise both sides of PopJob: the job may be queued, or already owned by a
+// worker which has not called DoWork and claimed DownloadStart::STARTED yet.
+static void DropNotStarted(bool popped)
+{
+  State s;
+  s.cacheHit = false;
+  Harness h(s);
+  for (auto path : {"http://a", "http://b", "http://c"})
+  {
+    h.Ask(path);
+    h.Run(path);
+  }
+  const auto old = h.JobOf("http://a");
+  CJob* workerJob = popped ? h.jobs.Start(old) : nullptr;
+  Cache().observer("http://a");
+  Check(h.StateOf("http://a") == Download::NONE && h.jobs.added[NORMAL] == 4 &&
+        h.StateOf("http://c") == Download::RUNNING && h.jobs.added[LOW] == 3,
+        "a download not yet running whose image was cached elsewhere is dropped and its slot reused");
+  Check(h.jobs.Queued() == 3,
+        "cache promotion removes the obsolete download from the job manager queue");
+  if (popped)
+  {
+    Check(workerJob->ShouldCancel(0, 0), "cache promotion detaches a popped download's callback");
+    const int fills = s.fills;
+    Check(!h.Work(workerJob) && s.fills == fills, "a dropped download makes no request");
+  }
+  s.cacheHit = true;
+  Check(h.Run("http://a") && h.Published("http://a") && h.StateOf("http://c") == Download::RUNNING,
+        "the promoted decode publishes and the replacement download retains its slot");
+  ++cases;
+}
 static void KeepStarted(){State s;s.cacheHit=false;Net net;s.fetch=net.Blocking();Harness h(s);h.Ask("http://a");h.Run("http://a");
  auto*job=h.jobs.Start(h.JobOf("http://a"));Worker w(net,[&]{h.Work(job);});Wait(Within([&]{return net.Started("http://a");},2s),"fixture: fetch did not start");
  Cache().observer("http://a");Check(h.images.m_downloadJobs.size()==1&&h.StateOf("http://a")==Download::RUNNING,"a running download is not dropped");
@@ -215,10 +240,25 @@ static void CachedBeatsTakeOver(){State s;s.cacheHit=false;Net net;s.fetch=net.B
  Cache().observer("http://a");h.jobs.OnJobComplete(ok,decode);
  Check(h.JobOf("http://a")!=old&&h.StateOf("http://a")==Download::NONE,"a newer cache report wins over taking a download over");
  net.finish=true;w.Join();++cases;}
-static void CachelessDropped(){State s;Harness h(s);h.Ask("http://a",false);h.Run("http://a");const unsigned id=h.JobOf("http://a");
- h.images.ReleaseImage("http://a",true);Check(h.images.m_downloadJobs.empty(),"a cache-less download is dropped with its last consumer");
- int fetched=0;s.fetch=[&](const std::string&,const std::function<bool()>&){++fetched;return true;};
- h.Work(h.jobs.Start(id));Check(fetched==0,"a dropped cache-less download makes no request");++cases;}
+static void CachelessDropped(bool popped)
+{
+  State s;
+  Harness h(s);
+  h.Ask("http://a", false);
+  h.Run("http://a");
+  CJob* workerJob = popped ? h.jobs.Start(h.JobOf("http://a")) : nullptr;
+  h.images.ReleaseImage("http://a", true);
+  Check(h.images.m_downloadJobs.empty(), "a cache-less download is dropped with its last consumer");
+  Check(h.jobs.Queued() == 0, "releasing a cache-less download removes it from the job manager queue");
+  if (popped)
+  {
+    Check(workerJob->ShouldCancel(0, 0), "releasing a popped cache-less download detaches its callback");
+    int fetched = 0;
+    s.fetch = [&](const std::string&, const std::function<bool()>&) { ++fetched; return true; };
+    Check(!h.Work(workerJob) && fetched == 0, "a dropped cache-less download makes no request");
+  }
+  ++cases;
+}
 static void CachelessStopped(){State s;Net net;s.fetch=net.Blocking();Harness h(s);h.Ask("http://a",false);h.Run("http://a");
  auto*job=h.jobs.Start(h.JobOf("http://a"));Worker w(net,[&]{h.Work(job);});Wait(Within([&]{return net.Started("http://a");},2s),"fixture: fetch did not start");
  h.images.ReleaseImage("http://a",true);
@@ -227,7 +267,7 @@ int main(){try{
  HandOff();CachedInternet();LocalUncached();NoCacheInternet();Cap();ReleaseKeepsReading();StopOnDemand();NewestStopsFirst();TakeOver();
  StoppedBeforeStart();ReleaseWaiting();JoinWaiting();Shutdown();Rejected();
  WrappedInternet();CachedElsewhere();ReportAfterManager();TakeOverPolicy();
- CachedBeforeHandOff();ReportBeforeCheck();ReportsLost();DropNotStarted();KeepStarted();TakeOverPlacement(false);TakeOverPlacement(true);CachedBeatsTakeOver();CachelessDropped();CachelessStopped();
+ CachedBeforeHandOff();ReportBeforeCheck();ReportsLost();DropNotStarted(false);DropNotStarted(true);KeepStarted();TakeOverPlacement(false);TakeOverPlacement(true);CachedBeatsTakeOver();CachelessDropped(false);CachelessDropped(true);CachelessStopped();
  std::printf("PASS %u cases %u checks; actual manager/jobs, decoder/network fixtures\n",cases,checks);return 0;
 }catch(const std::exception&e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}}
 '''
@@ -250,6 +290,11 @@ def mutations():
     release, done = 'void CGUILargeTextureManager::ReleaseImage(', 'void CGUILargeTextureManager::OnJobComplete('
     yield ('decode-fetches', edit(work, '  if (internet && !m_download)\n', '  if (false)\n'),
            'decode job never fetches an internet image')
+    cancel_queued = 'CServiceBroker::GetJobManager()->CancelJob(download->jobID);'
+    yield ('keep-released-job-queued', edit(release, cancel_queued, ''),
+           'releasing a cache-less download removes it from the job manager queue')
+    yield ('keep-promoted-job-queued', edit('void CGUILargeTextureManager::OnImageCached(', cancel_queued, ''),
+           'cache promotion removes the obsolete download from the job manager queue')
     yield ('no-cap', edit(start, 'if (m_downloadJobs.size() >= MAX_DOWNLOADS)', 'if (false)'), 'at most two downloads')
     yield ('normal-priority', edit(start, 'CJob::PRIORITY_LOW', 'CJob::PRIORITY_NORMAL'),
            'uncached internet image moves to a low-priority download job')
@@ -306,7 +351,7 @@ def mutations():
            '        ((void)queued, download->start->store(DownloadStart::DROPPED), false))'),
            'a running download is not dropped')
     yield ('no-start-claim', edit(work, '    if (!m_start->compare_exchange_strong(queued, DownloadStart::STARTED))\n      return false;\n',
-           '    (void)queued;\n'), 'a dropped download makes no request')
+           '    (void)queued;\n'), 'a running download is not dropped')
     yield ('placement-kept', edit(done, '          image->m_decodePlacement = running->placement;\n', ''),
            'a foreground request reaches the download it took over')
     yield ('placement-not-carried', edit(done, '          if (image->m_decodePlacement->IsNeededNow())\n            running->placement->NeededNow();\n', ''),

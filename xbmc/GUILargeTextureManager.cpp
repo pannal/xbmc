@@ -79,7 +79,7 @@ bool CImageLoader::DoWork()
     return false;
   if (m_start)
   {
-    // Dropped before it ran: another request cached the image.
+    // A worker can pop this job just before the manager drops it.
     auto queued = DownloadStart::QUEUED;
     if (!m_start->compare_exchange_strong(queued, DownloadStart::STARTED))
       return false;
@@ -531,7 +531,10 @@ void CGUILargeTextureManager::ReleaseImage(const std::string& path, bool immedia
               {
                 auto queued = DownloadStart::QUEUED;
                 if (download->start->compare_exchange_strong(queued, DownloadStart::DROPPED))
+                {
+                  CServiceBroker::GetJobManager()->CancelJob(download->jobID);
                   m_downloadJobs.erase(download);
+                }
                 else
                   download->stop->store(true, std::memory_order_release);
               }
@@ -888,7 +891,8 @@ void CGUILargeTextureManager::OnImageCached(const std::string& url)
       ++download;
       continue;
     }
-    // Its job returns at once whenever it runs; its slot returns now.
+    // Remove the queued job. A worker that already popped it will see DROPPED.
+    CServiceBroker::GetJobManager()->CancelJob(download->jobID);
     if (download->wanted)
     {
       const unsigned int jobID = download->jobID;

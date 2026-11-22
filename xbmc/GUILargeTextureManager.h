@@ -26,8 +26,8 @@
 
 class CTexture;
 
-// A download job's start, decided once: the job takes STARTED when it runs, the manager
-// DROPPED for one not yet running whose image another request has cached.
+// A worker claims STARTED before loading. The manager claims DROPPED before
+// cancelling a queued job on a cache hit or the last release without caching.
 enum class DownloadStart
 {
   QUEUED,
