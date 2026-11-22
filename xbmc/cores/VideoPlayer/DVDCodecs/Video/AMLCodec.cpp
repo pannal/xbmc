@@ -38,6 +38,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <fstream>
 #include <limits>
@@ -389,7 +390,6 @@ typedef struct am_private_t
   // timing. Session permits exclude teardown, not concurrent normal operations.
   std::atomic<unsigned int> video_rate{0};
   unsigned int      video_rotation_degree;
-  int               extrasize;
   FFmpegExtraData   extradata;
   DllLibAmCodec     *m_dll;
 
@@ -992,47 +992,11 @@ int mpeg12_add_frame_dec_info(am_private_t *para)
   return PLAYER_SUCCESS;
 }
 
-char obu_type_name[16][32] = {
-  "UNKNOWN",
-  "OBU_SEQUENCE_HEADER",
-  "OBU_TEMPORAL_DELIMITER",
-  "OBU_FRAME_HEADER",
-  "OBU_TILE_GROUP",
-  "OBU_METADATA",
-  "OBU_FRAME",
-  "OBU_REDUNDANT_FRAME_HEADER",
-  "OBU_TILE_LIST",
-  "UNKNOWN",
-  "UNKNOWN",
-  "UNKNOWN",
-  "UNKNOWN",
-  "UNKNOWN",
-  "UNKNOWN",
-  "OBU_PADDING"
-};
-
-char meta_type_name[6][32] = {
-  "OBU_METADATA_TYPE_RESERVED_0",
-  "OBU_METADATA_TYPE_HDR_CLL",
-  "OBU_METADATA_TYPE_HDR_MDCV",
-  "OBU_METADATA_TYPE_SCALABILITY",
-  "OBU_METADATA_TYPE_ITUT_T35",
-  "OBU_METADATA_TYPE_TIMECODE"
-};
-
-typedef struct DataBuffer {
-    const uint8_t *data;
-    size_t size;
-} DataBuffer;
-
-int av1_parser_frame(
-    int is_annexb,
-    uint8_t *data,
-    const uint8_t *data_end,
-    uint8_t *dst_data,
-    uint32_t *frame_len,
-    uint8_t *meta_buf,
-    uint32_t *meta_len) {
+// A sizing pass and a writing pass use the same OBU walk. Only a complete
+// result replaces the input packet.
+static int av1_parser_frame(const uint8_t* data, const uint8_t* data_end,
+                            uint8_t* dst_data, size_t capacity, size_t& frame_len)
+{
     int frame_decoding_finished = 0;
     uint32_t obu_size = 0;
     ObuHeader obu_header;
@@ -1045,19 +1009,15 @@ int av1_parser_frame(
         0x41, 0x4D, 0x4C, 0x56,
         0xD0, 0x82, 0x80, 0x00
     };
-    uint8_t *p = NULL;
-    uint32_t rpu_size = 0;
+    frame_len = 0;
 
     // decode frame as a series of OBUs
     while (!frame_decoding_finished) {
         //      struct read_bit_buffer rb;
         size_t payload_size = 0;
-        size_t header_size = 0;
         size_t bytes_read = 0;
         size_t bytes_written = 0;
         const size_t bytes_available = data_end - data;
-        unsigned int i;
-        OBU_METADATA_TYPE meta_type;
         uint64_t type;
 
         if (bytes_available == 0 && !seen_frame_header) {
@@ -1065,33 +1025,24 @@ int av1_parser_frame(
         }
 
         int status =
-            aom_read_obu_header_and_size(data, bytes_available, is_annexb,
+            aom_read_obu_header_and_size(data, bytes_available, 0,
                 &obu_header, &payload_size, &bytes_read);
 
         if (status != 0) {
             return -1;
         }
 
-        // Note: aom_read_obu_header_and_size() takes care of checking that this
-        // doesn't cause 'data' to advance past 'data_end'.
+        if (bytes_read == 0 || bytes_read > bytes_available ||
+            payload_size > bytes_available - bytes_read)
+            return PLAYER_FAILED;
 
-        if ((size_t)(data_end - data - bytes_read) < payload_size) {
-            return -1;
-        }
-
-        CLog::Log(LOGDEBUG, "\tobu {} len {:d}+{:d}", obu_type_name[obu_header.type], bytes_read, payload_size);
-
-        obu_size = bytes_read + payload_size + 4;
-
-        if (!is_annexb) {
-            obu_size = bytes_read + payload_size + 4;
-            header_size = 20;
-            aom_uleb_encode_fixed_size(obu_size, 4, 4, header + 16, &bytes_written);
-        }
-        else {
-            obu_size = bytes_read + payload_size;
-            header_size = 16;
-        }
+        const size_t obuBytes = bytes_read + payload_size;
+        if (capacity - frame_len < sizeof(header) ||
+            obuBytes > capacity - frame_len - sizeof(header))
+            return PLAYER_FAILED;
+        obu_size = obuBytes + 4;
+        if (aom_uleb_encode_fixed_size(obu_size, 4, 4, header + 16, &bytes_written) != 0)
+            return PLAYER_FAILED;
         header[0] = ((obu_size + 4) >> 24) & 0xff;
         header[1] = ((obu_size + 4) >> 16) & 0xff;
         header[2] = ((obu_size + 4) >> 8) & 0xff;
@@ -1100,13 +1051,13 @@ int av1_parser_frame(
         header[5] = header[1] ^ 0xff;
         header[6] = header[2] ^ 0xff;
         header[7] = header[3] ^ 0xff;
-        memcpy(dst_data, header, header_size);
-        dst_data += header_size;
-        memcpy(dst_data, data, bytes_read + payload_size);
-        dst_data += bytes_read + payload_size;
-
+        if (dst_data)
+        {
+            memcpy(dst_data + frame_len, header, sizeof(header));
+            memcpy(dst_data + frame_len + sizeof(header), data, obuBytes);
+        }
+        frame_len += sizeof(header) + obuBytes;
         data += bytes_read;
-        *frame_len += 20 + bytes_read + payload_size;
 
         switch (obu_header.type) {
         case OBU_TEMPORAL_DELIMITER:
@@ -1157,65 +1108,15 @@ int av1_parser_frame(
                 seen_frame_header = 0;
             break;
         case OBU_METADATA:
-            aom_uleb_decode(data, 8, &type, &bytes_read);
-            if (type < 6)
-                meta_type = static_cast<OBU_METADATA_TYPE>(type);
-            else
-                meta_type = OBU_METADATA_TYPE_AOM_RESERVED_0;
-            p = data + bytes_read;
-            CLog::Log(LOGDEBUG, "\tmeta type {} {:d}+{:d}", meta_type_name[type], bytes_read, payload_size - bytes_read);
-
-            if (meta_type == OBU_METADATA_TYPE_ITUT_T35 && meta_buf != NULL) {
-                if ((p[0] == 0xb5) /* country code */
-                    && ((p[1] == 0x00) && (p[2] == 0x3b)) /* terminal_provider_code */
-                    && ((p[3] == 0x00) && (p[4] == 0x00) && (p[5] == 0x08) && (p[6] == 0x00))) { /* terminal_provider_oriented_code */
-                    CLog::Log(LOGDEBUG, "\t\tdolbyvison rpu");
-                    meta_buf[0] = meta_buf[1] = meta_buf[2] = 0;
-                    meta_buf[3] = 0x01;    meta_buf[4] = 0x19;
-
-                    if (p[11] & 0x10) {
-                        rpu_size = 0x100;
-                        rpu_size |= (p[11] & 0x0f) << 4;
-                        rpu_size |= (p[12] >> 4) & 0x0f;
-                        if (p[12] & 0x08) {
-                            CLog::Log(LOGDEBUG, "\tmeta rpu in obu exceed 512 bytes");
-                            break;
-                        }
-                        for (i = 0; i < rpu_size; i++) {
-                            meta_buf[5 + i] = (p[12 + i] & 0x07) << 5;
-                            meta_buf[5 + i] |= (p[13 + i] >> 3) & 0x1f;
-                        }
-                        rpu_size += 5;
-                    }
-                    else {
-                        rpu_size = (p[10] & 0x1f) << 3;
-                        rpu_size |= (p[11] >> 5) & 0x07;
-                        for (i = 0; i < rpu_size; i++) {
-                            meta_buf[5 + i] = (p[11 + i] & 0x0f) << 4;
-                            meta_buf[5 + i] |= (p[12 + i] >> 4) & 0x0f;
-                        }
-                        rpu_size += 5;
-                    }
-                    *meta_len = rpu_size;
-                }
-            }
-            else if (meta_type == OBU_METADATA_TYPE_HDR_CLL) {
-                CLog::Log(LOGDEBUG, "\t\thdr10 cll:");
-                CLog::Log(LOGDEBUG, "\t\tmax_cll = {:x}", (p[0] << 8) | p[1]);
-                CLog::Log(LOGDEBUG, "\t\tmax_fall = {:x}", (p[2] << 8) | p[3]);
-            }
-            else if (meta_type == OBU_METADATA_TYPE_HDR_MDCV) {
-                CLog::Log(LOGDEBUG, "\t\thdr10 primaries[r,g,b] =");
-                for (i = 0; i < 3; i++) {
-                    CLog::Log(LOGDEBUG, "\t\t {:x}, {:x}",
-                        (p[i * 4] << 8) | p[i * 4 + 1],
-                        (p[i * 4 + 2] << 8) | p[i * 4 + 3]);
-                }
-                CLog::Log(LOGDEBUG, "\t\twhite point = {:x}, {:x}", (p[12] << 8) | p[13], (p[14] << 8) | p[15]);
-                CLog::Log(LOGDEBUG, "\t\tmaxl = {:x}", (p[16] << 24) | (p[17] << 16) | (p[18] << 8) | p[19]);
-                CLog::Log(LOGDEBUG, "\t\tminl = {:x}", (p[20] << 24) | (p[21] << 16) | (p[22] << 8) | p[23]);
-            }
-                break;
+            if (aom_uleb_decode(data, payload_size, &type, &bytes_read) != 0 ||
+                bytes_read > payload_size)
+                return PLAYER_FAILED;
+            if ((type == OBU_METADATA_TYPE_HDR_CLL && payload_size - bytes_read < 4) ||
+                (type == OBU_METADATA_TYPE_HDR_MDCV && payload_size - bytes_read < 24))
+                return PLAYER_FAILED;
+            // The AML decoder receives the original metadata OBU, including
+            // reserved types and T.35 payloads.
+            break;
         case OBU_TILE_LIST:
             break;
         case OBU_PADDING:
@@ -1233,136 +1134,74 @@ int av1_parser_frame(
 
 int av1_add_frame_dec_info(am_private_t *para)
 {
-  int ret;
-  am_packet_t *pkt = &para->am_pkt;
+  am_packet_t* pkt = &para->am_pkt;
+  if (!pkt->data || pkt->data_size <= 0)
+    return PLAYER_FAILED;
 
-  unsigned int dst_frame_size = 0;
-  uint8_t *dst_data = (uint8_t *)calloc(1, pkt->data_size + 4096);
-  av1_parser_frame(0, pkt->data, pkt->data + pkt->data_size, dst_data, &dst_frame_size, NULL, NULL);
+  size_t size = 0;
+  const uint8_t* end = pkt->data + pkt->data_size;
+  if (av1_parser_frame(pkt->data, end, nullptr, INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE, size) != 0)
+    return PLAYER_FAILED;
 
-  if (dst_frame_size - pkt->data_size > 0)
+  AVPacket output{};
+  if (av_new_packet(&output, size) < 0)
+    return PLAYER_NOMEM;
+  size_t written = 0;
+  if (av1_parser_frame(pkt->data, end, output.data, size, written) != 0 || written != size)
   {
-    pkt->avpkt.data = pkt->data;
-    pkt->avpkt.size = pkt->data_size;
-
-    av_buffer_unref(&pkt->avpkt.buf);
-    ret = av_grow_packet(&(pkt->avpkt), dst_frame_size - pkt->data_size);
-    if (ret < 0)
-    {
-      CLog::Log(LOGDEBUG, "ERROR!!! grow_packet for apk failed.!!!");
-      return ret;
-    }
-
-    pkt->data = pkt->avpkt.data;
-    pkt->data_size = dst_frame_size;
-    memcpy(pkt->data, dst_data, dst_frame_size);
+    av_packet_unref(&output);
+    return PLAYER_FAILED;
   }
-  free(dst_data);
-
+  av_packet_unref(&pkt->avpkt);
+  av_packet_move_ref(&pkt->avpkt, &output);
+  pkt->data = pkt->avpkt.data;
+  pkt->data_size = pkt->avpkt.size;
   return PLAYER_SUCCESS;
 }
 
-int vp9_update_frame_header(am_packet_t *pkt)
+static int vp9_update_frame_header(am_packet_t* pkt)
 {
-  int dsize = pkt->data_size;
-  unsigned char *buf = pkt->data;
-  unsigned char marker;
-  int frame_number;
-  int cur_frame, cur_mag, mag, index_sz, offset[9], size[8], tframesize[9];
-  int mag_ptr;
-  int ret;
-  unsigned char *old_header = NULL;
-  int total_datasize = 0;
+  const uint8_t* buf = pkt->data;
+  const int dsize = pkt->data_size;
+  if (!buf || dsize <= 0)
+    return PLAYER_FAILED;
 
-  pkt->avpkt.data = pkt->data;
-  pkt->avpkt.size = pkt->data_size;
-
-  if (buf == NULL)
-    return PLAYER_SUCCESS; /*something error. skip add header*/
-
-  marker = buf[dsize - 1];
-
+  const uint8_t marker = buf[dsize - 1];
+  int frameCount = 1;
+  int payloadSize = dsize;
+  int sizes[8] = {dsize};
   if ((marker & 0xe0) == 0xc0)
   {
-    frame_number = (marker & 0x7) + 1;
-    mag = ((marker >> 3) & 0x3) + 1;
-    index_sz = 2 + mag * frame_number;
-    CLog::Log(LOGDEBUG, " frame_number : {:d}, mag : {:d}; index_sz : {:d}", frame_number, mag, index_sz);
-    offset[0] = 0;
-    mag_ptr = dsize - mag * frame_number - 2;
-    if (buf[mag_ptr] != marker)
+    frameCount = (marker & 7) + 1;
+    const int width = ((marker >> 3) & 3) + 1;
+    payloadSize -= 2 + frameCount * width;
+    if (payloadSize <= 0 || buf[payloadSize] != marker)
+      return PLAYER_FAILED;
+    int remaining = payloadSize;
+    const uint8_t* index = buf + payloadSize + 1;
+    for (int i = 0; i < frameCount; ++i)
     {
-      CLog::Log(LOGDEBUG, " Wrong marker2 : 0x{:X} --> 0x{:X}", marker, buf[mag_ptr]);
-      return PLAYER_SUCCESS;
+      uint32_t length = 0;
+      for (int byte = 0; byte < width; ++byte)
+        length |= static_cast<uint32_t>(*index++) << (8 * byte);
+      if (!length || length > static_cast<unsigned int>(remaining))
+        return PLAYER_FAILED;
+      sizes[i] = length;
+      remaining -= length;
     }
-
-    mag_ptr++;
-
-    for (cur_frame = 0; cur_frame < frame_number; cur_frame++)
-    {
-      size[cur_frame] = 0; // or size[0] = bytes_in_buffer - 1; both OK
-
-      for (cur_mag = 0; cur_mag < mag; cur_mag++)
-      {
-        size[cur_frame] = size[cur_frame]|(buf[mag_ptr] << (cur_mag*8));
-        mag_ptr++;
-      }
-
-      offset[cur_frame+1] = offset[cur_frame] + size[cur_frame];
-
-      if (cur_frame == 0)
-        tframesize[cur_frame] = size[cur_frame];
-      else
-        tframesize[cur_frame] = tframesize[cur_frame - 1] + size[cur_frame];
-
-      total_datasize += size[cur_frame];
-    }
-  }
-  else
-  {
-    frame_number = 1;
-    offset[0] = 0;
-    size[0] = dsize; // or size[0] = bytes_in_buffer - 1; both OK
-    total_datasize += dsize;
-    tframesize[0] = dsize;
+    if (remaining)
+      return PLAYER_FAILED;
   }
 
-  if (total_datasize > dsize)
+  if (payloadSize > INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE - frameCount * 16)
+    return PLAYER_FAILED;
+  AVPacket output{};
+  if (av_new_packet(&output, payloadSize + frameCount * 16) < 0)
+    return PLAYER_NOMEM;
+  uint8_t* fdata = output.data;
+  for (int i = 0; i < frameCount; ++i)
   {
-    CLog::Log(LOGDEBUG, "DATA overflow : 0x{:X} --> 0x{:X}", total_datasize, dsize);
-    return PLAYER_SUCCESS;
-  }
-
-  if (frame_number >= 1)
-  {
-    /*
-    if only one frame ,can used headers.
-    */
-    int need_more = total_datasize + frame_number * 16 - dsize;
-
-    av_buffer_unref(&pkt->avpkt.buf);
-    ret = av_grow_packet(&(pkt->avpkt), need_more);
-    if (ret < 0)
-    {
-      CLog::Log(LOGDEBUG, "ERROR!!! grow_packet for apk failed.!!!");
-      return ret;
-    }
-
-    pkt->data = pkt->avpkt.data;
-    pkt->data_size = pkt->avpkt.size;
-  }
-
-  for (cur_frame = frame_number - 1; cur_frame >= 0; cur_frame--)
-  {
-    AVPacket *avpkt = &(pkt->avpkt);
-    int framesize = size[cur_frame];
-    int oldframeoff = tframesize[cur_frame] - framesize;
-    int outheaderoff = oldframeoff + cur_frame * 16;
-    uint8_t *fdata = avpkt->data + outheaderoff;
-    uint8_t *old_framedata = avpkt->data + oldframeoff;
-    memmove(fdata + 16, old_framedata, framesize);
-    framesize += 4;/*add 4. for shift.....*/
-
+    const int framesize = sizes[i] + 4;
     /*add amlogic frame headers.*/
     fdata[0] = (framesize >> 24) & 0xff;
     fdata[1] = (framesize >> 16) & 0xff;
@@ -1380,31 +1219,35 @@ int vp9_update_frame_header(am_packet_t *pkt)
     fdata[13] = 'M';
     fdata[14] = 'L';
     fdata[15] = 'V';
-    framesize -= 4;/*del 4 to real framesize for check.....*/
-
-    if (!old_header)
-    {
-      // nothing
-    }
-    else if (old_header > fdata + 16 + framesize)
-    {
-      CLog::Log(LOGDEBUG, "data has gaps,set to 0");
-      memset(fdata + 16 + framesize, 0, (old_header - fdata + 16 + framesize));
-    }
-    else if (old_header < fdata + 16 + framesize)
-      CLog::Log(LOGDEBUG, "ERROR!!! data over writed!!!! over write {:d}", fdata + 16 + framesize - old_header);
-
-    old_header = fdata;
+    memcpy(fdata + 16, buf, sizes[i]);
+    fdata += 16 + sizes[i];
+    buf += sizes[i];
   }
 
+  av_packet_unref(&pkt->avpkt);
+  av_packet_move_ref(&pkt->avpkt, &output);
+  pkt->data = pkt->avpkt.data;
+  pkt->data_size = pkt->avpkt.size;
   return PLAYER_SUCCESS;
+}
+
+static bool reserve_codec_header(hdr_buf_t* hdr, size_t size)
+{
+  char* data = static_cast<char*>(realloc(hdr->data, size));
+  if (!data)
+    return false;
+  hdr->data = data;
+  return true;
 }
 
 static int wmv3_write_header(am_private_t *para, am_packet_t *pkt)
 {
     CLog::Log(LOGDEBUG, "wmv3_write_header");
     unsigned i, check_sum = 0;
-    unsigned data_len = para->extrasize + 4;
+    const size_t extra = para->extradata.GetSize();
+    if (extra > 0xffffff - 4 || !reserve_codec_header(pkt->hdr, extra + 26))
+      return PLAYER_FAILED;
+    unsigned data_len = extra + 4;
 
     pkt->hdr->data[0] = 0;
     pkt->hdr->data[1] = 0;
@@ -1441,8 +1284,9 @@ static int wmv3_write_header(am_private_t *para, am_packet_t *pkt)
     pkt->hdr->data[24] = (para->video_height >> 8) & 0xff;
     pkt->hdr->data[25] =  para->video_height & 0xff;
 
-    memcpy(pkt->hdr->data + 26, para->extradata.GetData(), para->extradata.GetSize());
-    pkt->hdr->size = para->extrasize + 26;
+    if (para->extradata.GetSize())
+        memcpy(pkt->hdr->data + 26, para->extradata.GetData(), para->extradata.GetSize());
+    pkt->hdr->size = para->extradata.GetSize() + 26;
     if (1) {
         pkt->codec = &para->vcodec;
     } else {
@@ -1456,8 +1300,13 @@ static int wmv3_write_header(am_private_t *para, am_packet_t *pkt)
 static int wvc1_write_header(am_private_t *para, am_packet_t *pkt)
 {
     CLog::Log(LOGDEBUG, "wvc1_write_header");
-    memcpy(pkt->hdr->data, para->extradata.GetData() + 1, para->extradata.GetSize() - 1);
-    pkt->hdr->size = para->extrasize - 1;
+    const size_t extra = para->extradata.GetSize();
+    if (extra <= 1) // Sequence headers can arrive in-band.
+      return PLAYER_SUCCESS;
+    if (extra > INT_MAX || !reserve_codec_header(pkt->hdr, extra - 1))
+      return PLAYER_FAILED;
+    memcpy(pkt->hdr->data, para->extradata.GetData() + 1, extra - 1);
+    pkt->hdr->size = para->extradata.GetSize() - 1;
     if (1) {
         pkt->codec = &para->vcodec;
     } else {
@@ -1482,14 +1331,18 @@ static int mpeg_add_header(am_private_t *para, am_packet_t *pkt)
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff
     };
 
-    size = para->extrasize + sizeof(packet_wrapper);
+    if (para->extradata.GetSize() > INT_MAX - sizeof(packet_wrapper) - STUFF_BYTES_LENGTH ||
+        !reserve_codec_header(pkt->hdr, sizeof(packet_wrapper) + para->extradata.GetSize() + STUFF_BYTES_LENGTH))
+      return PLAYER_FAILED;
+    size = para->extradata.GetSize() + sizeof(packet_wrapper);
     packet_wrapper[4] = size >> 8 ;
     packet_wrapper[5] = size & 0xff ;
     memcpy(pkt->hdr->data, packet_wrapper, sizeof(packet_wrapper));
     size = sizeof(packet_wrapper);
     //CLog::Log(LOGDEBUG, "[mpeg_add_header:{:d}]wrapper size={:d}",__LINE__,size);
-    memcpy(pkt->hdr->data + size, para->extradata.GetData(), para->extradata.GetSize());
-    size += para->extrasize;
+    if (para->extradata.GetSize())
+        memcpy(pkt->hdr->data + size, para->extradata.GetData(), para->extradata.GetSize());
+    size += para->extradata.GetSize();
     //CLog::Log(LOGDEBUG, "[mpeg_add_header:{:d}]wrapper+seq size={:d}",__LINE__,size);
     memset(pkt->hdr->data + size, 0xff, STUFF_BYTES_LENGTH);
     size += STUFF_BYTES_LENGTH;
@@ -1512,6 +1365,8 @@ static int write_codec_header(am_private_t *para, am_packet_t *pkt)
     if (para->stream_type == AM_STREAM_ES) {
         if (pkt->hdr == NULL) {
             pkt->hdr = (hdr_buf_t*)calloc(1, sizeof(hdr_buf_t));
+            if (!pkt->hdr)
+                return PLAYER_NOMEM;
             pkt->hdr->data = (char *)malloc(HDR_BUF_SIZE);
             if (!pkt->hdr->data) {
                 //CLog::Log(LOGDEBUG, "[pre_header_feeding] NOMEM!");
@@ -1595,6 +1450,8 @@ static int write_codec_header(am_private_t *para, am_packet_t *pkt)
     else if (para->stream_type == AM_STREAM_PS) {
         if (pkt->hdr == NULL) {
             pkt->hdr = (hdr_buf_t*)calloc(1, sizeof(hdr_buf_t));
+            if (!pkt->hdr)
+                return PLAYER_NOMEM;
             pkt->hdr->data = (char*)malloc(HDR_BUF_SIZE);
             if (!pkt->hdr->data) {
                 CLog::Log(LOGDEBUG, "[pre_header_feeding] NOMEM!");
@@ -1689,6 +1546,8 @@ int set_header_info(am_private_t *para)
     } else if (para->video_format == VFORMAT_VC1) {
         if (para->video_codec_type == VIDEO_DEC_FORMAT_WMV3) {
             unsigned i, check_sum = 0, data_len = 0;
+            if (pkt->data_size < 0 || pkt->data_size > 0xffffff)
+                return PLAYER_FAILED;
 
             if ((pkt->hdr != NULL) && (pkt->hdr->data != NULL)) {
                 free(pkt->hdr->data);
@@ -1698,7 +1557,7 @@ int set_header_info(am_private_t *para)
             if (pkt->hdr == NULL) {
                 pkt->hdr = (hdr_buf_t*)malloc(sizeof(hdr_buf_t));
                 if (!pkt->hdr) {
-                    return PLAYER_FAILED;
+                    return PLAYER_NOMEM;
                 }
 
                 pkt->hdr->data = NULL;
@@ -1706,9 +1565,11 @@ int set_header_info(am_private_t *para)
             }
 
             if (pkt->avpkt.flags) {
-                pkt->hdr->data = (char*)malloc(para->extrasize + 26 + 22);
-                if (pkt->hdr->data == NULL) {
+                if (para->extradata.GetSize() > 0xffffff - 4)
                     return PLAYER_FAILED;
+                pkt->hdr->data = (char*)malloc(para->extradata.GetSize() + 26 + 22);
+                if (pkt->hdr->data == NULL) {
+                    return PLAYER_NOMEM;
                 }
 
                 pkt->hdr->data[0] = 0;
@@ -1716,7 +1577,7 @@ int set_header_info(am_private_t *para)
                 pkt->hdr->data[2] = 1;
                 pkt->hdr->data[3] = 0x10;
 
-                data_len = para->extrasize + 4;
+                data_len = para->extradata.GetSize() + 4;
                 pkt->hdr->data[4] = 0;
                 pkt->hdr->data[5] = (data_len >> 16) & 0xff;
                 pkt->hdr->data[6] = 0x88;
@@ -1747,14 +1608,15 @@ int set_header_info(am_private_t *para)
                 pkt->hdr->data[24] = (para->video_height >> 8) & 0xff;
                 pkt->hdr->data[25] =  para->video_height & 0xff;
 
-                memcpy(pkt->hdr->data + 26, para->extradata.GetData(), para->extradata.GetSize());
+                if (para->extradata.GetSize())
+                    memcpy(pkt->hdr->data + 26, para->extradata.GetData(), para->extradata.GetSize());
 
                 check_sum = 0;
-                data_len = para->extrasize + 26;
+                data_len = para->extradata.GetSize() + 26;
             } else {
                 pkt->hdr->data = (char*)malloc(22);
                 if (pkt->hdr->data == NULL) {
-                    return PLAYER_FAILED;
+                    return PLAYER_NOMEM;
                 }
             }
 
@@ -1800,7 +1662,7 @@ int set_header_info(am_private_t *para)
                 pkt->hdr = (hdr_buf_t*)malloc(sizeof(hdr_buf_t));
                 if (!pkt->hdr) {
                     CLog::Log(LOGDEBUG, "[wvc1_prefix] NOMEM!");
-                    return PLAYER_FAILED;
+                    return PLAYER_NOMEM;
                 }
 
                 pkt->hdr->data = NULL;
@@ -1810,7 +1672,7 @@ int set_header_info(am_private_t *para)
             pkt->hdr->data = (char*)malloc(4);
             if (pkt->hdr->data == NULL) {
                 CLog::Log(LOGDEBUG, "[wvc1_prefix] NOMEM!");
-                return PLAYER_FAILED;
+                return PLAYER_NOMEM;
             }
 
             pkt->hdr->data[0] = 0;
@@ -1822,10 +1684,10 @@ int set_header_info(am_private_t *para)
         }
     }
     else if (para->video_format == VFORMAT_VP9) {
-      vp9_update_frame_header(pkt);
+      return vp9_update_frame_header(pkt);
     }
     else if (para->vcodec.dec_mode == STREAM_TYPE_FRAME && para->video_format == VFORMAT_AV1) {
-      av1_add_frame_dec_info(para);
+      return av1_add_frame_dec_info(para);
     }
     else if (para->vcodec.dec_mode == STREAM_TYPE_FRAME && para->video_format == VFORMAT_MPEG12)
       mpeg12_add_frame_dec_info(para);
@@ -2790,7 +2652,8 @@ bool CAMLCodec::OpenDecoderInternal()
   am_private->hdr_buf.size = 0;
   free(am_private->hdr_buf.data);
   am_private->hdr_buf.data = NULL;
-  pre_header_feeding(am_private, &am_private->am_pkt);
+  if (pre_header_feeding(am_private, &am_private->am_pkt) != PLAYER_SUCCESS && isVc1)
+    return false;
 
   m_display_rect = CRect(0, 0, CDisplaySettings::GetInstance().GetCurrentResolutionInfo().iWidth, CDisplaySettings::GetInstance().GetCurrentResolutionInfo().iHeight);
 
@@ -3063,6 +2926,9 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts,
   auto operation = m_session.AcquireDecoder();
   if (!operation)
     return false;
+  // The driver accounts for up to 127 bytes of alignment and padding in an int.
+  if (iSize > INT_MAX - 127)
+    return true;
   int data_len, free_len;
   int chunk_size = calc_chunk_size(iSize);
   float new_buffer_level = GetBufferLevel(chunk_size, data_len, free_len);
@@ -3132,7 +2998,7 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts,
       if (ret < 0)
       {
         CLog::Log(LOGDEBUG, "CAMLCodec::{}: ERROR!!! grow_packet for apk failed.!!!", __FUNCTION__);
-        return ret;
+        return false;
       }
 
       pkt->data = pkt->avpkt.data;
@@ -3188,7 +3054,12 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts,
     // some formats need header/data tweaks.
     // the actual write occurs once in write_av_packet
     // and is controlled by am_pkt.newflag.
-    set_header_info(am_private);
+    const int headerStatus = set_header_info(am_private);
+    if (headerStatus == PLAYER_NOMEM || headerStatus == PLAYER_FAILED)
+    {
+      am_private->am_pkt.isvalid = 0;
+      return headerStatus != PLAYER_NOMEM; // Consume invalid input, retry allocation failures.
+    }
   }
 
   // loop until we write all into codec, am_pkt.isvalid

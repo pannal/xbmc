@@ -136,6 +136,7 @@ protected:
   friend class CDemuxStreamVideoFFmpeg;
   friend class CDemuxStreamSubtitleFFmpeg;
 
+  AVStream* GetAVStream(unsigned int index) const;
   CDemuxStream* AddStream(int streamIdx);
   void AddStream(int streamIdx, CDemuxStream* stream);
   void CreateStreams(unsigned int program = UINT_MAX);
@@ -159,6 +160,7 @@ protected:
   double SelectAspect(AVStream* st, bool& forced);
 
   bool IsDoViP7DualLayer() const;
+  void UpdateDolbyVisionPair();
   StreamHdrType DetermineHdrType(AVStream* pStream);
   void ComputePreferredVideoStream();
 
@@ -203,7 +205,7 @@ protected:
   bool m_seekToKeyFrame = false;
   bool m_seekRejectedWithoutChange = false;
   double m_startTime = 0;
-  bool m_dv_dual_stream = false;
+  int m_dvElStream = -1;
   bool m_dv_dual_stream_started = false;
   int m_dv_preferred_video_stream = -1;
 

@@ -2235,7 +2235,8 @@ void CVideoPlayer::ProcessPacket(CDemuxStream* pStream, DemuxPacket* pPacket)
     ProcessRadioRDSData(pStream, pPacket);
   else if (CheckIsCurrent(m_CurrentAudioID3, pStream, pPacket))
     ProcessAudioID3Data(pStream, pPacket);
-  else if (pPacket->isELPackage)
+  else if (pPacket->isELPackage && m_CurrentVideo.id == 0 &&
+           m_CurrentVideo.demuxerId == pStream->demuxerId && m_CurrentVideo.source == pStream->source)
   {
     CLog::Log(LOGDEBUG, "CVideoPlayer::ProcessPacket packet from enhancement layer: size:{:d} dts:{:.3f} pts:{:.3f} dur:{:.3f}ms",
       pPacket->iSize, pPacket->dts/DVD_TIME_BASE, pPacket->pts/DVD_TIME_BASE, pPacket->duration/1000.0);

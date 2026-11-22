@@ -239,8 +239,6 @@ CDVDDemuxFFmpeg::CDVDDemuxFFmpeg() : CDVDDemux()
   m_streaminfo = true; /* set to true if we want to look for streams before playback */
   m_checkTransportStream = false;
   m_dtsAtDisplayTime = DVD_NOPTS_VALUE;
-  m_dv_dual_stream = false;
-  m_dv_dual_stream_started = false;
 }
 
 CDVDDemuxFFmpeg::~CDVDDemuxFFmpeg()
@@ -687,7 +685,9 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
           for (unsigned int j = 0; j < m_pFormatContext->programs[i]->nb_stream_indexes; j++)
           {
             int idx = m_pFormatContext->programs[i]->stream_index[j];
-            AVStream* st = m_pFormatContext->streams[idx];
+            AVStream* st = GetAVStream(idx);
+            if (!st)
+              continue;
             // Related to https://patchwork.ffmpeg.org/project/ffmpeg/patch/20210429143825.53040-1-jamrial@gmail.com/
             // has been replaced with AVSTREAM_EVENT_FLAG_NEW_PACKETS.
             if ((st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
@@ -1185,7 +1185,7 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
       }
       // check size and stream index for being in a valid range
       else if (m_pkt.pkt.size < 0 || m_pkt.pkt.stream_index < 0 ||
-               m_pkt.pkt.stream_index >= (int)m_pFormatContext->nb_streams)
+               !GetAVStream(m_pkt.pkt.stream_index))
       {
         // XXX, in some cases ffmpeg returns a negative packet size
         if (m_pFormatContext->pb && !m_pFormatContext->pb->eof_reached)
@@ -1358,28 +1358,21 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
         pPacket->recoveryPoint = m_seekToKeyFrame;
       m_seekToKeyFrame = false;
 
-      // A dependency-layer EL is the non-primary video track (UHD BD PID 0x1015
-      // or a DT-DL MP4 track > 0), identified here the same way as the
-      // isELPackage tagging below: uniqueId > 0. EL packets that arrive before
-      // the first BL packet have nothing to pair with — drop them to keep the
-      // BL/EL pairing aligned at start-of-stream.
-      if (stream && stream->uniqueId > 0 &&
-         m_dv_dual_stream && !m_dv_dual_stream_started)
-      {
-        CLog::Log(LOGDEBUG, "CDVDDemuxFFmpeg::{}: EL packet arrived before BL packet on Dolby Vision dual stream, drop it!", __FUNCTION__);
-        CDVDDemuxUtils::FreeDemuxPacket(pPacket);
-        pPacket = CDVDDemuxUtils::AllocateDemuxPacket(0);
-        return pPacket;
-      }
-      else
-        m_dv_dual_stream_started = true;
+    }
 
-      if (m_pFormatContext->streams[pPacket->iStreamId]->codecpar &&
-          m_pFormatContext->streams[pPacket->iStreamId]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+    if (stream && m_dvElStream >= 0 && stream->type == STREAM_VIDEO)
+    {
+      const bool base = pPacket->iStreamId == 0;
+      const bool enhancement = pPacket->iStreamId == m_dvElStream;
+      if (enhancement && !m_dv_dual_stream_started)
       {
-        pPacket->isDualStream = m_dv_dual_stream;
-        pPacket->isELPackage = (stream->uniqueId > 0) ? m_dv_dual_stream : false;
+        CDVDDemuxUtils::FreeDemuxPacket(pPacket);
+        return CDVDDemuxUtils::AllocateDemuxPacket(0);
       }
+      if (base)
+        m_dv_dual_stream_started = true;
+      pPacket->isDualStream = base || enhancement;
+      pPacket->isELPackage = enhancement;
     }
     if (stream && m_pSSIF)
     {
@@ -1822,7 +1815,9 @@ void CDVDDemuxFFmpeg::CreateStreams(unsigned int program)
       // add streams from selected program
       for (unsigned int i = 0; i < m_pFormatContext->programs[m_program]->nb_stream_indexes; i++)
       {
-        int streamIdx = m_pFormatContext->programs[m_program]->stream_index[i];
+        unsigned int streamIdx = m_pFormatContext->programs[m_program]->stream_index[i];
+        if (!GetAVStream(streamIdx))
+          continue;
         m_pFormatContext->streams[streamIdx]->discard = AVDISCARD_NONE;
         AddStream(streamIdx);
       }
@@ -1830,9 +1825,8 @@ void CDVDDemuxFFmpeg::CreateStreams(unsigned int program)
       // discard all unneeded streams
       for (unsigned int i = 0; i < m_pFormatContext->nb_streams; i++)
       {
-        m_pFormatContext->streams[i]->discard = AVDISCARD_NONE;
-        if (GetStream(i) == nullptr)
-          m_pFormatContext->streams[i]->discard = AVDISCARD_ALL;
+        if (AVStream* st = GetAVStream(i))
+          st->discard = GetStream(i) ? AVDISCARD_NONE : AVDISCARD_ALL;
       }
     }
   }
@@ -1853,6 +1847,66 @@ void CDVDDemuxFFmpeg::CreateStreams(unsigned int program)
   ComputePreferredVideoStream();
 }
 
+static const AVDOVIDecoderConfigurationRecord* GetDoviConfig(const AVStream* stream)
+{
+  const auto* par = stream->codecpar;
+  const auto* side = av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data,
+                                             AV_PKT_DATA_DOVI_CONF);
+  if (!side || !side->data || side->size < sizeof(AVDOVIDecoderConfigurationRecord))
+    return nullptr;
+  return reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(side->data);
+}
+
+// The dependency layer is merged only with HEVC video on track zero.
+// Resolve against registered streams so either registration order works.
+void CDVDDemuxFFmpeg::UpdateDolbyVisionPair()
+{
+  const int previous = m_dvElStream;
+  m_dvElStream = -1;
+  auto* base = dynamic_cast<CDemuxStreamVideo*>(GetStream(0));
+  if (base && base->codec == AV_CODEC_ID_HEVC && m_pFormatContext->nb_streams &&
+      m_pFormatContext->streams[0] && m_pFormatContext->streams[0]->codecpar)
+  {
+    auto* bl = m_pFormatContext->streams[0];
+    const auto* config = GetDoviConfig(bl);
+    base->is_dual_track = false;
+    base->dovi = config ? *config : AVDOVIDecoderConfigurationRecord{};
+    base->hdr_type = DetermineHdrType(bl);
+    if (aml_dolby_vision_enabled() && bl->id != 0x1015 &&
+        !(config && config->el_present_flag && !config->bl_present_flag))
+    {
+      for (const auto& [index, stream] : m_streams)
+      {
+        if (index <= 0 || static_cast<unsigned>(index) >= m_pFormatContext->nb_streams ||
+            !stream || stream->type != STREAM_VIDEO || stream->codec != AV_CODEC_ID_HEVC)
+          continue;
+        const auto* el = m_pFormatContext->streams[index];
+        if (!el || !el->codecpar)
+          continue;
+        const auto* elConfig = GetDoviConfig(el);
+        if (el->id != 0x1015 && !(elConfig && elConfig->el_present_flag && !elConfig->bl_present_flag))
+          continue;
+        m_dvElStream = index;
+        base->is_dual_track = true;
+        base->hdr_type = StreamHdrType::HDR_TYPE_DOLBYVISION;
+        if (elConfig)
+          base->dovi = *elConfig;
+        else
+        {
+          base->dovi.dv_version_major = 1;
+          base->dovi.dv_profile = 7;
+          base->dovi.dv_level = 6;
+          base->dovi.rpu_present_flag = base->dovi.el_present_flag = base->dovi.bl_present_flag = 1;
+          base->dovi.dv_bl_signal_compatibility_id = 6;
+        }
+        break;
+      }
+    }
+  }
+  if (previous != m_dvElStream)
+    m_dv_dual_stream_started = false;
+}
+
 // Decide which video stream to prefer when a file carries more than one.
 //
 // The override exists purely to steer playback toward the HDR format the user
@@ -1867,7 +1921,7 @@ void CDVDDemuxFFmpeg::ComputePreferredVideoStream()
   m_dv_preferred_video_stream = -1;
 
   // BL+EL dependency layers are merged into one logical stream — nothing to pick.
-  if (m_dv_dual_stream || !aml_dolby_vision_enabled())
+  if (m_dvElStream >= 0 || !aml_dolby_vision_enabled())
     return;
 
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
@@ -1890,12 +1944,8 @@ void CDVDDemuxFFmpeg::ComputePreferredVideoStream()
     // DV stream that can be converted to HDR10+ (cross-compatible bl signal).
     if (!isDovi)
       return true;
-    const auto* dovi = av_packet_side_data_get(st->codecpar->coded_side_data,
-                                               st->codecpar->nb_coded_side_data,
-                                               AV_PKT_DATA_DOVI_CONF);
-    return dovi && dovi->size &&
-           reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(dovi->data)
-               ->dv_bl_signal_compatibility_id > 0;
+    const auto* dovi = GetDoviConfig(st);
+    return dovi && dovi->dv_bl_signal_compatibility_id > 0;
   };
 
   int videoStreams = 0;
@@ -1903,7 +1953,7 @@ void CDVDDemuxFFmpeg::ComputePreferredVideoStream()
   for (unsigned int i = 0; i < m_pFormatContext->nb_streams; ++i)
   {
     AVStream* st = m_pFormatContext->streams[i];
-    if (!st || st->discard == AVDISCARD_ALL ||
+    if (!st || !st->codecpar || st->discard == AVDISCARD_ALL ||
         st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO ||
         (st->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0)
       continue;
@@ -1937,12 +1987,22 @@ void CDVDDemuxFFmpeg::DisposeStreams()
   for(it = m_streams.begin(); it != m_streams.end(); ++it)
     delete it->second;
   m_streams.clear();
+  m_dvElStream = -1;
+  m_dv_dual_stream_started = false;
   m_parsers.clear();
+}
+
+AVStream* CDVDDemuxFFmpeg::GetAVStream(unsigned int index) const
+{
+  if (!m_pFormatContext || !m_pFormatContext->streams || index >= m_pFormatContext->nb_streams)
+    return nullptr;
+  AVStream* stream = m_pFormatContext->streams[index];
+  return stream && stream->codecpar ? stream : nullptr;
 }
 
 CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
 {
-  AVStream* pStream = m_pFormatContext->streams[streamIdx];
+  AVStream* pStream = GetAVStream(streamIdx);
   if (pStream && pStream->discard != AVDISCARD_ALL)
   {
     // Video (mp4) from GoPro cameras can have a 'meta' track used for a file repair containing
@@ -2180,91 +2240,8 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
         // https://github.com/FFmpeg/FFmpeg/blob/release/7.0/doc/APIchanges
         const AVPacketSideData* sideData = nullptr;
 
-        if (st->hdr_type == StreamHdrType::HDR_TYPE_DOLBYVISION)
-        {
-          sideData =
-              av_packet_side_data_get(pStream->codecpar->coded_side_data,
-                                      pStream->codecpar->nb_coded_side_data, AV_PKT_DATA_DOVI_CONF);
-
-          // A dependency-layer EL lives on its own track and must be combined
-          // with the base layer on track 0 — but only when Dolby Vision is
-          // enabled. With DV off the HDR10 base layer should play on its own:
-          // combining tags the EL packets for the base decoder, which then
-          // feeds the raw EL NALs to the hardware decoder because the codec's
-          // BL+EL pairing is itself DV-gated (see DVDVideoCodecAmlogic). Two
-          // transports carry a dependency EL on a separate track:
-          //   - UHD BD: the EL track has transport PID 0x1015.
-          //   - MP4/MOV dual-track (DT-DL): a later HEVC track whose Dolby
-          //     Vision config is a pure enhancement layer (el_present set,
-          //     bl_present clear — its base layer is track 0).
-          // MKV dual-layer DV uses BlockAddition instead of a separate track.
-          // Independent DV streams (P5/P8, or a second graded variant) carry
-          // their own base layer (bl_present set) and must NEVER be combined —
-          // which of several independent video streams to play is decided once,
-          // after every stream is known, in ComputePreferredVideoStream().
-          bool isDependencyEl = false;
-          if (aml_dolby_vision_enabled())
-          {
-            if (pStream->id == 0x1015) // UHD BD transport
-              isDependencyEl = true;
-            else if (sideData && sideData->size) // DT-DL MP4: pure EL config
-            {
-              const auto* conf =
-                  reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sideData->data);
-              isDependencyEl = conf->el_present_flag && !conf->bl_present_flag;
-            }
-          }
-
-          if (streamIdx > 0 && !m_dv_dual_stream && isDependencyEl)
-          {
-            m_dv_dual_stream = true;
-            CLog::Log(LOGDEBUG,
-                      "DVDDemuxFFmpeg::AddStream - DV dependency-layer EL (stream {}, PID {:#x}), "
-                      "combining BL+EL",
-                      streamIdx, pStream->id);
-          }
-
-          if (!m_dv_dual_stream)
-          {
-            // Single stream or independent multi-stream: set dovi config on this stream
-            if (sideData && sideData->size)
-              st->dovi = *reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sideData->data);
-          }
-          else if (aml_dolby_vision_enabled())
-          {
-            // Multi-layer: force dovi side data to bl stream
-            CDemuxStream* bl_stream = GetStream(0);
-            if (bl_stream)
-            {
-              CDemuxStreamVideo *bl_video_stream = static_cast<CDemuxStreamVideo*>(bl_stream);
-              bl_video_stream->hdr_type = StreamHdrType::HDR_TYPE_DOLBYVISION;
-              bl_video_stream->is_dual_track = true;
-
-              // use dovi side data if available
-              if (sideData && sideData->size)
-                bl_video_stream->dovi = *reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sideData->data);
-              // manual set dovi side data to P7
-              else
-              {
-                bl_video_stream->dovi.dv_version_major = 1;
-                bl_video_stream->dovi.dv_version_minor = 0;
-                bl_video_stream->dovi.dv_profile = 7;
-                bl_video_stream->dovi.dv_level = 6;
-                bl_video_stream->dovi.rpu_present_flag = 1;
-                bl_video_stream->dovi.el_present_flag = 1;
-                bl_video_stream->dovi.bl_present_flag = 1;
-                bl_video_stream->dovi.dv_bl_signal_compatibility_id = 6;
-              }
-            }
-          }
-        }
-        else if (m_dv_dual_stream)
-        {
-          CLog::Log(LOGDEBUG, "DVDDemuxFFmpeg::AddStream - discarding Dolby Vision stream from dual layer stream");
-          pStream->discard = AVDISCARD_ALL;
-          delete stream;
-          return nullptr;
-        }
+        if (const auto* config = GetDoviConfig(pStream))
+          st->dovi = *config;
 
         sideData = av_packet_side_data_get(pStream->codecpar->coded_side_data,
                                            pStream->codecpar->nb_coded_side_data,
@@ -2633,10 +2610,12 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
       }
     }
 
-    stream->uniqueId = pStream->index;
+    stream->uniqueId = streamIdx;
     stream->demuxerId = m_demuxerId;
 
-    AddStream(stream->uniqueId, stream);
+    AddStream(streamIdx, stream);
+    if (streamIdx == 0 || streamIdx == m_dvElStream || stream->type == STREAM_VIDEO)
+      UpdateDolbyVisionPair();
     return stream;
   }
   else
@@ -2866,23 +2845,24 @@ bool CDVDDemuxFFmpeg::IsProgramChange()
   for (unsigned int i = 0; i < m_pFormatContext->programs[m_program]->nb_stream_indexes; i++)
   {
     int idx = m_pFormatContext->programs[m_program]->stream_index[i];
-    if (m_pFormatContext->streams[idx]->discard >= AVDISCARD_ALL)
+    AVStream* st = GetAVStream(idx);
+    if (!st || st->discard >= AVDISCARD_ALL)
       continue;
     CDemuxStream* stream = GetStream(idx);
     if (!stream)
       return true;
-    if (m_pFormatContext->streams[idx]->codecpar->codec_id != stream->codec)
+    if (st->codecpar->codec_id != stream->codec)
       return true;
-    if (m_pFormatContext->streams[idx]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+    if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
     {
       CDemuxStreamAudioFFmpeg* audiostream = dynamic_cast<CDemuxStreamAudioFFmpeg*>(stream);
-      int codecparChannels = m_pFormatContext->streams[idx]->codecpar->ch_layout.nb_channels;
+      int codecparChannels = st->codecpar->ch_layout.nb_channels;
       if (audiostream && codecparChannels != audiostream->iChannels)
       {
         return true;
       }
     }
-    if (m_pFormatContext->streams[idx]->codecpar->extradata_size !=
+    if (st->codecpar->extradata_size !=
         static_cast<int>(stream->extraData.GetSize()))
       return true;
   }
@@ -2912,8 +2892,8 @@ unsigned int CDVDDemuxFFmpeg::HLSSelectProgram()
     for (unsigned int j = 0; j < m_pFormatContext->programs[i]->nb_stream_indexes; j++)
     {
       int idx = m_pFormatContext->programs[i]->stream_index[j];
-      AVStream* pStream = m_pFormatContext->streams[idx];
-      if (pStream && pStream->codecpar &&
+      AVStream* pStream = GetAVStream(idx);
+      if (pStream &&
           pStream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
       {
         strRes = pStream->codecpar->width * pStream->codecpar->height;
@@ -3061,8 +3041,8 @@ TRANSPORT_STREAM_STATE CDVDDemuxFFmpeg::TransportStreamAudioState()
     for (unsigned int i = 0; i < m_pFormatContext->programs[m_program]->nb_stream_indexes; i++)
     {
       int idx = m_pFormatContext->programs[m_program]->stream_index[i];
-      st = m_pFormatContext->streams[idx];
-      if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+      st = GetAVStream(idx);
+      if (st && st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
       {
         if (idx == m_pkt.pkt.stream_index && m_pkt.pkt.dts != AV_NOPTS_VALUE)
         {
@@ -3082,8 +3062,8 @@ TRANSPORT_STREAM_STATE CDVDDemuxFFmpeg::TransportStreamAudioState()
   {
     for (unsigned int i = 0; i < m_pFormatContext->nb_streams; i++)
     {
-      st = m_pFormatContext->streams[i];
-      if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+      st = GetAVStream(i);
+      if (st && st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
       {
         if (static_cast<int>(i) == m_pkt.pkt.stream_index && m_pkt.pkt.dts != AV_NOPTS_VALUE)
         {
@@ -3118,8 +3098,8 @@ TRANSPORT_STREAM_STATE CDVDDemuxFFmpeg::TransportStreamVideoState()
     for (unsigned int i = 0; i < m_pFormatContext->programs[m_program]->nb_stream_indexes; i++)
     {
       int idx = m_pFormatContext->programs[m_program]->stream_index[i];
-      st = m_pFormatContext->streams[idx];
-      if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+      st = GetAVStream(idx);
+      if (st && st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
       {
         if (idx == m_pkt.pkt.stream_index && m_pkt.pkt.dts != AV_NOPTS_VALUE &&
             st->codecpar->extradata)
@@ -3140,8 +3120,8 @@ TRANSPORT_STREAM_STATE CDVDDemuxFFmpeg::TransportStreamVideoState()
   {
     for (unsigned int i = 0; i < m_pFormatContext->nb_streams; i++)
     {
-      st = m_pFormatContext->streams[i];
-      if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+      st = GetAVStream(i);
+      if (st && st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
       {
         if (static_cast<int>(i) == m_pkt.pkt.stream_index && m_pkt.pkt.dts != AV_NOPTS_VALUE &&
             st->codecpar->extradata)
@@ -3284,11 +3264,9 @@ StreamHdrType CDVDDemuxFFmpeg::DetermineHdrType(AVStream* pStream)
 {
   auto hdrType = StreamHdrType::HDR_TYPE_NONE;
 
-  if (av_packet_side_data_get(pStream->codecpar->coded_side_data,
-                              pStream->codecpar->nb_coded_side_data,
-                              AV_PKT_DATA_DOVI_CONF)) // DoVi
+  if (GetDoviConfig(pStream))
     hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
-  else if (IsDoViP7DualLayer()) // DoVi P7 Dual Layer
+  else if ((pStream == m_pFormatContext->streams[0] || pStream->id == 0x1015) && IsDoViP7DualLayer()) // DoVi P7 Dual Layer
     hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
   else if (pStream->codecpar->color_trc == AVCOL_TRC_SMPTE2084) // HDR10
     hdrType = StreamHdrType::HDR_TYPE_HDR10;

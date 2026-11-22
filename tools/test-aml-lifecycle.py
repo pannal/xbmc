@@ -139,6 +139,7 @@ PRELUDE = r'''
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLSession.h"
 #include <atomic>
 #include <cassert>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -198,7 +199,9 @@ struct Private {
 };
 void av_buffer_unref(void**) {}
 int av_grow_packet(Packet*,size_t) {assert(false && "extradata path is not exercised"); return -1;}
-void set_header_info(Private*) {}
+constexpr int PLAYER_FAILED=-1,PLAYER_NOMEM=-2;
+int headerStatus=PLAYER_SUCCESS;
+int set_header_info(Private*) {return headerStatus;}
 std::function<void()> writeHook;
 int write_av_packet(Private* state,am_packet_t* packet) {
   if(writeHook) writeHook();
@@ -378,6 +381,11 @@ void DecoderDisplayAdmission() {
   assert(CAMLSession::TryBeginDisplay(display));
   assert(!codec.AddData(packet,1,1,1) && codec.storage.writes==0);
   assert(CAMLSession::EndDisplay(display,CAMLSession::DisplayPhase::READY));
+  headerStatus=PLAYER_FAILED;
+  assert(codec.AddData(packet,1,1,1) && codec.storage.writes==0);
+  headerStatus=PLAYER_NOMEM;
+  assert(!codec.AddData(packet,1,1,1) && codec.storage.writes==0);
+  headerStatus=PLAYER_SUCCESS;
   bool inside=false;
   writeHook=[&] {
     inside=true;
