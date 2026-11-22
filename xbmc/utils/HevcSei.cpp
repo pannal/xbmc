@@ -47,38 +47,33 @@ void HevcClearStartCodeEmulationPrevention3Byte(const uint8_t* buf,
   }
 }
 
+namespace
+{
+uint64_t ReadSeiValue(CBitstreamReader& br)
+{
+  uint64_t value = 0;
+  uint8_t byte;
+  do
+  {
+    byte = br.ReadBits(8);
+    value += byte;
+  } while (byte == 0xff);
+  return value;
+}
+} // namespace
+
 int CHevcSei::ParseSeiMessage(CBitstreamReader& br, std::vector<CHevcSei>& messages)
 {
   CHevcSei sei;
-  uint8_t lastPayloadTypeByte{0};
-  uint8_t lastPayloadSizeByte{0};
-
   sei.m_msgOffset = br.Position() / 8;
-
-  lastPayloadTypeByte = br.ReadBits(8);
-  while (lastPayloadTypeByte == 0xFF)
-  {
-    lastPayloadTypeByte = br.ReadBits(8);
-    sei.m_payloadType += 255;
-  }
-
-  sei.m_payloadType += lastPayloadTypeByte;
-
-  lastPayloadSizeByte = br.ReadBits(8);
-  while (lastPayloadSizeByte == 0xFF)
-  {
-    lastPayloadSizeByte = br.ReadBits(8);
-    sei.m_payloadSize += 255;
-  }
-
-  sei.m_payloadSize += lastPayloadSizeByte;
+  sei.m_payloadType = ReadSeiValue(br);
+  const uint64_t payloadSize = ReadSeiValue(br);
   sei.m_payloadOffset = br.Position() / 8;
-
-  // Invalid size
-  if (sei.m_payloadSize > br.AvailableBits() / 8)
+  if (br.HasError() || payloadSize > br.AvailableBits() / 8)
     return 1;
 
-  br.SkipBits(sei.m_payloadSize * 8);
+  sei.m_payloadSize = static_cast<size_t>(payloadSize);
+  br.SkipBits(payloadSize * 8);
   messages.emplace_back(sei);
 
   return 0;

@@ -13,61 +13,42 @@ extern "C"
 #include <libavutil/intreadwrite.h>
 }
 
-CBitstreamReader::CBitstreamReader(const uint8_t* buf, int len)
-  : buffer(buf), start(buf), length(len)
+CBitstreamReader::CBitstreamReader(const uint8_t* buf, std::size_t len)
+  : m_buffer(buf), m_lengthBits(static_cast<uint64_t>(len) * 8)
 {
 }
 
-uint32_t CBitstreamReader::ReadBits(int nbits)
+uint32_t CBitstreamReader::ReadBits(unsigned int nbits)
 {
-  uint32_t ret = GetBits(nbits);
-
-  offbits += nbits;
-  buffer += offbits / 8;
-  offbits %= 8;
-
-  m_posBits += nbits;
-
-  return ret;
+  const uint32_t value = GetBits(nbits);
+  if (!m_error)
+    m_posBits += nbits;
+  return value;
 }
 
-void CBitstreamReader::SkipBits(int nbits)
+void CBitstreamReader::SkipBits(uint64_t nbits)
 {
-  offbits += nbits;
-  buffer += offbits / 8;
-  offbits %= 8;
-
-  m_posBits += nbits;
-
-  if (buffer > (start + length))
-    oflow = 1;
+  if (nbits > AvailableBits())
+    m_error = true;
+  else if (!m_error)
+    m_posBits += nbits;
 }
 
-uint32_t CBitstreamReader::GetBits(int nbits)
+uint32_t CBitstreamReader::GetBits(unsigned int nbits)
 {
-  int i, nbytes;
-  uint32_t ret = 0;
-  const uint8_t *buf;
-
-  buf = buffer;
-  nbytes = (offbits + nbits) / 8;
-
-  if (((offbits + nbits) % 8) > 0)
-    nbytes++;
-
-  if ((buf + nbytes) > (start + length))
-  {
-    oflow = 1;
+  if (nbits > 32 || nbits > AvailableBits())
+    m_error = true;
+  if (m_error || nbits == 0)
     return 0;
-  }
-  for (i = 0; i<nbytes; i++)
-    ret += buf[i] << ((nbytes - i - 1) * 8);
 
-  i = (4 - nbytes) * 8 + offbits;
+  const unsigned int offset = m_posBits % 8;
+  const unsigned int bytes = (offset + nbits + 7) / 8;
+  const uint8_t* data = m_buffer + m_posBits / 8;
+  uint64_t value = 0;
+  for (unsigned int i = 0; i < bytes; ++i)
+    value = (value << 8) | data[i];
 
-  ret = ((ret << i) >> i) >> ((nbytes * 8) - nbits - offbits);
-
-  return ret;
+  return (value >> (bytes * 8 - offset - nbits)) & ((uint64_t{1} << nbits) - 1);
 }
 
 const uint8_t* find_start_code(const uint8_t *p, const uint8_t *end, uint32_t *state)

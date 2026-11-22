@@ -6,16 +6,22 @@
  *  See LICENSES/README.md for more information.
  */
 
-#include "utils/log.h"
-
-#include <vector>
-#include <cstdint>
-
 #include "HDR10Plus.h"
 
-#include "BitstreamReader.h"
+#include <vector>
 
-Hdr10PlusMetadata hdr10plus_sei_to_metadata(CBitstreamReader& br) 
+namespace
+{
+bool ReadPeakDimensions(CBitstreamReader& br, uint8_t& rows, uint8_t& cols)
+{
+  rows = br.ReadBits(5);
+  cols = br.ReadBits(5);
+  return !br.HasError() && rows >= 2 && rows <= 25 && cols >= 2 && cols <= 25 &&
+         static_cast<unsigned int>(rows * cols) <= br.AvailableBits() / 4;
+}
+} // namespace
+
+std::optional<Hdr10PlusMetadata> hdr10plus_sei_to_metadata(CBitstreamReader& br)
 {
   Hdr10PlusMetadata metadata = {};
 
@@ -25,6 +31,9 @@ Hdr10PlusMetadata hdr10plus_sei_to_metadata(CBitstreamReader& br)
   metadata.application_identifier = br.ReadBits(8);
   metadata.application_version = br.ReadBits(8);
   metadata.num_windows = br.ReadBits(2);
+
+  if (metadata.num_windows == 0)
+    return std::nullopt;
 
   if (metadata.num_windows > 1) {
 
@@ -50,18 +59,16 @@ Hdr10PlusMetadata hdr10plus_sei_to_metadata(CBitstreamReader& br)
   metadata.targeted_system_display_actual_peak_luminance_flag = br.ReadBits(1);
 
   if (metadata.targeted_system_display_actual_peak_luminance_flag) {
-      ActualTargetedSystemDisplay& display = metadata.actual_targeted_system_display;
-      display.num_rows_targeted_system_display_actual_peak_luminance = br.ReadBits(5);
-      display.num_cols_targeted_system_display_actual_peak_luminance = br.ReadBits(5);
-      display.targeted_system_display_actual_peak_luminance.resize(
-          display.num_rows_targeted_system_display_actual_peak_luminance,
-          std::vector<uint8_t>(display.num_cols_targeted_system_display_actual_peak_luminance)
-      );
-      for (uint8_t i = 0; i < display.num_rows_targeted_system_display_actual_peak_luminance; i++) {
-          for (uint8_t j = 0; j < display.num_cols_targeted_system_display_actual_peak_luminance; j++) {
-              display.targeted_system_display_actual_peak_luminance[i][j] = br.ReadBits(4);
-          }
-      }
+    auto& display = metadata.actual_targeted_system_display;
+    auto& rows = display.num_rows_targeted_system_display_actual_peak_luminance;
+    auto& cols = display.num_cols_targeted_system_display_actual_peak_luminance;
+    if (!ReadPeakDimensions(br, rows, cols))
+      return std::nullopt;
+    auto& matrix = display.targeted_system_display_actual_peak_luminance;
+    matrix.resize(rows, std::vector<uint8_t>(cols));
+    for (auto& row : matrix)
+      for (auto& luminance : row)
+        luminance = br.ReadBits(4);
   }
 
   // Parse luminance info
@@ -92,36 +99,52 @@ Hdr10PlusMetadata hdr10plus_sei_to_metadata(CBitstreamReader& br)
   // Parse mastering display info
   metadata.mastering_display_actual_peak_luminance_flag = br.ReadBits(1);
   if (metadata.mastering_display_actual_peak_luminance_flag) {
-      ActualMasteringDisplay& display = metadata.actual_mastering_display;
-      display.num_rows_mastering_display_actual_peak_luminance = br.ReadBits(5);
-      display.num_cols_mastering_display_actual_peak_luminance = br.ReadBits(5);
-      display.mastering_display_actual_peak_luminance.resize(
-          display.num_rows_mastering_display_actual_peak_luminance *
-          display.num_cols_mastering_display_actual_peak_luminance
-      );
-      for (uint8_t i = 0; i < display.mastering_display_actual_peak_luminance.size(); i++) {
-          display.mastering_display_actual_peak_luminance[i] = br.ReadBits(4);
+    auto& display = metadata.actual_mastering_display;
+    auto& rows = display.num_rows_mastering_display_actual_peak_luminance;
+    auto& cols = display.num_cols_mastering_display_actual_peak_luminance;
+    if (!ReadPeakDimensions(br, rows, cols))
+      return std::nullopt;
+    auto& matrix = display.mastering_display_actual_peak_luminance;
+    matrix.resize(rows * cols);
+    for (std::size_t i = 0; i < matrix.size(); ++i)
+      matrix[i] = br.ReadBits(4);
+  }
+
+  // Conversion uses the first window, but every window must be complete.
+  for (unsigned int i = 0; i < metadata.num_windows; ++i)
+  {
+    const bool toneMapping = br.ReadBits(1);
+    if (i == 0)
+      metadata.tone_mapping_flag = toneMapping;
+    if (toneMapping)
+    {
+      const auto kneeX = br.ReadBits(12);
+      const auto kneeY = br.ReadBits(12);
+      const auto count = br.ReadBits(4);
+      if (i == 0)
+      {
+        auto& curve = metadata.bezier_curve;
+        curve.knee_point_x = kneeX;
+        curve.knee_point_y = kneeY;
+        curve.num_bezier_curve_anchors = count;
+        curve.bezier_curve_anchors.resize(count);
+        for (auto& anchor : curve.bezier_curve_anchors)
+          anchor = br.ReadBits(10);
       }
+      else
+        br.SkipBits(count * 10);
+    }
+
+    const bool saturation = br.ReadBits(1);
+    const auto weight = saturation ? br.ReadBits(6) : 0;
+    if (i == 0)
+    {
+      metadata.color_saturation_mapping_flag = saturation;
+      metadata.color_saturation_weight = weight;
+    }
   }
 
-  // Parse tone mapping info
-  metadata.tone_mapping_flag = br.ReadBits(1);
-  if (metadata.tone_mapping_flag) {
-      BezierCurve& curve = metadata.bezier_curve;
-      curve.knee_point_x = br.ReadBits(12);
-      curve.knee_point_y = br.ReadBits(12);
-      curve.num_bezier_curve_anchors = br.ReadBits(4);
-      curve.bezier_curve_anchors.resize(curve.num_bezier_curve_anchors);
-      for (uint8_t i = 0; i < curve.num_bezier_curve_anchors; i++) {
-          curve.bezier_curve_anchors[i] = br.ReadBits(10);
-      }
-  }
-
-  // Parse color saturation info
-  metadata.color_saturation_mapping_flag = br.ReadBits(1);
-  if (metadata.color_saturation_mapping_flag) {
-      metadata.color_saturation_weight = br.ReadBits(6);
-  }
-
+  if (br.HasError())
+    return std::nullopt;
   return metadata;
 }

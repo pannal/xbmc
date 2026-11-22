@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <optional>
 #include <vector>
 
 #include "BitstreamReader.h"
@@ -90,4 +91,4 @@ struct Hdr10PlusMetadata {
   uint8_t color_saturation_weight;
 };
 
-Hdr10PlusMetadata hdr10plus_sei_to_metadata(CBitstreamReader& br);
+std::optional<Hdr10PlusMetadata> hdr10plus_sei_to_metadata(CBitstreamReader& br);

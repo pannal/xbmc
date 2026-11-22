@@ -54,7 +54,7 @@ public:
   CHevcSei() = default;
   ~CHevcSei() = default;
 
-  uint8_t m_payloadType{0};
+  uint64_t m_payloadType{0};
   size_t m_payloadSize{0};
 
   // In relation to the input SEI rbsp payload
