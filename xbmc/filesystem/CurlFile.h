@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "DllLibCurl.h"
 #include "IFile.h"
 #include "utils/HttpHeader.h"
 #include "utils/RingBuffer.h"
@@ -15,10 +16,6 @@
 #include <map>
 #include <functional>
 #include <string>
-
-typedef void CURL_HANDLE;
-typedef void CURLM;
-struct curl_slist;
 
 namespace XFILE
 {
@@ -42,6 +39,7 @@ namespace XFILE
       bool OpenForWrite(const CURL& url, bool bOverWrite = false) override;
       bool ReOpen(const CURL& url) override;
       bool Exists(const CURL& url) override;
+      bool ExistsDAVCollection(const CURL& url);
       int64_t Seek(int64_t iFilePosition, int iWhence=SEEK_SET) override;
       int64_t GetPosition() override;
       int64_t GetLength() override;
@@ -118,6 +116,7 @@ namespace XFILE
           bool m_sendRange;
           bool m_bLastError;
           bool m_bRetry;
+          bool m_lookupFailed = false;
 
           char* m_readBuffer;
 
@@ -138,15 +137,35 @@ namespace XFILE
           int8_t FillBuffer(unsigned int want);
           void SetReadBuffer(const void* lpBuf, int64_t uiBufSize);
 
+          void SetUrl(const std::string& url);
           void SetResume(void);
+          CURLcode Attach();
           long Connect(unsigned int size);
           void Disconnect();
+          CURLcode PerformOnSession();
+
+      private:
+          void Detach();
+          std::string m_resolveHost;
+          int m_resolvePort = 0;
+          // libcurl borrows the list until this state detaches.
+          curl_slist* m_resolveList = nullptr;
+          bool m_attached = false;
       };
 
     protected:
       void ParseAndCorrectUrl(CURL &url);
-      void SetCommonOptions(CReadState* state, bool failOnError = true);
-      void SetRequestHeaders(CReadState* state);
+      void SetCommonOptions(CReadState* state, bool failOnError = true, bool httpProbe = false);
+      enum class RequestType
+      {
+        Transfer,
+        FileProbe,
+        DAVCollectionProbe
+      };
+
+      bool ProbeExists(const CURL& url, RequestType type);
+      CURLcode SetRequestHeaders(CReadState* state, RequestType type = RequestType::Transfer);
+      CURLcode SetProbeOptions(const CURL& url, RequestType type = RequestType::FileProbe);
       void SetCorrectHeaders(CReadState* state);
       bool Service(const std::string& strURL, std::string& strHTML);
       std::string GetInfoString(int infoType);
@@ -192,7 +211,6 @@ namespace XFILE
       std::function<bool()> m_readInterrupt;
       bool m_verifyPeer = true;
       bool m_failOnError = true;
-      curl_slist* m_dnsCacheList = nullptr;
 
       CRingBuffer m_buffer; // our ringhold buffer
       char* m_overflowBuffer; // in the rare case we would overflow the above buffer
