@@ -51,18 +51,18 @@ struct CLog {template<class...T>static void Log(int,const char*,T&&...){}};
 static thread_local int heldLocks=0;
 struct CCriticalSection {std::recursive_mutex m;void lock(){m.lock();++heldLocks;}void unlock(){--heldLocks;m.unlock();}};
 struct CEvent {
- std::mutex m;std::condition_variable cv;bool set=false;
+ std::mutex m;std::condition_variable cv;bool set=false;std::atomic<unsigned int> signals{0};
  static std::atomic<bool> hold;
  bool Wait(std::chrono::milliseconds d){if(hold){while(hold)std::this_thread::sleep_for(1ms);return false;}
   std::unique_lock<std::mutex>l(m);const bool r=cv.wait_for(l,d,[&]{return set;});set=false;return r;}
- void Set(){{std::lock_guard<std::mutex>l(m);set=true;}cv.notify_all();}
+ void Set(){{std::lock_guard<std::mutex>l(m);set=true;++signals;}cv.notify_all();}
 };
 std::atomic<bool> CEvent::hold{false};
 struct CTexture {static std::unique_ptr<CTexture> LoadFromFile(const std::string&,int,int){return std::make_unique<CTexture>();}};
 struct CTextureUtils {static std::string UnwrapImageURL(const std::string&s){return s;}};
 struct CTextureDetails {std::string file;bool hashRevalidated=false,updateable=false;};
 // The network: a fill reads until released (then succeeds unless fillOk is false) or interrupted.
-struct Net {std::atomic<int> fills{0},started{0},interruptible{0};std::atomic<bool> release{false},fillOk{true};};
+struct Net {std::atomic<int> fills{0},started{0},interruptible{0};std::atomic<bool> release{false},fillOk{true};bool throwDecode=false,throwStore=false;};
 static Net* net=nullptr;
 struct CTextureCacheJob {
  std::string m_url;CTextureDetails m_details;std::function<bool()> m_readInterrupt;uint64_t m_fill=0;
@@ -72,22 +72,23 @@ struct CTextureCacheJob {
   ++net->fills;if(m_readInterrupt)++net->interruptible;++net->started;
   const auto end=std::chrono::steady_clock::now()+3s;
   while(!net->release){if(m_readInterrupt&&m_readInterrupt())return false;if(std::chrono::steady_clock::now()>end)return false;std::this_thread::sleep_for(1ms);}
+  if(net->throwDecode)throw std::runtime_error("decode");
   if(!net->fillOk)return false;
   m_details.file="cached/"+m_url;if(t)*t=std::make_unique<CTexture>();return true;}
 };
 class CTextureCache {
 public:
- CCriticalSection m_processingSection;std::set<std::string> m_processinglist;CEvent m_completeEvent;
+ CCriticalSection m_processingSection;CEvent m_completeEvent;
  std::map<std::string,uint64_t> m_fillIDs;uint64_t m_lastFillID=0;std::map<uint64_t,unsigned int> m_waiting;std::set<uint64_t> m_interrupted;
  CCriticalSection m_observerSection;std::function<void(const std::string&)> m_cachedObserver;
  std::mutex dbLock;std::set<std::string> db;
  std::string CacheImage(const std::string& image,std::unique_ptr<CTexture>* texture=nullptr,CTextureDetails* details=nullptr,const std::function<bool()>& interrupt={});
  void SetCachedObserver(std::function<void(const std::string& url)> observer);
  bool StartCacheImage(const std::string& image,uint64_t* fill=nullptr);
- void EndFill(const std::string& url,uint64_t fill);
+ void EndFill(const std::string& url,uint64_t fill,bool interrupted=false);
  void OnCachingComplete(bool success,CTextureCacheJob* job,bool interrupted=false);
  std::function<void()> afterMiss;
- void AddCachedTexture(const std::string&url,const CTextureDetails&){std::lock_guard<std::mutex>l(dbLock);db.insert(url);}
+ void AddCachedTexture(const std::string&url,const CTextureDetails&){if(net->throwStore)throw std::runtime_error("store");std::lock_guard<std::mutex>l(dbLock);db.insert(url);}
  void SetCachedTextureValid(const std::string&url,bool){std::lock_guard<std::mutex>l(dbLock);db.insert(url);}
  std::string GetCachedImage(const std::string&url,CTextureDetails&,bool){
   std::string r;{std::lock_guard<std::mutex>l(dbLock);r=db.count(url)?"cached/"+url:"";}
@@ -193,8 +194,53 @@ static void BackgroundEndsFill(){Net n;net=&n;auto c=std::make_shared<CTextureCa
  Wait(Within([&]{return waiter.done.load();},2s),"a background fill ends without its completion callback");
  Check(waiter.result=="cached/u"&&n.fills==1,"a background fill ends without its completion callback");
  CServiceBroker::cache=nullptr;++cases;}
+// Both owners must relinquish their fill even when no job-manager callback runs.
+static void ExceptionalFill(bool background, const std::string& failure)
+{
+ Net n;
+ net=&n;
+ n.throwDecode=(failure=="decode");
+ n.throwStore=(failure=="store");
+ auto cache=std::make_shared<CTextureCache>();
+ CServiceBroker::cache=cache;
+ if(failure=="observer")
+   cache->SetCachedObserver([](const std::string&){throw std::runtime_error("observer");});
+ std::string propagated;
+ std::thread owner([&]{
+   try
+   {
+     if(background)
+       CTextureCacheJob("u").DoWork();
+     else
+       cache->CacheImage("u");
+   }
+   catch(const std::runtime_error& error){propagated=error.what();}
+ });
+ Wait(Within([&]{return n.started.load()==1;},2s),"fixture: throwing owner did not start");
+ Request waiter(*cache,true);
+ Wait(Within([&]{std::lock_guard<CCriticalSection> lock(cache->m_processingSection);
+                 return !cache->m_waiting.empty();},2s),"fixture: waiter did not register");
+ n.release=true;
+ owner.join();
+ Check(propagated==failure,"owner preserves its exception");
+ Check(Within([&]{return waiter.done.load();},500ms),"an exception releases the waiting request");
+ waiter.Join();
+ const bool stored=(failure=="observer");
+ Check(waiter.result==(stored?"cached/u":""),"waiter sees only a stored result");
+ Check(cache->m_completeEvent.signals==1,"an exceptional fill signals its waiters exactly once");
+ Check(cache->m_fillIDs.empty()&&cache->m_waiting.empty()&&cache->m_interrupted.empty(),
+       "an exceptional fill leaves no active ownership or waiters");
+ n.throwDecode=n.throwStore=false;
+ cache->SetCachedObserver({});
+ if(stored){std::lock_guard<std::mutex> lock(cache->dbLock);cache->db.clear();}
+ Check(cache->CacheImage("u")=="cached/u","the next fill of the same URL succeeds after an exception");
+ ++cases;
+}
 int main(){try{
  OwnFill();WaiterStops();StoppedOwner(false);StoppedOwner(true);FailureShared();WaiterUsesResult();StoppedAlone();StaleRecord();DeclinedBackground();RetryLooksAgain();WaitPerFill();BackgroundEndsFill();
+ for(bool background : {false,true})
+   for(const char* failure : {"decode","store","observer"})
+     ExceptionalFill(background,failure);
  std::printf("PASS %u cases %u checks; actual CacheImage/OnCachingComplete, cache/job fixtures, real threads\n",cases,checks);return 0;
 }catch(const std::exception&e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}}
 '''
@@ -222,7 +268,7 @@ MUTATIONS = [
      'a caller waiting for a stopped fill fetches the image itself'),
     ('refetch-any-failure', ('    if (!interrupted || attempt >= MAX_REFETCHES)', '    if ((void)interrupted, attempt >= MAX_REFETCHES)'),
      'a fill that failed on its own is not repeated by its waiters'),
-    ('record-without-waiters', (' && m_waiting.find(job->m_fill) != m_waiting.end()', ''),
+    ('record-without-waiters', (' && m_waiting.find(fill) != m_waiting.end()', ''),
      'a stopped fill without waiters leaves no record'),
     ('record-kept', ('        m_interrupted.erase(fill);\n', ''), 'the record of a stopped fill ends with its waiters'),
     ('record-per-image', ('      interrupted = m_interrupted.find(fill) != m_interrupted.end();',
@@ -231,10 +277,10 @@ MUTATIONS = [
     ('release-any-fill', ('  if (fill == 0 || current == m_fillIDs.end() || current->second != fill)\n    return;\n',
                           '  if ((void)fill, current == m_fillIDs.end())\n    return;\n'),
      'a declined background fill leaves the running fill alone'),
-    ('retry-trusts-miss', ('      if (attempt > 0)\n      {\n        // Another caller', '      if (false)\n      {\n        // Another caller'),
+    ('retry-trusts-miss', ('        if (attempt > 0)\n        {\n          // Another caller', '        if (false)\n        {\n          // Another caller'),
      'a retry finds an image cached since its last look'),
     ('wait-per-image', ('        const auto current = m_fillIDs.find(url);\n        if (current == m_fillIDs.end() || current->second != fill)\n          break;\n',
-                        '        if (m_processinglist.find(url) == m_processinglist.end())\n          break;\n'),
+                        '        if (m_fillIDs.find(url) == m_fillIDs.end())\n          break;\n'),
      'a waiter does not wait through a later fill and retry its failure'),
     ('background-needs-callback', ('    cache->OnCachingComplete(success, this);\n', ''),
      'a background fill ends without its completion callback'),

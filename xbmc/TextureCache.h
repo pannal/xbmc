@@ -235,12 +235,11 @@ private:
 
   void OnJobComplete(unsigned int jobID, bool success, CJob *job) override;
 
-  // Ends the fill if it is still the image's; m_processingSection held.
-  void EndFill(const std::string& url, uint64_t fill);
+  // Notify waiters once, only if this fill still owns the image.
+  void EndFill(const std::string& url, uint64_t fill, bool interrupted = false);
 
   CCriticalSection m_databaseSection;
   CTextureDatabase m_database;
-  std::set<std::string> m_processinglist; ///< currently processing list to avoid 2 jobs being processed at once
   CCriticalSection     m_processingSection;
   CEvent               m_completeEvent; ///< Set whenever a job has finished
   // Under m_processingSection: the fill running for each processing image, the callers

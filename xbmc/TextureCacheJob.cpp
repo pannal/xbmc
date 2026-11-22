@@ -68,9 +68,17 @@ bool CTextureCacheJob::DoWork()
   {
     // Ended here, not in the completion callback: cancelling a running job, as a skin
     // unload does, removes the callback, and the fill would stay open for good.
-    const bool success = CacheTexture();
-    cache->OnCachingComplete(success, this);
-    return success;
+    try
+    {
+      const bool success = CacheTexture();
+      cache->OnCachingComplete(success, this);
+      return success;
+    }
+    catch (...)
+    {
+      cache->OnCachingComplete(false, this);
+      throw;
+    }
   }
 
   return false;
