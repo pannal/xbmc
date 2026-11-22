@@ -619,7 +619,7 @@ void vsvdb_max_filler(const SettingConstPtr& setting, std::vector<IntegerSetting
   list.emplace_back("PQ 3680 (4060 cd/m^2)", 25);
   list.emplace_back("PQ 3745 (4710 cd/m^2)", 26);
   list.emplace_back("PQ 3810 (5467 cd/m^2)", 27);
-  list.emplace_back("PQ 3875 (6351 cd/m^2)", 38);
+  list.emplace_back("PQ 3875 (6351 cd/m^2)", 28);
   list.emplace_back("PQ 3940 (7382 cd/m^2)", 29);
   list.emplace_back("PQ 4005 (8588 cd/m^2)", 30);
   list.emplace_back("PQ 4070 (10000 cd/m^2)", 31);
