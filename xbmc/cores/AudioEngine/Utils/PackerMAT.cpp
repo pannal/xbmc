@@ -70,6 +70,9 @@ void CPackerMAT::Reset()
 // high-bitrate streams can overshoot this size and therefor require proper handling of dynamic padding.
 bool CPackerMAT::PackTrueHD(const uint8_t* data, int size)
 {
+  if (!data || size < 8)
+    return false;
+
   TrueHDMajorSyncInfo info;
   bool isMajorSync = (AV_RB32(data + 4) == FORMAT_MAJOR_SYNC);
 
@@ -502,7 +505,7 @@ TrueHDMajorSyncInfo CPackerMAT::ParseTrueHDMajorSyncHeaders(const uint8_t* p, in
 
   // The computed header size must fit within the provided buffer; otherwise the
   // bitstream reads below could run past the end on malformed/corrupt input.
-  if (majorSyncSize > buffsize)
+  if (majorSyncSize > buffsize - 4)
     return {};
 
   CBitStream bs(p + 4, buffsize - 4);
@@ -510,7 +513,6 @@ TrueHDMajorSyncInfo CPackerMAT::ParseTrueHDMajorSyncHeaders(const uint8_t* p, in
   bs.SkipBits(32); // format_sync
 
   info.ratebits = bs.ReadBits(4); // ratebits
-  info.valid = true;
 
   //  (1) 6ch_multichannel_type
   //  (1) 8ch_multichannel_type
@@ -562,5 +564,6 @@ TrueHDMajorSyncInfo CPackerMAT::ParseTrueHDMajorSyncHeaders(const uint8_t* p, in
     break;
   }
 
+  info.valid = bs.IsValid();
   return info;
 }

@@ -26,7 +26,7 @@ class CDVDCodecOptions;
 
 typedef struct stDVDAudioFrame
 {
-  uint8_t* data[16];
+  uint8_t* data[AE_CH_MAX];
   double pts;
   bool hasTimestamp;
   double duration;

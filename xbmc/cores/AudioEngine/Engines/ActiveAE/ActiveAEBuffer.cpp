@@ -52,7 +52,7 @@ CActiveAEBufferPool::CActiveAEBufferPool(const AEAudioFormat& format) : m_format
   if (m_format.m_dataFormat == AE_FMT_RAW)
   {
     m_format.m_frameSize = 1;
-    m_format.m_frames = 61440;
+    m_format.m_frames = MAX_IEC61937_PACKET;
     m_format.m_channelLayout.Reset();
     m_format.m_channelLayout += AE_CH_FC;
   }
@@ -136,7 +136,7 @@ CActiveAEBufferPoolResample::CActiveAEBufferPoolResample(const AEAudioFormat& in
   if (m_inputFormat.m_dataFormat == AE_FMT_RAW)
   {
     m_format.m_frameSize = 1;
-    m_format.m_frames = 61440;
+    m_format.m_frames = MAX_IEC61937_PACKET;
     m_inputFormat.m_channelLayout.Reset();
     m_inputFormat.m_channelLayout += AE_CH_FC;
   }

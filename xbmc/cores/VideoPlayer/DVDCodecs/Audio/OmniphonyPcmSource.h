@@ -21,12 +21,7 @@ class CProcessInfo;
 /*!
  * \brief Planes this source will accept from the decoder.
  *
- * `DVDAudioFrame` carries `uint8_t* data[16]`, so sixteen is what Kodi itself
- * can pass onward: a planar stream wider than that is beyond the ordinary
- * decode path too, not only this one. Bounding the accepted layout here keeps
- * this source, its callers' arrays and the frame struct in agreement, and it
- * costs nothing real - the widest layout the renderer places is 7.1.4, at
- * twelve.
+ * The bridge accepts at most sixteen PCM channels.
  */
 constexpr int OMNI_PCM_MAX_PLANES = 16;
 
@@ -70,7 +65,7 @@ public:
    * the moment the listener is switched over. Holding it here means the base's
    * `GetData(DVDAudioFrame&)` formats it as though nothing had happened.
    */
-  int GetData(uint8_t** dst) override;
+  int GetData(uint8_t** dst, size_t capacity) override;
 
   /*!
    * \brief Take one decoded frame, converted for the bridge.
@@ -155,25 +150,14 @@ private:
   /*!
    * \brief The decoder's layout, if every channel of it can be placed.
    *
-   * Three things have to hold, and the first is why this exists at all rather
-   * than reusing GetChannelMap(): the layout must be AV_CHANNEL_ORDER_NATIVE,
-   * because `u.mask` shares storage with a pointer and reading it for a custom
-   * layout reads that pointer as a mask; the set bits must number exactly the
-   * decoded channels, or the mask is not describing this stream; and every bit
-   * must name a position the renderer can place.
-   *
-   * GetChannelMap() satisfies none of the three - it reads `u.mask`
-   * unconditionally, substitutes a default layout when the count disagrees, and
-   * folds the top-back channels onto the back pair.
+   * The bridge needs a native channel mask with one position for each decoded channel.
    */
   bool NativeLayout(uint64_t& mask, int& channels) const;
 
   //! \brief (Re)build the resampler and the header for the current geometry.
   bool Configure(uint64_t mask, int channels, AVSampleFormat fmt, int sampleRate);
 
-  //! \brief Hold a received frame for \ref GetData to serve, if the ordinary
-  //! path could carry it. A wider one is left dropped rather than written past
-  //! the sixteen pointers every caller of GetData actually offers.
+  //! Hold the frame for ordinary PCM delivery if the bridge declines its layout.
   void Retain(uint8_t* const* planes, int bytes);
 
   //! \brief Give up on this stream, once, with a reason in the log.
@@ -181,7 +165,8 @@ private:
 
   //! \brief Planes of a frame received but not usable, and its byte count.
   //! Served once, by \ref GetData, so the ordinary path still delivers it.
-  uint8_t* m_retainedPlanes[OMNI_PCM_MAX_PLANES]{};
+  uint8_t* m_retainedPlanes[AE_CH_MAX]{};
+  size_t m_retainedPlaneCount{0};
   int m_retainedBytes{0};
 
   //! The rate everything is converted to - see the constructor.

@@ -14,6 +14,8 @@
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "utils/log.h"
 
+#include <algorithm>
+
 extern "C"
 {
 #include <libavutil/avutil.h>
@@ -36,18 +38,8 @@ namespace
  */
 constexpr OmniphonyPcmEncoding OMNI_PCM_ENCODING = OmniphonyPcmEncoding::Float32;
 
-/*!
- * \brief Pointers the receive array holds, which is more than are accepted.
- *
- * `CDVDAudioCodecFFmpeg::GetData` writes one per plane of the frame it just
- * received, and has no way to be told how many the caller has room for. Since
- * a frame is received before its layout can be judged, the array has to
- * survive layouts this source will refuse: 22.2 decodes to twenty-four planes.
- * Sixty-four covers every layout ffmpeg names and matches the bridge's own
- * channel ceiling; a decoder exceeding it would overrun the base's callers
- * too, `DVDAudioFrame` carrying only sixteen.
- */
-constexpr size_t RECEIVE_PLANES = 64;
+// Receive wider FFmpeg layouts before deciding whether the bridge can render them.
+constexpr size_t RECEIVE_PLANES = AE_CH_MAX;
 } // namespace
 
 // The bound this source accepts must never exceed what a DVDAudioFrame can
@@ -91,17 +83,13 @@ void COmniphonyPcmSource::Reset()
 
 bool COmniphonyPcmSource::NativeLayout(uint64_t& mask, int& channels) const
 {
-  if (!m_pCodecContext)
+  if (!m_pFrame)
     return false;
 
-  const AVChannelLayout& layout = m_pCodecContext->ch_layout;
+  const AVChannelLayout& layout = m_pFrame->ch_layout;
   if (layout.order != AV_CHANNEL_ORDER_NATIVE)
     return false;
 
-  // Bounded by what Kodi can carry onward rather than by what the wire format
-  // allows: a frame with more planes than DVDAudioFrame holds cannot be
-  // delivered by the ordinary path either, so accepting it here would only
-  // choose between two ways of failing.
   const int count = layout.nb_channels;
   if (count <= 0 || count > OMNI_PCM_MAX_PLANES)
     return false;
@@ -140,34 +128,29 @@ void COmniphonyPcmSource::OpenLayout(uint64_t& mask, int& channels) const
 
 void COmniphonyPcmSource::Retain(uint8_t* const* planes, int bytes)
 {
-  // Only what the ordinary path could deliver anyway. A frame with more planes
-  // than DVDAudioFrame carries is not deliverable by anyone, so retaining it
-  // would trade a dropped frame for a write past the caller's array.
-  const int count = m_pFrame ? m_pFrame->ch_layout.nb_channels : 0;
-  const bool planar = m_pCodecContext && av_sample_fmt_is_planar(m_pCodecContext->sample_fmt);
-  const int used = planar ? count : 1;
-  if (bytes <= 0 || used <= 0 || used > OMNI_PCM_MAX_PLANES)
+  const int channels = m_pFrame->ch_layout.nb_channels;
+  const auto format = static_cast<AVSampleFormat>(m_pFrame->format);
+  const int planesUsed = av_sample_fmt_is_planar(format) ? channels : 1;
+  if (bytes <= 0 || planesUsed <= 0 || planesUsed > AE_CH_MAX)
     return;
 
-  // Cleared first: GetData hands back the whole array, and a pointer left over
-  // from an earlier frame in a slot this one does not use would be a stale
-  // plane sitting where a caller counting differently could read it.
-  for (int i = 0; i < OMNI_PCM_MAX_PLANES; ++i)
-    m_retainedPlanes[i] = (i < used) ? planes[i] : nullptr;
+  std::copy_n(planes, planesUsed, m_retainedPlanes);
+  m_retainedPlaneCount = planesUsed;
   m_retainedBytes = bytes;
 }
 
-int COmniphonyPcmSource::GetData(uint8_t** dst)
+int COmniphonyPcmSource::GetData(uint8_t** dst, size_t capacity)
 {
   if (m_retainedBytes > 0)
   {
+    if (capacity < m_retainedPlaneCount)
+      return AVERROR(ENOSPC);
+    std::copy_n(m_retainedPlanes, m_retainedPlaneCount, dst);
     const int bytes = m_retainedBytes;
     m_retainedBytes = 0;
-    for (int i = 0; i < OMNI_PCM_MAX_PLANES; ++i)
-      dst[i] = m_retainedPlanes[i];
     return bytes;
   }
-  return CDVDAudioCodecFFmpeg::GetData(dst);
+  return CDVDAudioCodecFFmpeg::GetData(dst, capacity);
 }
 
 void COmniphonyPcmSource::GiveUp(const char* why)
@@ -267,17 +250,11 @@ bool COmniphonyPcmSource::Convert(std::vector<uint8_t>& pcm, double& pts)
   if (m_unsupported)
     return false;
 
-  // The protected overload, not GetData(DVDAudioFrame&): that one sizes its
-  // frame from GetChannelMap(), whose count is wrong for any layout with
-  // height channels, so a 7.1.4 frame would be measured as though it were 7.1.
-  //
-  // Sized past what is accepted rather than at it. The base fills one pointer
-  // per plane of whatever it received and takes no capacity argument, so the
-  // array has to be wide enough for a frame this source will go on to refuse -
-  // 22.2 decodes to twenty-four planes, and arrives here before anything has
-  // had the chance to say no to it.
+  // Use the decoded frame layout when configuring the bridge.
   uint8_t* planes[RECEIVE_PLANES]{};
-  const int bytes = GetData(planes);
+  const int bytes = GetData(planes, std::size(planes));
+  if (bytes == AVERROR(ENOSPC))
+    GiveUp("decoded layout exceeds the receive plane capacity");
   if (bytes <= 0 || !m_pFrame || !m_pCodecContext)
     return false;
 
@@ -290,7 +267,7 @@ bool COmniphonyPcmSource::Convert(std::vector<uint8_t>& pcm, double& pts)
     return false;
   }
 
-  const AVSampleFormat fmt = m_pCodecContext->sample_fmt;
+  const auto fmt = static_cast<AVSampleFormat>(m_pFrame->format);
   const int rate = m_pCodecContext->sample_rate;
   if (rate <= 0)
   {

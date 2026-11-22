@@ -29,7 +29,7 @@ def exss_header(dialnorm):
 
 def main():
     source = (ROOT / 'xbmc/cores/AudioEngine/Utils/AEStreamInfo.cpp').read_text()
-    start = source.index('static inline uint32_t DTS_ReadBits(')
+    start = source.index('struct AudioBitReader')
     rewrite = source.index('void CAEStreamParser::DefeatDTSDialNorm(', start)
     end = source.index('\n}\n', rewrite) + 2
     definitions = '\n'.join(line for line in source.splitlines()
@@ -122,6 +122,12 @@ int main() {
     Frame input = core(6, 5, false, 0xa5);
     input.resize(size);
     check(input, input, "short input");
+  }
+  // A partial EXSS header cannot supply the asset field or its checksum.
+  for (size_t length = 0; length < exssOriginal.size(); ++length) {
+    Frame input = core(7, 0, false, 0);
+    input.insert(input.end(), exssOriginal.begin(), exssOriginal.begin() + length);
+    check(input, input, "partial extension header");
   }
   std::printf("%u DTS dialnorm cases, %u failures (each checked for idempotence)\n",
               checks, failures);

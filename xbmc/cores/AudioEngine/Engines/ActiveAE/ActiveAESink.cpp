@@ -276,7 +276,7 @@ void CActiveAESink::StateMachine(int signal, Protocol *port, Message *msg)
             //! for raw packets frameSize is set to 1
             if (m_requestedFormat.m_dataFormat == AE_FMT_RAW)
             {
-              reply.format.m_frames = 61440;
+              reply.format.m_frames = MAX_IEC61937_PACKET;
             }
             reply.cacheTotal = m_sink->GetCacheTotal();
             reply.latency = m_sink->GetLatency();

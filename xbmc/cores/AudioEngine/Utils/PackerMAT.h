@@ -129,6 +129,8 @@ public:
     return dat;
   }
 
+  bool IsValid() const { return (index + 7) / 8 <= size; }
+
   // skip bits from bitstream
   void SkipBits(int bits) { index += bits; }
 

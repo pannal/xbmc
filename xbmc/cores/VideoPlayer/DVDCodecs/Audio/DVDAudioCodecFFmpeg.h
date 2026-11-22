@@ -42,7 +42,7 @@ protected:
   // Virtual so a subclass can serve a frame it has already received rather
   // than pull the next one off the decoder. GetData(DVDAudioFrame&) formats
   // whatever this returns, so overriding it is enough to keep that path right.
-  virtual int GetData(uint8_t** dst);
+  virtual int GetData(uint8_t** dst, size_t capacity);
   // (Re)apply the configured dynamic range compression to the open codec.
   // Must be called after every avcodec_flush_buffers(): the AC3/E-AC3
   // decoder's flush memsets drc_scale (it lives past frame_type in
@@ -57,7 +57,6 @@ protected:
 
   AEAudioFormat m_format;
   AVCodecContext* m_pCodecContext;
-  enum AVSampleFormat m_iSampleFormat = AV_SAMPLE_FMT_NONE;
   CAEChannelInfo m_channelLayout;
   enum AVMatrixEncoding m_matrixEncoding = AV_MATRIX_ENCODING_NONE;
   AVFrame* m_pFrame;

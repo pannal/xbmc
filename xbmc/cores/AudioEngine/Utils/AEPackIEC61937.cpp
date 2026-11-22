@@ -14,15 +14,26 @@
 #define IEC61937_PREAMBLE1  0xF872
 #define IEC61937_PREAMBLE2  0x4E1F
 
-inline void SwapEndian(uint16_t *dst, uint16_t *src, unsigned int size)
+static void SwapEndian(uint8_t* dst, const uint8_t* src, unsigned int size)
 {
-  for (unsigned int i = 0; i < size; ++i, ++dst, ++src)
-    *dst = ((*src & 0xFF00) >> 8) | ((*src & 0x00FF) << 8);
+  unsigned int i = 0;
+  for (; i + 1 < size; i += 2)
+  {
+    const uint8_t first = src[i];
+    dst[i] = src[i + 1];
+    dst[i + 1] = first;
+  }
+  if (i < size)
+  {
+    dst[i + 1] = src[i];
+    dst[i] = 0;
+  }
 }
 
 int CAEPackIEC61937::PackAC3(uint8_t *data, unsigned int size, uint8_t *dest)
 {
-  assert(size <= OUT_FRAMESTOBYTES(AC3_FRAME_SIZE));
+  if (size > OUT_FRAMESTOBYTES(AC3_FRAME_SIZE) - IEC61937_DATA_OFFSET || size < 6)
+    return 0;
   struct IEC61937Packet *packet = (struct IEC61937Packet*)dest;
 
   packet->m_preamble1 = IEC61937_PREAMBLE1;
@@ -39,8 +50,8 @@ int CAEPackIEC61937::PackAC3(uint8_t *data, unsigned int size, uint8_t *dest)
   int bitstream_mode  = data[5] & 0x7;
   packet->m_type      = IEC61937_TYPE_AC3 | (bitstream_mode << 8);
 
+  SwapEndian(packet->m_data, data, size);
   size += size & 0x1;
-  SwapEndian((uint16_t*)packet->m_data, (uint16_t*)data, size >> 1);
 #endif
 
   memset(packet->m_data + size, 0, OUT_FRAMESTOBYTES(AC3_FRAME_SIZE) - IEC61937_DATA_OFFSET - size);
@@ -49,7 +60,8 @@ int CAEPackIEC61937::PackAC3(uint8_t *data, unsigned int size, uint8_t *dest)
 
 int CAEPackIEC61937::PackEAC3(uint8_t *data, unsigned int size, uint8_t *dest)
 {
-  assert(size <= OUT_FRAMESTOBYTES(EAC3_FRAME_SIZE));
+  if (size > OUT_FRAMESTOBYTES(EAC3_FRAME_SIZE) - IEC61937_DATA_OFFSET)
+    return 0;
   struct IEC61937Packet *packet = (struct IEC61937Packet*)dest;
 
   packet->m_preamble1 = IEC61937_PREAMBLE1;
@@ -63,8 +75,8 @@ int CAEPackIEC61937::PackEAC3(uint8_t *data, unsigned int size, uint8_t *dest)
   else
     memcpy(packet->m_data, data, size);
 #else
+  SwapEndian(packet->m_data, data, size);
   size += size & 0x1;
-  SwapEndian((uint16_t*)packet->m_data, (uint16_t*)data, size >> 1);
 #endif
 
   memset(packet->m_data + size, 0, OUT_FRAMESTOBYTES(EAC3_FRAME_SIZE) - IEC61937_DATA_OFFSET - size);
@@ -91,7 +103,8 @@ int CAEPackIEC61937::PackTrueHD(const uint8_t* data, unsigned int size, uint8_t*
   if (size == 0)
     return OUT_FRAMESTOBYTES(TRUEHD_FRAME_SIZE);
 
-  assert(size <= OUT_FRAMESTOBYTES(TRUEHD_FRAME_SIZE));
+  if (size > OUT_FRAMESTOBYTES(TRUEHD_FRAME_SIZE) - IEC61937_DATA_OFFSET)
+    return 0;
   struct IEC61937Packet *packet = (struct IEC61937Packet*)dest;
   packet->m_preamble1 = IEC61937_PREAMBLE1;
   packet->m_preamble2 = IEC61937_PREAMBLE2;
@@ -104,8 +117,8 @@ int CAEPackIEC61937::PackTrueHD(const uint8_t* data, unsigned int size, uint8_t*
   else
     memcpy(packet->m_data, data, size);
 #else
+  SwapEndian(packet->m_data, data, size);
   size += size & 0x1;
-  SwapEndian((uint16_t*)packet->m_data, (uint16_t*)data, size >> 1);
 #endif
 
   memset(packet->m_data + size, 0, OUT_FRAMESTOBYTES(TRUEHD_FRAME_SIZE) - IEC61937_DATA_OFFSET - size);
@@ -128,6 +141,10 @@ int CAEPackIEC61937::PackDTSHD(uint8_t *data, unsigned int size, uint8_t *dest, 
       return 0;
   }
 
+  const unsigned int burstsize = period * 4;
+  if (burstsize > MAX_IEC61937_PACKET || size > burstsize - IEC61937_DATA_OFFSET)
+    return 0;
+
   struct IEC61937Packet *packet = (struct IEC61937Packet*)dest;
   packet->m_preamble1 = IEC61937_PREAMBLE1;
   packet->m_preamble2 = IEC61937_PREAMBLE2;
@@ -143,11 +160,10 @@ int CAEPackIEC61937::PackDTSHD(uint8_t *data, unsigned int size, uint8_t *dest, 
   else
     memcpy(packet->m_data, data, size);
 #else
+  SwapEndian(packet->m_data, data, size);
   size += size & 0x1;
-  SwapEndian((uint16_t*)packet->m_data, (uint16_t*)data, size >> 1);
 #endif
 
-  unsigned int burstsize = period << 2;
   memset(packet->m_data + size, 0, burstsize - IEC61937_DATA_OFFSET - size);
   return burstsize;
 }
@@ -155,7 +171,8 @@ int CAEPackIEC61937::PackDTSHD(uint8_t *data, unsigned int size, uint8_t *dest, 
 int CAEPackIEC61937::PackDTS(uint8_t *data, unsigned int size, uint8_t *dest, bool littleEndian,
                              unsigned int frameSize, uint16_t type)
 {
-  assert(size <= frameSize);
+  if (size > frameSize)
+    return 0;
 
   /* BE is the standard endianness, byteswap needed if LE */
   bool byteSwapNeeded = littleEndian;
@@ -196,8 +213,8 @@ int CAEPackIEC61937::PackDTS(uint8_t *data, unsigned int size, uint8_t *dest, bo
 
   if (byteSwapNeeded)
   {
+    SwapEndian(dataTo, data, size);
     size += size & 0x1;
-    SwapEndian((uint16_t*)dataTo, (uint16_t*)data, size >> 1);
   }
 
   if (size != frameSize)

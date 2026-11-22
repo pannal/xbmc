@@ -35,9 +35,14 @@ CAEBitstreamPacker::~CAEBitstreamPacker()
 void CAEBitstreamPacker::Pack(CAEStreamInfo &info, uint8_t* data, int size)
 {
   m_pauseDuration = 0;
+  m_dataSize = 0;
+  if (!data || size <= 0)
+    return;
   switch (info.m_type)
   {
     case CAEStreamInfo::STREAM_TYPE_TRUEHD:
+      if (size <= IEC61937_DATA_OFFSET)
+        return;
       m_dataSize = CAEPackIEC61937::PackTrueHD(data + IEC61937_DATA_OFFSET,
                                                size - IEC61937_DATA_OFFSET, m_packedBuffer);
       break;
@@ -130,6 +135,8 @@ void CAEBitstreamPacker::Reset()
 void CAEBitstreamPacker::PackDTSHD(CAEStreamInfo &info, uint8_t* data, int size)
 {
   static const uint8_t dtshd_start_code[10] = { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfe, 0xfe };
+  if (size > static_cast<int>(MAX_IEC61937_PACKET - IEC61937_DATA_OFFSET - sizeof(dtshd_start_code) - 2))
+    return;
   unsigned int dataSize = sizeof(dtshd_start_code) + 2 + size;
 
   if (dataSize > m_dtsHDSize)

@@ -623,16 +623,39 @@ void CAEStreamParser::DefeatAC3DialNorm(uint8_t* data, unsigned int size)
 // and real DTS-HD MA streams. Only the 16-bit big-endian core is handled; the
 // 14-bit and little-endian packings are left untouched rather than risk damage.
 // ---------------------------------------------------------------------------
-static inline uint32_t DTS_ReadBits(const uint8_t* d, unsigned int& pos, unsigned int n)
+struct AudioBitReader
 {
-  uint32_t v = 0;
-  while (n--)
+  const uint8_t* data;
+  unsigned int pos;   /* absolute bit index into data */
+  unsigned int limit; /* one past the last readable bit index */
+  bool ok = true;
+
+  bool Skip(unsigned int n)
   {
-    v = (v << 1) | ((d[pos >> 3] >> (7 - (pos & 7))) & 1);
-    ++pos;
+    if (!ok || n > limit || pos > limit - n)
+    {
+      ok = false;
+      return false;
+    }
+    pos += n;
+    return true;
   }
-  return v;
-}
+
+  /* At most 32 bits; anything longer is a skip, never a value. */
+  uint32_t Read(unsigned int n)
+  {
+    if (n > 32 || !Skip(n))
+    {
+      ok = false;
+      return 0;
+    }
+
+    uint32_t v = 0;
+    for (unsigned int bit = pos - n; bit < pos; ++bit)
+      v = (v << 1) | ((data[bit >> 3] >> (7 - (bit & 7))) & 1);
+    return v;
+  }
+};
 
 static inline void DTS_WriteBits(uint8_t* d, unsigned int pos, unsigned int n, uint32_t value)
 {
@@ -686,23 +709,26 @@ void CAEStreamParser::DefeatDTSDialNorm(uint8_t* data, unsigned int size)
     return;
 
   // --- core header: DNG (4-bit), after FILTS/VERNUM/CHIST/PCMR/SUMF/SUMS ---
-  unsigned int pos = 32;
-  DTS_ReadBits(data, pos, 1);                       // FTYPE
-  DTS_ReadBits(data, pos, 5);                       // deficit sample count
-  const unsigned int cpf = DTS_ReadBits(data, pos, 1);
-  DTS_ReadBits(data, pos, 7);                       // NBLKS
-  const unsigned int fsize = DTS_ReadBits(data, pos, 14) + 1;
-  DTS_ReadBits(data, pos, 6 + 4 + 5);               // AMODE, SFREQ, RATE
-  DTS_ReadBits(data, pos, 1 + 1 + 1 + 1 + 1);       // FIXED, DYNF, TIMEF, AUXF, HDCD
-  DTS_ReadBits(data, pos, 3 + 1 + 1 + 2 + 1);       // EXT_AUDIO_ID/AUDIO, ASPF, LFF, HFLAG
+  AudioBitReader core{data, 32, size * 8};
+  core.Read(1);                       // FTYPE
+  core.Read(5);                       // deficit sample count
+  const unsigned int cpf = core.Read(1);
+  core.Read(7);                       // NBLKS
+  const unsigned int fsize = core.Read(14) + 1;
+  core.Read(6 + 4 + 5);               // AMODE, SFREQ, RATE
+  core.Read(1 + 1 + 1 + 1 + 1);       // FIXED, DYNF, TIMEF, AUXF, HDCD
+  core.Read(3 + 1 + 1 + 2 + 1);       // EXT_AUDIO_ID/AUDIO, ASPF, LFF, HFLAG
   if (cpf)
-    DTS_ReadBits(data, pos, 16);                    // header CRC (HCRC)
-  DTS_ReadBits(data, pos, 1);                       // FILTS
-  const unsigned int vernumPos = pos;
-  const unsigned int vernum = DTS_ReadBits(data, pos, 4);
-  DTS_ReadBits(data, pos, 2 + 3 + 1 + 1);           // CHIST, PCMR, SUMF, SUMS
-  const unsigned int dngPos = pos;
-  const unsigned int dng = DTS_ReadBits(data, pos, 4);
+    core.Read(16);                    // header CRC (HCRC)
+  core.Read(1);                       // FILTS
+  const unsigned int vernumPos = core.pos;
+  const unsigned int vernum = core.Read(4);
+  core.Read(2 + 3 + 1 + 1);           // CHIST, PCMR, SUMF, SUMS
+  const unsigned int dngPos = core.pos;
+  const unsigned int dng = core.Read(4);
+
+  if (!core.ok || fsize > size || fsize * 8 < core.pos)
+    return;
 
   // Zero the core DNG only when there is no core header CRC (cpf == 0) — this
   // holds for every DTS-HD MA stream. With cpf == 1 an HCRC recompute would be
@@ -728,14 +754,14 @@ void CAEStreamParser::DefeatDTSDialNorm(uint8_t* data, unsigned int size)
     return;
 
   uint8_t* eb = data + exss;
-  unsigned int ep = 32;                             // skip the 32-bit sync
-  DTS_ReadBits(eb, ep, 8);                          // nuUserDefinedBits
-  const unsigned int nExtSSIndex = DTS_ReadBits(eb, ep, 2);
-  const unsigned int bHeaderSizeType = DTS_ReadBits(eb, ep, 1);
+  AudioBitReader extension{eb, 32, (size - exss) * 8};                             // skip the 32-bit sync
+  extension.Read(8);                          // nuUserDefinedBits
+  const unsigned int nExtSSIndex = extension.Read(2);
+  const unsigned int bHeaderSizeType = extension.Read(1);
   const unsigned int nBitsHdr = bHeaderSizeType ? 12 : 8;
   const unsigned int nBitsFsize = bHeaderSizeType ? 20 : 16;
-  const unsigned int headerSize = DTS_ReadBits(eb, ep, nBitsHdr) + 1;
-  if (exss + headerSize > size || headerSize < 7)
+  const unsigned int headerSize = extension.Read(nBitsHdr) + 1;
+  if (!extension.ok || headerSize > size - exss || headerSize < 7)
     return;
 
   // Safety gate: only proceed if the existing EXSS header CRC validates. This
@@ -745,86 +771,89 @@ void CAEStreamParser::DefeatDTSDialNorm(uint8_t* data, unsigned int size)
   if (DTS_CRC16_CCITT(eb + 5, headerSize - 5) != 0)
     return;
 
-  DTS_ReadBits(eb, ep, nBitsFsize);                 // nuExtSSFsize
-  const unsigned int staticFields = DTS_ReadBits(eb, ep, 1);
+  extension.limit = (headerSize - 2) * 8; // exclude the stored CRC
+  extension.Read(nBitsFsize);                 // nuExtSSFsize
+  const unsigned int staticFields = extension.Read(1);
   unsigned int numAssets = 1;
   if (staticFields)
   {
-    DTS_ReadBits(eb, ep, 2 + 3);                    // nuRefClockCode, frame duration
-    if (DTS_ReadBits(eb, ep, 1))                    // bTimeStampFlag
+    extension.Read(2 + 3);                    // nuRefClockCode, frame duration
+    if (extension.Read(1))                    // bTimeStampFlag
     {
-      DTS_ReadBits(eb, ep, 32);
-      DTS_ReadBits(eb, ep, 4);
+      extension.Read(32);
+      extension.Read(4);
     }
-    const unsigned int numAudioPresnt = DTS_ReadBits(eb, ep, 3) + 1;
-    numAssets = DTS_ReadBits(eb, ep, 3) + 1;
+    const unsigned int numAudioPresnt = extension.Read(3) + 1;
+    numAssets = extension.Read(3) + 1;
     if (numAudioPresnt > 8)
       return;
     uint32_t masks[8] = {0};
     for (unsigned int i = 0; i < numAudioPresnt; ++i)
-      masks[i] = DTS_ReadBits(eb, ep, nExtSSIndex + 1);
+      masks[i] = extension.Read(nExtSSIndex + 1);
     for (unsigned int i = 0; i < numAudioPresnt; ++i)
       for (unsigned int ss = 0; ss < nExtSSIndex + 1u; ++ss)
         if ((masks[i] >> ss) & 1)
-          DTS_ReadBits(eb, ep, 8);
-    if (DTS_ReadBits(eb, ep, 1))                    // bMixMetadataEnbl — too complex; bail
+          extension.Read(8);
+    if (extension.Read(1))                    // bMixMetadataEnbl — too complex; bail
       return;
   }
   for (unsigned int i = 0; i < numAssets; ++i)
-    DTS_ReadBits(eb, ep, nBitsFsize);               // nuAssetFsize[i]
+    extension.Read(nBitsFsize);               // nuAssetFsize[i]
 
   // First (primary) audio-asset descriptor. DTS-HD MA / DTS:X carry a single
   // asset; a rare multi-asset stream would only have its first asset defeated.
-  DTS_ReadBits(eb, ep, 9);                          // nuAssetDescriptFsize
-  DTS_ReadBits(eb, ep, 3);                          // nuAssetIndex
+  const unsigned int assetStart = extension.pos;
+  const unsigned int assetBits = (extension.Read(9) + 1) * 8;
+  if (!extension.ok)
+    return;
+  extension.limit = std::min(extension.limit, assetStart + assetBits);
+  extension.Read(3);                          // nuAssetIndex
   if (staticFields)
   {
-    if (DTS_ReadBits(eb, ep, 1)) DTS_ReadBits(eb, ep, 4);   // asset type descriptor
-    if (DTS_ReadBits(eb, ep, 1)) DTS_ReadBits(eb, ep, 24);  // language descriptor
-    if (DTS_ReadBits(eb, ep, 1))                            // info text
-      ep += (DTS_ReadBits(eb, ep, 10) + 1) * 8;
-    DTS_ReadBits(eb, ep, 5);                        // nuBitResolution
-    DTS_ReadBits(eb, ep, 4);                        // nuMaxSampleRate
-    const unsigned int nch = DTS_ReadBits(eb, ep, 8) + 1;   // nuTotalNumChs
-    if (DTS_ReadBits(eb, ep, 1))                    // bOne2OneMapChannels2Speakers
+    if (extension.Read(1)) extension.Read(4);   // asset type descriptor
+    if (extension.Read(1)) extension.Read(24);  // language descriptor
+    if (extension.Read(1))                            // info text
+      extension.Skip((extension.Read(10) + 1) * 8);
+    extension.Read(5);                        // nuBitResolution
+    extension.Read(4);                        // nuMaxSampleRate
+    const unsigned int nch = extension.Read(8) + 1;   // nuTotalNumChs
+    if (extension.Read(1))                    // bOne2OneMapChannels2Speakers
     {
-      if (nch > 2) DTS_ReadBits(eb, ep, 1);         // bEmbeddedStereoFlag
-      if (nch > 6) DTS_ReadBits(eb, ep, 1);         // bEmbeddedSixChFlag
+      if (nch > 2) extension.Read(1);         // bEmbeddedStereoFlag
+      if (nch > 6) extension.Read(1);         // bEmbeddedSixChFlag
       unsigned int w = 0;
-      if (DTS_ReadBits(eb, ep, 1))                  // bSpkrMaskEnabled
+      if (extension.Read(1))                  // bSpkrMaskEnabled
       {
-        w = (DTS_ReadBits(eb, ep, 2) + 1) * 4;
-        DTS_ReadBits(eb, ep, w);                    // nuSpkrActivityMask
+        w = (extension.Read(2) + 1) * 4;
+        extension.Read(w);                    // nuSpkrActivityMask
       }
-      const unsigned int nremap = DTS_ReadBits(eb, ep, 3);
+      const unsigned int nremap = extension.Read(3);
       if (nremap > 8)
         return;
       uint32_t layouts[8] = {0};
       for (unsigned int i = 0; i < nremap; ++i)
-        layouts[i] = DTS_ReadBits(eb, ep, w);
+        layouts[i] = extension.Read(w);
       for (unsigned int i = 0; i < nremap; ++i)
       {
-        const unsigned int ndec = DTS_ReadBits(eb, ep, 5) + 1;
+        const unsigned int ndec = extension.Read(5) + 1;
         const unsigned int nspk = DTS_PopCount(layouts[i]);
         for (unsigned int c = 0; c < nspk; ++c)
         {
-          const unsigned int ncoef = DTS_PopCount(DTS_ReadBits(eb, ep, ndec));
+          const unsigned int ncoef = DTS_PopCount(extension.Read(ndec));
           for (unsigned int k = 0; k < ncoef; ++k)
-            DTS_ReadBits(eb, ep, 5);
+            extension.Read(5);
         }
       }
     }
     else
-      DTS_ReadBits(eb, ep, 3);                      // nuRepresentationType
+      extension.Read(3);                      // nuRepresentationType
   }
-  if (DTS_ReadBits(eb, ep, 1))                      // bDRCCoefPresent
-    DTS_ReadBits(eb, ep, 8);                        // nuDRCCode
-  if (!DTS_ReadBits(eb, ep, 1))                     // bDialNormPresent
+  if (extension.Read(1))                      // bDRCCoefPresent
+    extension.Read(8);                        // nuDRCCode
+  if (!extension.Read(1))                     // bDialNormPresent
     return;
-  const unsigned int dnPos = ep;
-  if (dnPos + 5 > headerSize * 8)                   // must lie within the header
-    return;
-  if (DTS_ReadBits(eb, ep, 5) == 0)                 // nuDialNormCode already 0
+  const unsigned int dnPos = extension.pos;
+  if (extension.Read(5) == 0)                 // nuDialNormCode already 0
     return;
 
   // Zero nuDialNormCode and recompute the EXSS header CRC over [5, headerSize-2).
@@ -833,44 +862,6 @@ void CAEStreamParser::DefeatDTSDialNorm(uint8_t* data, unsigned int size)
   eb[headerSize - 2] = (crc >> 8) & 0xFF;
   eb[headerSize - 1] = crc & 0xFF;
 }
-
-/* Bounded MSB-first bit reader shared by the Atmos metadata parsers. Any read
-   that would pass the block's declared end is refused and latches the failure,
-   so a short or malformed block reports "unknown" instead of a plausible wrong
-   number - the one outcome that would be worse than no number at all. */
-struct AtmosBitReader
-{
-  const uint8_t* data;
-  unsigned int pos;   /* absolute bit index into data */
-  unsigned int limit; /* one past the last readable bit index */
-  bool ok = true;
-
-  bool Skip(unsigned int n)
-  {
-    if (!ok || n > limit || pos > limit - n)
-    {
-      ok = false;
-      return false;
-    }
-    pos += n;
-    return true;
-  }
-
-  /* At most 32 bits; anything longer is a skip, never a value. */
-  uint32_t Read(unsigned int n)
-  {
-    if (n > 32 || !Skip(n))
-    {
-      ok = false;
-      return 0;
-    }
-
-    uint32_t v = 0;
-    for (unsigned int bit = pos - n; bit < pos; ++bit)
-      v = (v << 1) | ((data[bit >> 3] >> (7 - (bit & 7))) & 1);
-    return v;
-  }
-};
 
 /* Channels each bit of bed_channel_assignment_mask stands for, and the object
    counts of the intermediate spatial formats. Both tables are transcribed from
@@ -896,7 +887,7 @@ static const uint8_t ATMOS_ISF_OBJECTS[6] = {4, 8, 10, 14, 15, 30};
    its model is the same in both branches where MediaInfo's switches, it accounts
    for ISF objects that MediaInfo ignores, and it is what a renderer that places
    these objects audibly depends on. */
-static int Atmos_ParseProgramAssignment(AtmosBitReader& br)
+static int Atmos_ParseProgramAssignment(AudioBitReader& br)
 {
   if (br.Read(1)) /* b_dyn_object_only_program */
   {
@@ -972,7 +963,7 @@ static int Atmos_ParseProgramAssignment(AtmosBitReader& br)
 }
 
 /* Dynamic objects in a presentation holding elementCount elements in total. */
-static int Atmos_DynamicObjects(AtmosBitReader& br, int elementCount)
+static int Atmos_DynamicObjects(AudioBitReader& br, int elementCount)
 {
   const int bedOrIsfObjects = Atmos_ParseProgramAssignment(br);
   if (bedOrIsfObjects < 0 || elementCount < 0)
@@ -983,7 +974,7 @@ static int Atmos_DynamicObjects(AtmosBitReader& br, int elementCount)
 
 /* The escape-coded integer emdf uses for every variable-width field. Reading
    past the end latches failure in the reader, which ends the loop. */
-static uint32_t Atmos_VariableBits(AtmosBitReader& br, unsigned int n)
+static uint32_t Atmos_VariableBits(AudioBitReader& br, unsigned int n)
 {
   uint32_t value = 0;
   for (unsigned int guard = 0; guard < 8 && br.ok; ++guard)
@@ -1001,7 +992,7 @@ static uint32_t Atmos_VariableBits(AtmosBitReader& br, unsigned int n)
 /* emdf_payload_config(). Returns false on the one field whose value is fixed -
    a set codecdatae means this is not a container we understand, which is also
    what makes it useful for rejecting a chance syncword match. */
-static bool Atmos_SkipEmdfPayloadConfig(AtmosBitReader& br)
+static bool Atmos_SkipEmdfPayloadConfig(AudioBitReader& br)
 {
   const bool smpOffsetPresent = br.Read(1) != 0;
   if (smpOffsetPresent)
@@ -1038,7 +1029,7 @@ static bool Atmos_SkipEmdfPayloadConfig(AtmosBitReader& br)
    the bed is the static part. It is reported alongside the objects because the
    difference between the two is the only description of that bed either format
    gives. */
-static int Atmos_ParseOamdObjects(AtmosBitReader& br, int& elements)
+static int Atmos_ParseOamdObjects(AudioBitReader& br, int& elements)
 {
   uint32_t version = br.Read(2);
   if (version == 3)
@@ -1070,7 +1061,7 @@ static int Atmos_TryEmdfContainerAt(const uint8_t* data,
                                     unsigned int limitBit,
                                     int& elements)
 {
-  AtmosBitReader br{data, syncBit, limitBit};
+  AudioBitReader br{data, syncBit, limitBit};
 
   br.Skip(16); /* syncword, already matched */
   const uint32_t containerLength = br.Read(16);
@@ -1133,7 +1124,7 @@ static int Atmos_TryEmdfContainerAt(const uint8_t* data,
     const unsigned int payloadEnd = payloadStart + static_cast<unsigned int>(payloadBits);
     if (payloadId == 11 && objects < 0) /* object_audio_metadata_payload */
     {
-      AtmosBitReader payloadReader{data, payloadStart, payloadEnd};
+      AudioBitReader payloadReader{data, payloadStart, payloadEnd};
       objects = Atmos_ParseOamdObjects(payloadReader, objectElements);
     }
 
@@ -1160,7 +1151,7 @@ static int Atmos_ScanWindowForOamd(const uint8_t* data,
     if (hi != 0) /* 0x5838 starts with a zero bit - cheapest possible reject */
       continue;
 
-    AtmosBitReader peek{data, bit, endBit};
+    AudioBitReader peek{data, bit, endBit};
     if (peek.Read(16) != 0x5838)
       continue;
 
@@ -1189,7 +1180,7 @@ static int Atmos_ParseEAC3Objects(const uint8_t* data, unsigned int frameBytes, 
     return -1;
 
   const unsigned int trailerStart = frameBits - 32;
-  AtmosBitReader footer{data, trailerStart, frameBits};
+  AudioBitReader footer{data, trailerStart, frameBits};
   const unsigned int auxLength = footer.Read(14);
   const bool auxPresent = footer.Read(1) != 0;
 
@@ -1539,10 +1530,9 @@ unsigned int CAEStreamParser::SyncAC3(uint8_t* data, unsigned int size)
 
 unsigned int CAEStreamParser::SyncDTS(uint8_t* data, unsigned int size)
 {
-  if (size < 13)
+  if (size < 14)
   {
-    if (m_needBytes < 13)
-      m_needBytes = 14;
+    m_needBytes = 14;
     return 0;
   }
 
@@ -1625,7 +1615,7 @@ unsigned int CAEStreamParser::SyncDTS(uint8_t* data, unsigned int size)
         continue;
     }
 
-    if (sfreq == 0 || sfreq >= DTS_SFREQ_COUNT)
+    if (sfreq == 0 || sfreq >= DTS_SFREQ_COUNT || amode >= std::size(DTSChannels))
       continue;
 
     // make sure the framesize is sane
@@ -1688,6 +1678,16 @@ unsigned int CAEStreamParser::SyncDTS(uint8_t* data, unsigned int size)
       else
         ext_header_size = (((data[m_fsize + 5] & 0x1f) << 3) | ((data[m_fsize + 6] & 0xe0) >> 5)) + 1;
 
+      if (ext_size > sizeof(m_buffer) - m_fsize || ext_header_size < (blownup ? 10u : 9u) ||
+          ext_header_size > ext_size || ext_size - ext_header_size < 4)
+        continue;
+      if (size - skip < m_fsize + ext_size)
+      {
+        m_needBytes = m_fsize + ext_size;
+        m_fsize = 0;
+        return skip;
+      }
+
       ext_sub_sync = data[m_fsize + ext_header_size] << 24 | data[m_fsize + ext_header_size + 1] << 16 |
                      data[m_fsize + ext_header_size + 2] << 8 | data[m_fsize + ext_header_size + 3];
 
@@ -1726,53 +1726,30 @@ unsigned int CAEStreamParser::SyncDTS(uint8_t* data, unsigned int size)
       m_syncFunc = &CAEStreamParser::SyncDTS;
       m_info.m_repeat = 1;      
       
+      m_info.m_dtsSamplesPerFrame = 0;
       uint32_t hd_bits = 0;
 
       // If XLL aka DTS-HD Master Audio - Work out the bit depth
       if (ext_sub_sync == DTS_SYNC_EXT_XLL)
       {
-
-        uint32_t bitPosition = 0;
-        const uint8_t* hdBuffer = &data[m_coreSize + ext_header_size];
-
-        auto ExtractBits = [&](uint32_t numBits) -> uint32_t {
-            uint32_t result = 0;
-            for (uint32_t i = 0; i < numBits; ++i)
-            {
-                uint32_t byteIndex = bitPosition / 8;
-                uint32_t bitIndex = 7 - (bitPosition % 8);
-                result = (result << 1) | ((hdBuffer[byteIndex] >> bitIndex) & 1);
-                bitPosition++;
-            }
-            return result;
-        };
-
-        bitPosition = 32;  // Fast forward through bits to start after sub sync word
-
-        // XLL Common Header
-        uint32_t nVersion = ExtractBits(4) + 1;           // Version is 4 bits, add 1 to get actual version
-        uint32_t nHeaderSize = ExtractBits(8) + 1;        // Header size is 8 bits, add 1 to get actual size (size is in bytes)
-        uint32_t nBits4FrameFsize = ExtractBits(5) + 1;
-        uint32_t nLLFrameSize = ExtractBits(nBits4FrameFsize) + 1;
-        uint32_t nNumChSetsInFrame = ExtractBits(4) + 1;
-        
-        // Segments and samples calculation
-        uint32_t tmp = ExtractBits(4);
-        uint32_t nSegmentsInFrame = 1 << tmp;
-        tmp = ExtractBits(4);
-        uint32_t nSmplInSeg = 1 << tmp;
-        
-        // Calculate total samples per frame
-        m_info.m_dtsSamplesPerFrame = (nSegmentsInFrame * nSmplInSeg);
-
-        // Now find the offset to the first channel set sub header given the header size (in bytes).
-        bitPosition = (nHeaderSize * 8);
-
-        // Parse first Channel Set Sub-Header - to get the original audio data bit resolution
-        uint32_t nSubHeaderSize = ExtractBits(10) + 1;    // Unpack the channel set sub header size 
-        uint32_t nChSetLLChannel = ExtractBits(4) + 1;    // Extract the number of channels
-        bitPosition += nChSetLLChannel;                   // Skip Channels as bits!
-        hd_bits = ExtractBits(5) + 1;                     // Extract the input sample bit resolution (bit depth)
+        AudioBitReader xll{data + m_coreSize + ext_header_size, 32,
+                           (m_fsize - m_coreSize - ext_header_size) * 8};
+        xll.Skip(4);
+        const unsigned int headerBits = (xll.Read(8) + 1) * 8;
+        xll.Skip(xll.Read(5) + 1);
+        xll.Skip(4);
+        const unsigned int segments = 1u << xll.Read(4);
+        const unsigned int samples = 1u << xll.Read(4);
+        if (xll.ok && headerBits >= xll.pos && xll.Skip(headerBits - xll.pos))
+        {
+          m_info.m_dtsSamplesPerFrame = segments * samples;
+          const unsigned int subHeaderBits = (xll.Read(10) + 1) * 8;
+          xll.limit = std::min(xll.limit, headerBits + subHeaderBits);
+          xll.Skip(xll.Read(4) + 1);
+          const unsigned int depth = xll.Read(5) + 1;
+          if (xll.ok)
+            hd_bits = depth;
+        }
       }
 
       m_info.m_bitDepth = (hd_bits > 0) ? hd_bits : bits;
@@ -1965,7 +1942,7 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
         // these bytes are inside the range already length-checked and CRC
         // verified, and the reader's own limit covers the rest.
         const unsigned int extChannelMeaningEndBit = 240 + (extension_count + 1) * 16;
-        AtmosBitReader br{data, 260, extChannelMeaningEndBit};
+        AudioBitReader br{data, 260, extChannelMeaningEndBit};
         atmosObjects = Atmos_DynamicObjects(br, atmosChannels);
       }
 

@@ -222,6 +222,9 @@ int main(){
  assert(std::string(CAEUtil::GetStdChLayoutName(AE_CH_LAYOUT_INVALID))=="UNKNOWN");
  equal(CAEUtil::GuessChLayout(6),saved[7]);equal(CAEUtil::GuessChLayout(7),saved[8]);
  assert(CAEUtil::GuessChLayout(0).Count()==0&&CAEUtil::GuessChLayout(9).Count()==0);
+ const uint64_t allPositions=(uint64_t{1}<<18)-1;
+ const auto allChannels=CAEUtil::GetAEChannelLayout(allPositions);
+ assert(allChannels.Count()==18 && CAEUtil::GetAVChannelLayout(allChannels)==allPositions);
  const uint64_t back6=AV_CH_FRONT_LEFT|AV_CH_FRONT_RIGHT|AV_CH_FRONT_CENTER|AV_CH_BACK_LEFT|AV_CH_BACK_RIGHT|AV_CH_BACK_CENTER;
  const uint64_t back61=back6|AV_CH_LOW_FREQUENCY;
  assert(CAEUtil::GetAVChannelLayout(six0)==back6&&CAEUtil::GetAVChannelLayout(six1)==back61);

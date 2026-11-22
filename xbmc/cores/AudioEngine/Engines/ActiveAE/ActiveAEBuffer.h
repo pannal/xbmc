@@ -101,7 +101,7 @@ public:
 protected:
   void ChangeResampler();
 
-  uint8_t *m_planes[16];
+  uint8_t *m_planes[AE_CH_MAX];
   bool m_empty = true;
   bool m_drain = false;
   int64_t m_lastSamplePts = 0;
@@ -143,7 +143,7 @@ public:
 protected:
   void ChangeFilter();
   std::unique_ptr<CActiveAEFilter> m_pTempoFilter;
-  uint8_t *m_planes[16];
+  uint8_t *m_planes[AE_CH_MAX];
   CSampleBuffer *m_procSample;
   bool m_empty;
   bool m_drain;
