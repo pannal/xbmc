@@ -14,20 +14,27 @@
 #include <stdlib.h>
 
 #include <gtest/gtest.h>
+#include "ServiceBroker.h"
+#include "TextureCacheJob.h"
 #include "URL.h"
 #include "filesystem/CurlFile.h"
 #include "filesystem/File.h"
+#include "guilib/imagefactory.h"
 #include "interfaces/json-rpc/JSONRPC.h"
 #include "network/WebServer.h"
 #include "network/httprequesthandler/HTTPVfsHandler.h"
 #include "network/httprequesthandler/HTTPJsonRpcHandler.h"
+#include "settings/AdvancedSettings.h"
 #include "settings/MediaSourceSettings.h"
+#include "settings/SettingsComponent.h"
 #include "test/TestUtils.h"
 #include "utils/JSONVariantParser.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/Variant.h"
 
+#include <atomic>
+#include <memory>
 #include <random>
 
 using namespace XFILE;
@@ -353,7 +360,15 @@ protected:
 
   CWebServer webserver;
   CHTTPJsonRpcHandler m_jsonRpcHandler;
-  CHTTPVfsHandler m_vfsHandler;
+  struct CountingVfsHandler : CHTTPVfsHandler
+  {
+    IHTTPRequestHandler* Create(const HTTPRequest& request) const override
+    {
+      ++requests;
+      return CHTTPVfsHandler::Create(request);
+    }
+    mutable std::atomic<unsigned int> requests{0};
+  } m_vfsHandler;
   std::string baseUrl;
   std::string sourcePath;
   uint16_t webserverPort;
@@ -362,6 +377,38 @@ protected:
 TEST_F(TestWebServer, IsStarted)
 {
   ASSERT_TRUE(webserver.IsStarted());
+}
+
+TEST_F(TestWebServer, ArtworkMimeProbeHonorsPathSubstitution)
+{
+  // A text file makes the cache job stop after type validation, before pixel decoding.
+  const std::string url = GetUrlOfTestFile(TEST_FILES_RANGES);
+  const std::string localFile = URIUtils::AddFileToFolder(sourcePath, TEST_FILES_RANGES);
+  std::string mime;
+  ASSERT_TRUE(CCurlFile::GetMimeType(CURL(url), mime));
+  ASSERT_EQ("text/plain", mime);
+  const auto before = m_vfsHandler.requests.load();
+  EXPECT_FALSE(CTextureCacheJob(url).CacheTexture());
+  const auto requests = m_vfsHandler.requests.load();
+  ASSERT_GT(requests, before);
+
+  auto& paths = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_pathSubstitutions;
+  struct RestorePaths
+  {
+    CAdvancedSettings::StringMapping& paths;
+    size_t size;
+    ~RestorePaths() { paths.resize(size); }
+  } restore{paths, paths.size()};
+
+  paths.emplace_back(url, localFile);
+  EXPECT_FALSE(CTextureCacheJob(url).CacheTexture());
+  EXPECT_EQ(requests, m_vfsHandler.requests.load());
+
+  const std::string extensionless = GetUrl("vfs/artwork");
+  paths.emplace_back(extensionless, localFile);
+  std::unique_ptr<IImage> decoder(ImageFactory::CreateLoader(extensionless));
+  EXPECT_NE(nullptr, decoder);
+  EXPECT_EQ(requests, m_vfsHandler.requests.load());
 }
 
 TEST_F(TestWebServer, CanGetJsonRpcApiDescriptionWithHttpGet)

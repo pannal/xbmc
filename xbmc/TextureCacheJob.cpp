@@ -294,8 +294,8 @@ std::unique_ptr<CTexture> CTextureCacheJob::LoadImage(const std::string& image,
       return texture;
   }
 
-  // Validate file URL to see if it is an image
-  CFileItem file(image, false);
+  // Probe the path CFile will open. Pass the original path to the read below so it maps once.
+  CFileItem file(URIUtils::SubstitutePath(CURL(image)), false);
   file.FillInMimeType(true, interrupt);
   // A stopped lookup leaves an unknown type; never go on to the download.
   if (interrupt && interrupt())

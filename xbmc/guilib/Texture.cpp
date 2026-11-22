@@ -18,7 +18,6 @@
 #include "guilib/TextureBase.h"
 #include "guilib/iimage.h"
 #include "guilib/imagefactory.h"
-#include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
@@ -200,25 +199,9 @@ bool CTexture::LoadFromFileInternal(const std::string& texturePath,
                           xbtFile.GetImageFormat(), xbtFile.HasImageAlpha(), buf.data());
   }
 
-  IImage* pImage;
-
-  const CURL source(texturePath);
-  if (strMimeType.empty() && interrupt && source.GetFileType().empty() &&
-      (source.IsProtocol("http") || source.IsProtocol("https") || source.IsProtocol("shout")))
-  {
-    // The decoder's type lookup would ask the server again, without the interrupt.
-    // Take the type of the answer just read.
-    std::string mimeType = file.GetProperty(XFILE::FILE_PROPERTY_MIME_TYPE);
-    const size_t options = mimeType.find(';');
-    if (options != std::string::npos)
-      mimeType.erase(options);
-    StringUtils::Trim(mimeType);
-    pImage = ImageFactory::CreateLoaderFromMimeType(mimeType);
-  }
-  else if (strMimeType.empty())
-    pImage = ImageFactory::CreateLoader(texturePath);
-  else
-    pImage = ImageFactory::CreateLoaderFromMimeType(strMimeType);
+  IImage* pImage = strMimeType.empty()
+                       ? ImageFactory::CreateLoader(CURL(texturePath), interrupt ? &file : nullptr)
+                       : ImageFactory::CreateLoaderFromMimeType(strMimeType);
 
   if (!LoadIImage(pImage, buf.data(), buf.size(), width, height))
   {

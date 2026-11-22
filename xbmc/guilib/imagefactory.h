@@ -12,6 +12,11 @@
 #include "iimage.h"
 #include "threads/CriticalSection.h"
 
+namespace XFILE
+{
+class CFile;
+}
+
 class ImageFactory
 {
 public:
@@ -19,7 +24,7 @@ public:
   virtual ~ImageFactory() = default;
 
   static IImage* CreateLoader(const std::string& strFileName);
-  static IImage* CreateLoader(const CURL& url);
+  static IImage* CreateLoader(const CURL& url, const XFILE::CFile* openedFile = nullptr);
   static IImage* CreateLoaderFromMimeType(const std::string& strMimeType);
 
 private:

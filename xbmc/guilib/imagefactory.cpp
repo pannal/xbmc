@@ -12,8 +12,11 @@
 #include "addons/ExtsMimeSupportList.h"
 #include "addons/ImageDecoder.h"
 #include "addons/addoninfo/AddonType.h"
+#include "filesystem/File.h"
 #include "guilib/FFmpegImage.h"
 #include "utils/Mime.h"
+#include "utils/StringUtils.h"
+#include "utils/URIUtils.h"
 
 #include <mutex>
 
@@ -27,12 +30,24 @@ IImage* ImageFactory::CreateLoader(const std::string& strFileName)
   return CreateLoader(url);
 }
 
-IImage* ImageFactory::CreateLoader(const CURL& url)
+IImage* ImageFactory::CreateLoader(const CURL& url, const XFILE::CFile* openedFile)
 {
-  if(!url.GetFileType().empty())
-    return CreateLoaderFromMimeType("image/"+url.GetFileType());
+  const CURL source = URIUtils::SubstitutePath(url);
+  if (!source.GetFileType().empty())
+    return CreateLoaderFromMimeType("image/" + source.GetFileType());
 
-  return CreateLoaderFromMimeType(CMime::GetMimeType(url));
+  if (openedFile && (source.IsProtocol("http") || source.IsProtocol("https") ||
+                     source.IsProtocol("shout")))
+  {
+    // An interruptible read already has the response headers. A new probe would lose its interrupt.
+    std::string mimeType = openedFile->GetProperty(XFILE::FILE_PROPERTY_MIME_TYPE);
+    const size_t options = mimeType.find(';');
+    if (options != std::string::npos)
+      mimeType.erase(options);
+    StringUtils::Trim(mimeType);
+    return CreateLoaderFromMimeType(mimeType);
+  }
+  return CreateLoaderFromMimeType(CMime::GetMimeType(source));
 }
 
 IImage* ImageFactory::CreateLoaderFromMimeType(const std::string& strMimeType)
