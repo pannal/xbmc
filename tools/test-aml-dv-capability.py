@@ -23,6 +23,7 @@ PREFIX = r'''
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 struct CLog {template<class... T> static void Log(T&&...) {}};
 constexpr int LOGINFO=0,LOGERROR=1,LOGDEBUG=2;
@@ -110,6 +111,22 @@ int main(){
    defaults(true,true,cs);CalculateVSVDBPayload_2(missing);assert(storage.payload==manual);
    defaults(true,true,cs);set_vsvdb_payload_ver(DV_TYPE_DISPLAY_LED,1000,2000,second);assert(storage.payload==manual);
  }
+ // The numeric maximum is in nits. V2 carries its PQ index in bits 7..3 of byte 2.
+ const std::pair<int, int> maximums[] = {{6351, 28}, {6497, 28}, {6498, 29}, {7382, 29}};
+ for (const auto& [nits, index] : maximums) {
+   defaults(true, true, 1);
+   storage.SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM, nits);
+   set_vsvdb_payload_ver(DV_TYPE_DISPLAY_LED, nits, 4095, second);
+   assert(storage.payload.size() == 14);
+   assert((std::stoi(storage.payload.substr(4, 2), nullptr, 16) >> 3) == index);
+ }
+ auto pq3875 = valid(2);
+ pq3875.replace(pq3875.find("10pqi"), 5, "28pqi");
+ files[dvPath] = pq3875;
+ defaults();
+ set_vsvdb_payload_ver(DV_TYPE_DISPLAY_LED, 1000, 4095, aml_read_dv_cap());
+ assert(storage.GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM) == 6351);
+ assert((std::stoi(storage.payload.substr(4, 2), nullptr, 16) >> 3) == 28);
  defaults(true,false);CalculateVSVDBPayload_2(first);assert(storage.GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_VSVDB_MAX_LUM)==1000);
  defaults();set_vsvdb_payload_ver(DV_TYPE_PLAYER_LED_LLDV,1000,2000,first);assert(storage.payload=="2726014D1A1C5B");
  std::cout<<"PASS: fresh DV result, failures, immutable sink replacement, V1/V2 payloads and override policy\n";

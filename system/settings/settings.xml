@@ -4841,10 +4841,6 @@
             <!-- <dependency type="visible" setting="coreelec.amlogic.dolbyvision.type" operator="!is">1</dependency> -->
             <!-- <dependency type="visible" setting="coreelec.amlogic.dolbyvision.vsvdb.inject" operator="is">true</dependency> -->
           </dependencies>
-          <!-- <constraints>
-            <options>DolbyVisionVSVDBMaxLum</options>
-          </constraints>
-          <control type="list" format="string" /> -->
           <control type="edit" format="integer" />
         </setting>
         <setting id="coreelec.amlogic.dolbyvision.vsvdb.min.luminance" type="integer" label="60073" help="60074" parent="coreelec.amlogic.dolbyvision.vsvdb.inject">

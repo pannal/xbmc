@@ -589,42 +589,6 @@ void vsvdb_min_filler(const SettingConstPtr& setting, std::vector<IntegerSetting
   list.emplace_back("PQ 620 (1.04769654 cd/m^2)", 31);
 }
 
-void vsvdb_max_filler(const SettingConstPtr& setting, std::vector<IntegerSettingOption>& list, int& current, void* data) {
-  list.clear();
-  list.emplace_back("PQ 2055 (96 cd/m^2)", 0);
-  list.emplace_back("PQ 2120 (113 cd/m^2)", 1);
-  list.emplace_back("PQ 2185 (132 cd/m^2)", 2);
-  list.emplace_back("PQ 2250 (155 cd/m^2)", 3);
-  list.emplace_back("PQ 2315 (181 cd/m^2)", 4);
-  list.emplace_back("PQ 2380 (211 cd/m^2)", 5);
-  list.emplace_back("PQ 2445 (245 cd/m^2)", 6);
-  list.emplace_back("PQ 2510 (285 cd/m^2)", 7);
-  list.emplace_back("PQ 2575 (332 cd/m^2)", 8);
-  list.emplace_back("PQ 2640 (385 cd/m^2)", 9);
-  list.emplace_back("PQ 2705 (447 cd/m^2)", 10);
-  list.emplace_back("PQ 2770 (518 cd/m^2)", 11);
-  list.emplace_back("PQ 2835 (601 cd/m^2)", 12);
-  list.emplace_back("PQ 2900 (696 cd/m^2)", 13);
-  list.emplace_back("PQ 2965 (807 cd/m^2)", 14);
-  list.emplace_back("PQ 3030 (934 cd/m^2)", 15);
-  list.emplace_back("PQ 3095 (1082 cd/m^2)", 16);
-  list.emplace_back("PQ 3160 (1252 cd/m^2)", 17);
-  list.emplace_back("PQ 3225 (1450 cd/m^2)", 18);
-  list.emplace_back("PQ 3290 (1678 cd/m^2)", 19);
-  list.emplace_back("PQ 3355 (1943 cd/m^2)", 20);
-  list.emplace_back("PQ 3420 (2250 cd/m^2)", 21);
-  list.emplace_back("PQ 3485 (2607 cd/m^2)", 22);
-  list.emplace_back("PQ 3550 (3020 cd/m^2)", 23);
-  list.emplace_back("PQ 3615 (3501 cd/m^2)", 24);
-  list.emplace_back("PQ 3680 (4060 cd/m^2)", 25);
-  list.emplace_back("PQ 3745 (4710 cd/m^2)", 26);
-  list.emplace_back("PQ 3810 (5467 cd/m^2)", 27);
-  list.emplace_back("PQ 3875 (6351 cd/m^2)", 28);
-  list.emplace_back("PQ 3940 (7382 cd/m^2)", 29);
-  list.emplace_back("PQ 4005 (8588 cd/m^2)", 30);
-  list.emplace_back("PQ 4070 (10000 cd/m^2)", 31);
-}
-
 void add_vs10_bypass(std::vector<IntegerSettingOption>& list) {list.emplace_back(g_localizeStrings.Get(60063), DOLBY_VISION_OUTPUT_MODE_BYPASS);}
 void add_vs10_dv_bypass(std::vector<IntegerSettingOption>& list) {list.emplace_back(g_localizeStrings.Get(60063), DOLBY_VISION_OUTPUT_MODE_IPT);}
 void add_vs10_sdr(std::vector<IntegerSettingOption>& list) {list.emplace_back(g_localizeStrings.Get(60064), DOLBY_VISION_OUTPUT_MODE_SDR10);}
@@ -999,7 +963,6 @@ bool CDolbyVisionAML::Setup(CAMLSession::DisplayRequest display)
   settingsManager->RegisterSettingOptionsFiller("DolbyVisionType", dv_type_filler);
   settingsManager->RegisterSettingOptionsFiller("DolbyVisionProcessor", dv_processor_filler);
   settingsManager->RegisterSettingOptionsFiller("DolbyVisionVSVDBMinLum", vsvdb_min_filler);
-// settingsManager->RegisterSettingOptionsFiller("DolbyVisionVSVDBMaxLum", vsvdb_max_filler);
   settingsManager->RegisterSettingOptionsFiller("DolbyVisionVS10SDR8", vs10_sdr_filler);
   settingsManager->RegisterSettingOptionsFiller("DolbyVisionVS10SDR10", vs10_sdr_filler);
   settingsManager->RegisterSettingOptionsFiller("DolbyVisionVS10HDR10", vs10_hdr10_filler);
