@@ -18,6 +18,9 @@
 #include "settings/SettingsComponent.h"
 #include "utils/log.h"
 
+#include <algorithm>
+#include <cstring>
+
 extern "C" {
 #include <libavutil/opt.h>
 }
@@ -198,21 +201,67 @@ void CDVDAudioCodecFFmpeg::GetData(DVDAudioFrame &frame)
   frame.nb_frames = 0;
 
   const int bytes = GetData(frame.data, std::size(frame.data));
-  if (bytes <= 0 || static_cast<int>(m_format.m_channelLayout.Count()) != m_pFrame->ch_layout.nb_channels)
-  {
+  if (bytes <= 0)
     return;
+
+  const auto& layout = m_pFrame->ch_layout;
+  const int channels = m_format.m_channelLayout.Count();
+  const int sampleBytes = CAEUtil::DataFormatToBits(m_format.m_dataFormat) / 8;
+  if (channels <= 0 || channels > layout.nb_channels || sampleBytes <= 0 ||
+      m_pFrame->nb_samples <= 0 || m_pFrame->nb_samples > bytes / layout.nb_channels / sampleBytes)
+    return;
+
+  const bool planar = AE_IS_PLANAR(m_format.m_dataFormat);
+  const bool customMap = layout.order == AV_CHANNEL_ORDER_CUSTOM &&
+                         av_channel_layout_subset(&layout, UINT64_MAX) != 0;
+  if (channels != layout.nb_channels || customMap)
+  {
+    // Select speakers in AudioEngine order. Packed input retains the decoder's
+    // original stride even when AudioEngine omits a speaker such as LFE2.
+    int sourceIndex[AE_CH_MAX];
+    for (int ch = 0; ch < channels; ++ch)
+    {
+      // Unspecified layouts use the native-order hint or default from BuildChannelMap.
+      sourceIndex[ch] = ch;
+      if (layout.order == AV_CHANNEL_ORDER_NATIVE || customMap)
+        sourceIndex[ch] = av_channel_layout_index_from_channel(
+            &layout, CAEUtil::GetAVChannel(m_format.m_channelLayout[ch]));
+      if (sourceIndex[ch] < 0 || sourceIndex[ch] >= layout.nb_channels)
+        return;
+    }
+
+    if (planar)
+    {
+      uint8_t* selected[AE_CH_MAX];
+      for (int ch = 0; ch < channels; ++ch)
+        selected[ch] = frame.data[sourceIndex[ch]];
+      std::copy_n(selected, channels, frame.data);
+    }
+    else
+    {
+      m_packedSamples.resize(m_pFrame->nb_samples * channels * sampleBytes);
+      auto* dst = m_packedSamples.data();
+      const auto* row = frame.data[0];
+      for (int sample = 0; sample < m_pFrame->nb_samples; ++sample)
+      {
+        for (int ch = 0; ch < channels; ++ch)
+        {
+          std::memcpy(dst, row + sourceIndex[ch] * sampleBytes, sampleBytes);
+          dst += sampleBytes;
+        }
+        row += layout.nb_channels * sampleBytes;
+      }
+      frame.data[0] = m_packedSamples.data();
+    }
   }
 
   frame.passthrough = false;
   frame.format.m_dataFormat = m_format.m_dataFormat;
   frame.format.m_channelLayout = m_format.m_channelLayout;
-  frame.framesize = (CAEUtil::DataFormatToBits(frame.format.m_dataFormat) >> 3) * frame.format.m_channelLayout.Count();
-  if(frame.framesize == 0)
-    return;
-
-  frame.nb_frames = bytes/frame.framesize;
+  frame.framesize = sampleBytes * channels;
+  frame.nb_frames = m_pFrame->nb_samples;
   frame.framesOut = 0;
-  frame.planes = AE_IS_PLANAR(frame.format.m_dataFormat) ? frame.format.m_channelLayout.Count() : 1;
+  frame.planes = planar ? channels : 1;
 
   frame.bits_per_sample = CAEUtil::DataFormatToBits(frame.format.m_dataFormat);
   frame.format.m_sampleRate = m_format.m_sampleRate;
@@ -405,6 +454,16 @@ static unsigned count_bits(uint64_t value)
 
 void CDVDAudioCodecFFmpeg::BuildChannelMap()
 {
+  const uint64_t customMask = m_pFrame->ch_layout.order == AV_CHANNEL_ORDER_CUSTOM
+                                  ? av_channel_layout_subset(&m_pFrame->ch_layout, UINT64_MAX)
+                                  : 0;
+  if (customMask)
+  {
+    m_channels = 0; // Rebuild the cached native map on the next layout change.
+    m_channelLayout = CAEUtil::GetAEChannelLayout(customMask);
+    return;
+  }
+
   int codecChannels = m_pFrame->ch_layout.nb_channels;
   uint64_t codecChannelLayout = m_pFrame->ch_layout.order == AV_CHANNEL_ORDER_NATIVE
                                     ? m_pFrame->ch_layout.u.mask : 0;

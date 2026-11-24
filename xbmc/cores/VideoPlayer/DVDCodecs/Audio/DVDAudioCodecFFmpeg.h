@@ -10,6 +10,8 @@
 
 #include "DVDAudioCodec.h"
 
+#include <vector>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -67,5 +69,8 @@ protected:
   uint64_t m_layout;
   std::string m_codecName;
   uint64_t m_hint_layout;
+
+private:
+  std::vector<uint8_t> m_packedSamples;
 };
 
