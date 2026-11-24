@@ -4771,6 +4771,7 @@
             <dependency type="visible" setting="coreelec.amlogic.dolbyvision.mode" operator="!is">2</dependency>
             <dependency type="visible" setting="coreelec.amlogic.dolbyvision.video.processor" operator="is">0</dependency>
             <dependency type="update" setting="coreelec.amlogic.dolbyvision.force.modes" />
+            <dependency type="update" setting="coreelec.amlogic.dolbyvision.tv.preset" />
           </dependencies>
           <constraints>
             <options>DolbyVisionType</options>

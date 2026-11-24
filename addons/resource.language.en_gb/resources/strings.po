@@ -25945,7 +25945,7 @@ msgstr ""
 #. "Dolby Vision Type"
 #: system/settings/settings.xml
 msgctxt "#60022"
-msgid "Select how Dolby Vision content is processed. Display-Led: sends the full DV stream to the TV, which handles tonemapping. Player-Led modes: the player tonemaps and outputs as DV low-latency (LLDV) or HDR10, depending on the variant. VS10 Only: disables DV tunnel and only uses VS10 format conversion."
+msgid "Select how Dolby Vision content is processed. Display-Led: sends the full DV stream to the TV, which handles tonemapping. Player-Led modes: the player tonemaps and outputs as DV low-latency (LLDV) or HDR10, depending on the variant. VS10 Only: disables DV tunnel and only uses VS10 format conversion. With the TV preset set to Manual, LLDV can be selected even when the display does not advertise it. Use this override only with a compatible display or external processor."
 msgstr ""
 
 #. "Dolby Vision Type"
