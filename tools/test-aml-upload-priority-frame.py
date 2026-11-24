@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
 """The Amlogic window system's frame hook selects the upload priority.
 
-Compiles the production CWinSystemAmlogicGLESContext::BeginAFBCScanoutFrame and
-AbandonAFBCScanoutFrame against a recording presenter and EGL context: uploads
-may use the high-priority context only during AFBC frames with three display
-buffers, never for two buffers, linear frames, abandoned frames or when the
-primary context is not current. Mutations are negative controls.
+Compiles the production AML render admission and AFBC frame hooks with the
+production presenter callback, a recording EGL context and a mock presenter.
+Menu routing is stubbed out. Successful handoffs keep upload eligibility and
+rejected render entry, linear, rejected present and abandoned frames clear it.
 """
 import argparse
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = 'xbmc/windowing/amlogic/WinSystemAmlogicGLESContext.cpp'
+SOURCE = ROOT / 'xbmc/windowing/amlogic/WinSystemAmlogicGLESContext'
 
 
 def function(source, signature):
@@ -32,8 +30,10 @@ def function(source, signature):
 
 PRELUDE = r"""
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 typedef int EGLint;
 typedef void* EGLDisplay;
 typedef void* EGLConfig;
@@ -64,14 +64,25 @@ struct CTimeUtils { static unsigned int GetFrameTime() { return 0; } };
 struct CGUIExternalRendering { static bool Recent(unsigned int) { return false; } };
 enum RENDER_STEREO_MODE { RENDER_STEREO_MODE_OFF, RENDER_STEREO_MODE_SPLIT };
 struct CGraphicContext { RENDER_STEREO_MODE GetStereoMode() const { return RENDER_STEREO_MODE_OFF; } };
-struct Presenter
+struct CAMLAFBCPresenter
 {
+  explicit CAMLAFBCPresenter(std::function<void(bool)> callback = {})
+    : setUploadEligibility(std::move(callback))
+  {
+  }
+
   bool begin = true;
   unsigned int buffers = 3;
   unsigned int present = 1;
   unsigned int Present() { return present; }
   bool Failed() const { return false; }
-  bool BeginFrame(const std::string&, int, int, int, int) { return begin; }
+  std::function<void(bool)> setUploadEligibility;
+  bool BeginFrame(const std::string&, int, int, int, int)
+  {
+    if (begin && setUploadEligibility)
+      setUploadEligibility(buffers >= 3);
+    return begin;
+  }
   void BeginLinearFrame() {}
   unsigned int Buffers() const { return buffers; }
 };
@@ -85,26 +96,42 @@ struct EGLContextUtils
 };
 enum class MenuRoute { NONE, MENU };
 struct GuiAB { enum class Phase { IDLE, RUNNING }; Phase phase = Phase::IDLE; };
-class CWinSystemAmlogicGLESContext
+struct VideoMuteController
+{
+  unsigned int HandoffGeneration() const { return 0; }
+};
+static VideoMuteController aml_video_mute_controller() { return {}; }
+class CRenderSystemGLES
 {
 public:
+  bool primary = true;
+  bool IsPrimaryContextCurrent() const { return primary; }
+  bool CanRender() const { return IsPrimaryContextCurrent(); }
+  bool BeginRender() { return CanRender(); }
+};
+class CWinSystemAmlogicGLESContext : public CRenderSystemGLES
+{
+public:
+  bool BeginRender();
   void BeginAFBCScanoutFrame();
   void AbandonAFBCScanoutFrame();
   void PresentAFBCForFixture();
   void MarkGuiDirty() {}
-  bool primary = true;
-  bool IsPrimaryContextCurrent() const { return primary; }
+  void TakeAFBCOutcome() {}
+  void GuiABBegin() {}
+  void GuiABFinish(const char*) {}
+  unsigned int m_videoMuteHandoff = 0;
   bool HasPendingKernelSwitch() const { return false; }
   CGraphicContext gfx;
   CGraphicContext& GetGfxContext() { return gfx; }
   bool m_afbcFrame = false;
   bool m_afbcDirtyRegionsReported = false;
   int m_vncGuiViewer = -1;
-  Presenter m_afbcPresenter;
   MenuRoute m_menuRoute = MenuRoute::NONE;
   GuiAB m_guiAB;
   int m_nWidth = 3840, m_nHeight = 2160;
   EGLContextUtils m_pGLContext;
+@PRESENTER_MEMBER@
   std::string m_framebuffer_name = "fb0";
 };
 """
@@ -131,7 +158,19 @@ int main()
   w.BeginAFBCScanoutFrame();
   Check(w.m_pGLContext.high, "three buffers again: high");
   w.PresentAFBCForFixture();
-  Check(!w.m_afbcFrame && !w.m_pGLContext.high, "successful present: medium before next frame");
+  Check(!w.m_afbcFrame && w.m_pGLContext.high, "successful present: still eligible");
+  const int callsAfterPresent = w.m_pGLContext.calls;
+  Check(w.BeginRender() && w.m_pGLContext.high &&
+            w.m_pGLContext.calls == callsAfterPresent + 1,
+        "healthy render entry: no priority reset before the next AFBC frame");
+  w.PresentAFBCForFixture();
+  w.primary = false;
+  Check(!w.BeginRender() && !w.m_afbcFrame && !w.m_pGLContext.high,
+        "rejected render entry after successful present: medium");
+  w.primary = true;
+  Check(w.BeginRender() && w.m_afbcFrame && w.m_pGLContext.high,
+        "render entry after recovery: high");
+  w.PresentAFBCForFixture();
   w.m_afbcPresenter.begin = false;
   w.BeginAFBCScanoutFrame();
   Check(!w.m_afbcFrame && !w.m_pGLContext.high, "presenter refused the frame (linear): medium");
@@ -162,8 +201,21 @@ int main()
 """
 
 
-def build(source):
-    parts = [PRELUDE]
+def presenter_member(header):
+    declaration = '  CAMLAFBCPresenter m_afbcPresenter'
+    start = header.index(declaration)
+    semicolon = header.index(';', start)
+    if '{' in header[start:semicolon]:
+        return function(header, declaration).rstrip() + ';'
+    return header[start:semicolon + 1]
+
+
+def build(source, header):
+    parts = [PRELUDE.replace('@PRESENTER_MEMBER@', presenter_member(header))]
+    begin = function(source, 'bool CWinSystemAmlogicGLESContext::BeginRender()')
+    # Keep render admission and frame setup verbatim, skipping unrelated menu routing.
+    parts.append(begin[:begin.index('  // Outside fullscreen video')] +
+                 begin[begin.index('  BeginAFBCScanoutFrame();'):])
     for signature in ('void CWinSystemAmlogicGLESContext::AbandonAFBCScanoutFrame()',
                       'void CWinSystemAmlogicGLESContext::BeginAFBCScanoutFrame()'):
         parts.append(function(source, signature))
@@ -178,32 +230,39 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sanitize', action='store_true')
     args = parser.parse_args()
-    source = (ROOT / SOURCE).read_text()
-    cases = {'actual': (source, None)}
+    source = SOURCE.with_suffix('.cpp').read_text()
+    header = SOURCE.with_suffix('.h').read_text()
+    cases = {'actual': (source, header, None)}
     mutations = {
-        'always-high': ('m_pGLContext.SetTextureUploadHighPriority(m_afbcFrame && m_afbcPresenter.Buffers() >= 3);',
-                        'm_pGLContext.SetTextureUploadHighPriority(true);', 'two buffers: medium-priority uploads'),
-        'ignore-buffers': ('m_pGLContext.SetTextureUploadHighPriority(m_afbcFrame && m_afbcPresenter.Buffers() >= 3);',
-                           'm_pGLContext.SetTextureUploadHighPriority(m_afbcFrame);', 'two buffers: medium-priority uploads'),
+        'stale-on-render-entry-rejection': (
+            '  if (!CanRender())\n  {\n    m_pGLContext.SetTextureUploadHighPriority(false);\n'
+            '    return CRenderSystemGLES::BeginRender();\n  }',
+            '  if (!CanRender())\n    return CRenderSystemGLES::BeginRender();',
+            'rejected render entry after successful present: medium'),
         'stale-on-early-return': ('  {\n    m_pGLContext.SetTextureUploadHighPriority(false);\n    return;\n  }',
                                   '  {\n    return;\n  }', 'primary context not current: medium'),
         'stale-on-abandon': ('  m_pGLContext.SetTextureUploadHighPriority(false);\n  if (!m_afbcFrame)\n    return;',
                              '  if (!m_afbcFrame)\n    return;\n  m_pGLContext.SetTextureUploadHighPriority(false);',
                              'skipped frame without active target: medium'),
-        'stale-on-success': ('    m_pGLContext.SetTextureUploadHighPriority(false);\n    presented = afbcFrame != 0;',
-                             '    m_pGLContext.SetTextureUploadHighPriority(afbcFrame != 0);\n    presented = afbcFrame != 0;',
-                             'successful present: medium before next frame'),
-        'stale-on-rejection': ('    m_pGLContext.SetTextureUploadHighPriority(false);\n    presented = afbcFrame != 0;',
-                               '    m_pGLContext.SetTextureUploadHighPriority(afbcFrame == 0);\n    presented = afbcFrame != 0;',
-                               'rejected present: medium'),
+        'clear-on-success': ('    presented = afbcFrame != 0;',
+                             '    m_pGLContext.SetTextureUploadHighPriority(false);\n    presented = afbcFrame != 0;',
+                             'successful present: still eligible'),
+        'stale-on-linear': ('    m_pGLContext.SetTextureUploadHighPriority(false);\n    m_afbcPresenter.BeginLinearFrame();',
+                            '    m_afbcPresenter.BeginLinearFrame();',
+                            'presenter refused the frame (linear): medium'),
+        'stale-on-rejection': ('      m_pGLContext.SetTextureUploadHighPriority(false);\n      MarkGuiDirty();',
+                               '      MarkGuiDirty();', 'rejected present: medium'),
     }
     for name, (before, after, witness) in mutations.items():
         assert source.count(before) == 1, name
-        cases[name] = (source.replace(before, after), witness)
+        cases[name] = (source.replace(before, after), header, witness)
+    cases['disconnected-presenter'] = (
+        source, header.replace(presenter_member(header), '  CAMLAFBCPresenter m_afbcPresenter;'),
+        'three buffers: high-priority uploads')
     with tempfile.TemporaryDirectory(prefix='aml-upload-priority-frame-') as directory:
-        for name, (text, witness) in cases.items():
+        for name, (text, window_header, witness) in cases.items():
             cpp, binary = Path(directory) / (name + '.cpp'), Path(directory) / name
-            cpp.write_text(build(text))
+            cpp.write_text(build(text, window_header))
             command = [os.environ.get('CXX', 'c++'), '-std=c++17', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
                        '-Wno-unused-parameter', str(cpp), '-o', str(binary)]
             if args.sanitize:
@@ -214,7 +273,7 @@ def main():
             print(f"{name}: {'accepted' if accepted else 'REJECTED'}" + (f' (witness: {witness})' if witness else ''))
             if not accepted:
                 sys.exit(f'{name}: {run.stderr}')
-    print('PASS upload priority frame hook: high only for AFBC frames with three buffers')
+    print('PASS upload priority frame hook: healthy handoffs preserve eligibility and fallback clears it')
 
 
 if __name__ == '__main__':

@@ -57,6 +57,17 @@ constexpr auto RETRY_DELAY = std::chrono::seconds(1);
 #endif
 } // namespace
 
+CAMLAFBCPresenter::CAMLAFBCPresenter(std::function<void(bool)> setUploadEligibility)
+  : m_setUploadEligibility(std::move(setUploadEligibility))
+{
+}
+
+void CAMLAFBCPresenter::SetUploadEligibility(bool eligible) const
+{
+  if (m_setUploadEligibility)
+    m_setUploadEligibility(eligible);
+}
+
 bool CAMLAFBCPresenter::KernelQueuesFlips(const char* path)
 {
   std::FILE* file = std::fopen(path, "re");
@@ -218,7 +229,10 @@ bool CAMLAFBCPresenter::BeginFrame(const std::string& framebuffer, int width, in
                                    int stencilBits)
 {
   if (m_target >= 0)
+  {
+    SetUploadEligibility(false);
     BeginLinearFrame(); // the last frame was neither presented nor abandoned
+  }
   if (m_failed || width <= 0 || height <= 0)
     return false;
   if (m_ready)
@@ -284,6 +298,9 @@ bool CAMLAFBCPresenter::BeginFrame(const std::string& framebuffer, int width, in
         m_error)
       return false;
     target = FreeBuffer();
+    // Serialize the grant with flip failures. A successful handoff preserves
+    // eligibility until a fallback or the end of this session.
+    SetUploadEligibility(m_count >= 3);
   }
   m_target = m_lastTarget = target;
   glBindFramebuffer(GL_FRAMEBUFFER, m_buffers[target].framebuffer);
@@ -432,6 +449,7 @@ void CAMLAFBCPresenter::Run()
       m_outcome.frames.push_back({job.frame, !error});
       if (error)
       {
+        SetUploadEligibility(false);
         // The frames queued behind it are not flipped either.
         DropJobs();
         m_error = error;
@@ -448,6 +466,7 @@ void CAMLAFBCPresenter::Run()
 
 void CAMLAFBCPresenter::ReturnToLinear()
 {
+  SetUploadEligibility(false);
   if (!m_shown)
     return;
   m_shown = false;
@@ -483,6 +502,7 @@ void CAMLAFBCPresenter::TakeOutcome(Outcome& outcome)
 
 void CAMLAFBCPresenter::Destroy(bool contextCurrent)
 {
+  SetUploadEligibility(false);
   // Not a frame to present any more; the buffers go with the session.
   m_target = -1;
   if (m_thread.joinable())

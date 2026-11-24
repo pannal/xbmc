@@ -19,6 +19,7 @@ FIXTURE = r'''
 #pragma once
 #include <algorithm>
 #include <cassert>
+#include <atomic>
 #include <cerrno>
 #include <cstdarg>
 #include <cstdint>
@@ -78,6 +79,8 @@ struct Fixture
   int failIndex = 2;
   bool failReplacementAllocation = false;
   bool failReplacementSession = false;
+  bool failFlip = false;
+  std::atomic_bool* uploadEligible = nullptr;
   int nextFd = 100;
   int sessionsOpened = 0;
   int sessionRequests = 0;
@@ -121,6 +124,7 @@ int MockClose(int fd)
   const auto session = fixture.sessions.find(fd);
   if (session != fixture.sessions.end())
   {
+    assert(!fixture.uploadEligible || !fixture.uploadEligible->load());
     for (size_t index : session->second)
       fixture.allocations[index].session = false;
     fixture.sessions.erase(session);
@@ -225,7 +229,7 @@ void glGetIntegerv(GLenum, GLint* value) { *value = fixture.framebuffer; }
 void glFinish() {}
 void glFlush() {}
 EGLDisplay eglGetCurrentDisplay() { return reinterpret_cast<EGLDisplay>(1); }
-EGLSyncKHR CreateSync(EGLDisplay, EGLint, const EGLint*) { assert(false); return nullptr; }
+EGLSyncKHR CreateSync(EGLDisplay, EGLint, const EGLint*) { return nullptr; }
 EGLint WaitSync(EGLDisplay, EGLSyncKHR, EGLint, EGLTimeKHR) { assert(false); return 0; }
 EGLint DestroySync(EGLDisplay, EGLSyncKHR) { assert(false); return 0; }
 using EGLFunction = void (*)();
@@ -271,6 +275,15 @@ int MockIoctl(int fd, unsigned long request, ...)
     const int session = fixture.nextFd++;
     fixture.sessions.emplace(session, std::vector<size_t>{});
     *static_cast<int32_t*>(data) = session;
+    return 0;
+  }
+  if (request == SESSION_FLIP)
+  {
+    if (fixture.failFlip)
+    {
+      errno = EAGAIN;
+      return -1;
+    }
     return 0;
   }
   assert(request == SESSION_ALLOC);
@@ -332,6 +345,55 @@ void RunCase(const char* parameter, Failure failure, int failIndex, bool replace
   }
   fixture.AssertClean();
 }
+void WaitForFlip(CAMLAFBCPresenter& presenter, bool shown)
+{
+  CAMLAFBCPresenter::Outcome outcome;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < deadline)
+  {
+    presenter.TakeOutcome(outcome);
+    if (!outcome.frames.empty())
+    {
+      assert(outcome.frames.size() == 1 && outcome.frames.front().shown == shown);
+      return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  assert(false && "presenter did not finish the frame");
+}
+void RunUploadEligibilityCase(const char* triple, const char* doubleBuffer)
+{
+  fixture.AssertClean();
+  fixture = Fixture{};
+  std::atomic_bool eligible{false};
+  fixture.uploadEligible = &eligible;
+  {
+    CAMLAFBCPresenter presenter([&](bool high) { eligible.store(high); });
+    presenter.SetQueuedFlipsParameter(triple);
+    assert(presenter.BeginFrame("/mock/fb0", 3840, 2160, 24, 8));
+    assert(eligible.load());
+    assert(presenter.Present());
+    WaitForFlip(presenter, true);
+    assert(eligible.load());
+
+    presenter.SetQueuedFlipsParameter(doubleBuffer);
+    assert(presenter.BeginFrame("/mock/fb0", 1920, 1080, 24, 8));
+    assert(presenter.Buffers() == 2 && !eligible.load());
+    assert(presenter.Present());
+    WaitForFlip(presenter, true);
+
+    presenter.SetQueuedFlipsParameter(triple);
+    assert(presenter.BeginFrame("/mock/fb0", 3840, 2160, 24, 8));
+    assert(eligible.load());
+    fixture.failFlip = true;
+    assert(presenter.Present());
+    WaitForFlip(presenter, false);
+    assert(!eligible.load());
+    presenter.Destroy(true);
+  }
+  fixture.uploadEligible = nullptr;
+  fixture.AssertClean();
+}
 int main(int argc, char** argv)
 {
   assert(argc == 4);
@@ -349,7 +411,8 @@ int main(int argc, char** argv)
     for (Failure failure : {Failure::ALLOCATE, Failure::IMPORT, Failure::BIND,
                             Failure::FRAMEBUFFER, Failure::GL_ERROR})
       RunCase(argv[1], failure, index, false, false, 0, 1);
-  puts("PASS production presenter allocation fallback, independent ownership and partial teardown");
+  RunUploadEligibilityCase(argv[1], argv[2]);
+  puts("PASS production presenter allocation, teardown and upload eligibility");
 }
 '''
 
@@ -393,6 +456,15 @@ def main():
     run(source, header)
     if args.negative_controls:
         controls = [
+            ('stale upload eligibility at session close',
+             'void CAMLAFBCPresenter::Destroy(bool contextCurrent)\n{\n  SetUploadEligibility(false);',
+             'void CAMLAFBCPresenter::Destroy(bool contextCurrent)\n{'),
+            ('stale upload eligibility after flip failure',
+             '        SetUploadEligibility(false);\n        // The frames queued behind',
+             '        // The frames queued behind'),
+            ('two-buffer session receives high eligibility',
+             '    SetUploadEligibility(m_count >= 3);',
+             '    SetUploadEligibility(true);'),
             ('session ownership retained', '    close(m_session);', '    (void)m_session;'),
             ('exported ownership retained', '      close(buffer.fd);', '      (void)buffer.fd;'),
             ('import ownership retained', '    buffer.import.Release();', '    (void)buffer.import;'),
