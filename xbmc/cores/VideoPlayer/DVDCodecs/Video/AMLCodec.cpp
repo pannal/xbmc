@@ -2443,8 +2443,9 @@ bool CAMLCodec::OpenDecoderInternal()
   am_private->liveFELWithL5Scan = liveFEL && aml_dv_active_area_detection_requested();
   const bool nativeL5 = nativeP81 && aml_dv_live_frame_l5_eligible(m_dvSession);
   am_private->liveBorderToken = 0;
-  am_private->liveFrameL5 = nativeL5 && hints.width == 3840 && hints.height == 2160 &&
-      LiveFrameL5Enabled();
+  const bool frameL5Size = (hints.width == 3840 && hints.height == 2160) ||
+                           (hints.width == 1920 && hints.height == 1080);
+  am_private->liveFrameL5 = nativeL5 && frameL5Size && LiveFrameL5Enabled();
   if (aml_subtitle_active_area_configure(hints.width, hints.height, nativeDV,
                                         !nativeDV || hints.dovi.dv_profile != 9,
                                         hints.subtitleProbeSource, hints.aspect, true,
