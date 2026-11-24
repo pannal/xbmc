@@ -267,7 +267,7 @@ CLASSES = r'''
 class CEGLContextUtils
 {
 public:
-  bool CreateContext(CEGLAttributesVec contextAttribs);
+  CREATE_CONTEXT_DECLARATION
   void DestroyContext();
   bool BindTextureUploadContext();
   bool UnbindTextureUploadContext();
@@ -556,8 +556,9 @@ int main()
 '''
 
 
-def upload_classes(egl):
-    classes = CLASSES
+def upload_classes(egl, header):
+    declaration = re.search(r'bool CreateContext\([^;]+;', header).group()
+    classes = CLASSES.replace('CREATE_CONTEXT_DECLARATION', declaration)
     bind = function(egl, 'bool CEGLContextUtils::BindTextureUploadContext(')
     if 'const std::atomic_bool* cancelled' in bind:
         classes = classes.replace('BindTextureUploadContext()',
@@ -567,7 +568,7 @@ def upload_classes(egl):
 
 def sources(egl, header, aml, texture, baseline):
     attributes = re.search(r'class CEGLAttributesVec\n\{[\s\S]*?\n\};\n', header).group()
-    parts = [PRELUDE, attributes, upload_classes(egl)]
+    parts = [PRELUDE, attributes, upload_classes(egl, header)]
     methods = EGL_METHODS + ([] if baseline else FIXED_EGL_METHODS)
     parts += [function(egl, signature) for signature in methods]
     if baseline:

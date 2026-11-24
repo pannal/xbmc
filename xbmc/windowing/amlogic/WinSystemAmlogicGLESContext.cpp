@@ -282,7 +282,7 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
   CEGLAttributesVec contextAttribs;
   contextAttribs.Add({{EGL_CONTEXT_CLIENT_VERSION, 2}});
 
-  if (!m_pGLContext.CreateContext(contextAttribs))
+  if (!m_pGLContext.CreateContext(contextAttribs, true))
   {
     return false;
   }
@@ -766,12 +766,10 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   {
     m_afbcFrame = false;
     afbcFrame = m_afbcPresenter.Present();
+    m_pGLContext.SetTextureUploadHighPriority(false);
     presented = afbcFrame != 0;
     if (!presented)
-    {
-      m_pGLContext.SetTextureUploadHighPriority(false);
       MarkGuiDirty(); // The frame is lost: draw it again.
-    }
   }
   else
   {

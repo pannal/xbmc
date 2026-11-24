@@ -410,7 +410,7 @@ EGLint CEGLContextUtils::GetConfigAttrib(EGLint attribute) const
   return value;
 }
 
-bool CEGLContextUtils::CreateContext(CEGLAttributesVec contextAttribs)
+bool CEGLContextUtils::CreateContext(CEGLAttributesVec contextAttribs, bool allowHighPriorityUploads)
 {
   std::unique_lock<CCriticalSection> uploadLock(m_textureUploadLock);
   if (m_eglContext != EGL_NO_CONTEXT)
@@ -488,7 +488,7 @@ bool CEGLContextUtils::CreateContext(CEGLAttributesVec contextAttribs)
 
   // EGL may grant different priorities to contexts in the same share group.
   // Enable the extra upload context only when it can match the GUI's grant.
-  if (m_eglUploadContext != EGL_NO_CONTEXT && rendererHigh)
+  if (allowHighPriorityUploads && m_eglUploadContext != EGL_NO_CONTEXT && rendererHigh)
   {
     CEGLAttributesVec highAttribs{uploadContextAttribs};
     highAttribs.Add({{EGL_CONTEXT_PRIORITY_LEVEL_IMG, EGL_CONTEXT_PRIORITY_HIGH_IMG}});
@@ -802,8 +802,13 @@ bool CEGLContextUtils::BindTextureUploadContext(const std::atomic_bool* cancelle
         bound = retry && bind(m_eglUploadContextHigh, m_eglUploadSurfaceHigh);
         retireHigh = !bound;
         if (retireHigh)
-          CLog::LogF(LOGWARNING, "High-priority texture upload context unavailable (EGL error {:#x})",
-                     eglGetError());
+        {
+          if (surfaceless && !retry)
+            CLog::LogF(LOGWARNING, "High-priority texture upload context has no usable pbuffer");
+          else
+            CLog::LogF(LOGWARNING, "Failed to bind high-priority texture upload context (EGL error {:#x})",
+                       eglGetError());
+        }
       }
     }
   }

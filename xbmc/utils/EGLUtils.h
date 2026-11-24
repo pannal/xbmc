@@ -198,7 +198,7 @@ public:
   bool CreatePlatformSurface(void* nativeWindow, EGLNativeWindowType nativeWindowLegacy);
   bool InitializeDisplay(EGLint renderingApi);
   bool ChooseConfig(EGLint renderableType, EGLint visualId = 0, bool hdr = false);
-  bool CreateContext(CEGLAttributesVec contextAttribs);
+  bool CreateContext(CEGLAttributesVec contextAttribs, bool allowHighPriorityUploads = false);
   bool BindContext();
   void Destroy();
   void DestroySurface();

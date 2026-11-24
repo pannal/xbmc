@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 
 HERE = Path(__file__).resolve().parent
@@ -49,6 +50,10 @@ bool RequestedHighUpload(EGLContext context)
 '''
 
 TESTS = r'''
+static bool CreateAmlogicContext(CEGLContextUtils& egl, CEGLAttributesVec contextAttribs)
+{
+ return egl.AML_CREATE_CONTEXT;
+}
 static EGLint Attribute(EGLContext context,EGLint key,EGLint fallback)
 {
  const auto& attrs=fixture::requests.at(context).attributes;
@@ -95,6 +100,8 @@ static void Priority(bool extension,bool explicitPriority,bool overridePriority,
          "priority: caller context flags preserved");
   }
   Check(fixture::queries[upload]==(extension?1u:0u),"priority: query actual upload hint once");
+  Check(fixture::requests.size()==2 && win.m_pGLContext.m_eglUploadContextHigh==EGL_NO_CONTEXT,
+        "default backend: only renderer and ordinary upload contexts requested");
   // Assignment/query failure is advisory and must not disable valid uploads.
   CTexture texture;UploadOnLoader(texture);
   Check(texture.uploaded && texture.synced,"priority: upload completion retained");
@@ -115,7 +122,7 @@ static void HighUpload(bool extension,bool denyHigh,bool failHighBind,
  auto& egl=win.m_pGLContext;
  if(frameEndsOnPbuffer)fixture::frameEligibilityOnPbuffer=&egl.m_textureUploadHighPriority;
  CEGLAttributesVec attrs;attrs.Add({{0x3098,2}});
- Check(egl.CreateContext(attrs),"high: primary creation remains usable");
+ Check(CreateAmlogicContext(egl,attrs),"high: primary creation remains usable");
  const auto render=egl.m_eglContext,upload=egl.m_eglUploadContext,high=egl.m_eglUploadContextHigh;
  const bool granted=extension&&!denyHigh;
  if(!granted)
@@ -166,7 +173,7 @@ static void RendererGrant(bool queryFails)
  CWinSystemAmlogicGLESContext win;g_winSystem=&win;
  auto& egl=win.m_pGLContext;
  CEGLAttributesVec attrs;attrs.Add({{0x3098,2}});
- Check(egl.CreateContext(attrs),"renderer grant: ordinary rendering is still available");
+ Check(CreateAmlogicContext(egl,attrs),"renderer grant: ordinary rendering is still available");
  Check(egl.m_eglUploadContextHigh==EGL_NO_CONTEXT && fixture::requests.size()==2,
        "renderer grant: only a confirmed HIGH renderer may have a HIGH upload context");
  egl.SetTextureUploadHighPriority(true);
@@ -189,7 +196,7 @@ static void SinglePbuffer(HighPbufferOutcome outcome, const char* fallbackWitnes
  auto& egl=win.m_pGLContext;
  if(outcome==HighPbufferOutcome::FrameEnds)
   fixture::frameEligibilityOnPbuffer=&egl.m_textureUploadHighPriority;
- Check(egl.CreateContext({}),"one pbuffer: context creation succeeds");
+ Check(CreateAmlogicContext(egl,{}),"one pbuffer: context creation succeeds");
  const auto medium=egl.m_eglUploadContext,high=egl.m_eglUploadContextHigh;
  Check(high!=EGL_NO_CONTEXT,"one pbuffer: HIGH context created");
  egl.SetTextureUploadHighPriority(true);
@@ -301,7 +308,10 @@ EGLBoolean eglQueryContext(EGLDisplay, EGLContext context, EGLint, EGLint* value
     return EGL_NO_SURFACE;
   }
   EGLSurface surface = reinterpret_cast<EGLSurface>(fixture::next += 0x10);''')
-    source = h.replace(source, 'int main(){try {', TESTS + '\nint main(){try {\n      Priorities();\n      Highs();')
+    init = d.function(files[d.AML_SOURCE], 'bool CWinSystemAmlogicGLESContext::InitWindowSystem()')
+    create = re.search(r'm_pGLContext\.(CreateContext\([^()]*\))', init).group(1)
+    tests = TESTS.replace('AML_CREATE_CONTEXT', create)
+    source = h.replace(source, 'int main(){try {', tests + '\nint main(){try {\n      Priorities();\n      Highs();')
     return source
 
 
@@ -323,8 +333,11 @@ def main():
         'no-upload-query': ('if (m_eglUploadContext != EGL_NO_CONTEXT && supportsPriority)',
                             'if (false && m_eglUploadContext != EGL_NO_CONTEXT && supportsPriority)',
                             'query actual upload hint once'),
-        'ignore-renderer-grant': ('if (m_eglUploadContext != EGL_NO_CONTEXT && rendererHigh)',
-                                  'if (m_eglUploadContext != EGL_NO_CONTEXT && supportsPriority)',
+        'ignore-backend-opt-in': ('if (allowHighPriorityUploads && m_eglUploadContext != EGL_NO_CONTEXT && rendererHigh)',
+                                  'if (m_eglUploadContext != EGL_NO_CONTEXT && rendererHigh)',
+                                  'default backend: only renderer and ordinary upload contexts requested'),
+        'ignore-renderer-grant': ('if (allowHighPriorityUploads && m_eglUploadContext != EGL_NO_CONTEXT && rendererHigh)',
+                                  'if (allowHighPriorityUploads && m_eglUploadContext != EGL_NO_CONTEXT && supportsPriority)',
                                   'renderer grant: only a confirmed HIGH renderer'),
         'overwrite-medium-surface': ('m_eglUploadSurfaceHigh = CreateTextureUploadPbuffer();',
                                      'm_eglUploadSurfaceHigh = m_eglUploadSurface = CreateTextureUploadPbuffer();',

@@ -130,6 +130,8 @@ int main()
   w.m_afbcPresenter.buffers = 3;
   w.BeginAFBCScanoutFrame();
   Check(w.m_pGLContext.high, "three buffers again: high");
+  w.PresentAFBCForFixture();
+  Check(!w.m_afbcFrame && !w.m_pGLContext.high, "successful present: medium before next frame");
   w.m_afbcPresenter.begin = false;
   w.BeginAFBCScanoutFrame();
   Check(!w.m_afbcFrame && !w.m_pGLContext.high, "presenter refused the frame (linear): medium");
@@ -188,8 +190,12 @@ def main():
         'stale-on-abandon': ('  m_pGLContext.SetTextureUploadHighPriority(false);\n  if (!m_afbcFrame)\n    return;',
                              '  if (!m_afbcFrame)\n    return;\n  m_pGLContext.SetTextureUploadHighPriority(false);',
                              'skipped frame without active target: medium'),
-        'stale-on-rejection': ('      m_pGLContext.SetTextureUploadHighPriority(false);\n      MarkGuiDirty();',
-                               '      MarkGuiDirty();', 'rejected present: medium'),
+        'stale-on-success': ('    m_pGLContext.SetTextureUploadHighPriority(false);\n    presented = afbcFrame != 0;',
+                             '    m_pGLContext.SetTextureUploadHighPriority(afbcFrame != 0);\n    presented = afbcFrame != 0;',
+                             'successful present: medium before next frame'),
+        'stale-on-rejection': ('    m_pGLContext.SetTextureUploadHighPriority(false);\n    presented = afbcFrame != 0;',
+                               '    m_pGLContext.SetTextureUploadHighPriority(afbcFrame == 0);\n    presented = afbcFrame != 0;',
+                               'rejected present: medium'),
     }
     for name, (before, after, witness) in mutations.items():
         assert source.count(before) == 1, name
