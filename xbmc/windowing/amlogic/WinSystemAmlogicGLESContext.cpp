@@ -766,10 +766,12 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   {
     m_afbcFrame = false;
     afbcFrame = m_afbcPresenter.Present();
-    m_pGLContext.SetTextureUploadHighPriority(false);
     presented = afbcFrame != 0;
     if (!presented)
+    {
+      m_pGLContext.SetTextureUploadHighPriority(false);
       MarkGuiDirty(); // The frame is lost: draw it again.
+    }
   }
   else
   {
@@ -1066,7 +1068,10 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
   // A frame begun before teardown completed cannot release its later handoff.
   m_videoMuteHandoff = aml_video_mute_controller().HandoffGeneration();
   if (!CanRender())
+  {
+    m_pGLContext.SetTextureUploadHighPriority(false);
     return CRenderSystemGLES::BeginRender();
+  }
 
   // Outside fullscreen video (a skin's video preview, a window over playback)
   // the GUI pass never reports: a frame without a report there is no menu.
@@ -1239,9 +1244,10 @@ void CWinSystemAmlogicGLESContext::BeginAFBCScanoutFrame()
     m_afbcFrame = m_afbcPresenter.BeginFrame("/dev/" + m_framebuffer_name, m_nWidth, m_nHeight, depth, stencil);
   }
   if (!m_afbcFrame)
+  {
+    m_pGLContext.SetTextureUploadHighPriority(false);
     m_afbcPresenter.BeginLinearFrame();
-  // Only triple-buffered AFBC frames are eligible for HIGH uploads.
-  m_pGLContext.SetTextureUploadHighPriority(m_afbcFrame && m_afbcPresenter.Buffers() >= 3);
+  }
 }
 
 bool CWinSystemAmlogicGLESContext::EnsureFbo(CFrameBufferObject& fbo, int& width, int& height)
