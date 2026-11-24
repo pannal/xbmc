@@ -39,7 +39,7 @@ struct CDVDDemux {
   int64_t id=0;
   virtual ~CDVDDemux()=default;
   virtual void Abort() {} virtual void Flush() {}
-  virtual void EnableStream(int64_t,int,bool) {}
+  virtual bool EnableStream(int64_t,int,bool) {return false;}
   virtual bool Reset() {return true;}
   virtual bool SeekTime(double,bool,double*) {return true;}
   virtual DemuxPacket* Read() {return nullptr;}
