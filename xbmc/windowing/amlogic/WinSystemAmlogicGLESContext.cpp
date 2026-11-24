@@ -213,6 +213,7 @@ void CWinSystemAmlogicGLESContext::ReleaseCompositeResources()
 {
   GuiABFinish("release_composite");
   InvalidateRenderTarget();
+  m_pGLContext.SetTextureUploadHighPriority(false);
   m_afbcFrame = false;
   m_afbcPresenter.Destroy(IsPrimaryContextCurrent());
   m_afbcPresented.clear(); // its buffers are gone, whether or not they were shown
@@ -281,7 +282,7 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
   CEGLAttributesVec contextAttribs;
   contextAttribs.Add({{EGL_CONTEXT_CLIENT_VERSION, 2}});
 
-  if (!m_pGLContext.CreateContext(contextAttribs))
+  if (!m_pGLContext.CreateContext(contextAttribs, true))
   {
     return false;
   }
@@ -586,6 +587,7 @@ bool CWinSystemAmlogicGLESContext::DestroyWindow()
   SetNativeGuiWait(false);
   // The display buffers belong to this window size; the plane shows the
   // linear framebuffer again before the surface goes.
+  m_pGLContext.SetTextureUploadHighPriority(false);
   m_afbcFrame = false;
   m_afbcPresenter.Destroy(IsPrimaryContextCurrent());
   m_afbcPresented.clear(); // its buffers are gone, whether or not they were shown
@@ -764,6 +766,7 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
   {
     m_afbcFrame = false;
     afbcFrame = m_afbcPresenter.Present();
+    m_pGLContext.SetTextureUploadHighPriority(false);
     presented = afbcFrame != 0;
     if (!presented)
       MarkGuiDirty(); // The frame is lost: draw it again.
@@ -1183,6 +1186,7 @@ void CWinSystemAmlogicGLESContext::AbandonAFBCScanoutFrame()
 {
   // Nothing drawn after this (a screenshot renders the GUI between frames)
   // may reach a display buffer.
+  m_pGLContext.SetTextureUploadHighPriority(false);
   if (!m_afbcFrame)
     return;
   m_afbcFrame = false;
@@ -1200,7 +1204,10 @@ void CWinSystemAmlogicGLESContext::BeginAFBCScanoutFrame()
 {
   m_afbcFrame = false;
   if (!IsPrimaryContextCurrent())
+  {
+    m_pGLContext.SetTextureUploadHighPriority(false);
     return;
+  }
   const auto& advanced = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
   const int dirtyRegions = advanced->m_guiAlgorithmDirtyRegions;
   const bool wholeFrames = dirtyRegions == DIRTYREGION_SOLVER_FILL_VIEWPORT_ON_CHANGE ||
@@ -1233,6 +1240,8 @@ void CWinSystemAmlogicGLESContext::BeginAFBCScanoutFrame()
   }
   if (!m_afbcFrame)
     m_afbcPresenter.BeginLinearFrame();
+  // Only triple-buffered AFBC frames are eligible for HIGH uploads.
+  m_pGLContext.SetTextureUploadHighPriority(m_afbcFrame && m_afbcPresenter.Buffers() >= 3);
 }
 
 bool CWinSystemAmlogicGLESContext::EnsureFbo(CFrameBufferObject& fbo, int& width, int& height)
