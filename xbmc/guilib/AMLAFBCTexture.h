@@ -60,10 +60,7 @@ public:
                                                std::string& error);
   // Retire the upload-context cache before EGL handle destruction/reuse.
   static bool HasConversionResources(EGLContext context);
-  // A known share-group member may delete the shared program when the
-  // owning context cannot bind. Delete framebuffers only in their owner.
-  static void ReleaseConversionResources(EGLContext context,
-                                         EGLContext sharedContext = EGL_NO_CONTEXT);
+  static void ReleaseConversionResources(EGLContext context);
   ~CAMLAFBCTexture();
   GLuint TakeTexture();
 

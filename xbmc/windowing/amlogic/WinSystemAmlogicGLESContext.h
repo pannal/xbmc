@@ -229,8 +229,8 @@ private:
   // lost, and draws the GUI again after one was lost, also while the GUI is
   // idle.
   void TakeAFBCOutcome();
-  CAMLAFBCPresenter m_afbcPresenter{
-      [this](bool eligible) { m_pGLContext.SetTextureUploadHighPriority(eligible); }};
+  CAMLAFBCPresenter m_afbcPresenter;
+  bool m_afbcAllowThirdBuffer{true}; // Read once when the window system starts.
   bool m_afbcFrame = false; // this frame was begun in a display buffer
   // Frames handed over, not yet known to be on screen or lost: what their
   // presentation applies once they are. At most one per display buffer.

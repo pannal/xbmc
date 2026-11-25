@@ -15,7 +15,6 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
-#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -26,10 +25,11 @@
 // surface. Needs the kernel's AFBC scanout session (FBIOGET_OSD_AFBC_SCANOUT).
 //
 // The kernel allocates the contiguous buffers; each is the colour attachment of
-// one framebuffer object. Three are used when the kernel shows a flip queued
-// right after the previous one with the next vsync (afbc_scanout_queued_flips),
-// otherwise two. A frame is drawn into a buffer that is neither on screen nor
-// queued; with three, one frame can wait for its vsync while the next is drawn.
+// one framebuffer object. Three are used when allowed and the kernel shows a
+// flip queued right after the previous one with the next vsync
+// (afbc_scanout_queued_flips), otherwise two. A frame is drawn into a buffer
+// that is neither on screen nor queued. With three, one frame can wait for its
+// vsync while the next is drawn.
 // If none is free, the render thread waits for a vsync to retire one before it
 // binds it. The flip is queued behind an EGL fence, so the render thread never
 // waits for the GPU.
@@ -44,16 +44,20 @@ public:
       "/sys/module/fb/parameters/afbc_scanout_queued_flips";
   static bool KernelQueuesFlips(const char* path = QUEUED_FLIPS_PARAMETER);
 
-  // Invoked on the render or presenter thread, sometimes with m_mutex held.
-  // The callback may only publish upload eligibility and must not block.
-  explicit CAMLAFBCPresenter(std::function<void(bool)> setUploadEligibility = {});
+  CAMLAFBCPresenter() = default;
   ~CAMLAFBCPresenter() { Destroy(false); }
   CAMLAFBCPresenter(const CAMLAFBCPresenter&) = delete;
   CAMLAFBCPresenter& operator=(const CAMLAFBCPresenter&) = delete;
 
   // Selects this frame's display buffer as the default framebuffer. False
-  // leaves the EGL window surface in place for an ordinary frame.
-  bool BeginFrame(const std::string& framebuffer, int width, int height, int depthBits, int stencilBits);
+  // leaves the EGL window surface in place for an ordinary frame. The buffer
+  // preference applies when a session is created.
+  bool BeginFrame(const std::string& framebuffer,
+                  int width,
+                  int height,
+                  int depthBits,
+                  int stencilBits,
+                  bool allowThirdBuffer);
   // The EGL window surface is the default again: an ordinary frame follows,
   // or the frame begun in a display buffer is not presented.
   void BeginLinearFrame();
@@ -105,7 +109,7 @@ private:
   static constexpr unsigned int MAX_BUFFERS = 3;
 
   bool Create(const std::string& framebuffer, int width, int height, int depthBits, int stencilBits,
-              bool allowThirdBuffer = true);
+              bool allowThirdBuffer);
   // Records why Create() failed; returns false.
   bool Reject(std::string reason, int error, bool permanent);
   void Fail(const char* reason, int error);
@@ -115,9 +119,6 @@ private:
   // Reports the frames of jobs that will not be flipped. Caller holds m_mutex.
   void DropJobs();
   void EndFrame();
-  void SetUploadEligibility(bool eligible) const;
-
-  const std::function<void(bool)> m_setUploadEligibility;
 
   struct Buffer
   {

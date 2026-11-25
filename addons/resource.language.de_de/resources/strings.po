@@ -6856,6 +6856,16 @@ msgctxt "#60668"
 msgid "Use a 1080p interface while playing video above 1080p on a 4K output, even at film frame rates. HDMI stays at 4K. Applies from the next playback."
 msgstr "Nutzt bei Videos über 1080p eine 1080p-Oberfläche, auch bei Kinobildraten. Die HDMI-Ausgabe bleibt in 4K. Gilt ab der nächsten Wiedergabe."
 
+#: system/settings/settings.xml
+msgctxt "#60669"
+msgid "Use two AFBC GUI buffers"
+msgstr "Zwei AFBC-Puffer für die Oberfläche verwenden"
+
+#: system/settings/settings.xml
+msgctxt "#60670"
+msgid "Try this if posters load slowly. Busy menus may stutter more. Restart Kodi to apply."
+msgstr "Kann helfen, wenn Poster langsam laden. Aufwendige Menüs können häufiger ruckeln. Kodi neu starten."
+
 msgctxt "#14292"
 msgid "RGB"
 msgstr "RGB"

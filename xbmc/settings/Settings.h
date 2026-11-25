@@ -520,6 +520,8 @@ public:
   static constexpr auto SETTING_COREELEC_AMLOGIC_FORCE_CS = "coreelec.amlogic.forcecs";
   static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";
   static constexpr auto SETTING_COREELEC_AMLOGIC_GUI1080PFOR4K = "coreelec.amlogic.gui1080pfor4k";
+  static constexpr auto SETTING_COREELEC_AMLOGIC_AFBC_TWO_BUFFERS =
+      "coreelec.amlogic.afbcscanout.twobuffers";
   static constexpr auto SETTING_COREELEC_AMLOGIC_USE_DISPLAY_AS_CLOCK = "coreelec.amlogic.usedisplayasclock";
   static constexpr auto SETTING_COREELEC_AMLOGIC_FAST_SEEK = "coreelec.amlogic.fastseek";
   static constexpr auto SETTING_COREELEC_AMLOGIC_AVR_START_RESYNC = "coreelec.amlogic.avr_start_resync";

@@ -213,7 +213,6 @@ void CWinSystemAmlogicGLESContext::ReleaseCompositeResources()
 {
   GuiABFinish("release_composite");
   InvalidateRenderTarget();
-  m_pGLContext.SetTextureUploadHighPriority(false);
   m_afbcFrame = false;
   m_afbcPresenter.Destroy(IsPrimaryContextCurrent());
   m_afbcPresented.clear(); // its buffers are gone, whether or not they were shown
@@ -282,10 +281,13 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
   CEGLAttributesVec contextAttribs;
   contextAttribs.Add({{EGL_CONTEXT_CLIENT_VERSION, 2}});
 
-  if (!m_pGLContext.CreateContext(contextAttribs, true))
+  if (!m_pGLContext.CreateContext(contextAttribs))
   {
     return false;
   }
+
+  m_afbcAllowThirdBuffer = !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+      CSettings::SETTING_COREELEC_AMLOGIC_AFBC_TWO_BUFFERS);
 
   if (m_framebuffer_name == "fb0")
     StartVncGuiListener();
@@ -587,7 +589,6 @@ bool CWinSystemAmlogicGLESContext::DestroyWindow()
   SetNativeGuiWait(false);
   // The display buffers belong to this window size; the plane shows the
   // linear framebuffer again before the surface goes.
-  m_pGLContext.SetTextureUploadHighPriority(false);
   m_afbcFrame = false;
   m_afbcPresenter.Destroy(IsPrimaryContextCurrent());
   m_afbcPresented.clear(); // its buffers are gone, whether or not they were shown
@@ -768,10 +769,7 @@ void CWinSystemAmlogicGLESContext::PresentRenderImpl(bool rendered)
     afbcFrame = m_afbcPresenter.Present();
     presented = afbcFrame != 0;
     if (!presented)
-    {
-      m_pGLContext.SetTextureUploadHighPriority(false);
       MarkGuiDirty(); // The frame is lost: draw it again.
-    }
   }
   else
   {
@@ -1068,10 +1066,7 @@ bool CWinSystemAmlogicGLESContext::BeginRender()
   // A frame begun before teardown completed cannot release its later handoff.
   m_videoMuteHandoff = aml_video_mute_controller().HandoffGeneration();
   if (!CanRender())
-  {
-    m_pGLContext.SetTextureUploadHighPriority(false);
     return CRenderSystemGLES::BeginRender();
-  }
 
   // Outside fullscreen video (a skin's video preview, a window over playback)
   // the GUI pass never reports: a frame without a report there is no menu.
@@ -1191,7 +1186,6 @@ void CWinSystemAmlogicGLESContext::AbandonAFBCScanoutFrame()
 {
   // Nothing drawn after this (a screenshot renders the GUI between frames)
   // may reach a display buffer.
-  m_pGLContext.SetTextureUploadHighPriority(false);
   if (!m_afbcFrame)
     return;
   m_afbcFrame = false;
@@ -1209,10 +1203,7 @@ void CWinSystemAmlogicGLESContext::BeginAFBCScanoutFrame()
 {
   m_afbcFrame = false;
   if (!IsPrimaryContextCurrent())
-  {
-    m_pGLContext.SetTextureUploadHighPriority(false);
     return;
-  }
   const auto& advanced = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
   const int dirtyRegions = advanced->m_guiAlgorithmDirtyRegions;
   const bool wholeFrames = dirtyRegions == DIRTYREGION_SOLVER_FILL_VIEWPORT_ON_CHANGE ||
@@ -1241,13 +1232,11 @@ void CWinSystemAmlogicGLESContext::BeginAFBCScanoutFrame()
     EGLint depth = 0, stencil = 0;
     eglGetConfigAttrib(m_pGLContext.GetEGLDisplay(), m_pGLContext.GetEGLConfig(), EGL_DEPTH_SIZE, &depth);
     eglGetConfigAttrib(m_pGLContext.GetEGLDisplay(), m_pGLContext.GetEGLConfig(), EGL_STENCIL_SIZE, &stencil);
-    m_afbcFrame = m_afbcPresenter.BeginFrame("/dev/" + m_framebuffer_name, m_nWidth, m_nHeight, depth, stencil);
+    m_afbcFrame = m_afbcPresenter.BeginFrame("/dev/" + m_framebuffer_name, m_nWidth, m_nHeight,
+                                           depth, stencil, m_afbcAllowThirdBuffer);
   }
   if (!m_afbcFrame)
-  {
-    m_pGLContext.SetTextureUploadHighPriority(false);
     m_afbcPresenter.BeginLinearFrame();
-  }
 }
 
 bool CWinSystemAmlogicGLESContext::EnsureFbo(CFrameBufferObject& fbo, int& width, int& height)
