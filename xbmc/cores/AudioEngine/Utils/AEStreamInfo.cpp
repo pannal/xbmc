@@ -394,6 +394,27 @@ unsigned int CAEStreamParser::DetectType(uint8_t* data, unsigned int size)
   return possible ? possible : skipped;
 }
 
+// ETSI TS 102 366, table 4.13. AC-3 frame sizes are in 16-bit words.
+static unsigned int AC3_FrameSizeWords(uint8_t rateAndSizeCodes)
+{
+  const unsigned int sizeCode = rateAndSizeCodes & 0x3F;
+  if (sizeCode > 37)
+    return 0;
+
+  const unsigned int bitRate = AC3Bitrates[sizeCode >> 1];
+  switch (rateAndSizeCodes >> 6)
+  {
+    case 0: // 48 kHz
+      return bitRate * 2;
+    case 1: // 44.1 kHz, alternating frame sizes
+      return 320 * bitRate / 147 + (sizeCode & 1);
+    case 2: // 32 kHz
+      return bitRate * 3;
+    default:
+      return 0;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // AC-3 / E-AC-3 CRC-16 helpers for dialnorm defeat
 // Reference: FFmpeg libavcodec/ac3enc.c (GPL-2.0-or-later)
@@ -515,20 +536,9 @@ void CAEStreamParser::DefeatAC3DialNorm(uint8_t* data, unsigned int size)
     if (bsid <= 10)
     {
       // AC-3
-      uint8_t fscod = frame[4] >> 6;
-      uint8_t frmsizecod = frame[4] & 0x3F;
-      if (fscod >= 3 || frmsizecod > 37) break;
-
-      unsigned int bitRate = AC3Bitrates[frmsizecod >> 1];
-      unsigned int framewords = 0;
-      switch (fscod)
-      {
-        case 0: framewords = bitRate * 2; break;
-        case 1: framewords = (320 * bitRate / 147 + (frmsizecod & 1 ? 1 : 0)); break;
-        case 2: framewords = bitRate * 3; break;
-      }
-      frame_bytes = framewords * 2;
-      if (offset + frame_bytes > size) break;
+      frame_bytes = AC3_FrameSizeWords(frame[4]) * 2;
+      if (frame_bytes == 0 || frame_bytes > size - offset)
+        break;
 
       uint8_t acmod = frame[6] >> 5;
       uint8_t dn = AC3_ParseDialnorm(frame, acmod);
@@ -1340,21 +1350,7 @@ static unsigned int AC3_SyncframeBytes(const uint8_t* data)
   if (bsid > 10)
     return ((((data[2] & 0x7) << 8) | data[3]) + 1) << 1;
 
-  const uint8_t fscod = data[4] >> 6;
-  const uint8_t frmsizecod = data[4] & 0x3F;
-  if (fscod == 3 || frmsizecod > 37)
-    return 0;
-
-  const unsigned int bitRate = AC3Bitrates[frmsizecod >> 1];
-  switch (fscod)
-  {
-    case 0:
-      return bitRate * 4;
-    case 1:
-      return (320 * bitRate / 147 + (frmsizecod & 1 ? 1 : 0)) << 1;
-    default:
-      return bitRate * 8;
-  }
+  return AC3_FrameSizeWords(data[4]) * 2;
 }
 
 // ETSI TS 102 366 E.2.8.5: only the final dependent sets the first compre bit.
@@ -1566,28 +1562,12 @@ bool CAEStreamParser::TrySyncAC3(uint8_t* data,
     if (wantEAC3dependent)
       return false;
 
-    uint8_t fscod = data[4] >> 6;
-    uint8_t frmsizecod = data[4] & 0x3F;
-    if (fscod == 3 || frmsizecod > 37)
+    const uint8_t fscod = data[4] >> 6;
+    const unsigned int frameBytes = AC3_FrameSizeWords(data[4]) * 2;
+    if (frameBytes == 0)
       return false;
 
-    // get the details we need to check crc1 and framesize
-    unsigned int bitRate = AC3Bitrates[frmsizecod >> 1];
-    unsigned int framesize = 0;
-    switch (fscod)
-    {
-      case 0:
-        framesize = bitRate * 2;
-        break;
-      case 1:
-        framesize = (320 * bitRate / 147 + (frmsizecod & 1 ? 1 : 0));
-        break;
-      case 2:
-        framesize = bitRate * 3;
-        break;
-    }
-
-    m_fsize = framesize << 1;
+    m_fsize = frameBytes;
     m_info.m_sampleRate = AC3FSCod[fscod];
 
     // Parse dialnorm for logging (available in first 8 bytes)
@@ -1609,16 +1589,9 @@ bool CAEStreamParser::TrySyncAC3(uint8_t* data,
     if (syncedAC3)
       return true;
 
-    unsigned int crc_size;
-    // if we have enough data, validate the entire packet, else try to validate crc2 (5/8 of the packet)
-    if (framesize <= size)
-      crc_size = framesize - 1;
-    else
-      crc_size = (framesize >> 1) + (framesize >> 3) - 1;
-
-    if (crc_size <= size)
-      if (av_crc(av_crc_get_table(AV_CRC_16_ANSI), 0, &data[2], crc_size * 2))
-        return false;
+    // Dependent lookahead has buffered the whole core. Its CRC excludes the syncword.
+    if (frameBytes > size || av_crc(av_crc_get_table(AV_CRC_16_ANSI), 0, data + 2, frameBytes - 2))
+      return false;
 
     // if we get here, we can sync
     m_hasSync = true;

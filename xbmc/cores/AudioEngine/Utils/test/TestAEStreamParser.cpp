@@ -258,6 +258,36 @@ TEST(TestAEStreamParser, OrdinaryAc3StillDefeatsDialnorm)
   EXPECT_EQ(0, parser.GetStreamInfo().m_dialNormApplied);
 }
 
+TEST(TestAEStreamParser, ClassifiesDependentAfter32kHzAc3Core)
+{
+  auto core = AC3CoreFrame();
+  core.resize(2304); // 384 kbit/s at 32 kHz, 1,152 words per frame.
+  core[4] = (2 << 6) | 28;
+  core[2] = 0xc8;
+  core[3] = 0xaa; // CRC1 for the new header. The second region is all zero.
+
+  for (const bool joc : {false, true})
+  {
+    auto dependent = EAC3Frame(joc, 1);
+    dependent[4] |= 2 << 6; // Match the core's 32 kHz rate.
+    FixTailCRC(dependent);
+    auto packet = core;
+    packet.insert(packet.end(), dependent.begin(), dependent.end());
+
+    CAEStreamParser parser;
+    parser.SetEAC3Track(true);
+    parser.SetDefeatAC3DialNorm(true);
+    const auto output = ParseFirstPacket(parser, packet, core);
+    ASSERT_EQ(packet.size(), output.size());
+    EXPECT_EQ(joc ? 20 : 31, output[7] >> 3);
+    EXPECT_TRUE(std::equal(dependent.begin(), dependent.end(), output.begin() + core.size()));
+    if (joc)
+    {
+      EXPECT_EQ(packet, output);
+    }
+  }
+}
+
 TEST(TestAEStreamParser, UntypedEac3TrackPreservesCoreBeforeALateJocDependent)
 {
   CAEStreamParser parser;
