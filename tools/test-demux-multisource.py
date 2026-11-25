@@ -39,7 +39,7 @@ struct CDVDDemux {
   int64_t id=0;
   virtual ~CDVDDemux()=default;
   virtual void Abort() {} virtual void Flush() {}
-  virtual void EnableStream(int64_t,int,bool) {}
+  virtual bool EnableStream(int64_t,int,bool) {return false;}
   virtual bool Reset() {return true;}
   virtual bool SeekTime(double,bool,double*) {return true;}
   virtual DemuxPacket* Read() {return nullptr;}
@@ -265,13 +265,18 @@ def harness(baseline=None):
         return (ROOT / DIRECTORY / name).read_text()
     header = read('DemuxMultiSource.h')
     source = read('DemuxMultiSource.cpp')
+    stubs = STUBS
+    if baseline and 'void EnableStream(' in header:
+        # Older revisions predate the demuxer's disable-support return value.
+        stubs = stubs.replace('bool EnableStream(int64_t,int,bool) {return false;}',
+                              'void EnableStream(int64_t,int,bool) {}')
     # Keep complete method bodies and real comparator; only boundary declarations
     # and private access are adapted. Real DemuxPacket/TimingConstants are included.
     header = '\n'.join(line for line in header.splitlines()
                        if not line.startswith(('#include', '#pragma')))
     source = '\n'.join(line for line in source.splitlines() if not line.startswith('#include'))
     header = header.replace('private:', 'public:').replace(' override', '')
-    return STUBS + header + source + TESTS
+    return stubs + header + source + TESTS
 
 
 def main():

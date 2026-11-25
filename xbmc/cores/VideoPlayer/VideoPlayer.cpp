@@ -4424,30 +4424,8 @@ void CVideoPlayer::HandleMessages()
           }
 #endif
 
-          CloseStream(m_CurrentSubtitle, false);
-          OpenStream(m_CurrentSubtitle, st.demuxerId, st.id, st.source);
-          if (st.source == STREAM_SOURCE_DEMUX)
-          {
-            CDVDMsgPlayerSeek::CMode mode;
-            // If A/V sync hasn't completed after a seek, the clock hasn't been
-            // updated via Discontinuity() yet, so GetUpdatedTime() returns a stale
-            // value (typically near 0). Use the seek target (m_State.dts) instead.
-            if ((m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_STARTING ||
-                 m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_STARTING) &&
-                m_State.dts != DVD_NOPTS_VALUE)
-            {
-              mode.time = static_cast<double>(DVD_TIME_TO_MSEC(m_State.dts + m_State.time_offset));
-            }
-            else
-            {
-              mode.time = static_cast<double>(GetUpdatedTime());
-            }
-            mode.backward = true;
-            mode.accurate = true;
-            mode.trickplay = true;
-            mode.sync = true;
-            m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
-          }
+          // PM4K reselects the current embedded track to restart subtitle rendering.
+          ReopenSubtitleStream(st.demuxerId, st.id, st.source);
         }
       }
     }
@@ -4455,9 +4433,11 @@ void CVideoPlayer::HandleMessages()
     {
       bool isVisible = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
 
-      // SetEnableStream only if not visible, when visible OpenStream already implied that stream is enabled
       if (!isVisible)
         SetEnableStream(m_CurrentSubtitle, false);
+      else if (m_CurrentSubtitle.demuxDisabled)
+        ReopenSubtitleStream(m_CurrentSubtitle.demuxerId, m_CurrentSubtitle.id,
+                             m_CurrentSubtitle.source);
 
       SetSubtitleVisibleInternal(isVisible);
     }
@@ -5194,7 +5174,11 @@ void CVideoPlayer::SetSubtitleVisible(bool bVisible)
 void CVideoPlayer::SetEnableStream(CCurrentStream& current, bool isEnabled)
 {
   if (m_pDemuxer && STREAM_SOURCE_MASK(current.source) == STREAM_SOURCE_DEMUX)
-    m_pDemuxer->EnableStream(current.demuxerId, current.id, isEnabled);
+  {
+    // FFmpeg keeps delivering packets when subtitles are hidden.
+    if (m_pDemuxer->EnableStream(current.demuxerId, current.id, isEnabled))
+      current.demuxDisabled = !isEnabled;
+  }
 }
 
 void CVideoPlayer::SetSubtitleVisibleInternal(bool bVisible)
@@ -5205,6 +5189,46 @@ void CVideoPlayer::SetSubtitleVisibleInternal(bool bVisible)
     std::static_pointer_cast<CDVDInputStreamNavigator>(m_pInputStream)->EnableSubtitleStream(bVisible);
 
   CServiceBroker::GetDataCacheCore().SignalSubtitleInfoChange();
+}
+
+void CVideoPlayer::ReopenSubtitleStream(int64_t demuxerId, int id, int source)
+{
+  CloseStream(m_CurrentSubtitle, false);
+  if (!OpenStream(m_CurrentSubtitle, demuxerId, id, source))
+  {
+    // The track can disappear while hidden. Publish the cleared stream index.
+    UpdateContentState();
+    return;
+  }
+
+  // For embedded subtitles the demuxer is ahead of playback (AV buffers
+  // are full), so the subtitle packets for the current playback time have
+  // already been read and discarded. Seek back to the current time so they
+  // get re-read, mirroring what audio stream switching does.
+  // A seek already queued re-reads them as well and must not be overridden.
+  if (STREAM_SOURCE_MASK(source) == STREAM_SOURCE_DEMUX)
+  {
+    CDVDMsgPlayerSeek::CMode mode;
+    // If A/V sync hasn't completed after a seek, the clock hasn't been
+    // updated via Discontinuity() yet, so GetUpdatedTime() returns a stale
+    // value (typically near 0). Use the seek target (m_State.dts) instead.
+    if ((m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_STARTING ||
+         m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_STARTING) &&
+        m_State.dts != DVD_NOPTS_VALUE)
+    {
+      mode.time = static_cast<double>(DVD_TIME_TO_MSEC(m_State.dts + m_State.time_offset));
+    }
+    else
+    {
+      mode.time = static_cast<double>(GetUpdatedTime());
+    }
+    mode.backward = true;
+    mode.accurate = true;
+    mode.trickplay = true;
+    mode.sync = true;
+    m_messenger.PutIfNoMessages(std::make_shared<CDVDMsgPlayerSeek>(mode),
+                                {CDVDMsg::PLAYER_SEEK, CDVDMsg::PLAYER_SEEK_CHAPTER});
+  }
 }
 
 void CVideoPlayer::SetSubtitleVerticalPosition(int value, bool save)
@@ -5486,6 +5510,7 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
     current.id = iStream;
     current.demuxerId = demuxerId;
     current.source = source;
+    current.demuxDisabled = false;
     current.hint = hint;
     current.stream = (void*)stream;
     current.lastdts = DVD_NOPTS_VALUE;

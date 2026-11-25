@@ -2,8 +2,9 @@
 """Host regression checks for subtitle selection, without a Kodi/CE build.
 
 Compile the production predicates, stream sort and OpenDefaultStreams subtitle
-block with settings, language and stream-opening stubs. This checks selection
-and startup visibility, not demuxing, language conversion or forced bitmap cues.
+block, runtime selection/visibility handlers and subtitle resync logic with
+settings, demux, stream-opening and queue stubs. Actual playback, language
+conversion and forced bitmap cues are outside this fixture.
 Requires Python 3 and g++; temporary build files are removed automatically.
 """
 
@@ -48,11 +49,16 @@ def main():
     startup = declaration(player, "void CVideoPlayer::OpenDefaultStreams(")
     startup = startup[startup.index("  // enable  or disable subtitles"):
                       startup.index("  // open teletext stream")]
+    handlers = player[player.index("if (pMsg->IsType(CDVDMsg::PLAYER_SET_SUBTITLESTREAM))"):
+                      player.index("    else if (pMsg->IsType(CDVDMsg::PLAYER_SET_PROGRAM))")]
+    runtime = "\n".join(declaration(player, "void CVideoPlayer::" + method).replace("CVideoPlayer::", "")
+                        for method in ("SetEnableStream(", "ReopenSubtitleStream("))
 
     source = r'''
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -108,7 +114,13 @@ struct SelectionStreams {
   std::vector<SelectionStream> streams;
   SelectionStream audio;
   std::vector<SelectionStream> Get(StreamType) { return streams; }
-  SelectionStream Get(StreamType, int) { return audio; }
+  SelectionStream invalid;
+  SelectionStream& Get(StreamType type, int index) {
+    if (type == STREAM_AUDIO) return audio;
+    if (index >= 0 && static_cast<size_t>(index) < streams.size()) return streams[index];
+    invalid.source = STREAM_SOURCE_NONE;
+    return invalid;
+  }
 ''' + sort + r'''
 };
 struct VideoSettings { bool m_SubtitleOn = true; int m_SubtitleStream = -1; };
@@ -116,26 +128,94 @@ struct ProcessInfo {
   VideoSettings settings;
   const VideoSettings& GetVideoSettings() const { return settings; }
 };
-struct InputStream { virtual ~InputStream() = default; };
-struct CDVDInputStreamNavigator : InputStream {};
+constexpr int DVDSTREAM_TYPE_DVD = 1;
+struct InputStream {
+  virtual ~InputStream() = default;
+  bool IsStreamType(int) const { return false; }
+};
+struct CDVDInputStreamNavigator : InputStream {
+  bool SetActiveSubtitleStream(int) { return false; }
+};
+struct CCurrentStream : SelectionStream { bool demuxDisabled = false; };
+struct Demux {
+  bool supportsDisable = true, delivering = false;
+  bool EnableStream(int64_t, int, bool enable) {
+    if (supportsDisable) delivering = enable;
+    return supportsDisable;
+  }
+};
+struct CDVDMsg {
+  enum Type { PLAYER_SET_SUBTITLESTREAM, PLAYER_SET_SUBTITLESTREAM_VISIBLE, PLAYER_SEEK,
+              PLAYER_SEEK_CHAPTER, NONE };
+  Type type;
+  bool IsType(Type t) const { return type == t; }
+};
+struct CDVDMsgPlayerSetSubtitleStream : CDVDMsg {
+  int index;
+  int GetStreamId() const { return index; }
+};
+struct CDVDMsgBool : CDVDMsg { bool m_value; };
+struct CDVDMsgPlayerSeek {
+  struct CMode { double time; bool backward, accurate, trickplay, sync; };
+  explicit CDVDMsgPlayerSeek(CMode) {}
+};
+struct Queue {
+  CDVDMsg::Type pending = CDVDMsg::NONE;
+  int seeks = 0;
+  void PutIfNoMessages(std::shared_ptr<CDVDMsgPlayerSeek>, std::initializer_list<CDVDMsg::Type> types) {
+    if (std::find(types.begin(), types.end(), pending) == types.end()) ++seeks;
+  }
+};
+constexpr double DVD_NOPTS_VALUE = -1;
+double DVD_TIME_TO_MSEC(double pts) { return pts / 1000; }
+struct IDVDStreamPlayer { enum { SYNC_STARTING = 1 }; };
 struct Player {
   std::shared_ptr<ProcessInfo> m_processInfo = std::make_shared<ProcessInfo>();
   std::shared_ptr<InputStream> m_pInputStream;
   struct { std::string state; } m_playerOptions;
   SelectionStreams m_SelectionStreams;
-  SelectionStream m_CurrentSubtitle;
+  CCurrentStream m_CurrentSubtitle;
+  std::shared_ptr<Demux> m_pDemuxer = std::make_shared<Demux>();
+  Queue m_messenger;
+  struct { int syncState = 0; } m_CurrentVideo, m_CurrentAudio;
+  struct { double dts = DVD_NOPTS_VALUE, time_offset = 0; } m_State;
+  struct { int iSelectedSPUStream = -1; } m_dvd;
+  int opens = 0;
+  int publishedSubtitle = -1;
+  void UpdateContentState() { publishedSubtitle = m_CurrentSubtitle.id; }
+  int GetUpdatedTime() { return 0; }
   std::vector<int> failedStreams;
-  bool visible = false, enabled = false;
+  bool visible = false;
   int GetAudioStream() { return 0; }
-  bool OpenStream(SelectionStream& current, int, int id, int source) {
+  bool OpenStream(CCurrentStream& current, int64_t demuxerId, int id, int source) {
     if (std::find(failedStreams.begin(), failedStreams.end(), id) != failedStreams.end())
       return false;
-    current.id = id; current.source = source; enabled = true;
+    ++opens;
+    current.id = id; current.demuxerId = demuxerId; current.source = source;
+    current.demuxDisabled = false;
+    m_pDemuxer->delivering = true;
+    UpdateContentState();
     return true;
   }
-  void CloseStream(SelectionStream& current, bool) { current.id = -1; }
-  void SetEnableStream(SelectionStream&, bool value) { enabled = value; }
+  void CloseStream(CCurrentStream& current, bool) {
+    current = {};
+    current.source = STREAM_SOURCE_NONE;
+    current.id = -1;
+    m_pDemuxer->delivering = false;
+  }
   void SetSubtitleVisibleInternal(bool value) { visible = value; }
+''' + runtime + r'''
+  void Handle(const std::shared_ptr<CDVDMsg>& pMsg) {
+''' + handlers + r'''
+  }
+  void Show(bool value) {
+    Handle(std::make_shared<CDVDMsgBool>(CDVDMsgBool{{CDVDMsg::PLAYER_SET_SUBTITLESTREAM_VISIBLE}, value}));
+  }
+  void Select(int index) {
+    Handle(std::make_shared<CDVDMsgPlayerSetSubtitleStream>(
+        CDVDMsgPlayerSetSubtitleStream{{CDVDMsg::PLAYER_SET_SUBTITLESTREAM}, index}));
+    Show(true); // xbmc.Player.setSubtitleStream also requests visibility.
+  }
   void Start() {
     bool valid = false;
 ''' + startup + r'''
@@ -176,7 +256,7 @@ void check(const std::string& label, const std::string& preference, const std::s
     expect((selected < 0 || p.m_CurrentSubtitle.id == selected) && p.visible == visible,
            label + " (selected=" + std::to_string(p.m_CurrentSubtitle.id) +
            ", visible=" + std::to_string(p.visible) + ")");
-    expect(!visible || p.enabled, label + " visible stream enabled");
+    expect(!visible || p.m_pDemuxer->delivering, label + " visible stream enabled");
     std::reverse(streams.begin(), streams.end());
   }
 }
@@ -226,6 +306,53 @@ void checkOrdering() {
                  ", saved=" + std::to_string(saved));
         }
 }
+void checkRuntimeVisibility() {
+  for (bool supportsDisable : {false, true}) {
+    for (auto pending : {CDVDMsg::NONE, CDVDMsg::PLAYER_SEEK, CDVDMsg::PLAYER_SEEK_CHAPTER}) {
+      Player p;
+      p.m_pDemuxer->supportsDisable = supportsDisable;
+      p.m_messenger.pending = pending;
+      const int source = STREAM_SOURCE_DEMUX + 1;
+      p.OpenStream(p.m_CurrentSubtitle, 19, 7, source);
+      p.Show(false);
+      expect(!p.visible && p.m_pDemuxer->delivering == !supportsDisable, "hide respects demux support");
+      p.Show(true);
+      p.Show(true);
+      expect(p.visible && p.m_pDemuxer->delivering, "show resumes packet delivery");
+      expect(p.opens == (supportsDisable ? 2 : 1), "show reopens only a disabled stream, once");
+      expect(p.m_CurrentSubtitle.id == 7 && p.m_CurrentSubtitle.demuxerId == 19 &&
+             p.m_CurrentSubtitle.source == source, "reopen preserves stream identity");
+      expect(p.m_messenger.seeks == (supportsDisable && pending == CDVDMsg::NONE ? 1 : 0),
+             "queued time and chapter seeks take precedence over subtitle resync");
+    }
+  }
+
+  Player pm4k;
+  pm4k.m_pDemuxer->supportsDisable = false;
+  auto track = sub(7, "eng");
+  pm4k.m_SelectionStreams.streams = {track};
+  pm4k.OpenStream(pm4k.m_CurrentSubtitle, track.demuxerId, track.id, track.source);
+  pm4k.Select(-1);
+  pm4k.Select(0);
+  expect(pm4k.visible && pm4k.opens == 2 && pm4k.m_messenger.seeks == 1,
+         "PM4K explicit embedded reselect reopens and resyncs");
+
+  Player sidecar;
+  sidecar.OpenStream(sidecar.m_CurrentSubtitle, -1, 0, STREAM_SOURCE_TEXT);
+  sidecar.Show(false);
+  sidecar.Show(true);
+  expect(sidecar.visible && sidecar.opens == 1 && sidecar.m_messenger.seeks == 0,
+         "external text visibility leaves playback position alone");
+
+  Player removed;
+  removed.OpenStream(removed.m_CurrentSubtitle, 19, 7, STREAM_SOURCE_DEMUX);
+  removed.Show(false);
+  removed.failedStreams = {7};
+  removed.Show(true);
+  expect(removed.publishedSubtitle == -1 && removed.m_messenger.seeks == 0,
+         "failed reopen clears the published track without seeking");
+}
+
 int main() {
   const auto regular = sub(0, "eng");
   const auto def = sub(1, "eng", FLAG_DEFAULT);
@@ -299,6 +426,7 @@ int main() {
   check("failed default cannot enable unflagged fallback", "original", "eng", true,
         {def, regular}, 0, false, false, -1, "", {1});
   checkOrdering();
+  checkRuntimeVisibility();
   std::cout << checks << " subtitle checks, " << failures << " failures\n";
   return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

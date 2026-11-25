@@ -124,6 +124,7 @@ public:
   void* stream; // pointer or integer, identifying stream playing. if it changes stream changed
   int changes; // remembered counter from stream to track codec changes
   bool inited;
+  bool demuxDisabled; // disabled in the demuxer since it was opened
   unsigned int packets;
   IDVDStreamPlayer::ESyncState syncState;
   double starttime;
@@ -161,6 +162,7 @@ public:
     stream = NULL;
     changes = 0;
     inited = false;
+    demuxDisabled = false;
     packets = 0;
     syncState = IDVDStreamPlayer::SYNC_STARTING;
     starttime = DVD_NOPTS_VALUE;
@@ -447,6 +449,7 @@ protected:
   void SetEnableStream(CCurrentStream& current, bool isEnabled);
 
   void SetSubtitleVisibleInternal(bool bVisible);
+  void ReopenSubtitleStream(int64_t demuxerId, int id, int source);
 
   enum SubtitleChange
   {
