@@ -52,10 +52,8 @@ struct CEvent {
  bool signaled=false;
  void Set(){signaled=true;}
  void Reset(){signaled=false;}
- bool Wait(){++parkedWaits;return false;}
- int parkedWaits=0;
  bool Wait(std::chrono::milliseconds duration){
-  if(signaled){signaled=false;return true;}
+  if(signaled)return true;
   nowMs+=duration.count();return false;
  }
 };
@@ -93,7 +91,6 @@ HARNESS = r'''
 using namespace XFILE;
 @STRATEGIES@
 @RATE@;
-@SEEK_TARGET@
 constexpr int64_t MiB=1024*1024, CAPACITY=15*MiB/2;
 struct LocalSource {
  FILE* file=std::tmpfile();
@@ -107,7 +104,7 @@ struct LocalSource {
  ssize_t Read(char* data,size_t size){
   // 59 x 128 KiB reaches the production near-full test for a 7.5 MiB buffer.
   ++reads;nowMs=epoch+reads*fillMs/59;
-  return std::fread(data,1,std::min<int64_t>(size,length-ftello(file)),file);
+  return std::fread(data,1,size,file);
  }
  int IoControl(EIoControl,void*){return 1;}
 };
@@ -115,7 +112,7 @@ struct CFileCache {
  std::unique_ptr<CCacheStrategy> m_pCache=std::make_unique<CDoubleCache>(new CCircularCache(CAPACITY,5*MiB/2));
  LocalSource m_source;
  std::string m_sourcePath="local fixture";
- bool m_bStop=false,m_bFilling=true,m_readError=false,m_seekFromEnd=false;
+ bool m_bStop=false,m_bFilling=true;
  unsigned m_chunkSize=128*1024;
  int64_t m_forwardCacheSize=CAPACITY,m_maxForward=CAPACITY,m_fileSize=512*MiB;
  int64_t m_writePos=0,m_readPos=0,m_seekPos=0,m_nSeekResult=0;
@@ -126,9 +123,9 @@ struct CFileCache {
  std::chrono::milliseconds m_processWait{30};
  std::function<void()> m_readWaitCallback;
  std::function<bool()> m_readInterrupt;
-
+ int eofWaits=0;
  CFileCache(){assert(m_pCache->Open()==CACHE_RC_OK);}
- int AbortableWait(CEvent& event){return event.Wait();}
+ int AbortableWait(CEvent&){++eofWaits;return 0;}
  void Process();
  int IoControl(EIoControl,void*);
 };
@@ -308,7 +305,7 @@ void eofControl(){
  nowMs=0;toasts=0;CFileCache cache;
  cache.m_source.length=2*int64_t(cache.m_chunkSize);
  cache.Process();
- assert(cache.m_seekEvent.parkedWaits==1&&cache.m_pCache->IsEndOfInput());
+ assert(cache.eofWaits==1&&cache.m_pCache->IsEndOfInput());
  assert(cache.m_writePos==cache.m_source.length&&cache.m_writeRateLowSpeed==0);
  char data[128*1024];int64_t bytes=0;int count;
  while((count=cache.m_pCache->ReadFromCache(data,sizeof(data)))>0)bytes+=count;
@@ -342,7 +339,6 @@ def generate(revision=None, mutant=None):
     parts = {
         'STRATEGIES': strategies[strategies.index('CCacheStrategy::~CCacheStrategy()'):strategies.index('CSimpleFileCache::CSimpleFileCache()')] + strategies[strategies.index('CDoubleCache::CDoubleCache('):],
         'RATE': block(cache, 'class CWriteRate'),
-        'SEEK_TARGET': block(cache, 'int64_t SeekTarget(') if 'int64_t SeekTarget(' in cache else '',
         'PROCESS': block(cache, 'void CFileCache::Process()'),
         'IOCONTROL': block(cache, 'int CFileCache::IoControl('),
         'FULL': block(block(player, 'void CVideoPlayer::HandlePlaySpeed()'), 'if (m_caching == CACHESTATE_FULL)'),

@@ -60,16 +60,14 @@ namespace XFILE
 
   private:
     std::unique_ptr<CCacheStrategy> m_pCache;
-    std::atomic<int> m_seekPossible{0};
+    int m_seekPossible = 0;
     CFile m_source;
     std::string m_sourcePath;
     CEvent m_seekEvent;
     CEvent m_seekEnded;
-    int64_t m_nSeekResult = -1;
-    std::atomic<bool> m_readError{false};
+    int64_t m_nSeekResult = 0;
     int64_t m_seekPos = 0;
-    bool m_seekFromEnd = false;
-    std::atomic<int64_t> m_readPos{0};
+    int64_t m_readPos = 0;
     int64_t m_writePos = 0;
     unsigned m_chunkSize = 0;
     uint32_t m_writeRate = 0;
