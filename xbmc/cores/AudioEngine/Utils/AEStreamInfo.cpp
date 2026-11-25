@@ -1357,6 +1357,27 @@ static unsigned int AC3_SyncframeBytes(const uint8_t* data)
   }
 }
 
+// ETSI TS 102 366 E.2.8.5: only the final dependent sets the first compre bit.
+static bool EAC3_IsFinalDependent(const uint8_t* frame)
+{
+  return (frame[6] & 0x20) != 0;
+}
+
+static bool EAC3_MatchesPrimaryTiming(const uint8_t* primary, const uint8_t* dependent)
+{
+  const unsigned int bsid = primary[5] >> 3;
+  if (bsid > 10)
+    return (primary[4] >> 4) == (dependent[4] >> 4);
+
+  // An AC-3 core always covers six blocks. BSID 9/10 halve/quarter its rate.
+  const unsigned int rate = AC3FSCod[primary[4] >> 6] >> (bsid > 8 ? bsid - 8 : 0);
+  const unsigned int fscod = dependent[4] >> 6;
+  const unsigned int code = (dependent[4] >> 4) & 3;
+  if (fscod == 3)
+    return code != 3 && rate == (AC3FSCod[code] >> 1);
+  return code == 3 && rate == AC3FSCod[fscod];
+}
+
 bool CAEStreamParser::CanDefeatEAC3DialNorm(const uint8_t* data, unsigned int size)
 {
   m_eac3JOCSignaled = m_eac3JOCSignaled || m_info.m_hasAtmos;
@@ -1365,16 +1386,27 @@ bool CAEStreamParser::CanDefeatEAC3DialNorm(const uint8_t* data, unsigned int si
 
   unsigned int offset = 0;
   bool classified = true;
+  unsigned int expectedDependent = 0;
   while (size - offset >= 8)
   {
     const unsigned int frameBytes = AC3_SyncframeBytes(data + offset);
-    if (frameBytes == 0 || frameBytes > size - offset)
+    if (frameBytes < 8 || frameBytes > size - offset)
       return m_defeatEAC3AtmosDialNorm;
     if ((data[offset + 5] >> 3) > 10)
     {
       const EAC3AtmosStatus status = EAC3_ReadAtmosStatus(data + offset, frameBytes);
       if (status == EAC3AtmosStatus::Unknown)
         classified = false;
+      if ((data[offset + 2] >> 6) == 1)
+      {
+        const uint8_t* dependent = data + offset;
+        const unsigned int id = (dependent[2] >> 3) & 7;
+        // A missing or mismatched dependent can hide the JOC signal.
+        if (id != expectedDependent || !EAC3_MatchesPrimaryTiming(data, dependent) ||
+            (offset + frameBytes == size && !EAC3_IsFinalDependent(dependent)))
+          classified = false;
+        ++expectedDependent;
+      }
       if (status == EAC3AtmosStatus::Signaled)
       {
         m_eac3JOCSignaled = true;
@@ -1445,6 +1477,52 @@ void CAEStreamParser::ScanEAC3Objects(const uint8_t* data, unsigned int size)
               "giving up for this stream{}",
               m_eac3ScanAttempts, m_eac3IsJOC ? " (demuxer typed it Atmos)" : "");
   }
+}
+
+// TrySyncAC3 has identified the main frame. Collect its dependent substreams
+// into one output packet so its dialnorm decision and IEC burst cover the same
+// audio blocks. TS 103 420 section 8 places JOC in the last dependent.
+bool CAEStreamParser::TrySyncAC3Dependents(uint8_t* data, unsigned int size, bool resyncing)
+{
+  const unsigned int mainBytes = m_fsize;
+  if (size < mainBytes + 8)
+  {
+    m_needBytes = mainBytes + 8;
+    m_fsize = 0;
+    return true;
+  }
+
+  m_info.m_ac3FrameSize = mainBytes;
+  const uint8_t* dependent = data + mainBytes;
+  if (!TrySyncAC3(data + mainBytes, size - mainBytes, resyncing, true))
+    return false;
+
+  unsigned int packetBytes = mainBytes + m_fsize;
+  // Each programme can have D0 through D7. Only collect consecutive IDs with
+  // the same sample rate and block count, leaving the next syncword buffered.
+  for (unsigned int id = 1; id <= 7 && !EAC3_IsFinalDependent(dependent); ++id)
+  {
+    if (((dependent[2] >> 3) & 7u) != id - 1)
+      break;
+    if (size < packetBytes + 8)
+    {
+      // AddData must revisit this header before its split-payload fast path
+      // can release the packet.
+      m_needBytes = packetBytes + 8;
+      m_fsize = 0;
+      return true;
+    }
+    const uint8_t* next = data + packetBytes;
+    const unsigned int bytes = AC3_SyncframeBytes(next);
+    if (bytes < 8 || next[5] >> 3 < 11 || next[5] >> 3 > 16 ||
+        next[2] >> 3 != (8u | id) || (next[4] >> 4) != (dependent[4] >> 4))
+      break;
+    dependent = next;
+    packetBytes += bytes;
+  }
+  m_fsize = packetBytes;
+  m_info.m_ac3FrameSize = packetBytes;
+  return true;
 }
 
 bool CAEStreamParser::TrySyncAC3(uint8_t* data,
@@ -1521,29 +1599,16 @@ bool CAEStreamParser::TrySyncAC3(uint8_t* data,
     }
 
     // dont do extensive testing if we have not lost sync
-    if (m_info.m_type == CAEStreamInfo::STREAM_TYPE_AC3 && !resyncing)
+    const bool syncedAC3 =
+        m_hasSync && !resyncing && m_info.m_type == CAEStreamInfo::STREAM_TYPE_AC3;
+    if (syncedAC3 && !m_eac3Track)
       return true;
 
-    // this may be the main stream of EAC3
-    unsigned int fsizeMain = m_fsize;
-    unsigned int reqBytes = fsizeMain + 8;
-    if (size < reqBytes)
-    {
-      CLog::Log(LOGINFO, "CAEStreamParser::TrySyncAC3 - AC3 Not enough data for frame");
-      // not enough data to check for AC3 frame, request more
-      m_needBytes = reqBytes;
-      m_fsize = 0;
-      // no need to resync => return true
+    if (TrySyncAC3Dependents(data, size, resyncing))
       return true;
-    }
-    m_info.m_ac3FrameSize = fsizeMain;
-    if (TrySyncAC3(data + fsizeMain, size - fsizeMain, resyncing, true))
-    {
-      // concatenate the main and dependent frames
-      m_fsize += fsizeMain;
+    if (syncedAC3)
       return true;
-    }
-    
+
     unsigned int crc_size;
     // if we have enough data, validate the entire packet, else try to validate crc2 (5/8 of the packet)
     if (framesize <= size)
@@ -1617,30 +1682,8 @@ bool CAEStreamParser::TrySyncAC3(uint8_t* data,
       m_info.m_dialNorm = static_cast<int>(dialNormRaw) - 31;
     }
 
-    // EAC3 can have a dependent stream too
-    if (!wantEAC3dependent)
-    {
-      unsigned int fsizeMain = m_fsize;
-      unsigned int reqBytes = fsizeMain + 8;
-
-      if (size < reqBytes)
-      {
-        CLog::Log(LOGINFO, "CAEStreamParser::TrySyncAC3 - E-AC3 Not enough data for frame");
-        // not enough data to check for E-AC3 frame, request more
-        m_needBytes = reqBytes;
-        m_fsize = 0;
-        // no need to resync => return true
-        return true;
-      }
-
-      m_info.m_ac3FrameSize = fsizeMain;
-      if (TrySyncAC3(data + fsizeMain, size - fsizeMain, resyncing, true))
-      {
-        // concatenate the main and dependent frames
-        m_fsize += fsizeMain;
-        return true;
-      }
-    }
+    if (!wantEAC3dependent && TrySyncAC3Dependents(data, size, resyncing))
+      return true;
 
     if (m_info.m_type == CAEStreamInfo::STREAM_TYPE_EAC3 && m_hasSync && !resyncing)
       return true;

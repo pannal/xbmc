@@ -136,7 +136,6 @@ private:
   std::atomic<bool> m_defeatEAC3AtmosDialNorm{false};
   std::atomic<bool> m_defeatTrueHDDialNorm{false};
   std::atomic<bool> m_defeatDTSDialNorm{false};
-  bool m_isEAC3JOC{false};
 
   //============================================================================
   // Internal Clock A/V Sync

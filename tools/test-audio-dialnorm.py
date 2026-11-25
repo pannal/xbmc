@@ -40,11 +40,13 @@ Bytes ac3(unsigned dn, unsigned mode) {
   return f;
 }
 Bytes eac3(unsigned dn, unsigned type = 0, unsigned sub = 0, unsigned mode = 2) {
-  Bytes f(32, 0x55);
+  // Explicitly omit optional BSI and addbsi on these ordinary DD+ frames.
+  Bytes f(32, 0);
   f[0] = 0x0b; f[1] = 0x77;
   f[2] = (type << 6) | (sub << 3); f[3] = 15;
   f[4] = 0x30 | (mode << 1); f[5] = 16 << 3;
   bits(f, 45, 5, dn);
+  if (type == 1) bits(f, 50, 1, 1); // Final dependent, compr = 0.
   return f;
 }
 void metadata(const CAEStreamInfo& i, bool available, int original, int applied) {
@@ -76,8 +78,8 @@ Bytes truehd(CAEStreamParser& p, unsigned dn, bool atmos, unsigned extension) {
   return f;
 }
 int main() {
-  CAEStreamParser p;
   for (bool defeat : {false, true}) {
+    CAEStreamParser p;
     p.SetDefeatAC3DialNorm(defeat);
     for (unsigned mode = 0; mode < 8; ++mode) {
       for (unsigned dn : {0, 1, 27, 31}) {
@@ -108,6 +110,7 @@ int main() {
     packet(p, eac3(27, 0, 0, 0), CAEStreamInfo::STREAM_TYPE_EAC3);
     metadata(p.m_info, false, 0, 0);
   }
+  CAEStreamParser p;
   for (bool defeat : {false, true}) {
     p.SetDefeatTrueHDDialNorm(defeat);
     for (unsigned dn : {0, 1, 27, 31}) {

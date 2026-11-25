@@ -105,11 +105,11 @@ public:
   void SetDefeatEAC3AtmosDialNorm(bool value) { m_defeatEAC3AtmosDialNorm = value; }
   void SetEAC3Track(bool value) { m_eac3Track = value; }
   void SetDefeatDTSDialNorm(bool value) { m_defeatDTSDialNorm = value; }
-  //! \brief Tell the parser the demuxer typed this E-AC-3 track as DD+ Atmos.
-  //! Only a hint: the object scan is bounded on its own, so a stream this is
-  //! never set for still gets read, it just spends its budget doing so.
+  //! Begin a new track with the demuxer's DD+ Atmos hint. A seek uses Reset()
+  //! alone and keeps any JOC classification already learned for this track.
   void SetEAC3JOC(bool value)
   {
+    Reset();
     m_eac3IsJOC = value;
     m_eac3JOCSignaled = false;
     m_eac3DialNormSkipLogged = false;
@@ -206,6 +206,7 @@ private:
   bool CanDefeatEAC3DialNorm(const uint8_t* data, unsigned int size);
   void DefeatDTSDialNorm(uint8_t* data, unsigned int size);
   unsigned int DetectType(uint8_t *data, unsigned int size);
+  bool TrySyncAC3Dependents(uint8_t* data, unsigned int size, bool resyncing);
   bool TrySyncAC3(uint8_t *data, unsigned int size, bool resyncing, bool wantEAC3dependent);
   unsigned int SyncAC3(uint8_t *data, unsigned int size);
   unsigned int SyncDTS(uint8_t *data, unsigned int size);

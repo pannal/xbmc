@@ -8,6 +8,7 @@
 
 #include "cores/AudioEngine/Utils/AEStreamInfo.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -30,8 +31,11 @@ void FixTailCRC(std::vector<uint8_t>& frame)
 }
 
 // Header-only synthetic frames test classification and rewriting, not Atmos decoding.
-std::vector<uint8_t> EAC3Frame(bool joc, unsigned int streamType = 0,
-                             unsigned int additionalBytes = 2)
+std::vector<uint8_t> EAC3Frame(bool joc,
+                               unsigned int streamType = 0,
+                               unsigned int additionalBytes = 2,
+                               unsigned int substream = 0,
+                               bool finalDependent = true)
 {
   std::vector<uint8_t> frame(16, 0);
   unsigned int pos = 0;
@@ -42,7 +46,7 @@ std::vector<uint8_t> EAC3Frame(bool joc, unsigned int streamType = 0,
   };
   write(0x0b77, 16);
   write(streamType, 2);
-  write(0, 3);
+  write(substream, 3);
   write(7, 11); // 16-byte frame
   write(0, 2);
   write(3, 2);
@@ -50,7 +54,10 @@ std::vector<uint8_t> EAC3Frame(bool joc, unsigned int streamType = 0,
   write(1, 1);
   write(16, 5);
   write(20, 5);
-  write(0, 1);
+  const bool compre = streamType == 1 && finalDependent;
+  write(compre, 1);
+  if (compre)
+    write(0, 8);
   if (streamType == 1)
     write(0, 1);
   write(0, 1);
@@ -69,10 +76,12 @@ std::vector<uint8_t> AC3CoreFrame()
   std::vector<uint8_t> frame(128, 0);
   frame[0] = 0x0b;
   frame[1] = 0x77;
+  // CRC1 for bytes [2,80); the all-zero second region already has CRC2 zero.
+  frame[2] = 0xf2;
+  frame[3] = 0xaa;
   frame[5] = 8 << 3;
   frame[6] = 0xe1;
   frame[7] = 20 << 3;
-  FixTailCRC(frame);
   return frame;
 }
 
@@ -256,7 +265,10 @@ TEST(TestAEStreamParser, UntypedEac3TrackPreservesCoreBeforeALateJocDependent)
   parser.SetDefeatAC3DialNorm(true);
   const auto core = AC3CoreFrame();
   EXPECT_EQ(core, ParseFirstPacket(parser, core, core));
-  EXPECT_EQ(core, ParseFirstPacket(parser, EAC3Frame(true, 1)));
+  const auto dependent = EAC3Frame(true, 1);
+  auto complete = core;
+  complete.insert(complete.end(), dependent.begin(), dependent.end());
+  EXPECT_EQ(complete, ParseFirstPacket(parser, dependent));
 }
 
 TEST(TestAEStreamParser, ParsedJocProtectsSubsequentAc3CoreAfterSeek)
@@ -267,4 +279,70 @@ TEST(TestAEStreamParser, ParsedJocProtectsSubsequentAc3CoreAfterSeek)
   parser.Reset();
   const auto original = AC3CoreFrame();
   EXPECT_EQ(original, ParseFirstPacket(parser, original));
+}
+
+TEST(TestAEStreamParser, ClassifiesLastDependentBeforeEmittingFragmentedPresentation)
+{
+  for (const bool joc : {false, true})
+  {
+    CAEStreamParser parser;
+    parser.SetEAC3Track(true);
+    parser.SetDefeatAC3DialNorm(true);
+    auto packet = EAC3Frame(false);
+    const auto first = EAC3Frame(false, 1, 2, 0, false);
+    const auto last = EAC3Frame(joc, 1, 2, 1);
+    packet.insert(packet.end(), first.begin(), first.end());
+    packet.insert(packet.end(), last.begin(), last.end());
+
+    uint8_t* output = nullptr;
+    unsigned int size = 0;
+    for (size_t i = 0; i < packet.size(); ++i)
+    {
+      EXPECT_EQ(1, parser.AddData(&packet[i], 1, &output, &size));
+      if (i + 1 < packet.size())
+      {
+        EXPECT_EQ(0u, size);
+      }
+    }
+    std::unique_ptr<uint8_t[]> owner(output);
+    ASSERT_EQ(packet.size(), size);
+    const std::vector<uint8_t> result(output, output + size);
+    EXPECT_EQ(joc ? 20u : 31u, Dialnorm(result));
+    if (joc)
+    {
+      EXPECT_EQ(packet, result);
+    }
+    EXPECT_TRUE(std::equal(first.begin(), first.end(), result.begin() + 16));
+    EXPECT_TRUE(std::equal(last.begin(), last.end(), result.begin() + 32));
+  }
+}
+
+TEST(TestAEStreamParser, MissingFinalDependentPreservesPrimaryAndKeepsNextIndependent)
+{
+  CAEStreamParser parser;
+  parser.SetDefeatAC3DialNorm(true);
+  auto packet = EAC3Frame(false);
+  const auto dependent = EAC3Frame(false, 1, 2, 0, false);
+  packet.insert(packet.end(), dependent.begin(), dependent.end());
+  EXPECT_EQ(packet, ParseFirstPacket(parser, packet));
+  const auto next = ParseFirstPacket(parser, EAC3Frame(false));
+  ASSERT_EQ(16u, next.size());
+  EXPECT_EQ(31u, Dialnorm(next));
+}
+
+TEST(TestAEStreamParser, MalformedFirstDependentPreservesPrimary)
+{
+  const auto primary = EAC3Frame(false);
+  auto wrongID = EAC3Frame(false, 1, 2, 1);
+  auto wrongRate = EAC3Frame(false, 1);
+  wrongRate[4] |= 0x40; // 44.1 kHz dependent on a 48 kHz primary.
+  FixTailCRC(wrongRate);
+  for (const auto& dependent : {wrongID, wrongRate})
+  {
+    CAEStreamParser parser;
+    parser.SetDefeatAC3DialNorm(true);
+    auto packet = primary;
+    packet.insert(packet.end(), dependent.begin(), dependent.end());
+    EXPECT_EQ(packet, ParseFirstPacket(parser, packet));
+  }
 }
