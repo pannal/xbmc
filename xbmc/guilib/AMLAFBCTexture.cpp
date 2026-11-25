@@ -304,17 +304,16 @@ bool CAMLAFBCTexture::HasConversionResources(EGLContext context)
   return conversionResources.count(context) != 0;
 }
 
-void CAMLAFBCTexture::ReleaseConversionResources(EGLContext context, EGLContext sharedContext)
+void CAMLAFBCTexture::ReleaseConversionResources(EGLContext context)
 {
   std::lock_guard<std::mutex> lock(conversionLock);
   const auto it = conversionResources.find(context);
   if (it == conversionResources.end())
     return;
-  const EGLContext current = eglGetCurrentContext();
-  if (current != EGL_NO_CONTEXT && current == context)
+  // A failed/poisoned EGL bind must never delete names in another context.
+  // In that case EGL context/share-group teardown reclaims the GL objects.
+  if (context != EGL_NO_CONTEXT && eglGetCurrentContext() == context)
     it->second.Delete();
-  else if (current != EGL_NO_CONTEXT && current == sharedContext)
-    glDeleteProgram(it->second.program);
   conversionResources.erase(it);
 }
 

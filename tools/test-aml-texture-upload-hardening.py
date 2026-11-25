@@ -380,15 +380,13 @@ std::thread::id releaseThread;''')
     prelude=replace(prelude,'using CCriticalSection = std::recursive_mutex;',MUTEX)
     prelude=replace(prelude,'  static void LogF(int level, const char*, Args&&...)\n  {',
         '  static void LogF(int level, const char*, Args&&...)\n  {\n    if (level==LOGWARNING && fixture::throwWarning) throw std::bad_alloc();')
-    classes=donor.upload_classes(files[donor.EGL_SOURCE], files[donor.EGL_HEADER])
+    classes=donor.upload_classes(files[donor.EGL_SOURCE])
     if 'void CTexture::LoadToGPUAsync(const std::atomic_bool*' in files[donor.TEXTURE_SOURCE]:
         classes=replace(classes,'  void LoadToGPUAsync();',
                         '  void LoadToGPUAsync(const std::atomic_bool* cancelled=nullptr);')
-    egl=files[donor.EGL_SOURCE]
-    pbuffer_type='EGLSurface' if 'EGLSurface CEGLContextUtils::CreateTextureUploadPbuffer()' in egl else 'bool'
-    classes=replace(classes,'  bool HasTextureUploadContext() const;',
-                    '  bool HasTextureUploadContext() const;\n  void CloseTextureUploadContext();\n'
-                    f'  {pbuffer_type} CreateTextureUploadPbuffer();')
+    classes=replace(classes,'  bool HasTextureUploadContext() const;',r'''  bool HasTextureUploadContext() const;
+  void CloseTextureUploadContext();
+  bool CreateTextureUploadPbuffer();''')
     classes=replace(classes,'  mutable CCriticalSection m_textureUploadLock;',r'''  mutable CCriticalSection m_textureUploadLock;
   bool m_textureUploadDisabled=false,m_textureUploadPoisoned=false;
   std::atomic<bool> m_textureUploadClosing{false};
@@ -416,7 +414,7 @@ std::thread::id releaseThread;''')
   fixture::releaseThread={};''')
     attributes=re.search(r'class CEGLAttributesVec\n\{[\s\S]*?\n\};\n',files[donor.EGL_HEADER]).group()
     signatures=donor.EGL_METHODS+donor.FIXED_EGL_METHODS+[
-        f'{pbuffer_type} CEGLContextUtils::CreateTextureUploadPbuffer()',
+        'bool CEGLContextUtils::CreateTextureUploadPbuffer()',
         'void CEGLContextUtils::CloseTextureUploadContext()',
         'void CEGLContextUtils::DestroySurface()']
     parts=[prelude,EXTRA_EGL,attributes,classes,PUBLICATION_CLASSES]
@@ -484,7 +482,7 @@ def main():
                 'exception-cleanup':(donor.TEXTURE_SOURCE,'      if (bound)\n','      if (false && bound)\n'),
                 'failed-publication':(PUBLICATION,'if (success)\n      {\n        loader->m_texture->SetBackgroundTexture(','if (true)\n      {\n        loader->m_texture->SetBackgroundTexture('),
                 'destroy-under-callback-lock':(PUBLICATION,'// Failed jobs retain their texture until job deletion outside this lock.','loader->m_texture.reset();\n      // Failed jobs retain their texture until job deletion outside this lock.'),
-                'retry-per-texture':(donor.EGL_SOURCE,'      m_textureUploadDisabled = true;\n      CLog::LogF(LOGWARNING, "Disabling unavailable','      m_textureUploadDisabled = false;\n      CLog::LogF(LOGWARNING, "Disabling unavailable'),
+                'retry-per-texture':(donor.EGL_SOURCE,'    m_textureUploadDisabled = true;\n    CLog::LogF(LOGWARNING, "Disabling unavailable','    m_textureUploadDisabled = false;\n    CLog::LogF(LOGWARNING, "Disabling unavailable'),
                 'wrong-owner':(donor.EGL_SOURCE,'  if (m_currentUploadContext != this)\n    return false;','  if (false && m_currentUploadContext != this)\n    return false;'),
                 'release-fallback':(donor.EGL_SOURCE,'released = eglReleaseThread() == EGL_TRUE;','released = false;'),
                 'pbuffer-config':(donor.EGL_SOURCE,'!(surfaceTypes & EGL_PBUFFER_BIT)','false'),

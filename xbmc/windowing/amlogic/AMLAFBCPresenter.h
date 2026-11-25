@@ -15,7 +15,6 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
-#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -44,9 +43,7 @@ public:
       "/sys/module/fb/parameters/afbc_scanout_queued_flips";
   static bool KernelQueuesFlips(const char* path = QUEUED_FLIPS_PARAMETER);
 
-  // Invoked on the render or presenter thread, sometimes with m_mutex held.
-  // The callback may only publish upload eligibility and must not block.
-  explicit CAMLAFBCPresenter(std::function<void(bool)> setUploadEligibility = {});
+  CAMLAFBCPresenter() = default;
   ~CAMLAFBCPresenter() { Destroy(false); }
   CAMLAFBCPresenter(const CAMLAFBCPresenter&) = delete;
   CAMLAFBCPresenter& operator=(const CAMLAFBCPresenter&) = delete;
@@ -115,9 +112,6 @@ private:
   // Reports the frames of jobs that will not be flipped. Caller holds m_mutex.
   void DropJobs();
   void EndFrame();
-  void SetUploadEligibility(bool eligible) const;
-
-  const std::function<void(bool)> m_setUploadEligibility;
 
   struct Buffer
   {
