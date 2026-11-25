@@ -255,8 +255,15 @@ void CAEStreamParser::GetPacket(uint8_t** buffer, unsigned int* bufferSize)
 {
   // Every path to a finished packet comes through here, and only here is the
   // whole of it known to be in the buffer
+  // An isolated AC3 core on an EAC3 track cannot rule out a later JOC dependent.
+  bool canDefeatAC3 = m_defeatEAC3AtmosDialNorm ||
+                     (!m_eac3IsJOC && !m_eac3JOCSignaled &&
+                      !(m_eac3Track && m_info.m_type == CAEStreamInfo::STREAM_TYPE_AC3));
   if (m_info.m_type == CAEStreamInfo::STREAM_TYPE_EAC3)
+  {
     ScanEAC3Objects(m_buffer, m_fsize);
+    canDefeatAC3 = CanDefeatEAC3DialNorm(m_buffer, m_fsize);
+  }
 
   // if the caller wants the packet
   if (buffer)
@@ -278,7 +285,17 @@ void CAEStreamParser::GetPacket(uint8_t** buffer, unsigned int* bufferSize)
         (m_info.m_type == CAEStreamInfo::STREAM_TYPE_AC3 ||
          m_info.m_type == CAEStreamInfo::STREAM_TYPE_EAC3))
     {
-      DefeatAC3DialNorm(m_buffer, size);
+      if (canDefeatAC3)
+      {
+        DefeatAC3DialNorm(m_buffer, size);
+      }
+      else if (!m_eac3DialNormSkipLogged)
+      {
+        CLog::Log(LOGINFO,
+                  "CAEStreamParser::GetPacket - Skipping AC3/E-AC3 DialNorm defeat: "
+                  "Atmos detected or BSI unclassified; original metadata retained");
+        m_eac3DialNormSkipLogged = true;
+      }
     }
 
     // Describe the bytes actually emitted, rather than the requested setting.
@@ -863,6 +880,117 @@ void CAEStreamParser::DefeatDTSDialNorm(uint8_t* data, unsigned int size)
   eb[headerSize - 1] = crc & 0xFF;
 }
 
+enum class EAC3AtmosStatus
+{
+  Unknown,
+  NotSignaled,
+  Signaled
+};
+
+// Walk BSI, not coded audio: addbsi's extension type A identifies JOC independently
+// of the demux profile and the bounded object-count scan.
+static EAC3AtmosStatus EAC3_ReadAtmosStatus(const uint8_t* data, unsigned int size)
+{
+  if (size < 8 || (data[5] >> 3) < 11 || (data[5] >> 3) > 16)
+    return EAC3AtmosStatus::Unknown;
+
+  const unsigned int streamType = data[2] >> 6;
+  if (streamType == 3)
+    return EAC3AtmosStatus::Unknown;
+
+  AudioBitReader br{data, 32, size * 8};
+  const unsigned int fscod = br.Read(2);
+  const unsigned int rateCode = br.Read(2);
+  if (fscod == 3 && rateCode == 3)
+    return EAC3AtmosStatus::Unknown;
+  const unsigned int blocks = fscod == 3 ? 6 : AC3BlkCod[rateCode];
+  const unsigned int acmod = br.Read(3);
+  const bool lfe = br.Read(1) != 0;
+  br.Skip(5); // bsid
+  const unsigned int programs = acmod == 0 ? 2 : 1;
+  for (unsigned int program = 0; program < programs; ++program)
+  {
+    br.Skip(5); // dialnorm
+    if (br.Read(1))
+      br.Skip(8); // compr
+  }
+  if (streamType == 1 && br.Read(1))
+    br.Skip(16);
+  if (br.Read(1)) // mixmdate
+  {
+    if (acmod > 2)
+    {
+      br.Skip(2);
+      if (acmod & 1)
+        br.Skip(6);
+      if (acmod & 4)
+        br.Skip(6);
+    }
+    if (lfe && br.Read(1))
+      br.Skip(5);
+    if (streamType == 0)
+    {
+      for (unsigned int program = 0; program < programs; ++program)
+      {
+        if (br.Read(1))
+          br.Skip(6);
+      }
+      if (br.Read(1))
+        br.Skip(6);
+      const unsigned int mixdef = br.Read(2);
+      if (mixdef == 1)
+        br.Skip(5);
+      else if (mixdef == 2)
+        br.Skip(12);
+      else if (mixdef == 3)
+        br.Skip((br.Read(5) + 2) * 8);
+      if (acmod < 2)
+      {
+        for (unsigned int program = 0; program < programs; ++program)
+        {
+          if (br.Read(1))
+            br.Skip(14);
+        }
+      }
+      if (br.Read(1))
+      {
+        for (unsigned int block = 0; block < blocks; ++block)
+        {
+          if (blocks == 1 || br.Read(1))
+            br.Skip(5);
+        }
+      }
+    }
+  }
+  if (br.Read(1)) // infomdate
+  {
+    br.Skip(5);
+    if (acmod == 2)
+      br.Skip(4);
+    if (acmod >= 6)
+      br.Skip(2);
+    for (unsigned int program = 0; program < programs; ++program)
+    {
+      if (br.Read(1))
+        br.Skip(8);
+    }
+    if (fscod != 3)
+      br.Skip(1);
+  }
+  if (streamType == 0 && blocks != 6)
+    br.Skip(1);
+  if (streamType == 2 && (blocks == 6 || br.Read(1)))
+    br.Skip(6);
+  if (!br.Read(1)) // addbsie
+    return br.ok ? EAC3AtmosStatus::NotSignaled : EAC3AtmosStatus::Unknown;
+  const unsigned int bytes = br.Read(6) + 1;
+  const unsigned int flags = br.Read(8);
+  br.Skip((bytes - 1) * 8);
+  if (!br.ok || ((flags & 1) && bytes < 2))
+    return EAC3AtmosStatus::Unknown;
+  return flags & 1 ? EAC3AtmosStatus::Signaled : EAC3AtmosStatus::NotSignaled;
+}
+
 /* Channels each bit of bed_channel_assignment_mask stands for, and the object
    counts of the intermediate spatial formats. Both tables are transcribed from
    harletty-bridge (eac3/src/eac3dec/metadata.rs STANDARD_BED_CHANNELS and
@@ -1229,6 +1357,35 @@ static unsigned int AC3_SyncframeBytes(const uint8_t* data)
   }
 }
 
+bool CAEStreamParser::CanDefeatEAC3DialNorm(const uint8_t* data, unsigned int size)
+{
+  m_eac3JOCSignaled = m_eac3JOCSignaled || m_info.m_hasAtmos;
+  if (m_eac3IsJOC || m_eac3JOCSignaled)
+    return m_defeatEAC3AtmosDialNorm;
+
+  unsigned int offset = 0;
+  bool classified = true;
+  while (size - offset >= 8)
+  {
+    const unsigned int frameBytes = AC3_SyncframeBytes(data + offset);
+    if (frameBytes == 0 || frameBytes > size - offset)
+      return m_defeatEAC3AtmosDialNorm;
+    if ((data[offset + 5] >> 3) > 10)
+    {
+      const EAC3AtmosStatus status = EAC3_ReadAtmosStatus(data + offset, frameBytes);
+      if (status == EAC3AtmosStatus::Unknown)
+        classified = false;
+      if (status == EAC3AtmosStatus::Signaled)
+      {
+        m_eac3JOCSignaled = true;
+        return m_defeatEAC3AtmosDialNorm;
+      }
+    }
+    offset += frameBytes;
+  }
+  return m_defeatEAC3AtmosDialNorm || (classified && offset == size);
+}
+
 /* DD+ Atmos object metadata is not confined to the dependent substream:
    harletty's own Dolby Atmos regression frame carries its OAMD in an
    independent one (eac3/tests/data/short_packet_independent_joc.bin, whose
@@ -1504,7 +1661,7 @@ bool CAEStreamParser::TrySyncAC3(uint8_t* data,
               "CAEStreamParser::TrySyncAC3 - E-AC3 stream detected ({} channels, {}Hz, {}-bit, "
               "dialnorm: {} dB{})",
               m_info.m_channels, m_info.m_sampleRate, m_info.m_bitDepth,
-              m_info.m_dialNorm, m_defeatAC3DialNorm ? ", defeat enabled" : "");
+              m_info.m_dialNorm, m_defeatAC3DialNorm ? ", defeat requested" : "");
 
     return true;
   }
