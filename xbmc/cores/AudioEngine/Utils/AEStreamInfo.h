@@ -102,11 +102,18 @@ public:
   void SetCoreOnly(bool value) { m_coreOnly = value; }
   void SetDefeatTrueHDDialNorm(bool value) { m_defeatTrueHDDialNorm = value; }
   void SetDefeatAC3DialNorm(bool value) { m_defeatAC3DialNorm = value; }
+  void SetDefeatEAC3AtmosDialNorm(bool value) { m_defeatEAC3AtmosDialNorm = value; }
+  void SetEAC3Track(bool value) { m_eac3Track = value; }
   void SetDefeatDTSDialNorm(bool value) { m_defeatDTSDialNorm = value; }
   //! \brief Tell the parser the demuxer typed this E-AC-3 track as DD+ Atmos.
   //! Only a hint: the object scan is bounded on its own, so a stream this is
   //! never set for still gets read, it just spends its budget doing so.
-  void SetEAC3JOC(bool value) { m_eac3IsJOC = value; }
+  void SetEAC3JOC(bool value)
+  {
+    m_eac3IsJOC = value;
+    m_eac3JOCSignaled = false;
+    m_eac3DialNormSkipLogged = false;
+  }
   unsigned int IsValid() const { return m_hasSync; }
   unsigned int GetSampleRate() const { return m_info.m_sampleRate; }
   unsigned int GetChannels() const { return m_info.m_channels; }
@@ -137,12 +144,17 @@ private:
   bool m_coreOnly = false;
   bool m_defeatTrueHDDialNorm = false;
   bool m_defeatAC3DialNorm = false;
+  bool m_defeatEAC3AtmosDialNorm = false;
   bool m_defeatDTSDialNorm = false;
   /* E-AC-3 JOC object metadata is looked for in every E-AC-3 syncframe of a
      packet as GetPacket() completes it, and latched: once found, or once the
      budget of packets is spent, the scan stops for the rest of the stream. A
      seek re-arms both through Reset(), which also forgets what was found. */
   bool m_eac3IsJOC = false;
+  bool m_eac3Track = false;
+  // Track classification survives seeks; SetEAC3JOC starts a new track.
+  bool m_eac3JOCSignaled = false;
+  bool m_eac3DialNormSkipLogged = false;
   bool m_eac3ObjectsLatched = false;
   unsigned int m_eac3ScanAttempts = 0;
   /* How long to keep looking. The larger budget applies when the demuxer typed
@@ -191,6 +203,7 @@ private:
   void GetPacket(uint8_t **buffer, unsigned int *bufferSize);
   void ScanEAC3Objects(const uint8_t* data, unsigned int size);
   void DefeatAC3DialNorm(uint8_t* data, unsigned int size);
+  bool CanDefeatEAC3DialNorm(const uint8_t* data, unsigned int size);
   void DefeatDTSDialNorm(uint8_t* data, unsigned int size);
   unsigned int DetectType(uint8_t *data, unsigned int size);
   bool TrySyncAC3(uint8_t *data, unsigned int size, bool resyncing, bool wantEAC3dependent);

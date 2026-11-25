@@ -141,6 +141,9 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
   UpdateLavModeSettings();
 
   m_parser.SetCoreOnly(false);
+  m_isEAC3JOC = false;
+  m_parser.SetDefeatEAC3AtmosDialNorm(m_defeatEAC3AtmosDialNorm.load());
+  m_parser.SetEAC3Track(m_format.m_streamInfo.m_type == CAEStreamInfo::STREAM_TYPE_EAC3);
 
   // The track's codec family is fixed by the demuxer - it never legitimately
   // changes mid-stream (genuine codec changes arrive as a demuxer stream
@@ -175,6 +178,7 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
   {
     case CAEStreamInfo::STREAM_TYPE_AC3:
       m_codecName = "pt-ac3";
+      m_parser.SetEAC3JOC(false);
       if (m_lavStyleSyncEnabled)
         m_jitterThreshold = JITTER_THRESHOLD_DEFAULT;
 
@@ -186,10 +190,10 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
       if (m_lavStyleSyncEnabled)
         m_jitterThreshold = JITTER_THRESHOLD_DEFAULT;
 
-      m_isEAC3JOC = (hints.profile == AV_PROFILE_EAC3_DDP_ATMOS);
+      m_isEAC3JOC = hints.profile == AV_PROFILE_EAC3_DDP_ATMOS;
       m_parser.SetEAC3JOC(m_isEAC3JOC);
-      if (!m_isEAC3JOC || m_defeatEAC3AtmosDialNorm.load())
-        m_parser.SetDefeatAC3DialNorm(m_defeatAC3DialNorm.load());
+      m_parser.SetDefeatAC3DialNorm(
+          m_defeatAC3DialNorm.load() && (!m_isEAC3JOC || m_defeatEAC3AtmosDialNorm.load()));
       break;
 
     case CAEStreamInfo::STREAM_TYPE_DTSHD_MA:
@@ -286,10 +290,10 @@ void CDVDAudioCodecPassthrough::Dispose()
 bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
 {
   // Apply cached values (updated by settings callbacks) without per-packet settings lookups.
-  // Skip E-AC-3 dialnorm defeat for JOC/Atmos unless explicitly overridden —
-  // modifying BSI dialnorm breaks JOC rendering on receivers.
-  m_parser.SetDefeatAC3DialNorm(
-    m_defeatAC3DialNorm.load() && (!m_isEAC3JOC || m_defeatEAC3AtmosDialNorm.load()));
+  // Preserve Atmos unless the existing warning-labelled override is explicitly enabled.
+  const bool defeatEAC3Atmos = m_defeatEAC3AtmosDialNorm.load();
+  m_parser.SetDefeatEAC3AtmosDialNorm(defeatEAC3Atmos);
+  m_parser.SetDefeatAC3DialNorm(m_defeatAC3DialNorm.load() && (!m_isEAC3JOC || defeatEAC3Atmos));
   m_parser.SetDefeatTrueHDDialNorm(m_defeatTrueHDDialNorm.load());
   m_parser.SetDefeatDTSDialNorm(m_defeatDTSDialNorm.load());
 
