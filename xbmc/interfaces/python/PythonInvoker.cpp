@@ -612,6 +612,10 @@ void CPythonInvoker::onExecutionDone()
 
     PyEval_RestoreThread(m_threadState);
 
+    // The script has finished. A SystemExit queued by stop() would interrupt
+    // Python's threading shutdown callbacks during Py_EndInterpreter().
+    PyThreadState_SetAsyncExc(m_threadState->thread_id, nullptr);
+
     onDeinitialization();
 
     // run the gc before finishing
