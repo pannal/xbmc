@@ -214,8 +214,12 @@ int CAMLAFBCPresenter::FreeBuffer() const
   return -1;
 }
 
-bool CAMLAFBCPresenter::BeginFrame(const std::string& framebuffer, int width, int height, int depthBits,
-                                   int stencilBits)
+bool CAMLAFBCPresenter::BeginFrame(const std::string& framebuffer,
+                                   int width,
+                                   int height,
+                                   int depthBits,
+                                   int stencilBits,
+                                   bool allowThirdBuffer)
 {
   if (m_target >= 0)
     BeginLinearFrame(); // the last frame was neither presented nor abandoned
@@ -258,7 +262,7 @@ bool CAMLAFBCPresenter::BeginFrame(const std::string& framebuffer, int width, in
     const auto now = std::chrono::steady_clock::now();
     if (now < m_retryAt)
       return false;
-    if (!Create(framebuffer, width, height, depthBits, stencilBits))
+    if (!Create(framebuffer, width, height, depthBits, stencilBits, allowThirdBuffer))
     {
       Destroy(true);
       if (m_rejection.permanent || ++m_createFailures > MAX_RETRIES)

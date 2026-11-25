@@ -230,6 +230,7 @@ private:
   // idle.
   void TakeAFBCOutcome();
   CAMLAFBCPresenter m_afbcPresenter;
+  bool m_afbcAllowThirdBuffer{true}; // Read once when the window system starts.
   bool m_afbcFrame = false; // this frame was begun in a display buffer
   // Frames handed over, not yet known to be on screen or lost: what their
   // presentation applies once they are. At most one per display buffer.

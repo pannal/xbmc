@@ -286,6 +286,9 @@ bool CWinSystemAmlogicGLESContext::InitWindowSystem()
     return false;
   }
 
+  m_afbcAllowThirdBuffer = !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+      CSettings::SETTING_COREELEC_AMLOGIC_AFBC_TWO_BUFFERS);
+
   if (m_framebuffer_name == "fb0")
     StartVncGuiListener();
 
@@ -1229,7 +1232,8 @@ void CWinSystemAmlogicGLESContext::BeginAFBCScanoutFrame()
     EGLint depth = 0, stencil = 0;
     eglGetConfigAttrib(m_pGLContext.GetEGLDisplay(), m_pGLContext.GetEGLConfig(), EGL_DEPTH_SIZE, &depth);
     eglGetConfigAttrib(m_pGLContext.GetEGLDisplay(), m_pGLContext.GetEGLConfig(), EGL_STENCIL_SIZE, &stencil);
-    m_afbcFrame = m_afbcPresenter.BeginFrame("/dev/" + m_framebuffer_name, m_nWidth, m_nHeight, depth, stencil);
+    m_afbcFrame = m_afbcPresenter.BeginFrame("/dev/" + m_framebuffer_name, m_nWidth, m_nHeight,
+                                           depth, stencil, m_afbcAllowThirdBuffer);
   }
   if (!m_afbcFrame)
     m_afbcPresenter.BeginLinearFrame();

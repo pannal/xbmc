@@ -294,7 +294,8 @@ int MockIoctl(int fd, unsigned long request, ...)
 }
 
 void RunCase(const char* parameter, Failure failure, int failIndex, bool replacementAllocation,
-             bool replacementSession, unsigned int expectedBuffers, int expectedSessions)
+             bool replacementSession, unsigned int expectedBuffers, int expectedSessions,
+             bool allowThirdBuffer = true)
 {
   fixture.AssertClean();
   fixture = Fixture{};
@@ -305,7 +306,8 @@ void RunCase(const char* parameter, Failure failure, int failIndex, bool replace
   {
     CAMLAFBCPresenter presenter;
     presenter.SetQueuedFlipsParameter(parameter);
-    assert(presenter.BeginFrame("/mock/fb0", 3840, 2160, 24, 8) == (expectedBuffers > 0));
+    assert(presenter.BeginFrame("/mock/fb0", 3840, 2160, 24, 8, allowThirdBuffer) ==
+           (expectedBuffers > 0));
     assert(presenter.Buffers() == expectedBuffers);
     assert(fixture.LiveAllocations() == expectedBuffers);
     assert(fixture.sessionsOpened == expectedSessions);
@@ -317,13 +319,13 @@ void RunCase(const char* parameter, Failure failure, int failIndex, bool replace
     {
       assert(CFrameBufferObject::GetDefaultFramebuffer() != 0);
       presenter.BeginLinearFrame();
-      assert(presenter.BeginFrame("/mock/fb0", 3840, 2160, 24, 8));
+      assert(presenter.BeginFrame("/mock/fb0", 3840, 2160, 24, 8, allowThirdBuffer));
       assert(fixture.sessionsOpened == expectedSessions);
     }
     else
     {
       assert(!presenter.Failed()); // transient creation failures retain their retry policy
-      assert(!presenter.BeginFrame("/mock/fb0", 3840, 2160, 24, 8));
+      assert(!presenter.BeginFrame("/mock/fb0", 3840, 2160, 24, 8, allowThirdBuffer));
       assert(fixture.sessionsOpened == expectedSessions); // backoff prevents an immediate retry
     }
     presenter.Destroy(true);
@@ -336,6 +338,7 @@ int main(int argc, char** argv)
 {
   assert(argc == 4);
   RunCase(argv[1], Failure::NONE, 2, false, false, 3, 1);
+  RunCase(argv[1], Failure::NONE, 2, false, false, 2, 1, false); // forced two on a queued-flip kernel
   RunCase(argv[2], Failure::NONE, 2, false, false, 2, 1);
   RunCase(argv[3], Failure::NONE, 2, false, false, 2, 1);
   RunCase(argv[1], Failure::ALLOCATE, 2, false, false, 2, 1);
@@ -393,6 +396,9 @@ def main():
     run(source, header)
     if args.negative_controls:
         controls = [
+            ('explicit two-buffer preference ignored',
+             'const unsigned int wanted = queued && allowThirdBuffer ? MAX_BUFFERS : 2;',
+             'const unsigned int wanted = (queued || allowThirdBuffer) && queued ? MAX_BUFFERS : 2;'),
             ('session ownership retained', '    close(m_session);', '    (void)m_session;'),
             ('exported ownership retained', '      close(buffer.fd);', '      (void)buffer.fd;'),
             ('import ownership retained', '    buffer.import.Release();', '    (void)buffer.import;'),

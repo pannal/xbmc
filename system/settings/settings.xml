@@ -3171,6 +3171,12 @@
           </dependencies>
           <control type="toggle" />
         </setting>
+        <setting id="coreelec.amlogic.afbcscanout.twobuffers" type="boolean" label="60669" help="60670">
+          <requirement>HAVE_G12B</requirement>
+          <level>2</level>
+          <default>false</default>
+          <control type="toggle" />
+        </setting>
         <setting id="coreelec.amlogic.limitcd" type="integer" parent="videoscreen.screen" label="14286" help="14287">
           <level>3</level>
           <default>0</default> <!-- Auto -->
