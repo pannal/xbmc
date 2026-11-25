@@ -4428,6 +4428,8 @@ void CVideoPlayer::HandleMessages()
           ReopenSubtitleStream(st.demuxerId, st.id, st.source);
         }
       }
+      m_processInfo->GetVideoSettingsLocked().SetSubtitleStream(pMsg2->GetStreamId());
+      NotifySubtitleUpdate(SubtitleChange::FLAG_STREAMINFO_CHANGE);
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SET_SUBTITLESTREAM_VISIBLE))
     {
@@ -4605,11 +4607,21 @@ void CVideoPlayer::HandleMessages()
     }
     else if (pMsg->IsType(CDVDMsg::SUBTITLE_ADDFILE))
     {
-      int id = AddSubtitleFile(std::static_pointer_cast<CDVDMsgType<std::string>>(pMsg)->m_value);
-      if (id >= 0)
+      const int index =
+          AddSubtitleFile(std::static_pointer_cast<CDVDMsgType<std::string>>(pMsg)->m_value);
+      if (index >= 0)
       {
-        SetSubtitle(id);
-        SetSubtitleVisibleInternal(true);
+        // Select the file before a queued audio change can adapt the previous forced subtitle.
+        const SelectionStream& stream = m_SelectionStreams.Get(STREAM_SUBTITLE, index);
+        const auto source = STREAM_SOURCE_MASK(stream.source);
+        if (stream.type_index == index &&
+            (source == STREAM_SOURCE_TEXT || source == STREAM_SOURCE_DEMUX_SUB) &&
+            ReopenSubtitleStream(stream.demuxerId, stream.id, stream.source))
+        {
+          m_processInfo->GetVideoSettingsLocked().SetSubtitleStream(index);
+          SetSubtitleVisibleInternal(true);
+          NotifySubtitleUpdate(SubtitleChange::FLAG_STREAMINFO_CHANGE);
+        }
       }
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_SYNCHRONIZE))
@@ -5191,14 +5203,14 @@ void CVideoPlayer::SetSubtitleVisibleInternal(bool bVisible)
   CServiceBroker::GetDataCacheCore().SignalSubtitleInfoChange();
 }
 
-void CVideoPlayer::ReopenSubtitleStream(int64_t demuxerId, int id, int source)
+bool CVideoPlayer::ReopenSubtitleStream(int64_t demuxerId, int id, int source)
 {
   CloseStream(m_CurrentSubtitle, false);
   if (!OpenStream(m_CurrentSubtitle, demuxerId, id, source))
   {
     // The track can disappear while hidden. Publish the cleared stream index.
     UpdateContentState();
-    return;
+    return false;
   }
 
   // For embedded subtitles the demuxer is ahead of playback (AV buffers
@@ -5229,6 +5241,7 @@ void CVideoPlayer::ReopenSubtitleStream(int64_t demuxerId, int id, int source)
     m_messenger.PutIfNoMessages(std::make_shared<CDVDMsgPlayerSeek>(mode),
                                 {CDVDMsg::PLAYER_SEEK, CDVDMsg::PLAYER_SEEK_CHAPTER});
   }
+  return true;
 }
 
 void CVideoPlayer::SetSubtitleVerticalPosition(int value, bool save)
@@ -7837,8 +7850,6 @@ void CVideoPlayer::GetSubtitleStreamInfo(int index, SubtitleStreamInfo& info) co
 void CVideoPlayer::SetSubtitle(int iStream)
 {
   m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSubtitleStream>(iStream));
-  m_processInfo->GetVideoSettingsLocked().SetSubtitleStream(iStream);
-  NotifySubtitleUpdate(SubtitleChange::FLAG_STREAMINFO_CHANGE);
 }
 
 int CVideoPlayer::GetSubtitleCount() const

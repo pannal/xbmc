@@ -20,8 +20,10 @@ def read(path):
     return (ROOT / path).read_text()
 
 
-def declaration(source, signature):
+def declaration(source, signature, include_return_type=False):
     start = source.index(signature)
+    if include_return_type:
+        start = source.rfind("\n", 0, start) + 1
     opening = source.index("{", start)
     depth = 1
     end = opening + 1
@@ -49,16 +51,20 @@ def main():
     startup = declaration(player, "void CVideoPlayer::OpenDefaultStreams(")
     startup = startup[startup.index("  // enable  or disable subtitles"):
                       startup.index("  // open teletext stream")]
-    handlers = player[player.index("if (pMsg->IsType(CDVDMsg::PLAYER_SET_SUBTITLESTREAM))"):
-                      player.index("    else if (pMsg->IsType(CDVDMsg::PLAYER_SET_PROGRAM))")]
-    runtime = "\n".join(declaration(player, "void CVideoPlayer::" + method).replace("CVideoPlayer::", "")
-                        for method in ("SetEnableStream(", "ReopenSubtitleStream("))
+    handlers = " else ".join(declaration(player, f"if (pMsg->IsType(CDVDMsg::{message}))")
+                             for message in ("PLAYER_SET_AUDIOSTREAM", "PLAYER_SET_SUBTITLESTREAM",
+                                             "PLAYER_SET_SUBTITLESTREAM_VISIBLE", "SUBTITLE_ADDFILE"))
+    runtime = "\n".join(declaration(player, f"CVideoPlayer::{name}(", include_return_type=True)
+                        .replace("CVideoPlayer::", "")
+                        for name in ("SetEnableStream", "ReopenSubtitleStream", "SetSubtitle",
+                                     "AdaptForcedSubtitles"))
 
     source = r'''
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <cstdint>
+#include <deque>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -113,20 +119,26 @@ struct LangCodeExpander {
 struct SelectionStreams {
   std::vector<SelectionStream> streams;
   SelectionStream audio;
+  std::vector<SelectionStream> audioTracks;
   std::vector<SelectionStream> Get(StreamType) { return streams; }
   SelectionStream invalid;
   SelectionStream& Get(StreamType type, int index) {
-    if (type == STREAM_AUDIO) return audio;
+    if (type == STREAM_AUDIO) return audioTracks.empty() ? audio : audioTracks.at(index);
     if (index >= 0 && static_cast<size_t>(index) < streams.size()) return streams[index];
     invalid.source = STREAM_SOURCE_NONE;
     return invalid;
   }
 ''' + sort + r'''
 };
-struct VideoSettings { bool m_SubtitleOn = true; int m_SubtitleStream = -1; };
+struct VideoSettings {
+  bool m_SubtitleOn = true;
+  int m_SubtitleStream = -1;
+  void SetSubtitleStream(int index) { m_SubtitleStream = index; }
+};
 struct ProcessInfo {
   VideoSettings settings;
   const VideoSettings& GetVideoSettings() const { return settings; }
+  VideoSettings& GetVideoSettingsLocked() { return settings; }
 };
 constexpr int DVDSTREAM_TYPE_DVD = 1;
 struct InputStream {
@@ -135,8 +147,9 @@ struct InputStream {
 };
 struct CDVDInputStreamNavigator : InputStream {
   bool SetActiveSubtitleStream(int) { return false; }
+  bool SetActiveAudioStream(int) { return false; }
 };
-struct CCurrentStream : SelectionStream { bool demuxDisabled = false; };
+struct CCurrentStream : SelectionStream { bool demuxDisabled = false; int syncState = 0; };
 struct Demux {
   bool supportsDisable = true, delivering = false;
   bool EnableStream(int64_t, int, bool enable) {
@@ -146,14 +159,20 @@ struct Demux {
 };
 struct CDVDMsg {
   enum Type { PLAYER_SET_SUBTITLESTREAM, PLAYER_SET_SUBTITLESTREAM_VISIBLE, PLAYER_SEEK,
-              PLAYER_SEEK_CHAPTER, NONE };
+              PLAYER_SEEK_CHAPTER, PLAYER_SET_AUDIOSTREAM, SUBTITLE_ADDFILE, NONE };
   Type type;
   bool IsType(Type t) const { return type == t; }
 };
 struct CDVDMsgPlayerSetSubtitleStream : CDVDMsg {
+  explicit CDVDMsgPlayerSetSubtitleStream(int value) : CDVDMsg{PLAYER_SET_SUBTITLESTREAM}, index(value) {}
   int index;
   int GetStreamId() const { return index; }
 };
+struct CDVDMsgPlayerSetAudioStream : CDVDMsg {
+  int index;
+  int GetStreamId() const { return index; }
+};
+template<typename T> struct CDVDMsgType : CDVDMsg { T m_value; };
 struct CDVDMsgBool : CDVDMsg { bool m_value; };
 struct CDVDMsgPlayerSeek {
   struct CMode { double time; bool backward, accurate, trickplay, sync; };
@@ -162,6 +181,8 @@ struct CDVDMsgPlayerSeek {
 struct Queue {
   CDVDMsg::Type pending = CDVDMsg::NONE;
   int seeks = 0;
+  std::deque<std::shared_ptr<CDVDMsg>> messages;
+  void Put(std::shared_ptr<CDVDMsg> message) { messages.push_back(message); }
   void PutIfNoMessages(std::shared_ptr<CDVDMsgPlayerSeek>, std::initializer_list<CDVDMsg::Type> types) {
     if (std::find(types.begin(), types.end(), pending) == types.end()) ++seeks;
   }
@@ -177,16 +198,31 @@ struct Player {
   CCurrentStream m_CurrentSubtitle;
   std::shared_ptr<Demux> m_pDemuxer = std::make_shared<Demux>();
   Queue m_messenger;
-  struct { int syncState = 0; } m_CurrentVideo, m_CurrentAudio;
+  CCurrentStream m_CurrentVideo, m_CurrentAudio;
+  bool m_audioRecoveryPending = false;
   struct { double dts = DVD_NOPTS_VALUE, time_offset = 0; } m_State;
-  struct { int iSelectedSPUStream = -1; } m_dvd;
+  struct { int iSelectedSPUStream = -1, iSelectedAudioStream = -1; } m_dvd;
   int opens = 0;
   int publishedSubtitle = -1;
   void UpdateContentState() { publishedSubtitle = m_CurrentSubtitle.id; }
   int GetUpdatedTime() { return 0; }
   std::vector<int> failedStreams;
   bool visible = false;
-  int GetAudioStream() { return 0; }
+  int GetAudioStream() { return m_CurrentAudio.id; }
+  int GetSubtitle() { return publishedSubtitle; }
+  enum SubtitleChange { FLAG_STREAMINFO_CHANGE = 1 };
+  void NotifySubtitleUpdate(int) {}
+  int AddSubtitleFile(const std::string& path) {
+    if (path != "example.en.srt") return -1;
+    return static_cast<int>(m_SelectionStreams.streams.size()) - 1;
+  }
+  void Drain() {
+    while (!m_messenger.messages.empty()) {
+      auto message = m_messenger.messages.front();
+      m_messenger.messages.pop_front();
+      Handle(message);
+    }
+  }
   bool OpenStream(CCurrentStream& current, int64_t demuxerId, int id, int source) {
     if (std::find(failedStreams.begin(), failedStreams.end(), id) != failedStreams.end())
       return false;
@@ -208,12 +244,20 @@ struct Player {
   void Handle(const std::shared_ptr<CDVDMsg>& pMsg) {
 ''' + handlers + r'''
   }
+  void QueueVisibility(bool value) {
+    m_messenger.Put(std::make_shared<CDVDMsgBool>(
+        CDVDMsgBool{{CDVDMsg::PLAYER_SET_SUBTITLESTREAM_VISIBLE}, value}));
+  }
+  void QueueExternalSrt() {
+    m_messenger.Put(std::make_shared<CDVDMsgType<std::string>>(
+        CDVDMsgType<std::string>{{CDVDMsg::SUBTITLE_ADDFILE}, "example.en.srt"}));
+  }
   void Show(bool value) {
-    Handle(std::make_shared<CDVDMsgBool>(CDVDMsgBool{{CDVDMsg::PLAYER_SET_SUBTITLESTREAM_VISIBLE}, value}));
+    QueueVisibility(value);
+    Drain();
   }
   void Select(int index) {
-    Handle(std::make_shared<CDVDMsgPlayerSetSubtitleStream>(
-        CDVDMsgPlayerSetSubtitleStream{{CDVDMsg::PLAYER_SET_SUBTITLESTREAM}, index}));
+    SetSubtitle(index);
     Show(true); // xbmc.Player.setSubtitleStream also requests visibility.
   }
   void Start() {
@@ -353,6 +397,38 @@ void checkRuntimeVisibility() {
          "failed reopen clears the published track without seeking");
 }
 
+void checkParadiseAutoplay() {
+  Player p;
+  p.m_pDemuxer->supportsDisable = false; // FFmpeg continues to deliver hidden streams.
+  p.m_SelectionStreams.audioTracks = {sub(0, "ger"), sub(1, "eng")};
+  p.m_SelectionStreams.streams = {sub(0, "ger", FLAG_FORCED),
+                                  sub(1, "eng", FLAG_NONE, STREAM_SOURCE_TEXT)};
+  p.OpenStream(p.m_CurrentSubtitle, 0, 0, STREAM_SOURCE_DEMUX);
+  p.Show(true);
+
+  // Both PM4K startup callbacks request the external SRT before the reused handler fixes audio.
+  for (int callback = 0; callback < 2; ++callback) {
+    p.QueueVisibility(false);
+    p.QueueExternalSrt();
+    p.QueueVisibility(true);
+  }
+  p.m_messenger.Put(std::make_shared<CDVDMsgPlayerSetAudioStream>(
+      CDVDMsgPlayerSetAudioStream{{CDVDMsg::PLAYER_SET_AUDIOSTREAM}, 1}));
+  p.Drain();
+  expect(p.GetAudioStream() == 1 && p.m_audioRecoveryPending, "Paradise autoplay switches to English audio");
+  expect(p.GetSubtitle() == 1 && p.m_CurrentSubtitle.source == STREAM_SOURCE_TEXT &&
+         p.m_processInfo->settings.m_SubtitleStream == 1, "Paradise autoplay selects the external SRT");
+  expect(p.visible, "Paradise autoplay keeps the external SRT visible after switching audio");
+
+  p.QueueExternalSrt();
+  p.SetSubtitle(0);
+  p.QueueVisibility(false);
+  p.Drain();
+  expect(p.GetSubtitle() == 0 && p.m_processInfo->settings.m_SubtitleStream == 0,
+         "a later manual track selection wins for playback and saved settings");
+  expect(!p.visible, "a later manual hide wins over adding an external SRT");
+}
+
 int main() {
   const auto regular = sub(0, "eng");
   const auto def = sub(1, "eng", FLAG_DEFAULT);
@@ -427,6 +503,7 @@ int main() {
         {def, regular}, 0, false, false, -1, "", {1});
   checkOrdering();
   checkRuntimeVisibility();
+  checkParadiseAutoplay();
   std::cout << checks << " subtitle checks, " << failures << " failures\n";
   return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

@@ -449,7 +449,7 @@ protected:
   void SetEnableStream(CCurrentStream& current, bool isEnabled);
 
   void SetSubtitleVisibleInternal(bool bVisible);
-  void ReopenSubtitleStream(int64_t demuxerId, int id, int source);
+  bool ReopenSubtitleStream(int64_t demuxerId, int id, int source);
 
   enum SubtitleChange
   {
