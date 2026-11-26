@@ -221,6 +221,7 @@ struct Settings{
   int GetInt(int setting){return setting==CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE?adjust:stereo;}
 };
 Settings settings;
+constexpr RESOLUTION uhdFilmMode = 6, dciFilmMode = 7;
 struct Messenger{bool main=true;bool IsProcessThread(){return main;}void SendMsg(int,int,int){event("send-resolution");}}messenger;
 struct Input{void SetMouseResolution(int,int,int,int){event("mouse");}}input;
 struct CGUIComponent{
@@ -236,6 +237,13 @@ struct CDisplaySettings{
   RESOLUTION_INFO GetResolutionInfo(int res){RESOLUTION_INFO info;if(res==0){info.iWidth=info.iScreenWidth=1280;info.iHeight=info.iScreenHeight=720;}if(res==2){info.iWidth=info.iScreenWidth=2560;info.iHeight=info.iScreenHeight=1440;}if(res==3)info.fRefreshRate=59.94f;
     if(res==4){info.dwFlags=D3DPRESENTFLAG_PROGRESSIVE;info.iScreenWidth=3840;info.iScreenHeight=2160;info.fRefreshRate=30.0f;}
     if(res==5){info.dwFlags=D3DPRESENTFLAG_PROGRESSIVE|D3DPRESENTFLAG_MODE3DFP;info.iBlanking=45;info.fRefreshRate=24.0f/1.001f;}
+    if (res == uhdFilmMode || res == dciFilmMode)
+    {
+      info.dwFlags = D3DPRESENTFLAG_PROGRESSIVE;
+      info.iScreenWidth = res == uhdFilmMode ? 3840 : 4096;
+      info.iScreenHeight = 2160;
+      info.fRefreshRate = 24000.0f / 1001.0f;
+    }
     return info;}
 };
 class CWinSystemAmlogicGLESContext;
@@ -507,6 +515,14 @@ void OwnCaptureAndDirectWindow(){
   assert(!f.win.m_displayGeometryReady);f.win.PresentRenderImpl(false);assert(f.session.DisplayBlocked());
   assert(f.win.ResizeWindow(info.iWidth,info.iHeight,-1,-1));assert(!f.session.DisplayBlocked());
 }
+void ExactWhitelistSizeWins()
+{
+  Fixture fixture;
+  settings.whitelist = {std::to_string(dciFilmMode), std::to_string(uhdFilmMode)};
+  RESOLUTION target = RES_DESKTOP;
+  CResolutionUtils::FindResolutionFromWhitelist(24000.0f / 1001.0f, 3840, 2160, false, target);
+  assert(target == uhdFilmMode);
+}
 void FramePackingTiming(){
   Fixture f;
   constexpr int gui4k=4, framePacking1080p=5;
@@ -676,7 +692,7 @@ void CloseHandoffPresentation(){
   owner=mute.Acquire();mute.Handoff(owner,std::chrono::steady_clock::now()-std::chrono::seconds(1));
   f.win.PresentRenderImpl(false);assert(!mute.HandoffGeneration()); // skipped renders still expire
 }
-int main(){FramePackingTiming();CloseHandoffPresentation();ExactNativeParents();PendingAndLatestPayload();OwnCaptureAndDirectWindow();FailedRebind();FailedGeometry();DelayedResetAndSwap();RenderIntentAndEngage();NoModeAndForcedFrac();GuiResizeKeepsRequiredHandshake();ShutdownOwnsPendingDisplay();NoModeNeedsReadiness();OffMainDispatch();}
+int main(){ExactWhitelistSizeWins();FramePackingTiming();CloseHandoffPresentation();ExactNativeParents();PendingAndLatestPayload();OwnCaptureAndDirectWindow();FailedRebind();FailedGeometry();DelayedResetAndSwap();RenderIntentAndEngage();NoModeAndForcedFrac();GuiResizeKeepsRequiredHandshake();ShutdownOwnsPendingDisplay();NoModeNeedsReadiness();OffMainDispatch();}
 '''
 
 if __name__ == '__main__':
