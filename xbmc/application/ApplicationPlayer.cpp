@@ -942,11 +942,12 @@ void CApplicationPlayer::SetVideoStream(int iStream)
   }
 }
 
-void CApplicationPlayer::AddSubtitle(const std::string& strSubPath)
+void CApplicationPlayer::AddSubtitle(const std::string& strSubPath,
+                                     const SubtitleDownload& download)
 {
   std::shared_ptr<IPlayer> player = GetInternal();
   if (player)
-    player->AddSubtitle(strSubPath);
+    player->AddSubtitle(strSubPath, download);
 }
 
 void CApplicationPlayer::SetSubTitleDelay(float fValue)

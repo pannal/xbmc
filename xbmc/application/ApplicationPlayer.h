@@ -141,7 +141,7 @@ public:
   std::string GetName() const;
 
   // proxy calls
-  void AddSubtitle(const std::string& strSubPath);
+  void AddSubtitle(const std::string& strSubPath, const SubtitleDownload& download = {});
   bool CanPause() const;
   bool CanSeek() const;
   int GetAudioDelay() const;

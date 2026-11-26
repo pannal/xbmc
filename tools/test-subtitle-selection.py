@@ -36,6 +36,8 @@ def declaration(source, signature, include_return_type=False):
 def main():
     player = read("xbmc/cores/VideoPlayer/VideoPlayer.cpp")
     player_h = read("xbmc/cores/VideoPlayer/VideoPlayer.h")
+    download = declaration(read("xbmc/cores/IPlayer.h"), "struct SubtitleDownload") + ";\n"
+    messages = read("xbmc/cores/VideoPlayer/DVDMessage.h")
     demux = read("xbmc/cores/VideoPlayer/DVDDemuxers/DVDDemux.h")
     info = read("xbmc/cores/VideoPlayer/Interface/StreamInfo.h")
     flags = declaration(info, "enum StreamFlags") + ";\n"
@@ -48,6 +50,9 @@ def main():
     predicates = "\n".join(declaration(player, "class " + name) + ";"
                            for name in ("PredicateSubtitleFilter", "PredicateSubtitlePriority"))
     sort = declaration(player_h, "template<typename Compare>")
+    catalog = "\n".join(declaration(player, f"CSelectionStreams::{name}(", include_return_type=True)
+                        .replace("CSelectionStreams::", "").replace("m_Streams", "streams")
+                        for name in ("TypeIndexOf", "OrderDownloadedSubtitles"))
     startup = declaration(player, "void CVideoPlayer::OpenDefaultStreams(")
     startup = startup[startup.index("  // enable  or disable subtitles"):
                       startup.index("  // open teletext stream")]
@@ -57,7 +62,7 @@ def main():
     runtime = "\n".join(declaration(player, f"CVideoPlayer::{name}(", include_return_type=True)
                         .replace("CVideoPlayer::", "")
                         for name in ("SetEnableStream", "ReopenSubtitleStream", "SetSubtitle",
-                                     "AdaptForcedSubtitles"))
+                                     "AdaptForcedSubtitles", "OrderDownloadedSubtitle"))
 
     source = r'''
 #include <algorithm>
@@ -66,7 +71,9 @@ def main():
 #include <cstdint>
 #include <deque>
 #include <iostream>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 ''' + flags + sources + types + source_mask + r'''
@@ -74,7 +81,8 @@ def main():
 struct SelectionStream {
   int type_index = 0, id = 0, demuxerId = 0, source = STREAM_SOURCE_DEMUX;
   StreamFlags flags = FLAG_NONE;
-  std::string language;
+  std::string language, filename;
+  StreamType type = STREAM_SUBTITLE;
 };
 struct CSettings {
   static constexpr int SETTING_LOCALE_SUBTITLELANGUAGE = 0;
@@ -128,7 +136,7 @@ struct SelectionStreams {
     invalid.source = STREAM_SOURCE_NONE;
     return invalid;
   }
-''' + sort + r'''
+''' + sort + catalog + r'''
 };
 struct VideoSettings {
   bool m_SubtitleOn = true;
@@ -140,7 +148,7 @@ struct ProcessInfo {
   const VideoSettings& GetVideoSettings() const { return settings; }
   VideoSettings& GetVideoSettingsLocked() { return settings; }
 };
-constexpr int DVDSTREAM_TYPE_DVD = 1;
+constexpr int DVDSTREAM_TYPE_DVD = 1, DVDSTREAM_TYPE_PVRMANAGER = 2;
 struct InputStream {
   virtual ~InputStream() = default;
   bool IsStreamType(int) const { return false; }
@@ -151,6 +159,7 @@ struct CDVDInputStreamNavigator : InputStream {
 };
 struct CCurrentStream : SelectionStream { bool demuxDisabled = false; int syncState = 0; };
 struct Demux {
+  std::string GetFileName() const { return {}; }
   bool supportsDisable = true, delivering = false;
   bool EnableStream(int64_t, int, bool enable) {
     if (supportsDisable) delivering = enable;
@@ -160,19 +169,20 @@ struct Demux {
 struct CDVDMsg {
   enum Type { PLAYER_SET_SUBTITLESTREAM, PLAYER_SET_SUBTITLESTREAM_VISIBLE, PLAYER_SEEK,
               PLAYER_SEEK_CHAPTER, PLAYER_SET_AUDIOSTREAM, SUBTITLE_ADDFILE, NONE };
+  CDVDMsg(Type t) : type(t) {}
   Type type;
   bool IsType(Type t) const { return type == t; }
-};
-struct CDVDMsgPlayerSetSubtitleStream : CDVDMsg {
-  explicit CDVDMsgPlayerSetSubtitleStream(int value) : CDVDMsg{PLAYER_SET_SUBTITLESTREAM}, index(value) {}
-  int index;
-  int GetStreamId() const { return index; }
 };
 struct CDVDMsgPlayerSetAudioStream : CDVDMsg {
   int index;
   int GetStreamId() const { return index; }
 };
-template<typename T> struct CDVDMsgType : CDVDMsg { T m_value; };
+template<typename T> struct CDVDMsgType : CDVDMsg {
+  CDVDMsgType(Type type, const T& value) : CDVDMsg(type), m_value(value) {}
+  T m_value;
+};
+''' + download + declaration(messages, "class CDVDMsgSubtitleAddFile") + ";\n" + declaration(
+        messages, "class CDVDMsgPlayerSetSubtitleStream") + r''';
 struct CDVDMsgBool : CDVDMsg { bool m_value; };
 struct CDVDMsgPlayerSeek {
   struct CMode { double time; bool backward, accurate, trickplay, sync; };
@@ -190,11 +200,21 @@ struct Queue {
 constexpr double DVD_NOPTS_VALUE = -1;
 double DVD_TIME_TO_MSEC(double pts) { return pts / 1000; }
 struct IDVDStreamPlayer { enum { SYNC_STARTING = 1 }; };
+using CCriticalSection = std::recursive_mutex;
 struct Player {
   std::shared_ptr<ProcessInfo> m_processInfo = std::make_shared<ProcessInfo>();
-  std::shared_ptr<InputStream> m_pInputStream;
+  std::shared_ptr<InputStream> m_pInputStream = std::make_shared<InputStream>();
   struct { std::string state; } m_playerOptions;
   SelectionStreams m_SelectionStreams;
+  struct Content {
+    CCriticalSection m_section;
+    SelectionStreams m_selectionStreams;
+    int m_subtitleIndex = -1;
+  } m_content;
+  void UpdateContent() { m_content.m_selectionStreams = m_SelectionStreams; }
+  std::vector<std::string> sidecars;
+  struct { std::string GetDynPath() const { return "episode.mkv"; } } m_item;
+  std::map<int64_t, std::shared_ptr<Demux>> m_subtitleDemuxerMap;
   CCurrentStream m_CurrentSubtitle;
   std::shared_ptr<Demux> m_pDemuxer = std::make_shared<Demux>();
   Queue m_messenger;
@@ -204,7 +224,10 @@ struct Player {
   struct { int iSelectedSPUStream = -1, iSelectedAudioStream = -1; } m_dvd;
   int opens = 0;
   int publishedSubtitle = -1;
-  void UpdateContentState() { publishedSubtitle = m_CurrentSubtitle.id; }
+  void UpdateContentState() {
+    publishedSubtitle = m_content.m_subtitleIndex = m_SelectionStreams.TypeIndexOf(
+        STREAM_SUBTITLE, m_CurrentSubtitle.source, m_CurrentSubtitle.demuxerId, m_CurrentSubtitle.id);
+  }
   int GetUpdatedTime() { return 0; }
   std::vector<int> failedStreams;
   bool visible = false;
@@ -213,7 +236,17 @@ struct Player {
   enum SubtitleChange { FLAG_STREAMINFO_CHANGE = 1 };
   void NotifySubtitleUpdate(int) {}
   int AddSubtitleFile(const std::string& path) {
-    if (path != "example.en.srt") return -1;
+    if (path == "episode.nl.srt") {
+      SelectionStream dutch;
+      dutch.type_index = static_cast<int>(m_SelectionStreams.streams.size());
+      dutch.source = STREAM_SOURCE_TEXT + 1;
+      dutch.language = "dut";
+      dutch.filename = path;
+      m_SelectionStreams.streams.push_back(dutch);
+    } else if (path != "example.en.srt") {
+      return -1;
+    }
+    UpdateContent();
     return static_cast<int>(m_SelectionStreams.streams.size()) - 1;
   }
   void Drain() {
@@ -242,15 +275,17 @@ struct Player {
   void SetSubtitleVisibleInternal(bool value) { visible = value; }
 ''' + runtime + r'''
   void Handle(const std::shared_ptr<CDVDMsg>& pMsg) {
+    do {
 ''' + handlers + r'''
+    } while (false);
   }
   void QueueVisibility(bool value) {
     m_messenger.Put(std::make_shared<CDVDMsgBool>(
         CDVDMsgBool{{CDVDMsg::PLAYER_SET_SUBTITLESTREAM_VISIBLE}, value}));
   }
-  void QueueExternalSrt() {
-    m_messenger.Put(std::make_shared<CDVDMsgType<std::string>>(
-        CDVDMsgType<std::string>{{CDVDMsg::SUBTITLE_ADDFILE}, "example.en.srt"}));
+  void QueueExternalSrt(const std::string& path = "example.en.srt", bool downloaded = false) {
+    m_messenger.Put(std::make_shared<CDVDMsgSubtitleAddFile>(path,
+        downloaded ? SubtitleDownload{m_item.GetDynPath(), sidecars} : SubtitleDownload{}));
   }
   void Show(bool value) {
     QueueVisibility(value);
@@ -373,9 +408,11 @@ void checkRuntimeVisibility() {
 
   Player pm4k;
   pm4k.m_pDemuxer->supportsDisable = false;
-  auto track = sub(7, "eng");
+  auto track = sub(0, "eng");
+  track.id = 7;
   pm4k.m_SelectionStreams.streams = {track};
   pm4k.OpenStream(pm4k.m_CurrentSubtitle, track.demuxerId, track.id, track.source);
+  pm4k.UpdateContent();
   pm4k.Select(-1);
   pm4k.Select(0);
   expect(pm4k.visible && pm4k.opens == 2 && pm4k.m_messenger.seeks == 1,
@@ -403,6 +440,7 @@ void checkParadiseAutoplay() {
   p.m_SelectionStreams.audioTracks = {sub(0, "ger"), sub(1, "eng")};
   p.m_SelectionStreams.streams = {sub(0, "ger", FLAG_FORCED),
                                   sub(1, "eng", FLAG_NONE, STREAM_SOURCE_TEXT)};
+  p.UpdateContent();
   p.OpenStream(p.m_CurrentSubtitle, 0, 0, STREAM_SOURCE_DEMUX);
   p.Show(true);
 
@@ -427,6 +465,94 @@ void checkParadiseAutoplay() {
   expect(p.GetSubtitle() == 0 && p.m_processInfo->settings.m_SubtitleStream == 0,
          "a later manual track selection wins for playback and saved settings");
   expect(!p.visible, "a later manual hide wins over adding an external SRT");
+}
+
+void checkNativeDownloadReplay() {
+  auto english = sub(0, "eng");
+  english.id = 2; // MKV stream id, independent of its Kodi subtitle index.
+  Player p;
+  p.m_SelectionStreams.streams = {english};
+  p.UpdateContent();
+  p.sidecars = {"episode.nl.srt"};
+  p.QueueExternalSrt("episode.nl.srt", true);
+  p.Drain();
+  const int saved = p.m_processInfo->settings.m_SubtitleStream;
+  expect(saved == 0 && p.GetSubtitle() == saved && p.visible &&
+         p.m_content.m_selectionStreams.Get(STREAM_SUBTITLE, saved).language == "dut",
+         "native download publishes and saves the Dutch sidecar at its startup index");
+
+  Player replay;
+  auto dutch = sub(0, "dut", FLAG_NONE, STREAM_SOURCE_TEXT);
+  english.type_index = 1;
+  replay.m_SelectionStreams.streams = {dutch, english}; // startup scans sidecars before the MKV
+  replay.m_SelectionStreams.audio.language = "eng";
+  replay.m_processInfo->settings = {true, saved};
+  configure("eng", "eng", false);
+  replay.Start();
+  expect(replay.visible && replay.m_CurrentSubtitle.source == STREAM_SOURCE_TEXT,
+         "replaying the same file restores Dutch over preferred English");
+
+  Player queued;
+  english.type_index = 0;
+  queued.m_SelectionStreams.streams = {english};
+  queued.UpdateContent();
+  queued.sidecars = p.sidecars;
+  queued.QueueExternalSrt("episode.nl.srt", true);
+  queued.SetSubtitle(0); // English as listed when the user made the choice.
+  queued.Drain();
+  expect(queued.m_CurrentSubtitle.id == english.id && queued.GetSubtitle() == 1 &&
+         queued.m_processInfo->settings.m_SubtitleStream == 1,
+         "a queued manual selection follows its track across native download numbering");
+
+  // A directory can enumerate the new file before an older sidecar. A VobSub
+  // file contributes multiple entries, which retain their internal order.
+  auto vob0 = sub(0, "eng", FLAG_NONE, STREAM_SOURCE_DEMUX_SUB);
+  vob0.filename = "episode.idx";
+  auto vob1 = vob0;
+  vob1.id = vob1.type_index = 1;
+  english.type_index = 2;
+  Player several;
+  several.m_SelectionStreams.streams = {vob0, vob1, english};
+  several.sidecars = {"episode.nl.srt", "episode.idx"};
+  several.QueueExternalSrt("episode.nl.srt", true);
+  several.Drain();
+  const auto& listed = several.m_content.m_selectionStreams;
+  expect(listed.streams.size() == 4 && listed.streams[0].language == "dut" &&
+         listed.streams[1].filename == "episode.idx" && listed.streams[1].id == 0 &&
+         listed.streams[2].filename == "episode.idx" && listed.streams[2].id == 1 &&
+         listed.streams[3].source == STREAM_SOURCE_DEMUX,
+         "multiple sidecars follow discovery order and keep VobSub substreams together");
+
+  auto oldBitmap = sub(0, "dut", FLAG_NONE, STREAM_SOURCE_DEMUX_SUB);
+  oldBitmap.filename = "episode.sup";
+  oldBitmap.demuxerId = 17;
+  auto replacement = oldBitmap;
+  replacement.type_index = 2;
+  replacement.demuxerId = 18;
+  english.type_index = 1;
+  Player redownload;
+  redownload.m_SelectionStreams.streams = {oldBitmap, english, replacement};
+  redownload.OpenStream(redownload.m_CurrentSubtitle, replacement.demuxerId,
+                        replacement.id, replacement.source);
+  expect(redownload.OrderDownloadedSubtitle(2, {replacement.filename}) == 0 &&
+         redownload.m_SelectionStreams.streams.size() == 2 &&
+         redownload.m_SelectionStreams.streams[0].demuxerId == replacement.demuxerId,
+         "replacing a bitmap sidecar keeps a single copy at the replay index");
+
+  Player advanced;
+  advanced.m_messenger.Put(std::make_shared<CDVDMsgSubtitleAddFile>("episode.nl.srt",
+      SubtitleDownload{"previous.mkv", p.sidecars}));
+  advanced.Drain();
+  expect(advanced.opens == 0 && advanced.m_SelectionStreams.streams.empty(),
+         "a download finishing after the player advances cannot change the new episode");
+
+  Player temporary;
+  english.type_index = 0;
+  temporary.m_SelectionStreams.streams = {english};
+  temporary.QueueExternalSrt("episode.nl.srt", true);
+  temporary.Drain();
+  expect(temporary.GetSubtitle() == 1 && temporary.visible,
+         "a temporary subtitle outside the startup scan remains appended");
 }
 
 int main() {
@@ -504,6 +630,7 @@ int main() {
   checkOrdering();
   checkRuntimeVisibility();
   checkParadiseAutoplay();
+  checkNativeDownloadReplay();
   std::cout << checks << " subtitle checks, " << failures << " failures\n";
   return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

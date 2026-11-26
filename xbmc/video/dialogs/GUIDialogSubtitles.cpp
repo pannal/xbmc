@@ -541,7 +541,8 @@ void CGUIDialogSubtitles::OnDownloadComplete(const CFileItemList *items, const s
   SUBTITLE_STORAGEMODE storageMode = (SUBTITLE_STORAGEMODE) CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_SUBTITLES_STORAGEMODE);
 
   // Get (unstacked) path
-  std::string strCurrentFile = g_application.CurrentUnstackedItem().GetDynPath();
+  const CFileItem video = g_application.CurrentUnstackedItem();
+  std::string strCurrentFile = video.GetDynPath();
 
   std::string strDownloadPath = "special://temp";
   std::string strDestPath;
@@ -668,7 +669,7 @@ void CGUIDialogSubtitles::OnDownloadComplete(const CFileItemList *items, const s
 
       // Set sub for currently playing (stack) item
       if (vecFiles[i] == strCurrentFile)
-        SetSubtitles(strDestFile);
+        SetSubtitles(strDestFile, video);
     }
   }
 
@@ -696,9 +697,13 @@ void CGUIDialogSubtitles::ClearServices()
   m_currentService.clear();
 }
 
-void CGUIDialogSubtitles::SetSubtitles(const std::string &subtitle)
+void CGUIDialogSubtitles::SetSubtitles(const std::string& subtitle, const CFileItem& video)
 {
   auto& components = CServiceBroker::GetAppComponents();
   const auto appPlayer = components.GetComponent<CApplicationPlayer>();
-  appPlayer->AddSubtitle(subtitle);
+  // Run discovery on the download job so a slow media share cannot stall playback.
+  SubtitleDownload download{video.GetDynPath(), {}};
+  if (!URIUtils::IsUPnP(video.GetPath()) && !video.GetProperty("no-ext-subs-scan").asBoolean(false))
+    CUtil::ScanForExternalSubtitles(download.videoPath, download.sidecars);
+  appPlayer->AddSubtitle(subtitle, download);
 }

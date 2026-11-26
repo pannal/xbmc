@@ -223,6 +223,8 @@ public:
   bool Get(StreamType type, StreamFlags flag, SelectionStream& out);
   void Clear(StreamType type, StreamSource source);
   int Source(StreamSource source, const std::string& filename);
+  bool OrderDownloadedSubtitles(const std::vector<std::string>& files,
+                                const SelectionStream& downloaded);
   void Update(SelectionStream& s);
   void Update(const std::shared_ptr<CDVDInputStream>& input, CDVDDemux* demuxer);
   void Update(const std::shared_ptr<CDVDInputStream>& input,
@@ -311,7 +313,7 @@ public:
    */
   void SetSubtitleVerticalPosition(const int value, bool save) override;
 
-  void AddSubtitle(const std::string& strSubPath) override;
+  void AddSubtitle(const std::string& strSubPath, const SubtitleDownload& download = {}) override;
 
   int GetAudioStreamCount() const override;
   int GetAudioStream() override;
@@ -426,6 +428,7 @@ protected:
   void ProcessRadioRDSData(CDemuxStream* pStream, DemuxPacket* pPacket);
   void ProcessAudioID3Data(CDemuxStream* pStream, DemuxPacket* pPacket);
 
+  int OrderDownloadedSubtitle(int index, const std::vector<std::string>& sidecars);
   int  AddSubtitleFile(const std::string& filename, const std::string& subfilename = "");
 
   // Embedded text-subtitle seek-back recall: cache the selected text subtitle's

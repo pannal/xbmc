@@ -142,6 +142,17 @@ public:
   T m_value;
 };
 
+class CDVDMsgSubtitleAddFile : public CDVDMsgType<std::string>
+{
+public:
+  CDVDMsgSubtitleAddFile(const std::string& path, const SubtitleDownload& download)
+    : CDVDMsgType(SUBTITLE_ADDFILE, path), m_download(download)
+  {
+  }
+
+  const SubtitleDownload m_download;
+};
+
 typedef CDVDMsgType<bool> CDVDMsgBool;
 
 // A distinct receipt survives cancellation/reuse of its original decode session.
@@ -213,12 +224,15 @@ private:
 class CDVDMsgPlayerSetSubtitleStream : public CDVDMsg
 {
 public:
-  explicit CDVDMsgPlayerSetSubtitleStream(int streamId) : CDVDMsg(PLAYER_SET_SUBTITLESTREAM) { m_streamId = streamId; }
-  ~CDVDMsgPlayerSetSubtitleStream() override = default;
+  CDVDMsgPlayerSetSubtitleStream(int index, int source, int64_t demuxerId, int id)
+    : CDVDMsg(PLAYER_SET_SUBTITLESTREAM), index(index), source(source), demuxerId(demuxerId), id(id)
+  {
+  }
 
-  int GetStreamId() { return m_streamId; }
-private:
-  int m_streamId;
+  const int index;
+  const int source;
+  const int64_t demuxerId;
+  const int id;
 };
 
 class CDVDMsgPlayerSetState : public CDVDMsg

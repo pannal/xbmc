@@ -29,6 +29,12 @@ class CStreamDetails;
 class CAction;
 class IPlayerCallback;
 
+struct SubtitleDownload
+{
+  std::string videoPath;
+  std::vector<std::string> sidecars;
+};
+
 class CPlayerOptions
 {
 public:
@@ -137,7 +143,7 @@ public:
   *          and actives the first of the added stream(s). E.g., vob subs can contain multiple streams.
   *   \param[in] strSubPath The full path of the subtitle file.
   */
-  virtual void AddSubtitle(const std::string& strSubPath) {}
+  virtual void AddSubtitle(const std::string& strSubPath, const SubtitleDownload& download = {}) {}
 
   virtual int GetAudioStreamCount() const { return 0; }
   virtual int  GetAudioStream()       { return -1; }

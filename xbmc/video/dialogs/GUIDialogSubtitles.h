@@ -58,7 +58,7 @@ protected:
   */
   void OnSubtitleServiceContextMenu(int itemIdx);
 
-  void SetSubtitles(const std::string &subtitle);
+  void SetSubtitles(const std::string& subtitle, const CFileItem& video);
 
   CCriticalSection m_critsection;
   CFileItemList* m_subtitles;

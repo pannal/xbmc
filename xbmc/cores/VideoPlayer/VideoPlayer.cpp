@@ -526,6 +526,47 @@ int CSelectionStreams::Source(StreamSource source, const std::string& filename)
   return index + 1;
 }
 
+bool CSelectionStreams::OrderDownloadedSubtitles(const std::vector<std::string>& files,
+                                                 const SelectionStream& downloaded)
+{
+  if (std::find(files.begin(), files.end(), downloaded.filename) == files.end())
+    return false;
+
+  // Re-downloading VobSub or PGS opens a new demuxer for the same file.
+  if (STREAM_SOURCE_MASK(downloaded.source) == STREAM_SOURCE_DEMUX_SUB)
+  {
+    m_Streams.erase(std::remove_if(m_Streams.begin(), m_Streams.end(),
+                                   [&](const auto& stream)
+                                   {
+                                     return stream.type == STREAM_SUBTITLE &&
+                                            stream.source == downloaded.source &&
+                                            stream.demuxerId != downloaded.demuxerId;
+                                   }),
+                    m_Streams.end());
+  }
+
+  // Match startup registration: scanned sidecars in discovery order, then embedded tracks.
+  auto next = m_Streams.begin();
+  for (const auto& path : files)
+  {
+    next = std::stable_partition(
+        next, m_Streams.end(),
+        [&](const SelectionStream& stream)
+        {
+          const auto source = STREAM_SOURCE_MASK(stream.source);
+          return stream.type == STREAM_SUBTITLE && stream.filename == path &&
+                 (source == STREAM_SOURCE_TEXT || source == STREAM_SOURCE_DEMUX_SUB);
+        });
+  }
+  int index = 0;
+  for (auto& stream : m_Streams)
+  {
+    if (stream.type == STREAM_SUBTITLE)
+      stream.type_index = index++;
+  }
+  return true;
+}
+
 void CSelectionStreams::Update(SelectionStream& s)
 {
   int index = TypeIndexOf(s.type, s.source, s.demuxerId, s.id);
@@ -4398,7 +4439,23 @@ void CVideoPlayer::HandleMessages()
     {
       auto pMsg2 = std::static_pointer_cast<CDVDMsgPlayerSetSubtitleStream>(pMsg);
 
-      SelectionStream& st = m_SelectionStreams.Get(STREAM_SUBTITLE, pMsg2->GetStreamId());
+      // A download can renumber the tracks after the caller has made its choice.
+      int index = pMsg2->index;
+      if (pMsg2->source != STREAM_SOURCE_NONE)
+      {
+        const auto tracks = m_SelectionStreams.Get(STREAM_SUBTITLE);
+        const auto it = std::find_if(tracks.begin(), tracks.end(),
+                                     [&](const auto& track)
+                                     {
+                                       return track.source == pMsg2->source &&
+                                              track.demuxerId == pMsg2->demuxerId &&
+                                              track.id == pMsg2->id;
+                                     });
+        if (it == tracks.end())
+          continue;
+        index = static_cast<int>(std::distance(tracks.begin(), it));
+      }
+      SelectionStream& st = m_SelectionStreams.Get(STREAM_SUBTITLE, index);
       if(st.source != STREAM_SOURCE_NONE)
       {
         if(st.source == STREAM_SOURCE_NAV && m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
@@ -4428,7 +4485,7 @@ void CVideoPlayer::HandleMessages()
           ReopenSubtitleStream(st.demuxerId, st.id, st.source);
         }
       }
-      m_processInfo->GetVideoSettingsLocked().SetSubtitleStream(pMsg2->GetStreamId());
+      m_processInfo->GetVideoSettingsLocked().SetSubtitleStream(index);
       NotifySubtitleUpdate(SubtitleChange::FLAG_STREAMINFO_CHANGE);
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SET_SUBTITLESTREAM_VISIBLE))
@@ -4607,8 +4664,10 @@ void CVideoPlayer::HandleMessages()
     }
     else if (pMsg->IsType(CDVDMsg::SUBTITLE_ADDFILE))
     {
-      const int index =
-          AddSubtitleFile(std::static_pointer_cast<CDVDMsgType<std::string>>(pMsg)->m_value);
+      const auto msg = std::static_pointer_cast<CDVDMsgSubtitleAddFile>(pMsg);
+      if (!msg->m_download.videoPath.empty() && msg->m_download.videoPath != m_item.GetDynPath())
+        continue;
+      int index = AddSubtitleFile(msg->m_value);
       if (index >= 0)
       {
         // Select the file before a queued audio change can adapt the previous forced subtitle.
@@ -4618,6 +4677,7 @@ void CVideoPlayer::HandleMessages()
             (source == STREAM_SOURCE_TEXT || source == STREAM_SOURCE_DEMUX_SUB) &&
             ReopenSubtitleStream(stream.demuxerId, stream.id, stream.source))
         {
+          index = OrderDownloadedSubtitle(index, msg->m_download.sidecars);
           m_processInfo->GetVideoSettingsLocked().SetSubtitleStream(index);
           SetSubtitleVisibleInternal(true);
           NotifySubtitleUpdate(SubtitleChange::FLAG_STREAMINFO_CHANGE);
@@ -7063,10 +7123,36 @@ int CVideoPlayer::GetPreviousChapter()
     return chapter;
 }
 
-void CVideoPlayer::AddSubtitle(const std::string& strSubPath)
+int CVideoPlayer::OrderDownloadedSubtitle(int index, const std::vector<std::string>& sidecars)
 {
-  m_messenger.Put(
-      std::make_shared<CDVDMsgType<std::string>>(CDVDMsg::SUBTITLE_ADDFILE, strSubPath));
+  if (sidecars.empty() || m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD) ||
+      m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER))
+    return index;
+
+  const SelectionStream downloaded = m_SelectionStreams.Get(STREAM_SUBTITLE, index);
+  if (!m_SelectionStreams.OrderDownloadedSubtitles(sidecars, downloaded))
+    return index;
+
+  if (STREAM_SOURCE_MASK(downloaded.source) == STREAM_SOURCE_DEMUX_SUB)
+  {
+    for (auto it = m_subtitleDemuxerMap.begin(); it != m_subtitleDemuxerMap.end();)
+    {
+      if (it->first != downloaded.demuxerId && it->second->GetFileName() == downloaded.filename)
+        it = m_subtitleDemuxerMap.erase(it);
+      else
+        ++it;
+    }
+  }
+
+  std::unique_lock<CCriticalSection> lock(m_content.m_section);
+  UpdateContent();
+  UpdateContentState();
+  return m_content.m_subtitleIndex;
+}
+
+void CVideoPlayer::AddSubtitle(const std::string& strSubPath, const SubtitleDownload& download)
+{
+  m_messenger.Put(std::make_shared<CDVDMsgSubtitleAddFile>(strSubPath, download));
 }
 
 bool CVideoPlayer::IsCaching() const
@@ -7849,7 +7935,10 @@ void CVideoPlayer::GetSubtitleStreamInfo(int index, SubtitleStreamInfo& info) co
 
 void CVideoPlayer::SetSubtitle(int iStream)
 {
-  m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSubtitleStream>(iStream));
+  std::unique_lock<CCriticalSection> lock(m_content.m_section);
+  const auto& stream = m_content.m_selectionStreams.Get(STREAM_SUBTITLE, iStream);
+  m_messenger.Put(std::make_shared<CDVDMsgPlayerSetSubtitleStream>(iStream, stream.source,
+                                                                   stream.demuxerId, stream.id));
 }
 
 int CVideoPlayer::GetSubtitleCount() const
