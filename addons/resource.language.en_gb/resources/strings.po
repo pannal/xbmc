@@ -17900,7 +17900,7 @@ msgstr ""
 #. Description of setting with label #421 "Keep audio device alive"
 #: system/settings/settings.xml
 msgctxt "#34111"
-msgid "Select the behaviour when no sound is required for either playback or GUI sounds.[CR][Always] Continuous inaudible signal is output, this keeps the receiving audio device alive for any new sounds, however this might also block sound from other applications.[CR][1-10 Minutes] Same as [Always] except that after the selected period of time audio enters a suspended state.[CR][Off] Audio output enters a suspended state. Note: Sounds can be missed if audio enters suspended state."
+msgid "Select the behaviour when no sound is required for either playback or GUI sounds.[CR][Always] Continuous inaudible signal is output, this keeps the receiving audio device alive for any new sounds, however this might also block sound from other applications.[CR][1-10 Minutes] Same as [Always] except that after the selected period of time audio enters a suspended state. While playback is paused, the audio device is kept alive until playback resumes or stops, except for passthrough via AudioTrack (RAW).[CR][Off] Audio output enters a suspended state. Note: Sounds can be missed if audio enters suspended state."
 msgstr ""
 
 #. Indicates if Audio Engine should transmit noise or real silence

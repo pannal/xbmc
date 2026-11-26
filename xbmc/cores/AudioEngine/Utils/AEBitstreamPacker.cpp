@@ -8,6 +8,7 @@
 
 #include "AEBitstreamPacker.h"
 
+#include "AEBitstreamSilence.h"
 #include "AEPackIEC61937.h"
 #include "AEStreamInfo.h"
 #include "utils/log.h"
@@ -21,6 +22,24 @@ namespace
 {
 constexpr auto BURST_HEADER_SIZE = 8;
 constexpr auto EAC3_MAX_BURST_PAYLOAD_SIZE = 24576 - BURST_HEADER_SIZE;
+
+bool HasSilentPackets(CAEStreamInfo::DataType type)
+{
+  switch (type)
+  {
+    case CAEStreamInfo::STREAM_TYPE_AC3:
+    case CAEStreamInfo::STREAM_TYPE_EAC3:
+    case CAEStreamInfo::STREAM_TYPE_DTSHD_CORE:
+    case CAEStreamInfo::STREAM_TYPE_DTSHD:
+    case CAEStreamInfo::STREAM_TYPE_DTSHD_MA:
+    case CAEStreamInfo::STREAM_TYPE_DTS_512:
+    case CAEStreamInfo::STREAM_TYPE_DTS_1024:
+    case CAEStreamInfo::STREAM_TYPE_DTS_2048:
+      return true;
+    default:
+      return false;
+  }
+}
 } // namespace
 
 CAEBitstreamPacker::CAEBitstreamPacker()
@@ -33,6 +52,54 @@ CAEBitstreamPacker::~CAEBitstreamPacker()
 }
 
 void CAEBitstreamPacker::Pack(CAEStreamInfo &info, uint8_t* data, int size)
+{
+  if (data && size > 0 && HasSilentPackets(info.m_type))
+  {
+    // PackSilence derives its packet from the last one
+    m_lastPacket.assign(data, data + size);
+    m_silence.clear();
+  }
+  else
+    ResetSilence();
+
+  PackFrame(info, data, size);
+}
+
+bool CAEBitstreamPacker::PackSilence(CAEStreamInfo& info)
+{
+  if (m_lastPacket.empty())
+    return false;
+
+  if (m_silence.empty())
+  {
+    if (!CAEBitstreamSilence::Generate(info, m_lastPacket.data(),
+                                       static_cast<unsigned int>(m_lastPacket.size()), m_silence))
+    {
+      CLog::Log(LOGDEBUG, "CAEBitstreamPacker::PackSilence - unsupported packet of {} bytes",
+                m_lastPacket.size());
+      ResetSilence();
+      return false;
+    }
+    // the IEC packers round odd sizes up to whole 16-bit words
+    m_silence.push_back(0);
+  }
+
+  Reset();
+  PackFrame(info, m_silence.data(), static_cast<int>(m_silence.size() - 1));
+  if (m_dataSize > 0)
+    return true;
+
+  ResetSilence();
+  return false;
+}
+
+void CAEBitstreamPacker::ResetSilence()
+{
+  m_lastPacket.clear();
+  m_silence.clear();
+}
+
+void CAEBitstreamPacker::PackFrame(CAEStreamInfo& info, uint8_t* data, int size)
 {
   m_pauseDuration = 0;
   m_dataSize = 0;
@@ -80,8 +147,8 @@ void CAEBitstreamPacker::Pack(CAEStreamInfo &info, uint8_t* data, int size)
 
 bool CAEBitstreamPacker::PackPause(CAEStreamInfo &info, unsigned int millis, bool iecBursts)
 {
-  // re-use last buffer
-  if (m_pauseDuration == millis)
+  // re-use the last buffer if it holds the same kind of pause data
+  if (m_pauseDuration == millis && m_pauseIecBursts == iecBursts)
     return false;
 
   switch (info.m_type)
@@ -107,6 +174,7 @@ bool CAEBitstreamPacker::PackPause(CAEStreamInfo &info, unsigned int millis, boo
       CLog::Log(LOGERROR, "CAEBitstreamPacker::Pack - no pack function");
   }
 
+  m_pauseIecBursts = iecBursts;
   if (!iecBursts)
   {
     memset(m_packedBuffer, 0, m_dataSize);
