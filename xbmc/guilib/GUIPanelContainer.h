@@ -28,6 +28,7 @@ public:
 
   void Process(unsigned int currentTime, CDirtyRegionList &dirtyregions) override;
   void Render() override;
+  std::pair<int, int> GetVisibleItemRange() const override;
   bool OnAction(const CAction &action) override;
   bool OnMessage(CGUIMessage& message) override;
   void OnLeft() override;

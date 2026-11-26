@@ -63,6 +63,8 @@ public:
   std::string GetDescription() const override;
   void SaveStates(std::vector<CControlState> &states) override;
   virtual int GetSelectedItem() const;
+  /*! \brief First item and slot count covered by the current viewport and its scroll target. */
+  virtual std::pair<int, int> GetVisibleItemRange() const;
 
   void DoProcess(unsigned int currentTime, CDirtyRegionList &dirtyregions) override;
   void Process(unsigned int currentTime, CDirtyRegionList &dirtyregions) override;

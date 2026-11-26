@@ -44,7 +44,6 @@ protected:
   void OnItemLoaded(CFileItem* pItem) override {};
 
   // override base class methods
-  bool Update(const std::string &strDirectory, bool updateFilterPath = true) override;
   bool GetDirectory(const std::string &strDirectory, CFileItemList &items) override;
   void UpdateButtons() override;
   void DoSearch(const std::string& strSearch, CFileItemList& items) override;
@@ -62,5 +61,5 @@ private:
   virtual SelectFirstUnwatchedItem GetSettingSelectFirstUnwatchedItem();
   virtual IncludeAllSeasonsAndSpecials GetSettingIncludeAllSeasonsAndSpecials();
   virtual int GetFirstUnwatchedItemIndex(bool includeAllSeasons, bool includeSpecials);
-  void SelectFirstUnwatched();
+  void SelectFirstUnwatched() override;
 };

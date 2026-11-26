@@ -530,6 +530,28 @@ void CGUIPanelContainer::CalculateLayout()
   m_scroller.SetValue(GetOffset() * m_layout->Size(m_orientation));
 }
 
+std::pair<int, int> CGUIPanelContainer::GetVisibleItemRange() const
+{
+  if (!m_layout)
+    return {0, 0};
+
+  const float rowSize = m_layout->Size(m_orientation);
+  const float value = m_scroller.GetValue();
+  const float target = GetOffset() * rowSize;
+  const float renderOffset = m_orientation == VERTICAL ? m_renderOffset.y : m_renderOffset.x;
+  const float length = m_orientation == VERTICAL ? m_height : m_width;
+  int firstRow, lastRow;
+  GetPanelRows(value, target, rowSize, length, renderOffset, GetCacheCount() / 2, firstRow, lastRow);
+
+  // A render offset can bring a preloaded row partly on screen. Drop only fully clipped rows.
+  const auto [minScroll, maxScroll] = std::minmax(value, target);
+  while (firstRow <= lastRow && (firstRow + 1) * rowSize - minScroll + renderOffset <= 0)
+    ++firstRow;
+  while (lastRow >= firstRow && lastRow * rowSize - maxScroll + renderOffset >= length)
+    --lastRow;
+  return {CorrectOffset(firstRow, 0), (lastRow - firstRow + 1) * m_itemsPerRow};
+}
+
 unsigned int CGUIPanelContainer::GetRows() const
 {
   assert(m_itemsPerRow > 0);

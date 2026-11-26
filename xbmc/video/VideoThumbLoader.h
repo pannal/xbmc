@@ -11,6 +11,7 @@
 #include "FileItem.h"
 #include "ThumbLoader.h"
 
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -74,6 +75,21 @@ public:
  bool FillLibraryArt(CFileItem &item) override;
 
 protected:
+  bool NeedsLoaderBatch(const CFileItem& item) const override;
+  void OnLoaderBatch(std::vector<CFileItemPtr>::const_iterator begin,
+                     std::vector<CFileItemPtr>::const_iterator end) override;
+
+  /*! \brief Fill the library art of many items with one query.
+   Gives movies, movie sets, TV shows, seasons, episodes and music videos the same art as
+   FillLibraryArt(CFileItem&): their own and that of their show, season or set. Leaves other
+   items, and all items if the query fails, to FillLibraryArt(CFileItem&). Marks filled items
+   "libraryartfilled".
+   \param items the items to fill, a batch at most so that the query stays short
+   \param db an open video database
+   */
+  static void FillLibraryArt(const std::vector<std::shared_ptr<CFileItem>>& items,
+                             CVideoDatabase& db);
+
   CVideoDatabase *m_videoDatabase;
   ArtCache m_artCache;
 
@@ -84,4 +100,12 @@ protected:
   void DetectAndAddMissingItemData(CFileItem &item);
 
   const ArtMap& GetArtFromCache(const std::string &mediaType, const int id);
+
+  /*! \brief Append the art FillLibraryArt() takes from an item's TV show, season or movie set.
+   \param item the item, with its own library art appended
+   \param getArt the art of a (media type, id), empty if it has none
+   */
+  static void AppendParentArt(
+      CFileItem& item, const std::function<const ArtMap&(const MediaType&, int)>& getArt);
+
 };

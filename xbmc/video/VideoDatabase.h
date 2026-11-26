@@ -981,6 +981,15 @@ public:
   bool GetArtForItem(int mediaId, const MediaType &mediaType, std::map<std::string, std::string> &art);
   std::string GetArtForItem(int mediaId, const MediaType &mediaType, const std::string &artType);
 
+  /*! \brief Get the art of many items, with one query per 500 items.
+   \param ids the media ids to get the art for, per media type
+   \param art filled with the art of each (media type, media id) that has any
+   \return true if every query succeeded, false otherwise
+   */
+  bool GetArtForItems(
+      const std::map<MediaType, std::set<int>>& ids,
+      std::map<std::pair<MediaType, int>, std::map<std::string, std::string>>& art);
+
   /*!
    * \brief Retrieve all art for the given video asset, with optional fallback to the art of the
    * parent/owner of the asset
