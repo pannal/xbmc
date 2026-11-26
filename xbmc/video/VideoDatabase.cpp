@@ -113,6 +113,11 @@ void CVideoDatabase::AddMissingColumns()
 
   AddMissingColumn("streamdetails", "strHdrTypeAlt", "text");
   AddMissingColumn("streamdetails", "strDvProfile", "text");
+  // MySQL's dataset maps numeric NULLs to zero. A character flag preserves the
+  // distinction between a legacy row (NULL) and an embedded subtitle ('0').
+  AddMissingColumn("settings", "SubtitleExternal", "char(1)");
+  AddMissingColumn("settings", "SubtitleLanguage", "text");
+  AddMissingColumn("settings", "SubtitleFilename", "text");
 
   // HdrTypeToString() used to return "hdr10+", which a skin expression can never match
   // because '+' is the AND operator. No build could store that by scanning - detecting
@@ -212,7 +217,8 @@ void CVideoDatabase::CreateTables()
               "VolumeAmplification float, AudioDelay float, ResumeTime integer,"
               "Sharpness float, NoiseReduction float, NonLinStretch bool, PostProcess bool,"
               "ScalingMethod integer, DeinterlaceMode integer, StereoMode integer, StereoInvert bool, VideoStream integer,"
-              "TonemapMethod integer, TonemapParam float, Orientation integer, CenterMixLevel integer)\n");
+              "TonemapMethod integer, TonemapParam float, Orientation integer, CenterMixLevel integer,"
+              "SubtitleExternal char(1), SubtitleLanguage text, SubtitleFilename text)\n");
 
   CLog::Log(LOGINFO, "create stacktimes table");
   m_pDS->exec("CREATE TABLE stacktimes (idFile integer, times text)\n");
@@ -5032,6 +5038,12 @@ bool CVideoDatabase::GetVideoSettings(const std::string &filePath, CVideoSetting
   return GetVideoSettings(GetFileId(filePath), settings);
 }
 
+static bool HasSubtitleIdentityColumns(Dataset& dataset)
+{
+  return dataset.fieldIndex("SubtitleExternal") >= 0 &&
+         dataset.fieldIndex("SubtitleLanguage") >= 0 && dataset.fieldIndex("SubtitleFilename") >= 0;
+}
+
 bool CVideoDatabase::GetVideoSettings(int idFile, CVideoSettings &settings)
 {
   try
@@ -5062,6 +5074,16 @@ bool CVideoDatabase::GetVideoSettings(int idFile, CVideoSettings &settings)
       settings.m_SubtitleDelay = m_pDS->fv("SubtitleDelay").get_asFloat();
       settings.m_SubtitleOn = m_pDS->fv("SubtitlesOn").get_asBool();
       settings.m_SubtitleStream = m_pDS->fv("SubtitleStream").get_asInt();
+      settings.m_subtitleIdentity.reset();
+      // A stock client can replace an identity-backed choice by writing an explicit index.
+      if (settings.m_SubtitleStream < 0 && HasSubtitleIdentityColumns(*m_pDS) &&
+          !m_pDS->fv("SubtitleExternal").get_asString().empty())
+      {
+        settings.m_subtitleIdentity =
+            SubtitleIdentity{m_pDS->fv("SubtitleExternal").get_asBool(),
+                             m_pDS->fv("SubtitleLanguage").get_asString(),
+                             m_pDS->fv("SubtitleFilename").get_asString()};
+      }
       settings.m_ViewMode = m_pDS->fv("ViewMode").get_asInt();
       settings.m_ResumeTime = m_pDS->fv("ResumeTime").get_asInt();
       settings.m_InterlaceMethod = (EINTERLACEMETHOD)m_pDS->fv("Deinterlace").get_asInt();
@@ -5106,7 +5128,28 @@ void CVideoDatabase::SetVideoSettings(int idFile, const CVideoSettings &setting)
       return;
     std::string strSQL = PrepareSQL("select * from settings where idFile=%i", idFile);
     m_pDS->query( strSQL );
-    if (m_pDS->num_rows() > 0)
+    const bool update = m_pDS->num_rows() > 0;
+    const bool hasIdentityColumns = HasSubtitleIdentityColumns(*m_pDS);
+    int subtitleStream = setting.m_SubtitleStream;
+    std::string identitySQL;
+    if (hasIdentityColumns)
+    {
+      if (const auto& identity = setting.m_subtitleIdentity)
+      {
+        // The live index may refer to a different track on the next open.
+        subtitleStream = -1;
+        identitySQL =
+            PrepareSQL(update ? ",SubtitleExternal=%i,SubtitleLanguage='%s',SubtitleFilename='%s'"
+                              : ",%i,'%s','%s'",
+                       identity->external, identity->language.c_str(), identity->filename.c_str());
+      }
+      else
+      {
+        identitySQL = update ? ",SubtitleExternal=NULL,SubtitleLanguage=NULL,SubtitleFilename=NULL"
+                             : ",NULL,NULL,NULL";
+      }
+    }
+    if (update)
     {
       m_pDS->close();
       // update the item
@@ -5121,7 +5164,7 @@ void CVideoDatabase::SetVideoSettings(int idFile, const CVideoSettings &setting)
           static_cast<double>(setting.m_CustomZoomAmount),
           static_cast<double>(setting.m_CustomPixelRatio),
           static_cast<double>(setting.m_CustomVerticalShift), setting.m_AudioStream,
-          setting.m_SubtitleStream, static_cast<double>(setting.m_SubtitleDelay),
+          subtitleStream, static_cast<double>(setting.m_SubtitleDelay),
           setting.m_SubtitleOn, static_cast<double>(setting.m_Brightness),
           static_cast<double>(setting.m_Contrast), static_cast<double>(setting.m_Gamma),
           static_cast<double>(setting.m_VolumeAmplification),
@@ -5131,11 +5174,13 @@ void CVideoDatabase::SetVideoSettings(int idFile, const CVideoSettings &setting)
       std::string strSQL2;
 
       strSQL2 = PrepareSQL("ResumeTime=%i,StereoMode=%i,StereoInvert=%i,VideoStream=%i,"
-                           "TonemapMethod=%i,TonemapParam=%f where idFile=%i\n",
+                           "TonemapMethod=%i,TonemapParam=%f",
                            setting.m_ResumeTime, setting.m_StereoMode, setting.m_StereoInvert,
                            setting.m_VideoStream, setting.m_ToneMapMethod,
-                           static_cast<double>(setting.m_ToneMapParam), idFile);
+                           static_cast<double>(setting.m_ToneMapParam));
       strSQL += strSQL2;
+      strSQL += identitySQL;
+      strSQL += PrepareSQL(" where idFile=%i", idFile);
       m_pDS->exec(strSQL);
       return ;
     }
@@ -5146,15 +5191,17 @@ void CVideoDatabase::SetVideoSettings(int idFile, const CVideoSettings &setting)
                 "AudioStream,SubtitleStream,SubtitleDelay,SubtitlesOn,Brightness,"
                 "Contrast,Gamma,VolumeAmplification,AudioDelay,"
                 "ResumeTime,"
-                "Sharpness,NoiseReduction,NonLinStretch,PostProcess,ScalingMethod,StereoMode,StereoInvert,VideoStream,TonemapMethod,TonemapParam,Orientation,CenterMixLevel) "
-              "VALUES ";
+                "Sharpness,NoiseReduction,NonLinStretch,PostProcess,ScalingMethod,StereoMode,StereoInvert,VideoStream,TonemapMethod,TonemapParam,Orientation,CenterMixLevel";
+      if (hasIdentityColumns)
+        strSQL += ",SubtitleExternal,SubtitleLanguage,SubtitleFilename";
+      strSQL += ") VALUES ";
       strSQL += PrepareSQL(
-          "(%i,%i,%i,%f,%f,%f,%i,%i,%f,%i,%f,%f,%f,%f,%f,%i,%f,%f,%i,%i,%i,%i,%i,%i,%i,%f,%i,%i)",
+          "(%i,%i,%i,%f,%f,%f,%i,%i,%f,%i,%f,%f,%f,%f,%f,%i,%f,%f,%i,%i,%i,%i,%i,%i,%i,%f,%i,%i",
           idFile, setting.m_InterlaceMethod, setting.m_ViewMode,
           static_cast<double>(setting.m_CustomZoomAmount),
           static_cast<double>(setting.m_CustomPixelRatio),
           static_cast<double>(setting.m_CustomVerticalShift), setting.m_AudioStream,
-          setting.m_SubtitleStream, static_cast<double>(setting.m_SubtitleDelay),
+          subtitleStream, static_cast<double>(setting.m_SubtitleDelay),
           setting.m_SubtitleOn, static_cast<double>(setting.m_Brightness),
           static_cast<double>(setting.m_Contrast), static_cast<double>(setting.m_Gamma),
           static_cast<double>(setting.m_VolumeAmplification),
@@ -5164,6 +5211,8 @@ void CVideoDatabase::SetVideoSettings(int idFile, const CVideoSettings &setting)
           setting.m_StereoMode, setting.m_StereoInvert, setting.m_VideoStream,
           setting.m_ToneMapMethod, static_cast<double>(setting.m_ToneMapParam),
           setting.m_Orientation, setting.m_CenterMixLevel);
+      strSQL += identitySQL;
+      strSQL += ")";
       m_pDS->exec(strSQL);
     }
   }

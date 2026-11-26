@@ -10,6 +10,8 @@
 
 #include "utils/Map.h"
 
+#include <optional>
+#include <string>
 #include <string_view>
 
 #include <fmt/format.h>
@@ -191,6 +193,18 @@ enum ViewMode
   ViewModeZoom110Width
 };
 
+struct SubtitleIdentity
+{
+  bool external;
+  std::string language;
+  std::string filename; // Basename of a discovered sidecar, when available.
+
+  bool operator==(const SubtitleIdentity& other) const
+  {
+    return external == other.external && language == other.language && filename == other.filename;
+  }
+};
+
 class CVideoSettings
 {
 public:
@@ -208,7 +222,8 @@ public:
   bool  m_CustomNonLinStretch;
   int m_AudioStream;
   float m_VolumeAmplification;
-  int m_SubtitleStream;
+  int m_SubtitleStream; // Live selection, or the saved index from a legacy per-file setting.
+  std::optional<SubtitleIdentity> m_subtitleIdentity;
   float m_SubtitleDelay;
   int m_subtitleVerticalPosition{0};
   bool m_subtitleVerticalPositionSave{false};
@@ -240,7 +255,7 @@ public:
   CVideoSettingsLocked(CVideoSettingsLocked const &) = delete;
   void operator=(CVideoSettingsLocked const &x) = delete;
 
-  void SetSubtitleStream(int stream);
+  void SetSubtitleStream(int stream, std::optional<SubtitleIdentity> identity);
   void SetSubtitleVisible(bool visible);
   void SetAudioStream(int stream);
   void SetVideoStream(int stream);

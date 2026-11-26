@@ -446,6 +446,18 @@ void CSelectionStreams::Clear(StreamType type, StreamSource source)
                                   (source == 0 || stream.source == source);
                                 });
   m_Streams.erase(new_end, m_Streams.end());
+  if (type == STREAM_NONE || type == STREAM_SUBTITLE)
+    ReindexSubtitles();
+}
+
+void CSelectionStreams::ReindexSubtitles()
+{
+  int index = 0;
+  for (auto& stream : m_Streams)
+  {
+    if (stream.type == STREAM_SUBTITLE)
+      stream.type_index = index++;
+  }
 }
 
 SelectionStream& CSelectionStreams::Get(StreamType type, int index)
@@ -526,6 +538,55 @@ int CSelectionStreams::Source(StreamSource source, const std::string& filename)
   return index + 1;
 }
 
+SubtitleIdentity SelectionStream::GetSubtitleIdentity() const
+{
+  const auto kind = STREAM_SOURCE_MASK(source);
+  const bool external = kind == STREAM_SOURCE_TEXT || kind == STREAM_SOURCE_DEMUX_SUB;
+  SubtitleIdentity identity{external, {}, {}};
+  // Runtime addon attachments have no rediscoverable file on the next open.
+  if (external && !isFileSidecar)
+    return identity;
+
+  // Stream registration already converts subtitle languages to ISO 639-2/B.
+  if (!StringUtils::EqualsNoCase(language, "und"))
+    identity.language = language;
+
+  if (external && filename.find_first_of("?#|") == std::string::npos &&
+      (!URIUtils::IsURL(filename) || URIUtils::IsSmb(filename) || URIUtils::IsNfs(filename) ||
+       URIUtils::IsProtocol(filename, "file")))
+    identity.filename = URIUtils::GetFileName(filename);
+  return identity;
+}
+
+int CSelectionStreams::ResolveSubtitle(const SubtitleIdentity& identity) const
+{
+  int exactIndex = -1, exactMatches = 0;
+  int languageIndex = -1, languageMatches = 0;
+  for (const auto& stream : m_Streams)
+  {
+    if (stream.type != STREAM_SUBTITLE)
+      continue;
+    const auto candidate = stream.GetSubtitleIdentity();
+    if (candidate.external != identity.external ||
+        !StringUtils::EqualsNoCase(candidate.language, identity.language))
+      continue;
+
+    if (!identity.language.empty())
+    {
+      languageIndex = stream.type_index;
+      ++languageMatches;
+    }
+    if (!identity.filename.empty() && candidate.filename == identity.filename)
+    {
+      exactIndex = stream.type_index;
+      ++exactMatches;
+    }
+  }
+  if (exactMatches == 1)
+    return exactIndex;
+  return languageMatches == 1 ? languageIndex : -1;
+}
+
 bool CSelectionStreams::OrderDownloadedSubtitles(const std::vector<std::string>& files,
                                                  const SelectionStream& downloaded)
 {
@@ -558,12 +619,7 @@ bool CSelectionStreams::OrderDownloadedSubtitles(const std::vector<std::string>&
                  (source == STREAM_SOURCE_TEXT || source == STREAM_SOURCE_DEMUX_SUB);
         });
   }
-  int index = 0;
-  for (auto& stream : m_Streams)
-  {
-    if (stream.type == STREAM_SUBTITLE)
-      stream.type_index = index++;
-  }
+  ReindexSubtitles();
   return true;
 }
 
@@ -574,6 +630,7 @@ void CSelectionStreams::Update(SelectionStream& s)
   {
     SelectionStream& o = Get(s.type, index);
     s.type_index = o.type_index;
+    s.isFileSidecar = s.isFileSidecar || o.isFileSidecar;
     o = s;
   }
   else
@@ -1055,6 +1112,8 @@ bool CVideoPlayer::OpenInputStream()
         !m_item.GetProperty("no-ext-subs-scan").asBoolean(false))
       CUtil::ScanForExternalSubtitles(m_item.GetDynPath(), filenames);
 
+    const size_t scannedFiles = filenames.size();
+
     // load any subtitles from file item
     std::string key("subtitle:1");
     for (unsigned s = 1; m_item.HasProperty(key); key = StringUtils::Format("subtitle:{}", ++s))
@@ -1067,13 +1126,13 @@ bool CVideoPlayer::OpenInputStream()
       {
         std::string strSubFile;
         if (CUtil::FindVobSubPair( filenames, filenames[i], strSubFile))
-          AddSubtitleFile(filenames[i], strSubFile);
+          AddSubtitleFile(filenames[i], strSubFile, i < scannedFiles);
       }
       else
       {
         if (!CUtil::IsVobSub(filenames, filenames[i] ))
         {
-          AddSubtitleFile(filenames[i]);
+          AddSubtitleFile(filenames[i], {}, i < scannedFiles);
         }
       }
     } // end loop over all subtitle files
@@ -1214,12 +1273,26 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
   }
 
   // enable  or disable subtitles
-  bool visible = m_processInfo->GetVideoSettings().m_SubtitleOn;
+  const auto settings = m_processInfo->GetVideoSettings();
+  bool visible = settings.m_SubtitleOn;
 
   // open subtitle stream
   SelectionStream as = m_SelectionStreams.Get(STREAM_AUDIO, GetAudioStream());
-  PredicateSubtitlePriority psp(as.language, m_processInfo->GetVideoSettings().m_SubtitleStream,
-                                visible);
+  int savedIndex = settings.m_SubtitleStream;
+  if (settings.m_subtitleIdentity)
+  {
+    // A demux stream change can reopen defaults within the same playback. Keep an
+    // explicitly opened track (including a temporary addon attachment) while it exists.
+    const int liveIndex = m_SelectionStreams.TypeIndexOf(
+        STREAM_SUBTITLE, m_CurrentSubtitle.source, m_CurrentSubtitle.demuxerId, m_CurrentSubtitle.id);
+    if (savedIndex >= 0 && liveIndex >= 0 &&
+        m_SelectionStreams.Get(STREAM_SUBTITLE, liveIndex).GetSubtitleIdentity() ==
+            *settings.m_subtitleIdentity)
+      savedIndex = liveIndex;
+    else
+      savedIndex = m_SelectionStreams.ResolveSubtitle(*settings.m_subtitleIdentity);
+  }
+  PredicateSubtitlePriority psp(as.language, savedIndex, visible);
   valid = false;
   // We need to close CC subtitles to avoid conflicts with external sub stream
   if (m_CurrentSubtitle.source == STREAM_SOURCE_VIDEOMUX)
@@ -4456,16 +4529,16 @@ void CVideoPlayer::HandleMessages()
         index = static_cast<int>(std::distance(tracks.begin(), it));
       }
       SelectionStream& st = m_SelectionStreams.Get(STREAM_SUBTITLE, index);
+      std::optional<SubtitleIdentity> identity;
       if(st.source != STREAM_SOURCE_NONE)
       {
         if(st.source == STREAM_SOURCE_NAV && m_pInputStream && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD))
         {
           std::shared_ptr<CDVDInputStreamNavigator> pStream = std::static_pointer_cast<CDVDInputStreamNavigator>(m_pInputStream);
-          if(pStream->SetActiveSubtitleStream(st.id))
-          {
-            m_dvd.iSelectedSPUStream = -1;
-            CloseStream(m_CurrentSubtitle, false);
-          }
+          if (!pStream->SetActiveSubtitleStream(st.id))
+            continue;
+          m_dvd.iSelectedSPUStream = -1;
+          CloseStream(m_CurrentSubtitle, false);
         }
         else
         {
@@ -4482,10 +4555,14 @@ void CVideoPlayer::HandleMessages()
 #endif
 
           // PM4K reselects the current embedded track to restart subtitle rendering.
-          ReopenSubtitleStream(st.demuxerId, st.id, st.source);
+          identity = st.GetSubtitleIdentity();
+          if (!ReopenSubtitleStream(st.demuxerId, st.id, st.source))
+            continue;
         }
       }
-      m_processInfo->GetVideoSettingsLocked().SetSubtitleStream(index);
+      else if (index != -1)
+        continue;
+      m_processInfo->GetVideoSettingsLocked().SetSubtitleStream(index, std::move(identity));
       NotifySubtitleUpdate(SubtitleChange::FLAG_STREAMINFO_CHANGE);
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SET_SUBTITLESTREAM_VISIBLE))
@@ -4667,7 +4744,10 @@ void CVideoPlayer::HandleMessages()
       const auto msg = std::static_pointer_cast<CDVDMsgSubtitleAddFile>(pMsg);
       if (!msg->m_download.videoPath.empty() && msg->m_download.videoPath != m_item.GetDynPath())
         continue;
-      int index = AddSubtitleFile(msg->m_value);
+      const auto& sidecars = msg->m_download.sidecars;
+      const bool isFileSidecar =
+          std::find(sidecars.begin(), sidecars.end(), msg->m_value) != sidecars.end();
+      int index = AddSubtitleFile(msg->m_value, {}, isFileSidecar);
       if (index >= 0)
       {
         // Select the file before a queued audio change can adapt the previous forced subtitle.
@@ -4677,8 +4757,9 @@ void CVideoPlayer::HandleMessages()
             (source == STREAM_SOURCE_TEXT || source == STREAM_SOURCE_DEMUX_SUB) &&
             ReopenSubtitleStream(stream.demuxerId, stream.id, stream.source))
         {
-          index = OrderDownloadedSubtitle(index, msg->m_download.sidecars);
-          m_processInfo->GetVideoSettingsLocked().SetSubtitleStream(index);
+          const auto identity = stream.GetSubtitleIdentity();
+          index = OrderDownloadedSubtitle(index, sidecars);
+          m_processInfo->GetVideoSettingsLocked().SetSubtitleStream(index, identity);
           SetSubtitleVisibleInternal(true);
           NotifySubtitleUpdate(SubtitleChange::FLAG_STREAMINFO_CHANGE);
         }
@@ -7174,7 +7255,9 @@ double CVideoPlayer::GetQueueTime()
   return std::max(a, v) * m_messageQueueTimeSize * 1000.0 / 100;
 }
 
-int CVideoPlayer::AddSubtitleFile(const std::string& filename, const std::string& subfilename)
+int CVideoPlayer::AddSubtitleFile(const std::string& filename,
+                                  const std::string& subfilename,
+                                  bool isFileSidecar)
 {
   std::string ext = URIUtils::GetExtension(filename);
   std::string vobsubfile = subfilename;
@@ -7227,6 +7310,7 @@ int CVideoPlayer::AddSubtitleFile(const std::string& filename, const std::string
         sub->demuxerId, sub->uniqueId);
       SelectionStream& stream = m_SelectionStreams.Get(STREAM_SUBTITLE, index);
 
+      stream.isFileSidecar = stream.isFileSidecar || isFileSidecar;
       if (stream.name.empty())
         stream.name = info.name;
 
@@ -7250,10 +7334,11 @@ int CVideoPlayer::AddSubtitleFile(const std::string& filename, const std::string
     // if this looks like vobsub file (i.e. .idx found), add it as such
     std::string vobsubidx = CUtil::GetVobSubIdxFromSub(filename);
     if (!vobsubidx.empty())
-      return AddSubtitleFile(vobsubidx, filename);
+      return AddSubtitleFile(vobsubidx, filename, isFileSidecar);
   }
 
   SelectionStream s;
+  s.isFileSidecar = isFileSidecar;
   s.source   = m_SelectionStreams.Source(STREAM_SOURCE_TEXT, filename);
   s.type     = STREAM_SUBTITLE;
   s.id       = 0;
@@ -7801,6 +7886,7 @@ void CVideoPlayer::UpdateContentState()
     CVideoSettings settings{m_processInfo->GetVideoSettings()};
     settings.m_AudioStream = m_content.m_audioIndex;
     settings.m_SubtitleStream = m_content.m_subtitleIndex;
+    settings.m_subtitleIdentity.reset();
     m_processInfo->SetVideoSettings(settings);
   }
 }

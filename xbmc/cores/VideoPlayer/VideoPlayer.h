@@ -21,6 +21,7 @@
 #include "VideoPlayerTeletext.h"
 #include "cores/IPlayer.h"
 #include "cores/MenuType.h"
+#include "cores/VideoSettings.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
 #include "guilib/DispResource.h"
@@ -186,6 +187,9 @@ public:
 //------------------------------------------------------------------------------
 struct SelectionStream
 {
+  SubtitleIdentity GetSubtitleIdentity() const;
+
+  bool isFileSidecar{false};
   StreamType type = STREAM_NONE;
   int type_index = 0;
   std::string filename;
@@ -216,6 +220,7 @@ public:
   CSelectionStreams() = default;
 
   int TypeIndexOf(StreamType type, int source, int64_t demuxerId, int id) const;
+  int ResolveSubtitle(const SubtitleIdentity& identity) const;
   int CountTypeOfSource(StreamType type, StreamSource source) const;
   int CountType(StreamType type) const;
   SelectionStream& Get(StreamType type, int index);
@@ -242,6 +247,7 @@ public:
   std::vector<SelectionStream> m_Streams;
 
 protected:
+  void ReindexSubtitles();
   SelectionStream m_invalid;
 };
 
@@ -429,7 +435,9 @@ protected:
   void ProcessAudioID3Data(CDemuxStream* pStream, DemuxPacket* pPacket);
 
   int OrderDownloadedSubtitle(int index, const std::vector<std::string>& sidecars);
-  int  AddSubtitleFile(const std::string& filename, const std::string& subfilename = "");
+  int AddSubtitleFile(const std::string& filename,
+                      const std::string& subfilename,
+                      bool isFileSidecar);
 
   // Embedded text-subtitle seek-back recall: cache the selected text subtitle's
   // packets during playback and re-emit the event active at the target after a

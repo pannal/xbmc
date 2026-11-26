@@ -11,6 +11,7 @@
 #include "threads/CriticalSection.h"
 
 #include <mutex>
+#include <utility>
 
 CVideoSettings::CVideoSettings()
 {
@@ -56,6 +57,7 @@ bool CVideoSettings::operator!=(const CVideoSettings &right) const
   if (m_CustomNonLinStretch != right.m_CustomNonLinStretch) return true;
   if (m_AudioStream != right.m_AudioStream) return true;
   if (m_SubtitleStream != right.m_SubtitleStream) return true;
+  if (!(m_subtitleIdentity == right.m_subtitleIdentity)) return true;
   if (m_SubtitleDelay != right.m_SubtitleDelay) return true;
   if (m_subtitleVerticalPosition != right.m_subtitleVerticalPosition)
     return true;
@@ -89,10 +91,11 @@ CVideoSettingsLocked::CVideoSettingsLocked(CVideoSettings &vs, CCriticalSection 
 {
 }
 
-void CVideoSettingsLocked::SetSubtitleStream(int stream)
+void CVideoSettingsLocked::SetSubtitleStream(int stream, std::optional<SubtitleIdentity> identity)
 {
   std::unique_lock<CCriticalSection> lock(m_critSection);
   m_videoSettings.m_SubtitleStream = stream;
+  m_videoSettings.m_subtitleIdentity = std::move(identity);
 }
 
 void CVideoSettingsLocked::SetSubtitleVisible(bool visible)

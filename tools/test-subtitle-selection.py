@@ -50,9 +50,14 @@ def main():
     predicates = "\n".join(declaration(player, "class " + name) + ";"
                            for name in ("PredicateSubtitleFilter", "PredicateSubtitlePriority"))
     sort = declaration(player_h, "template<typename Compare>")
+    identity = declaration(read("xbmc/cores/VideoSettings.h"), "struct SubtitleIdentity")
+    identify = declaration(player, "SelectionStream::GetSubtitleIdentity(", include_return_type=True)
+    setter = declaration(read("xbmc/cores/VideoSettings.cpp"),
+                         "void CVideoSettingsLocked::SetSubtitleStream(")
     catalog = "\n".join(declaration(player, f"CSelectionStreams::{name}(", include_return_type=True)
                         .replace("CSelectionStreams::", "").replace("m_Streams", "streams")
-                        for name in ("TypeIndexOf", "OrderDownloadedSubtitles"))
+                        for name in ("TypeIndexOf", "CountType", "Update", "Clear", "ReindexSubtitles",
+                                     "OrderDownloadedSubtitles", "ResolveSubtitle"))
     startup = declaration(player, "void CVideoPlayer::OpenDefaultStreams(")
     startup = startup[startup.index("  // enable  or disable subtitles"):
                       startup.index("  // open teletext stream")]
@@ -74,15 +79,18 @@ def main():
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
-''' + flags + sources + types + source_mask + r'''
+''' + flags + sources + types + source_mask + '\n' + identity + r''';
 
 struct SelectionStream {
   int type_index = 0, id = 0, demuxerId = 0, source = STREAM_SOURCE_DEMUX;
   StreamFlags flags = FLAG_NONE;
   std::string language, filename;
   StreamType type = STREAM_SUBTITLE;
+  bool isFileSidecar = false;
+  SubtitleIdentity GetSubtitleIdentity() const;
 };
 struct CSettings {
   static constexpr int SETTING_LOCALE_SUBTITLELANGUAGE = 0;
@@ -107,6 +115,19 @@ struct StringUtils {
     return a == b;
   }
 };
+// Only the file-style URI schemes used by this fixture have a meaningful leaf.
+// Keep query-like suffixes intact so the production identity builder must reject them.
+struct URIUtils {
+  static bool IsURL(const std::string& path) { return path.find("://") != std::string::npos; }
+  static bool IsProtocol(const std::string& path, const std::string& scheme) {
+    return path.compare(0, scheme.size() + 3, scheme + "://") == 0;
+  }
+  static bool IsSmb(const std::string& path) { return IsProtocol(path, "smb"); }
+  static bool IsNfs(const std::string& path) { return IsProtocol(path, "nfs"); }
+  static std::string GetFileName(const std::string& path) {
+    return path.substr(path.find_last_of("/\\") + 1);
+  }
+};
 struct LangInfo {
   std::string audio, subtitle;
   std::string GetAudioLanguage(bool fallback) const {
@@ -122,7 +143,7 @@ struct LangCodeExpander {
     return StringUtils::EqualsNoCase(a, b);
   }
 } g_LangCodeExpander;
-''' + macro + predicates + r'''
+''' + identify + '\n' + macro + predicates + r'''
 
 struct SelectionStreams {
   std::vector<SelectionStream> streams;
@@ -141,12 +162,20 @@ struct SelectionStreams {
 struct VideoSettings {
   bool m_SubtitleOn = true;
   int m_SubtitleStream = -1;
-  void SetSubtitleStream(int index) { m_SubtitleStream = index; }
+  std::optional<SubtitleIdentity> m_subtitleIdentity = std::nullopt;
 };
+using CCriticalSection = std::recursive_mutex;
+struct CVideoSettingsLocked {
+  CCriticalSection& m_critSection;
+  VideoSettings& m_videoSettings;
+  void SetSubtitleStream(int, std::optional<SubtitleIdentity>);
+};
+''' + setter + r'''
 struct ProcessInfo {
   VideoSettings settings;
+  CCriticalSection lock;
   const VideoSettings& GetVideoSettings() const { return settings; }
-  VideoSettings& GetVideoSettingsLocked() { return settings; }
+  CVideoSettingsLocked GetVideoSettingsLocked() { return {lock, settings}; }
 };
 constexpr int DVDSTREAM_TYPE_DVD = 1, DVDSTREAM_TYPE_PVRMANAGER = 2;
 struct InputStream {
@@ -200,7 +229,6 @@ struct Queue {
 constexpr double DVD_NOPTS_VALUE = -1;
 double DVD_TIME_TO_MSEC(double pts) { return pts / 1000; }
 struct IDVDStreamPlayer { enum { SYNC_STARTING = 1 }; };
-using CCriticalSection = std::recursive_mutex;
 struct Player {
   std::shared_ptr<ProcessInfo> m_processInfo = std::make_shared<ProcessInfo>();
   std::shared_ptr<InputStream> m_pInputStream = std::make_shared<InputStream>();
@@ -235,14 +263,17 @@ struct Player {
   int GetSubtitle() { return publishedSubtitle; }
   enum SubtitleChange { FLAG_STREAMINFO_CHANGE = 1 };
   void NotifySubtitleUpdate(int) {}
-  int AddSubtitleFile(const std::string& path) {
-    if (path == "episode.nl.srt") {
-      SelectionStream dutch;
-      dutch.type_index = static_cast<int>(m_SelectionStreams.streams.size());
-      dutch.source = STREAM_SOURCE_TEXT + 1;
-      dutch.language = "dut";
-      dutch.filename = path;
-      m_SelectionStreams.streams.push_back(dutch);
+  int AddSubtitleFile(const std::string& path, const std::string&, bool isFileSidecar) {
+    if (path == "episode.nl.srt" || path == "episode.de.srt") {
+      const bool dutch = path == "episode.nl.srt";
+      SelectionStream sidecar;
+      sidecar.source = STREAM_SOURCE_TEXT + (dutch ? 1 : 2);
+      sidecar.language = dutch ? "dut" : "ger";
+      sidecar.filename = path;
+      sidecar.isFileSidecar = isFileSidecar;
+      m_SelectionStreams.Update(sidecar);
+      UpdateContent();
+      return sidecar.type_index;
     } else if (path != "example.en.srt") {
       return -1;
     }
@@ -357,11 +388,9 @@ void checkOrdering() {
         for (int saved : {-1, 0}) {
           configure(preference, "", hearing);
           // Use the same production constructor as OpenDefaultStreams.
-          Player p;
-          p.m_processInfo->settings = {on, saved};
-          auto& m_processInfo = p.m_processInfo;
           SelectionStream as = sub(0, "eng");
           const bool visible = on;
+          const int savedIndex = saved;
           /* PRIORITY_CONSTRUCTOR */
           const size_t n = streams.size();
           std::vector<std::vector<bool>> less(n, std::vector<bool>(n));
@@ -477,16 +506,21 @@ void checkNativeDownloadReplay() {
   p.QueueExternalSrt("episode.nl.srt", true);
   p.Drain();
   const int saved = p.m_processInfo->settings.m_SubtitleStream;
+  const SubtitleIdentity downloaded{true, "dut", "episode.nl.srt"};
+  expect(p.m_processInfo->settings.m_subtitleIdentity == downloaded,
+         "a native download saves the selected file identity across reordering");
   expect(saved == 0 && p.GetSubtitle() == saved && p.visible &&
          p.m_content.m_selectionStreams.Get(STREAM_SUBTITLE, saved).language == "dut",
          "native download publishes and saves the Dutch sidecar at its startup index");
 
   Player replay;
   auto dutch = sub(0, "dut", FLAG_NONE, STREAM_SOURCE_TEXT);
+  dutch.isFileSidecar = true;
+  dutch.filename = "episode.nl.srt";
   english.type_index = 1;
   replay.m_SelectionStreams.streams = {dutch, english}; // startup scans sidecars before the MKV
   replay.m_SelectionStreams.audio.language = "eng";
-  replay.m_processInfo->settings = {true, saved};
+  replay.m_processInfo->settings = {true, -1, downloaded};
   configure("eng", "eng", false);
   replay.Start();
   expect(replay.visible && replay.m_CurrentSubtitle.source == STREAM_SOURCE_TEXT,
@@ -553,6 +587,158 @@ void checkNativeDownloadReplay() {
   temporary.Drain();
   expect(temporary.GetSubtitle() == 1 && temporary.visible,
          "a temporary subtitle outside the startup scan remains appended");
+  const SubtitleIdentity transient{true, {}, {}};
+  expect(temporary.m_processInfo->settings.m_subtitleIdentity == transient,
+         "a temporary download leaves a nonpositional external selection for replay");
+  configure("eng", "", false);
+  // Rebuilding the demux catalogue drops the embedded stream but keeps the attachment.
+  auto& rebuilt = temporary.m_SelectionStreams;
+  rebuilt.Clear(STREAM_NONE, STREAM_SOURCE_DEMUX);
+  rebuilt.Update(english);
+  expect(rebuilt.streams.size() == 2 && rebuilt.Get(STREAM_SUBTITLE, 0).type_index == 0 &&
+         rebuilt.Get(STREAM_SUBTITLE, 0).source == STREAM_SOURCE_TEXT + 1 &&
+         rebuilt.Get(STREAM_SUBTITLE, 1).type_index == 1 &&
+         rebuilt.Get(STREAM_SUBTITLE, 1).source == STREAM_SOURCE_DEMUX,
+         "demux rebuild gives the surviving attachment and re-added embedded stream distinct indices");
+  temporary.UpdateContent();
+  temporary.Start();
+  expect(temporary.GetSubtitle() == 0 && temporary.visible &&
+         temporary.m_CurrentSubtitle.source == STREAM_SOURCE_TEXT + 1,
+         "same-session demux rebuild keeps the active temporary attachment at its new index");
+  Player nextPlayback;
+  nextPlayback.m_processInfo->settings = {true, -1, transient};
+  nextPlayback.m_SelectionStreams.streams = temporary.m_SelectionStreams.streams;
+  nextPlayback.Start();
+  expect(nextPlayback.GetSubtitle() == 1 && nextPlayback.visible &&
+         nextPlayback.m_CurrentSubtitle.source == STREAM_SOURCE_DEMUX,
+         "fresh playback with the same candidates prefers English over a temporary attachment");
+}
+
+void checkSubtitleIdentity() {
+  auto dutch = sub(0, "dut", FLAG_NONE, STREAM_SOURCE_TEXT);
+  dutch.filename = "smb://user:password@host/private/episode.nl.srt";
+  dutch.isFileSidecar = true;
+  const SubtitleIdentity expected{true, "dut", "episode.nl.srt"};
+  expect(dutch.GetSubtitleIdentity() == expected, "only the SMB sidecar leaf is saved");
+  for (const auto& path : {"C:\\private\\episode.nl.srt", "/private/episode.nl.srt",
+                           "nfs://host/private/episode.nl.srt", "file:///private/episode.nl.srt"}) {
+    dutch.filename = path;
+    expect(dutch.GetSubtitleIdentity() == expected, "file-backed sidecar basename");
+  }
+  for (const auto& path : {"https://host/123.srt?token=test", "plugin://addon/test.srt",
+                           "smb://host/test.srt|secret", "/path/test.srt?secret",
+                           "smb://host/episode.nl.srt?redirect=/session/value.srt",
+                           "nfs://host/test.srt#secret"}) {
+    dutch.filename = path;
+    expect(dutch.GetSubtitleIdentity().filename.empty(), "no unsafe basename is persisted");
+  }
+  dutch.filename = "https://host/library/streams/123.srt?token=test";
+  dutch.isFileSidecar = false;
+  expect(dutch.GetSubtitleIdentity() == SubtitleIdentity{true, {}, {}},
+         "a PM4K attachment persists neither its URL identifier nor stream language");
+
+  dutch.filename = "episode.nl.srt";
+  dutch.isFileSidecar = true;
+  auto secondDutch = dutch;
+  secondDutch.type_index = 1;
+  secondDutch.filename = "episode.nl.sdh.srt";
+  const auto embedded = sub(2, "dut");
+  SelectionStreams catalog;
+  catalog.streams = {dutch, secondDutch, embedded};
+  expect(catalog.ResolveSubtitle(secondDutch.GetSubtitleIdentity()) == 1,
+         "two same-language sidecars can be distinguished by basename");
+  expect(catalog.ResolveSubtitle({true, "dut", "missing.srt"}) == -1,
+         "an absent basename cannot choose between same-language sidecars");
+  expect(catalog.ResolveSubtitle({false, "dut", {}}) == 2,
+         "embedded and external tracks of the same language remain distinct");
+  catalog.streams[1].filename = dutch.filename;
+  expect(catalog.ResolveSubtitle(expected) == -1, "two exact matches remain ambiguous");
+  catalog.streams[1].language = "eng";
+  expect(catalog.ResolveSubtitle({true, "dut", "old.nl.srt"}) == 0,
+         "a renamed sidecar can be restored by unique language within its source");
+  catalog.streams[0].language = "und";
+  expect(catalog.ResolveSubtitle({true, {}, dutch.filename}) == 0 &&
+         catalog.ResolveSubtitle({true, {}, {}}) == -1,
+         "unknown language needs an exact stable basename");
+  catalog.streams[1] = sub(1, "dut");
+  expect(catalog.ResolveSubtitle({false, "dut", {}}) == -1,
+         "duplicate embedded languages cannot reuse a positional index");
+  auto french = sub(2, "fre", FLAG_NONE, STREAM_SOURCE_DEMUX_SUB);
+  french.filename = "/show/episode.idx";
+  french.isFileSidecar = true;
+  auto frenchCommentary = french;
+  frenchCommentary.type_index = 3;
+  frenchCommentary.id = 8;
+  catalog.streams = {french, frenchCommentary};
+  expect(catalog.ResolveSubtitle(french.GetSubtitleIdentity()) == -1,
+         "same-language substreams of one VobSub file cannot be uniquely restored");
+
+  Player replay;
+  auto preferred = sub(0, "eng", FLAG_DEFAULT);
+  auto staleSlot = sub(1, "jpn");
+  replay.m_SelectionStreams.streams = {preferred, staleSlot};
+  replay.m_SelectionStreams.audio.language = "eng";
+  configure("eng", "", false);
+  replay.m_processInfo->settings = {true, 1, expected};
+  replay.Start();
+  expect(replay.GetSubtitle() == 0 && replay.visible &&
+         replay.m_processInfo->settings.m_subtitleIdentity == expected,
+         "a missing identity uses normal selection and preserves the requested sidecar");
+  dutch.type_index = 2;
+  replay.m_SelectionStreams.streams.push_back(dutch);
+  replay.Start();
+  expect(replay.GetSubtitle() == 2, "the returning sidecar wins over a stale numerical slot");
+  replay.UpdateContent();
+  replay.Select(2);
+  replay.failedStreams = {staleSlot.id};
+  replay.Select(1);
+  expect(replay.m_processInfo->settings.m_subtitleIdentity == expected &&
+         replay.m_processInfo->settings.m_SubtitleStream == 2,
+         "failed manual stream open leaves the previous saved identity and numeric value intact");
+  replay.Select(-1);
+  expect(!replay.m_processInfo->settings.m_subtitleIdentity &&
+         replay.m_processInfo->settings.m_SubtitleStream == -1,
+         "an explicit reset clears the saved identity and index");
+}
+
+void checkTwoDownloads() {
+  const std::string dutch = "episode.nl.srt";
+  const std::string german = "episode.de.srt";
+  const auto embedded = sub(0, "eng");
+  Player playing;
+  playing.m_SelectionStreams.streams = {embedded};
+  playing.sidecars = {dutch};
+  playing.QueueExternalSrt(dutch, true);
+  playing.Drain();
+  playing.sidecars = {dutch, german};
+  playing.QueueExternalSrt(german, true);
+  playing.Drain();
+  expect(playing.m_SelectionStreams.streams.size() == 3 &&
+         playing.m_SelectionStreams.Get(STREAM_SUBTITLE, 0).filename == dutch &&
+         playing.m_SelectionStreams.Get(STREAM_SUBTITLE, 1).filename == german &&
+         playing.GetSubtitle() == 1 && playing.visible,
+         "downloading Dutch then German installs each sidecar once and selects German");
+  configure("eng", "", false);
+  for (const auto& chosen : {german, dutch}) {
+    if (chosen == dutch)
+      playing.Select(0);
+    const auto identity = playing.m_processInfo->settings.m_subtitleIdentity;
+    expect(identity && identity->filename == chosen,
+           "latest download or subsequent manual selection records the chosen sidecar");
+    for (const auto& discovery : {std::vector<std::string>{german, dutch},
+                                  std::vector<std::string>{dutch, german}}) {
+      Player fresh;
+      for (const auto& file : discovery)
+        fresh.AddSubtitleFile(file, {}, true);
+      auto english = embedded;
+      fresh.m_SelectionStreams.Update(english);
+      fresh.m_processInfo->settings = {true, -1, identity};
+      fresh.Start();
+      expect(fresh.GetSubtitle() >= 0 && fresh.visible &&
+             fresh.m_SelectionStreams.Get(STREAM_SUBTITLE, fresh.GetSubtitle()).filename == chosen,
+             "fresh playback honors the requested sidecar in either discovery order");
+    }
+  }
 }
 
 int main() {
@@ -631,6 +817,8 @@ int main() {
   checkRuntimeVisibility();
   checkParadiseAutoplay();
   checkNativeDownloadReplay();
+  checkSubtitleIdentity();
+  checkTwoDownloads();
   std::cout << checks << " subtitle checks, " << failures << " failures\n";
   return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }
