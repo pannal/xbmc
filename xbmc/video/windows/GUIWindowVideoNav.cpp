@@ -316,16 +316,6 @@ int CGUIWindowVideoNav::GetFirstUnwatchedItemIndex(bool includeAllSeasons, bool 
   return iIndex;
 }
 
-bool CGUIWindowVideoNav::Update(const std::string &strDirectory, bool updateFilterPath /* = true */)
-{
-  if (!CGUIWindowVideoBase::Update(strDirectory, updateFilterPath))
-    return false;
-
-  SelectFirstUnwatched();
-
-  return true;
-}
-
 void CGUIWindowVideoNav::SelectFirstUnwatched() {
   // Check if we should select the first unwatched item
   SelectFirstUnwatchedItem selectFirstUnwatched = GetSettingSelectFirstUnwatchedItem();

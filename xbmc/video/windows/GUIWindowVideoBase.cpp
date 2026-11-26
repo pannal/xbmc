@@ -66,6 +66,7 @@
 
 #include <chrono>
 #include <memory>
+#include <utility>
 
 using namespace XFILE;
 using namespace VIDEODATABASEDIRECTORY;
@@ -118,6 +119,7 @@ bool CGUIWindowVideoBase::OnMessage(CGUIMessage& message)
   {
   case GUI_MSG_WINDOW_DEINIT:
     m_thumbLoaderPending = false;
+    m_confirmThumbViewport = false;
     if (m_thumbLoader.IsLoading())
       m_thumbLoader.StopThread();
     m_database.Close();
@@ -977,6 +979,7 @@ bool CGUIWindowVideoBase::OnPlayMedia(const std::shared_ptr<CFileItem>& pItem,
   itemCopy->SetProperty("playlist_type_hint", m_guiState->GetPlaylist());
 
   m_thumbLoaderPending = false;
+  m_confirmThumbViewport = false;
   if (m_thumbLoader.IsLoading())
     m_thumbLoader.StopAsync();
 
@@ -1159,11 +1162,20 @@ bool CGUIWindowVideoBase::Update(const std::string &strDirectory, bool updateFil
     m_thumbLoader.StopThread();
 
   m_thumbLoaderPending = false;
-  if (!CGUIMediaWindow::Update(strDirectory, updateFilterPath))
+  m_confirmThumbViewport = false;
+  // Filtering binds the sorted list before Update restores the selection from history.
+  const bool wasDeferred = std::exchange(m_deferThumbLoader, true);
+  const bool updated = CGUIMediaWindow::Update(strDirectory, updateFilterPath);
+  m_deferThumbLoader = wasDeferred;
+  if (!updated)
+  {
+    StartThumbLoader(); // a recursive Update may have opened a fallback directory
     return false;
+  }
 
   UpdateVideoVersionItems();
-
+  SelectFirstUnwatched();
+  StartThumbLoader();
   UpdateVideoVersionItemsLabel(strDirectory);
 
   return true;
@@ -1258,32 +1270,37 @@ void CGUIWindowVideoBase::GetGroupedItems(CFileItemList &items)
   m_thumbLoaderPending = true;
 }
 
+void CGUIWindowVideoBase::OnFilterItems(const std::string& filter)
+{
+  CGUIMediaWindow::OnFilterItems(filter);
+  StartThumbLoader();
+}
+
+void CGUIWindowVideoBase::StartThumbLoader()
+{
+  if (m_deferThumbLoader || !m_thumbLoaderPending)
+    return;
+  m_thumbLoaderPending = false;
+  m_confirmThumbViewport = !m_vecItems->IsEmpty();
+  if (m_confirmThumbViewport)
+  {
+    const auto [first, visible] = m_viewControl.GetVisibleItems();
+    m_thumbLoader.LoadShownFirst(*m_vecItems, first, visible);
+  }
+}
+
 void CGUIWindowVideoBase::DoProcess(unsigned int currentTime, CDirtyRegionList& dirtyregions)
 {
-  // Search, first-unwatched selection and control-state restoration can move the viewport
-  // after Update(). Start once, just before the controls process the settled list.
-  if (m_thumbLoaderPending)
+  if (std::exchange(m_confirmThumbViewport, false))
   {
-    m_thumbLoaderPending = false;
-    if (!m_vecItems->IsEmpty())
-    {
-      const auto [first, visible] = m_viewControl.GetVisibleItems();
-      const int count = m_vecItems->Size();
-      bool waitForArt = false;
-      for (int i = 0; i < visible; ++i)
-      {
-        const auto item = m_vecItems->Get((first + i) % count);
-        if (item && CVideoThumbLoader::NeedsDatabaseArt(*item))
-        {
-          waitForArt = true;
-          break;
-        }
-      }
-
-      m_thumbLoader.LoadShownFirst(*m_vecItems, first, visible);
-      if (waitForArt)
-        m_thumbLoader.WaitForShownBatch(std::chrono::milliseconds{100});
-    }
+    // Control restoration or queued input may have changed the viewport since launch.
+    const auto [first, visible] = m_viewControl.GetVisibleItems();
+    const int count = m_vecItems->Size();
+    std::vector<CFileItemPtr> shown;
+    shown.reserve(visible);
+    for (int i = 0; i < visible && i < count; ++i)
+      shown.push_back(m_vecItems->Get((first + i) % count));
+    m_thumbLoader.PrioritizeAndWait(shown, std::chrono::milliseconds{100});
   }
   CGUIMediaWindow::DoProcess(currentTime, dirtyregions);
 }
@@ -1359,58 +1376,43 @@ void CGUIWindowVideoBase::OnSearch()
 /// \param pItem Search result item
 void CGUIWindowVideoBase::OnSearchItemFound(const CFileItem* pSelItem)
 {
+  std::string path = pSelItem->GetPath();
+  std::string directory;
   if (pSelItem->m_bIsFolder)
-  {
-    std::string strPath = pSelItem->GetPath();
-    std::string strParentPath;
-    URIUtils::GetParentPath(strPath, strParentPath);
-
-    Update(strParentPath);
-
-    strPath = pSelItem->GetPath();
-    CURL url(strPath);
-    if (pSelItem->IsSmb() && !URIUtils::HasSlashAtEnd(strPath))
-      strPath += "/";
-
-    for (int i = 0; i < m_vecItems->Size(); i++)
-    {
-      CFileItemPtr pItem = m_vecItems->Get(i);
-      if (pItem->GetPath() == strPath)
-      {
-        m_viewControl.SetSelectedItem(i);
-        break;
-      }
-    }
-
-    if (pSelItem->IsVideoDb() && CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_MYVIDEOS_FLATTEN))
-      SetHistoryForPath("");
-    else
-      SetHistoryForPath(strParentPath);
-  }
+    URIUtils::GetParentPath(path, directory);
   else
+    directory = URIUtils::GetDirectory(path);
+
+  // The search hit is known. Avoid issuing a query for the history selection first.
+  const bool wasDeferred = std::exchange(m_deferThumbLoader, true);
+  Update(directory);
+  m_deferThumbLoader = wasDeferred;
+
+  if (pSelItem->m_bIsFolder && pSelItem->IsSmb() && !URIUtils::HasSlashAtEnd(path))
+    path += "/";
+  for (int i = 0; i < m_vecItems->Size(); ++i)
   {
-    std::string strPath = URIUtils::GetDirectory(pSelItem->GetPath());
-
-    Update(strPath);
-
-    for (int i = 0; i < m_vecItems->Size(); i++)
+    std::string itemPath = m_vecItems->Get(i)->GetPath();
+    if (!pSelItem->m_bIsFolder)
     {
-      CFileItemPtr pItem = m_vecItems->Get(i);
-      CURL url(pItem->GetPath());
+      CURL url(itemPath);
       if (pSelItem->IsVideoDb())
         url.SetOptions("");
-      if (url.Get() == pSelItem->GetPath())
-      {
-        m_viewControl.SetSelectedItem(i);
-        break;
-      }
+      itemPath = url.Get();
     }
-
-    if (pSelItem->IsVideoDb() && CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_MYVIDEOS_FLATTEN))
-      SetHistoryForPath("");
-    else
-      SetHistoryForPath(strPath);
+    if (itemPath == path)
+    {
+      m_viewControl.SetSelectedItem(i);
+      break;
+    }
   }
+  StartThumbLoader();
+
+  if (pSelItem->IsVideoDb() && CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+                                   CSettings::SETTING_MYVIDEOS_FLATTEN))
+    SetHistoryForPath("");
+  else
+    SetHistoryForPath(directory);
   m_viewControl.SetFocused();
 }
 

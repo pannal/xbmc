@@ -353,9 +353,11 @@ bool CVideoThumbLoader::LoadItemLookup(CFileItem* pItem)
   return true;
 }
 
+namespace
+{
 // Library items whose art FillLibraryArt() takes from the video database alone: their own art and,
 // through AppendParentArt(), that of their TV show, season or movie set.
-bool CVideoThumbLoader::NeedsDatabaseArt(const CFileItem& item)
+bool NeedsDatabaseArt(const CFileItem& item)
 {
   if (!item.HasVideoInfoTag() || item.GetProperty("libraryartfilled").asBoolean())
     return false;
@@ -366,6 +368,13 @@ bool CVideoThumbLoader::NeedsDatabaseArt(const CFileItem& item)
   return tag.m_type == MediaTypeMovie || tag.m_type == MediaTypeVideoCollection ||
          tag.m_type == MediaTypeTvShow || tag.m_type == MediaTypeSeason ||
          tag.m_type == MediaTypeEpisode || tag.m_type == MediaTypeMusicVideo;
+}
+
+} // namespace
+
+bool CVideoThumbLoader::NeedsLoaderBatch(const CFileItem& item) const
+{
+  return NeedsDatabaseArt(item);
 }
 
 void CVideoThumbLoader::AppendParentArt(

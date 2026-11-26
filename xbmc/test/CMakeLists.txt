@@ -1,4 +1,5 @@
-set(SOURCES TestBasicEnvironment.cpp
+set(SOURCES TestBackgroundInfoLoader.cpp
+            TestBasicEnvironment.cpp
             TestFileItem.cpp
             TestTextureUtils.cpp
             TestURL.cpp

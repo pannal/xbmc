@@ -68,8 +68,6 @@ public:
    */
   static std::string GetEmbeddedThumbURL(const CFileItem &item);
 
-  static bool NeedsDatabaseArt(const CFileItem& item);
-
   /*! \brief helper function to fill the art for a video library item
    \param item a video CFileItem
    \return true if we fill art, false otherwise
@@ -77,6 +75,7 @@ public:
  bool FillLibraryArt(CFileItem &item) override;
 
 protected:
+  bool NeedsLoaderBatch(const CFileItem& item) const override;
   void OnLoaderBatch(std::vector<CFileItemPtr>::const_iterator begin,
                      std::vector<CFileItemPtr>::const_iterator end) override;
 

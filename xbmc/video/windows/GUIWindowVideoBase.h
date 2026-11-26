@@ -71,6 +71,8 @@ protected:
   bool Update(const std::string &strDirectory, bool updateFilterPath = true) override;
   bool GetDirectory(const std::string &strDirectory, CFileItemList &items) override;
   void OnItemLoaded(CFileItem* pItem) override {};
+  void OnFilterItems(const std::string& filter) override;
+  virtual void SelectFirstUnwatched() {}
   void GetGroupedItems(CFileItemList &items) override;
   void DoProcess(unsigned int currentTime, CDirtyRegionList& dirtyregions) override;
 
@@ -136,8 +138,12 @@ protected:
   CVideoThumbLoader m_thumbLoader;
   bool m_stackingAvailable;
   bool m_thumbLoaderPending{false};
+  bool m_deferThumbLoader{false};
+  bool m_confirmThumbViewport{false};
 
 private:
+  void StartThumbLoader();
+
   /*!
    \brief Lookup the information of an item and display an Info dialog
    \param item the item to lookup
