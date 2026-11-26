@@ -15,7 +15,6 @@
 
 #include <algorithm>
 #include <mutex>
-#include <utility>
 
 CBackgroundInfoLoader::CBackgroundInfoLoader() = default;
 
@@ -29,77 +28,12 @@ void CBackgroundInfoLoader::Reset()
   m_pVecItems = nullptr;
   m_vecItems.clear();
   m_bIsLoading = false;
-  {
-    // Nothing more will be done: no one waits for it.
-    std::unique_lock<CCriticalSection> lock(m_shownLock);
-    m_shownRequest.reset();
-    m_shownDone = m_shownRequested;
-  }
   m_shownBatchDone.Set();
-}
-
-std::optional<size_t> CBackgroundInfoLoader::TakeShownRequest()
-{
-  CFileItemPtr item;
-  {
-    std::unique_lock<CCriticalSection> lock(m_shownLock);
-    if (!m_shownRequest)
-      return std::nullopt;
-    item = std::move(m_shownRequest);
-    m_shownRequest.reset();
-    m_shownTaken = m_shownRequested;
-  }
-  const auto it = std::find(m_vecItems.begin(), m_vecItems.end(), item);
-  if (it != m_vecItems.end())
-    return static_cast<size_t>(it - m_vecItems.begin());
-  ShownBatchDone(); // not one of these items: nothing to wait for
-  return std::nullopt;
-}
-
-bool CBackgroundInfoLoader::ShownRequestPending()
-{
-  std::unique_lock<CCriticalSection> lock(m_shownLock);
-  return m_shownRequest != nullptr;
-}
-
-void CBackgroundInfoLoader::ShownBatchDone()
-{
-  {
-    std::unique_lock<CCriticalSection> lock(m_shownLock);
-    m_shownDone = m_shownTaken;
-  }
-  m_shownBatchDone.Set();
-}
-
-void CBackgroundInfoLoader::Prioritize(const CFileItemPtr& item)
-{
-  std::unique_lock<CCriticalSection> lock(m_shownLock);
-  if (!m_bIsLoading || !item)
-    return;
-  m_shownRequest = item;
-  m_shownRequested++;
 }
 
 bool CBackgroundInfoLoader::WaitForShownBatch(std::chrono::milliseconds timeout)
 {
-  const auto end = std::chrono::steady_clock::now() + timeout;
-  while (true)
-  {
-    {
-      std::unique_lock<CCriticalSection> lock(m_shownLock);
-      if (m_shownDone == m_shownRequested)
-        return true;
-      // ShownBatchDone() and Reset() set it after their update under the lock
-      m_shownBatchDone.Reset();
-    }
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= end ||
-        !m_shownBatchDone.Wait(std::chrono::duration_cast<std::chrono::milliseconds>(end - now)))
-    {
-      std::unique_lock<CCriticalSection> lock(m_shownLock);
-      return m_shownDone == m_shownRequested;
-    }
-  }
+  return m_shownBatchDone.Wait(timeout);
 }
 
 void CBackgroundInfoLoader::Run()
@@ -111,32 +45,23 @@ void CBackgroundInfoLoader::Run()
       OnLoaderStart();
 
       const size_t count = m_vecItems.size();
-      std::vector<bool> batched(count);
-      std::vector<bool> cached(count);
-      std::vector<bool> looked(count);
       const auto aborted = [this]
       { return (m_pProgressCallback && m_pProgressCallback->Abort()) || m_bStop; };
 
-      // The batch from index; items done in another batch are passed again, a loader skips them.
-      const auto batch = [&](size_t index)
+      const auto batch = [&](size_t begin, size_t end)
       {
-        const size_t end = std::min(index + LOADER_BATCH_SIZE, count);
         try
         {
-          OnLoaderBatch(m_vecItems.begin() + index, m_vecItems.begin() + end);
+          OnLoaderBatch(m_vecItems.begin() + begin, m_vecItems.begin() + end);
         }
         catch (...)
         {
           CLog::Log(LOGERROR, "CBackgroundInfoLoader::OnLoaderBatch - Unhandled exception");
         }
-        std::fill(batched.begin() + index, batched.begin() + end, true);
       };
       // Stage 1: All "fast" stuff we have already cached
       const auto loadCached = [&](size_t index)
       {
-        if (cached[index])
-          return;
-        cached[index] = true;
         CFileItem* pItem = m_vecItems[index].get();
         try
         {
@@ -153,9 +78,6 @@ void CBackgroundInfoLoader::Run()
       // Stage 2: All "slow" stuff that we need to lookup
       const auto loadLookup = [&](size_t index)
       {
-        if (looked[index])
-          return;
-        looked[index] = true;
         CFileItem* pItem = m_vecItems[index].get();
         try
         {
@@ -169,43 +91,29 @@ void CBackgroundInfoLoader::Run()
                     CURL::GetRedacted(pItem->GetPath()));
         }
       };
-      // The items shown go through both stages before the rest of the list.
-      const auto loadShown = [&]()
+      // Fill all artwork in the viewport before waking the GUI, even when it spans two batches.
+      const size_t shownEnd = std::min(m_shownItems, count);
+      if (shownEnd > 0)
       {
-        const std::optional<size_t> first = TakeShownRequest();
-        if (!first || aborted())
-          return; // when stopped, Reset() ends the request
-        const size_t end = std::min(*first + LOADER_BATCH_SIZE, count);
-        if (!std::all_of(batched.begin() + *first, batched.begin() + end,
-                         [](bool done) { return done; }))
-          batch(*first);
-        ShownBatchDone();
-        // Items shown now come before those shown before: a newer request ends this one's
-        // stages, whose items then follow in order.
-        for (size_t index = *first; index < end && !aborted() && !ShownRequestPending(); index++)
+        for (size_t begin = 0; begin < shownEnd && !aborted(); begin += LOADER_BATCH_SIZE)
+          batch(begin, std::min(begin + LOADER_BATCH_SIZE, shownEnd));
+        m_shownBatchDone.Set();
+        for (size_t index = 0; index < shownEnd && !aborted(); ++index)
           loadCached(index);
-        for (size_t index = *first; index < end && !aborted() && !ShownRequestPending(); index++)
+        for (size_t index = 0; index < shownEnd && !aborted(); ++index)
           loadLookup(index);
-      };
+      }
 
-      for (size_t index = 0; index < count && !aborted(); index++)
+      // Ordinary loads and the rest of a visible-first load keep the two list-wide passes.
+      for (size_t begin = shownEnd; begin < count && !aborted(); begin += LOADER_BATCH_SIZE)
       {
-        loadShown();
-        if (aborted())
-          break;
-        if (!batched[index])
-          batch(index);
-        if (aborted())
-          break;
-        loadCached(index);
+        const size_t end = std::min(begin + LOADER_BATCH_SIZE, count);
+        batch(begin, end);
+        for (size_t index = begin; index < end && !aborted(); ++index)
+          loadCached(index);
       }
-      for (size_t index = 0; index < count && !aborted(); index++)
-      {
-        loadShown();
-        if (aborted())
-          break;
+      for (size_t index = shownEnd; index < count && !aborted(); ++index)
         loadLookup(index);
-      }
     }
 
     OnLoaderFinish();
@@ -220,15 +128,15 @@ void CBackgroundInfoLoader::Run()
 
 void CBackgroundInfoLoader::Load(CFileItemList& items)
 {
-  Start(items, 0, false);
+  Start(items, 0, 0);
 }
 
-void CBackgroundInfoLoader::LoadShownFirst(CFileItemList& items, int firstItem)
+void CBackgroundInfoLoader::LoadShownFirst(CFileItemList& items, int firstItem, size_t shownItems)
 {
-  Start(items, firstItem, true);
+  Start(items, firstItem, std::max(LOADER_BATCH_SIZE, shownItems));
 }
 
-void CBackgroundInfoLoader::Start(CFileItemList& items, int firstItem, bool shownFirst)
+void CBackgroundInfoLoader::Start(CFileItemList& items, int firstItem, size_t shownItems)
 {
   StopThread();
 
@@ -245,12 +153,9 @@ void CBackgroundInfoLoader::Start(CFileItemList& items, int firstItem, bool show
   m_pVecItems = &items;
   m_bStop = false;
   m_bIsLoading = true;
-  if (shownFirst)
-  {
-    std::unique_lock<CCriticalSection> shownLock(m_shownLock);
-    m_shownRequest = m_vecItems.front();
-    m_shownRequested++;
-  }
+  m_shownItems = shownItems;
+  if (shownItems > 0)
+    m_shownBatchDone.Reset();
 
   m_thread = new CThread(this, "BackgroundLoader");
   m_thread->Create();

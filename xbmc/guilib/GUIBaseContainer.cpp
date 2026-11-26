@@ -759,6 +759,31 @@ void CGUIBaseContainer::Scroll(int amount)
   ScrollToOffset(GetOffset() + amount);
 }
 
+std::pair<int, int> CGUIBaseContainer::GetVisibleItemRange() const
+{
+  int row;
+  float pos, end;
+  if (!m_layout || !m_focusedLayout || !GetDrawRange(row, pos, end))
+    return {0, 0};
+
+  // Use the same positions as Process(), excluding the preloaded rows outside the viewport.
+  const float size = m_layout->Size(m_orientation);
+  const float target = GetOffset() * size;
+  const float start = (m_orientation == VERTICAL ? m_posY : m_posX) +
+                      std::min(0.0f, target - m_scroller.GetValue());
+  end -= (GetCacheCount() / 2) * size;
+  const int focus = GetOffset() + GetCursor();
+  int first = row;
+  while (pos < end)
+  {
+    pos += row == focus ? m_focusedLayout->Size(m_orientation) : size;
+    ++row;
+    if (pos <= start)
+      first = row;
+  }
+  return {CorrectOffset(first, 0), row - first};
+}
+
 int CGUIBaseContainer::GetSelectedItem() const
 {
   return CorrectOffset(GetOffset(), GetCursor());

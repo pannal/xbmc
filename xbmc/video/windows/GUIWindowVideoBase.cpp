@@ -64,7 +64,6 @@
 #include "video/guilib/VideoVersionHelper.h"
 #include "view/GUIViewState.h"
 
-#include <algorithm>
 #include <chrono>
 #include <memory>
 
@@ -118,6 +117,7 @@ bool CGUIWindowVideoBase::OnMessage(CGUIMessage& message)
   switch ( message.GetMessage() )
   {
   case GUI_MSG_WINDOW_DEINIT:
+    m_thumbLoaderPending = false;
     if (m_thumbLoader.IsLoading())
       m_thumbLoader.StopThread();
     m_database.Close();
@@ -976,6 +976,7 @@ bool CGUIWindowVideoBase::OnPlayMedia(const std::shared_ptr<CFileItem>& pItem,
 
   itemCopy->SetProperty("playlist_type_hint", m_guiState->GetPlaylist());
 
+  m_thumbLoaderPending = false;
   if (m_thumbLoader.IsLoading())
     m_thumbLoader.StopAsync();
 
@@ -1157,17 +1158,9 @@ bool CGUIWindowVideoBase::Update(const std::string &strDirectory, bool updateFil
   if (m_thumbLoader.IsLoading())
     m_thumbLoader.StopThread();
 
-  // The loader is restarted at the end; its selection check is for the list on screen now.
-  m_checkThumbLoaderSelection = false;
-  const bool wasUpdating = m_updatingItems;
-  m_updatingItems = true;
-  const bool updated = CGUIMediaWindow::Update(strDirectory, updateFilterPath);
-  m_updatingItems = wasUpdating;
-  if (!updated)
+  m_thumbLoaderPending = false;
+  if (!CGUIMediaWindow::Update(strDirectory, updateFilterPath))
     return false;
-
-  // now that the selected item is restored
-  StartThumbLoader();
 
   UpdateVideoVersionItems();
 
@@ -1260,80 +1253,36 @@ void CGUIWindowVideoBase::GetGroupedItems(CFileItemList &items)
     }
   }
 
-  // reload thumbs after filtering and grouping: restarted once the items are sorted
-  // (OnItemsFiltered), so that it starts with the items on screen
   if (m_thumbLoader.IsLoading())
     m_thumbLoader.StopThread();
-}
-
-void CGUIWindowVideoBase::OnItemsFiltered()
-{
-  // Update() starts it after restoring the selected item
-  if (!m_updatingItems)
-    StartThumbLoader();
-}
-
-namespace
-{
-// How long the GUI waits for the library art of the items shown. A batch took 3-10 ms on an S922X,
-// with a local database and with 2 ms added per query.
-constexpr std::chrono::milliseconds SHOWN_ART_WAIT{100};
-} // namespace
-
-int CGUIWindowVideoBase::GetFirstShownItem() const
-{
-  // A page before the selected item (half a batch at most): with the batch from there, the items
-  // the view can show, wherever its page shows the selected one. Wraps, as a wrapping list shows
-  // both ends.
-  const int count = m_vecItems->Size();
-  constexpr int MAX_ITEMS_BEFORE =
-      static_cast<int>(CBackgroundInfoLoader::LOADER_BATCH_SIZE) / 2 - 1;
-  int before = m_viewControl.GetItemsPerPage();
-  if (before <= 0)
-    before = MAX_ITEMS_BEFORE;
-  before = std::min({before, MAX_ITEMS_BEFORE, count / 2});
-  const int selected = std::max(m_viewControl.GetSelectedItem(), 0);
-  return ((selected - before) % count + count) % count;
-}
-
-void CGUIWindowVideoBase::StartThumbLoader()
-{
-  m_checkThumbLoaderSelection = false;
-  if (m_thumbLoader.IsLoading())
-    m_thumbLoader.StopThread();
-
-  if (m_vecItems->IsEmpty())
-    return;
-
-  // An item without art shows the skin's fallback image until the loader reaches it, and a
-  // crossfading image that follows the selection then shows the real one only after a fade to the
-  // fallback. So the loader does the items shown first, and the window waits for their library
-  // art before drawing them. Only the loader thread queries the database: a slow, stalled or
-  // reconnecting one holds up the GUI for SHOWN_ART_WAIT at most, and the items then get their
-  // art when the loader has it.
-  m_thumbLoaderSelected = m_viewControl.GetSelectedItem();
-  m_thumbLoader.LoadShownFirst(*m_vecItems, GetFirstShownItem());
-  m_thumbLoaderInTime = m_thumbLoader.WaitForShownBatch(SHOWN_ART_WAIT);
-  m_checkThumbLoaderSelection = true;
+  m_thumbLoaderPending = true;
 }
 
 void CGUIWindowVideoBase::DoProcess(unsigned int currentTime, CDirtyRegionList& dirtyregions)
 {
-  // The selection can move after the loader started and before the list is first processed: a
-  // search result, an item named on opening the window, the first unwatched episode, restored
-  // control states. The loader then does the items shown there next. It is not stopped for that:
-  // stopping it waits for its query. The window waits for their art as before, unless the
-  // database was too slow the first time.
-  if (m_checkThumbLoaderSelection)
+  // Search, first-unwatched selection and control-state restoration can move the viewport
+  // after Update(). Start once, just before the controls process the settled list.
+  if (m_thumbLoaderPending)
   {
-    m_checkThumbLoaderSelection = false;
-    const int selected = m_viewControl.GetSelectedItem();
-    if (selected != m_thumbLoaderSelected && !m_vecItems->IsEmpty())
+    m_thumbLoaderPending = false;
+    if (!m_vecItems->IsEmpty())
     {
-      m_thumbLoaderSelected = selected;
-      m_thumbLoader.Prioritize(m_vecItems->Get(GetFirstShownItem()));
-      if (m_thumbLoaderInTime)
-        m_thumbLoaderInTime = m_thumbLoader.WaitForShownBatch(SHOWN_ART_WAIT);
+      const auto [first, visible] = m_viewControl.GetVisibleItems();
+      const int count = m_vecItems->Size();
+      bool waitForArt = false;
+      for (int i = 0; i < visible; ++i)
+      {
+        const auto item = m_vecItems->Get((first + i) % count);
+        if (item && CVideoThumbLoader::NeedsDatabaseArt(*item))
+        {
+          waitForArt = true;
+          break;
+        }
+      }
+
+      m_thumbLoader.LoadShownFirst(*m_vecItems, first, visible);
+      if (waitForArt)
+        m_thumbLoader.WaitForShownBatch(std::chrono::milliseconds{100});
     }
   }
   CGUIMediaWindow::DoProcess(currentTime, dirtyregions);
@@ -1418,11 +1367,6 @@ void CGUIWindowVideoBase::OnSearchItemFound(const CFileItem* pSelItem)
 
     Update(strParentPath);
 
-    if (pSelItem->IsVideoDb() && CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_MYVIDEOS_FLATTEN))
-      SetHistoryForPath("");
-    else
-      SetHistoryForPath(strParentPath);
-
     strPath = pSelItem->GetPath();
     CURL url(strPath);
     if (pSelItem->IsSmb() && !URIUtils::HasSlashAtEnd(strPath))
@@ -1437,17 +1381,17 @@ void CGUIWindowVideoBase::OnSearchItemFound(const CFileItem* pSelItem)
         break;
       }
     }
+
+    if (pSelItem->IsVideoDb() && CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_MYVIDEOS_FLATTEN))
+      SetHistoryForPath("");
+    else
+      SetHistoryForPath(strParentPath);
   }
   else
   {
     std::string strPath = URIUtils::GetDirectory(pSelItem->GetPath());
 
     Update(strPath);
-
-    if (pSelItem->IsVideoDb() && CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_MYVIDEOS_FLATTEN))
-      SetHistoryForPath("");
-    else
-      SetHistoryForPath(strPath);
 
     for (int i = 0; i < m_vecItems->Size(); i++)
     {
@@ -1461,6 +1405,11 @@ void CGUIWindowVideoBase::OnSearchItemFound(const CFileItem* pSelItem)
         break;
       }
     }
+
+    if (pSelItem->IsVideoDb() && CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_MYVIDEOS_FLATTEN))
+      SetHistoryForPath("");
+    else
+      SetHistoryForPath(strPath);
   }
   m_viewControl.SetFocused();
 }

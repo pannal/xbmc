@@ -13,9 +13,9 @@
 #include "threads/Event.h"
 #include "threads/IRunnable.h"
 
+#include <atomic>
 #include <chrono>
 #include <memory>
-#include <optional>
 #include <vector>
 
 class CFileItem; typedef std::shared_ptr<CFileItem> CFileItemPtr;
@@ -38,21 +38,15 @@ public:
   void Load(CFileItemList& items);
 
   /*! \brief Start loading the items in a background thread, the shown items first.
-   The batch from \p firstItem (LOADER_BATCH_SIZE items, or fewer at the list's end) goes through
-   both stages first. The other items follow from there, wrapping around to the list's start.
+   The shown items go through both stages first, in batches of up to LOADER_BATCH_SIZE.
+   The remaining items follow in list order, wrapping at the end.
    \param items the items to load
-   \param firstItem the first of the items shown
+   \param firstItem the first shown item
+   \param shownItems number of shown items; the first batch is always prioritized in full
    */
-  void LoadShownFirst(CFileItemList& items, int firstItem);
+  void LoadShownFirst(CFileItemList& items, int firstItem, size_t shownItems = LOADER_BATCH_SIZE);
 
-  /*! \brief Have the running loader do the batch from \p item next, through both stages, then go on
-   where it was. Does not wait for the loader, which may be in a slow query.
-   \param item the first of the items shown now, one of the items being loaded
-   */
-  void Prioritize(const CFileItemPtr& item);
-
-  /*! \brief Wait until the loader has done OnLoaderBatch() for the batch of the last
-   LoadShownFirst() or Prioritize(), or has ended.
+  /*! \brief Wait for the shown items to finish OnLoaderBatch(), or for the loader to end.
    \param timeout how long to wait at most
    \return true if it has
    */
@@ -88,25 +82,17 @@ protected:
   std::vector<CFileItemPtr> m_vecItems; // FileItemList would delete the items and we only want to keep a reference.
   CCriticalSection m_lock;
 
-  volatile bool m_bIsLoading{false};
-  volatile bool m_bStop{true};
+  std::atomic<bool> m_bIsLoading{false};
+  std::atomic<bool> m_bStop{true};
   CThread* m_thread{nullptr};
 
   IBackgroundLoaderObserver* m_pObserver{nullptr};
   IProgressCallback* m_pProgressCallback{nullptr};
 
 private:
-  void Start(CFileItemList& items, int firstItem, bool shownFirst);
+  void Start(CFileItemList& items, int firstItem, size_t shownItems);
   void Reset();
-  std::optional<size_t> TakeShownRequest();
-  bool ShownRequestPending();
-  void ShownBatchDone();
-
-  CCriticalSection m_shownLock; //!< for the members below
-  CFileItemPtr m_shownRequest; //!< the first item shown, for the loader to do next
-  unsigned int m_shownRequested{0}; //!< requests made by LoadShownFirst() and Prioritize()
-  unsigned int m_shownTaken{0}; //!< the request the loader took last
-  unsigned int m_shownDone{0}; //!< the last request whose batch is done, or all when stopped
-  CEvent m_shownBatchDone{true};
+  size_t m_shownItems{0};
+  CEvent m_shownBatchDone{true, true};
 };
 

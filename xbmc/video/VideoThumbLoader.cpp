@@ -353,11 +353,9 @@ bool CVideoThumbLoader::LoadItemLookup(CFileItem* pItem)
   return true;
 }
 
-namespace
-{
 // Library items whose art FillLibraryArt() takes from the video database alone: their own art and,
 // through AppendParentArt(), that of their TV show, season or movie set.
-bool HasDatabaseArtOnly(const CFileItem& item)
+bool CVideoThumbLoader::NeedsDatabaseArt(const CFileItem& item)
 {
   if (!item.HasVideoInfoTag() || item.GetProperty("libraryartfilled").asBoolean())
     return false;
@@ -369,7 +367,6 @@ bool HasDatabaseArtOnly(const CFileItem& item)
          tag.m_type == MediaTypeTvShow || tag.m_type == MediaTypeSeason ||
          tag.m_type == MediaTypeEpisode || tag.m_type == MediaTypeMusicVideo;
 }
-} // namespace
 
 void CVideoThumbLoader::AppendParentArt(
     CFileItem& item, const std::function<const ArtMap&(const MediaType&, int)>& getArt)
@@ -419,7 +416,7 @@ void CVideoThumbLoader::FillLibraryArt(const std::vector<std::shared_ptr<CFileIt
   std::map<MediaType, std::set<int>> ids;
   for (const auto& item : items)
   {
-    if (!item || !HasDatabaseArtOnly(*item))
+    if (!item || !NeedsDatabaseArt(*item))
       continue;
     const CVideoInfoTag& tag = *item->GetVideoInfoTag();
     ids[tag.m_type].insert(tag.m_iDbId);

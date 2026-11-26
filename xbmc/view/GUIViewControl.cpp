@@ -20,6 +20,7 @@
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 
+#include <algorithm>
 #include <utility>
 
 CGUIViewControl::CGUIViewControl(void)
@@ -162,13 +163,26 @@ int CGUIViewControl::GetSelectedItem(const CGUIControl *control) const
   return iItem;
 }
 
-int CGUIViewControl::GetItemsPerPage() const
+std::pair<int, int> CGUIViewControl::GetVisibleItems() const
 {
-  if (m_currentView < 0 || m_currentView >= static_cast<int>(m_visibleViews.size()))
-    return 0;
-  // Not every container is a CGUIBaseContainer (the PVR guide grid).
+  if (!m_fileItems || m_fileItems->IsEmpty() || m_currentView < 0 ||
+      m_currentView >= static_cast<int>(m_visibleViews.size()))
+    return {0, 0};
+
   const auto* container = dynamic_cast<const CGUIBaseContainer*>(m_visibleViews[m_currentView]);
-  return container ? container->GetItemsPerPage() : 0;
+  if (!container)
+    return {0, 0};
+
+  const int count = m_fileItems->Size();
+  const auto [offset, page] = container->GetVisibleItemRange();
+  if (container->GetControlType() == CGUIControl::GUICONTAINER_WRAPLIST)
+    return {offset % count, std::min(page, count)};
+
+  // A fixed list can leave empty slots before the first item to keep its cursor in place.
+  if (offset >= count)
+    return {0, 0};
+  const int first = std::max(0, offset);
+  return {first, std::clamp(page + std::min(offset, 0), 0, count - first)};
 }
 
 int CGUIViewControl::GetSelectedItem() const

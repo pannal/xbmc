@@ -63,8 +63,8 @@ public:
   std::string GetDescription() const override;
   void SaveStates(std::vector<CControlState> &states) override;
   virtual int GetSelectedItem() const;
-  /*! \brief The number of items a page of this container shows. */
-  virtual int GetItemsPerPage() const { return m_itemsPerPage; }
+  /*! \brief First item and slot count covered by the current viewport and its scroll target. */
+  virtual std::pair<int, int> GetVisibleItemRange() const;
 
   void DoProcess(unsigned int currentTime, CDirtyRegionList &dirtyregions) override;
   void Process(unsigned int currentTime, CDirtyRegionList &dirtyregions) override;
