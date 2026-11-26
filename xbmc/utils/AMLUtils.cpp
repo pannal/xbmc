@@ -12,8 +12,10 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <stdexcept>
+#include <utility>
 #include <regex>
 #include <chrono>
 #include <vector>
@@ -6845,6 +6847,21 @@ bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res)
   if (StringUtils::EndsWith(fromMode, "*"))
     fromMode.erase(fromMode.size() - 1);
 
+  static constexpr std::pair<const char*, float> smpteModes[] = {
+      {"4k2ksmpte", 24.0f},
+      {"smpte24hz", 24.0f},
+      {"smpte25hz", 25.0f},
+      {"smpte30hz", 30.0f},
+      {"smpte50hz", 50.0f},
+      {"smpte60hz", 60.0f},
+      {"smpte50hz420", 50.0f},
+      {"smpte60hz420", 60.0f},
+  };
+  const auto smpte = std::find_if(std::begin(smpteModes), std::end(smpteModes),
+                                  [&fromMode](const auto& timing) {
+                                    return StringUtils::EqualsNoCase(fromMode, timing.first);
+                                  });
+
   if (StringUtils::EqualsNoCase(fromMode, "panel"))
   {
     res->iWidth = aml_axis_value(AML_DISPLAY_AXIS_PARAM_WIDTH);
@@ -6854,13 +6871,13 @@ bool aml_mode_to_resolution(const char *mode, RESOLUTION_INFO *res)
     res->fRefreshRate = 60;
     res->dwFlags = D3DPRESENTFLAG_PROGRESSIVE;
   }
-  else if (StringUtils::EqualsNoCase(fromMode, "4k2ksmpte") || StringUtils::EqualsNoCase(fromMode, "smpte24hz"))
+  else if (smpte != std::end(smpteModes))
   {
     res->iWidth = nativeGui ? 4096 : 1920;
     res->iHeight= nativeGui ? 2160 : 1080;
     res->iScreenWidth = 4096;
     res->iScreenHeight= 2160;
-    res->fRefreshRate = 24;
+    res->fRefreshRate = smpte->second;
     res->dwFlags = D3DPRESENTFLAG_PROGRESSIVE;
   }
   else
@@ -7074,8 +7091,9 @@ bool aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolutions)
   {
     if (((StringUtils::StartsWith(i->c_str(), "4k2k")) && (aml_support_h264_4k2k() > AML_NO_H264_4K2K)) || !(StringUtils::StartsWith(i->c_str(), "4k2k")))
     {
-      if (aml_mode_to_resolution(i->c_str(), &res))
-        resolutions.push_back(res);
+      if (!aml_mode_to_resolution(i->c_str(), &res))
+        continue;
+      resolutions.push_back(res);
 
       if (aml_has_frac_rate_policy())
       {
