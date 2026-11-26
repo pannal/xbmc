@@ -3171,7 +3171,7 @@
           </dependencies>
           <control type="toggle" />
         </setting>
-        <setting id="coreelec.amlogic.afbcscanout.twobuffers" type="boolean" label="60669" help="60670">
+        <setting id="coreelec.amlogic.afbcscanout.twobuffers" type="boolean" parent="videoscreen.screen" label="60669" help="60670">
           <requirement>HAVE_G12B</requirement>
           <level>2</level>
           <default>false</default>
