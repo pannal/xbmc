@@ -35,6 +35,8 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <functional>
+#include <set>
 #include <utility>
 
 using namespace XFILE;
@@ -189,9 +191,12 @@ bool CVideoThumbLoader::LoadItemCached(CFileItem* pItem)
   }
 
   // video db items normally have info in the database
-  if (pItem->HasVideoInfoTag() && !pItem->GetProperty("libraryartfilled").asBoolean())
+  if (pItem->HasVideoInfoTag())
   {
-    FillLibraryArt(*pItem);
+    // OnLoaderBatch() fills most library items first. Whoever filled it, and in every pass,
+    // the types below get no art from the texture cache.
+    if (!pItem->GetProperty("libraryartfilled").asBoolean())
+      FillLibraryArt(*pItem);
 
     if (!pItem->GetVideoInfoTag()->m_type.empty() &&
         pItem->GetVideoInfoTag()->m_type != MediaTypeMovie &&
@@ -348,6 +353,107 @@ bool CVideoThumbLoader::LoadItemLookup(CFileItem* pItem)
   return true;
 }
 
+namespace
+{
+// Library items whose art FillLibraryArt() takes from the video database alone: their own art and,
+// through AppendParentArt(), that of their TV show, season or movie set.
+bool HasDatabaseArtOnly(const CFileItem& item)
+{
+  if (!item.HasVideoInfoTag() || item.GetProperty("libraryartfilled").asBoolean())
+    return false;
+  const CVideoInfoTag& tag = *item.GetVideoInfoTag();
+  // Video versions and extras have their own art rules (GetArtForAsset).
+  if (tag.m_iDbId < 0 || VIDEO::IsVideoAssetFile(item))
+    return false;
+  return tag.m_type == MediaTypeMovie || tag.m_type == MediaTypeVideoCollection ||
+         tag.m_type == MediaTypeTvShow || tag.m_type == MediaTypeSeason ||
+         tag.m_type == MediaTypeEpisode || tag.m_type == MediaTypeMusicVideo;
+}
+} // namespace
+
+void CVideoThumbLoader::AppendParentArt(
+    CFileItem& item, const std::function<const ArtMap&(const MediaType&, int)>& getArt)
+{
+  const CVideoInfoTag& tag = *item.GetVideoInfoTag();
+  if (tag.m_type == MediaTypeEpisode || tag.m_type == MediaTypeSeason)
+  {
+    // For episodes and seasons, we want to set fanart for that of the show
+    if (!item.HasArt("tvshow.fanart") && tag.m_iIdShow >= 0)
+    {
+      const ArtMap& artmap = getArt(MediaTypeTvShow, tag.m_iIdShow);
+      if (!artmap.empty())
+      {
+        item.AppendArt(artmap, MediaTypeTvShow);
+        item.SetArtFallback("fanart", "tvshow.fanart");
+        item.SetArtFallback("tvshow.thumb", "tvshow.poster");
+      }
+    }
+
+    if (tag.m_type == MediaTypeEpisode && !item.HasArt("season.poster") && tag.m_iSeason > -1)
+    {
+      const ArtMap& artmap = getArt(MediaTypeSeason, tag.m_iIdSeason);
+      if (!artmap.empty())
+        item.AppendArt(artmap, MediaTypeSeason);
+    }
+  }
+  else if (tag.m_type == MediaTypeMovie && tag.m_set.id >= 0 && !item.HasArt("set.fanart"))
+  {
+    const ArtMap& artmap = getArt(MediaTypeVideoCollection, tag.m_set.id);
+    if (!artmap.empty())
+      item.AppendArt(artmap, MediaTypeVideoCollection);
+  }
+}
+
+void CVideoThumbLoader::OnLoaderBatch(std::vector<CFileItemPtr>::const_iterator begin,
+                                      std::vector<CFileItemPtr>::const_iterator end)
+{
+  // An item shows the skin's fallback image until it has its art, and the per-item path needs a
+  // query or two per item, a network round trip each with a remote (MySQL) database.
+  FillLibraryArt({begin, end}, *m_videoDatabase);
+}
+
+void CVideoThumbLoader::FillLibraryArt(const std::vector<std::shared_ptr<CFileItem>>& items,
+                                       CVideoDatabase& db)
+{
+  std::vector<CFileItem*> toFill;
+  std::map<MediaType, std::set<int>> ids;
+  for (const auto& item : items)
+  {
+    if (!item || !HasDatabaseArtOnly(*item))
+      continue;
+    const CVideoInfoTag& tag = *item->GetVideoInfoTag();
+    ids[tag.m_type].insert(tag.m_iDbId);
+    // the parents AppendParentArt() may ask for
+    if ((tag.m_type == MediaTypeEpisode || tag.m_type == MediaTypeSeason) && tag.m_iIdShow >= 0)
+      ids[MediaTypeTvShow].insert(tag.m_iIdShow);
+    if (tag.m_type == MediaTypeEpisode && tag.m_iSeason > -1)
+      ids[MediaTypeSeason].insert(tag.m_iIdSeason);
+    if (tag.m_type == MediaTypeMovie && tag.m_set.id >= 0)
+      ids[MediaTypeVideoCollection].insert(tag.m_set.id);
+    toFill.push_back(item.get());
+  }
+  if (toFill.empty())
+    return;
+
+  std::map<std::pair<MediaType, int>, ArtMap> art;
+  if (!db.GetArtForItems(ids, art))
+    return; // FillLibraryArt(item) tries each item again
+
+  static const ArtMap noArt;
+  const auto getArt = [&art](const MediaType& mediaType, int id) -> const ArtMap&
+  {
+    const auto it = art.find({mediaType, id});
+    return it != art.end() ? it->second : noArt;
+  };
+  for (CFileItem* item : toFill)
+  {
+    const CVideoInfoTag& tag = *item->GetVideoInfoTag();
+    item->AppendArt(getArt(tag.m_type, tag.m_iDbId));
+    AppendParentArt(*item, getArt);
+    item->SetProperty("libraryartfilled", true);
+  }
+}
+
 bool CVideoThumbLoader::FillLibraryArt(CFileItem &item)
 {
   CVideoInfoTag &tag = *item.GetVideoInfoTag();
@@ -436,33 +542,8 @@ bool CVideoThumbLoader::FillLibraryArt(CFileItem &item)
       database.Close();
     }
 
-    if (tag.m_type == MediaTypeEpisode || tag.m_type == MediaTypeSeason)
-    {
-      // For episodes and seasons, we want to set fanart for that of the show
-      if (!item.HasArt("tvshow.fanart") && tag.m_iIdShow >= 0)
-      {
-        const ArtMap& artmap = GetArtFromCache(MediaTypeTvShow, tag.m_iIdShow);
-        if (!artmap.empty())
-        {
-          item.AppendArt(artmap, MediaTypeTvShow);
-          item.SetArtFallback("fanart", "tvshow.fanart");
-          item.SetArtFallback("tvshow.thumb", "tvshow.poster");
-        }
-      }
-
-      if (tag.m_type == MediaTypeEpisode && !item.HasArt("season.poster") && tag.m_iSeason > -1)
-      {
-        const ArtMap& artmap = GetArtFromCache(MediaTypeSeason, tag.m_iIdSeason);
-        if (!artmap.empty())
-          item.AppendArt(artmap, MediaTypeSeason);
-      }
-    }
-    else if (tag.m_type == MediaTypeMovie && tag.m_set.id >= 0 && !item.HasArt("set.fanart"))
-    {
-      const ArtMap& artmap = GetArtFromCache(MediaTypeVideoCollection, tag.m_set.id);
-      if (!artmap.empty())
-        item.AppendArt(artmap, MediaTypeVideoCollection);
-    }
+    AppendParentArt(item, [this](const MediaType& mediaType, int id) -> const ArtMap&
+                    { return GetArtFromCache(mediaType, id); });
     m_videoDatabase->Close();
   }
   item.SetProperty("libraryartfilled", true);

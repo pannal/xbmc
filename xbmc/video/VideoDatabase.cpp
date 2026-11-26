@@ -5246,6 +5246,69 @@ bool CVideoDatabase::GetArtForItem(int mediaId, const MediaType &mediaType, std:
   return false;
 }
 
+bool CVideoDatabase::GetArtForItems(
+    const std::map<MediaType, std::set<int>>& ids,
+    std::map<std::pair<MediaType, int>, std::map<std::string, std::string>>& art)
+{
+  try
+  {
+    if (nullptr == m_pDB)
+      return false;
+    if (nullptr == m_pDS2)
+      return false; // using dataset 2 as we're likely called in loops on dataset 1
+
+    // Keeps each statement short; also bounds the IN lists for MySQL's max_allowed_packet.
+    constexpr size_t MAX_IDS_PER_QUERY = 500;
+    std::vector<std::string> conditions;
+    size_t idsInQuery = 0;
+
+    const auto runQuery = [&]()
+    {
+      if (conditions.empty())
+        return;
+      const std::string sql = "SELECT media_type, media_id, type, url FROM art WHERE " +
+                              StringUtils::Join(conditions, " OR ");
+      conditions.clear();
+      idsInQuery = 0;
+
+      m_pDS2->query(sql);
+      while (!m_pDS2->eof())
+      {
+        art[{m_pDS2->fv(0).get_asString(), m_pDS2->fv(1).get_asInt()}].insert(
+            {m_pDS2->fv(2).get_asString(), m_pDS2->fv(3).get_asString()});
+        m_pDS2->next();
+      }
+      m_pDS2->close();
+    };
+
+    for (const auto& [mediaType, mediaIds] : ids)
+    {
+      std::string idList;
+      for (const int id : mediaIds)
+      {
+        idList += (idList.empty() ? "" : ",") + std::to_string(id);
+        if (++idsInQuery == MAX_IDS_PER_QUERY)
+        {
+          conditions.emplace_back(
+              PrepareSQL("(media_type='%s' AND media_id IN (", mediaType.c_str()) + idList + "))");
+          idList.clear();
+          runQuery();
+        }
+      }
+      if (!idList.empty())
+        conditions.emplace_back(
+            PrepareSQL("(media_type='%s' AND media_id IN (", mediaType.c_str()) + idList + "))");
+    }
+    runQuery();
+    return true;
+  }
+  catch (...)
+  {
+    CLog::Log(LOGERROR, "{} failed", __FUNCTION__);
+  }
+  return false;
+}
+
 bool CVideoDatabase::GetArtForAsset(int assetId,
                                     ArtFallbackOptions fallback,
                                     std::map<std::string, std::string>& art)

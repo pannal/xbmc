@@ -11,6 +11,7 @@
 #include "FileItem.h"
 #include "GUIInfoManager.h"
 #include "ServiceBroker.h"
+#include "guilib/GUIBaseContainer.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
 #include "guilib/IGUIContainer.h"
@@ -159,6 +160,15 @@ int CGUIViewControl::GetSelectedItem(const CGUIControl *control) const
     return -1;
 
   return iItem;
+}
+
+int CGUIViewControl::GetItemsPerPage() const
+{
+  if (m_currentView < 0 || m_currentView >= static_cast<int>(m_visibleViews.size()))
+    return 0;
+  // Not every container is a CGUIBaseContainer (the PVR guide grid).
+  const auto* container = dynamic_cast<const CGUIBaseContainer*>(m_visibleViews[m_currentView]);
+  return container ? container->GetItemsPerPage() : 0;
 }
 
 int CGUIViewControl::GetSelectedItem() const

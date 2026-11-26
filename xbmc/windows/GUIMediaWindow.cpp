@@ -2001,6 +2001,8 @@ void CGUIMediaWindow::OnFilterItems(const std::string &filter)
   // and update our view control + buttons
   m_viewControl.SetItems(*m_vecItems);
   m_viewControl.SetSelectedItem(currentItemPath);
+
+  OnItemsFiltered();
 }
 
 bool CGUIMediaWindow::GetFilteredItems(const std::string &filter, CFileItemList &items)

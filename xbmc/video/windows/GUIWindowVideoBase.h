@@ -72,6 +72,17 @@ protected:
   bool GetDirectory(const std::string &strDirectory, CFileItemList &items) override;
   void OnItemLoaded(CFileItem* pItem) override {};
   void GetGroupedItems(CFileItemList &items) override;
+  void OnItemsFiltered() override;
+  void DoProcess(unsigned int currentTime, CDirtyRegionList& dirtyregions) override;
+
+  /*! \brief Start the thumb loader on the sorted list, the items shown first, and wait (a
+   bounded time) for their library art.
+   */
+  void StartThumbLoader();
+  /*! \brief The item the thumb loader starts with: the first the view can show around the selected
+   item.
+   */
+  int GetFirstShownItem() const;
 
   bool CheckFilterAdvanced(CFileItemList &items) const override;
   bool CanContainFilter(const std::string &strDirectory) const override;
@@ -134,6 +145,10 @@ protected:
 
   CVideoThumbLoader m_thumbLoader;
   bool m_stackingAvailable;
+  bool m_updatingItems = false; //!< in Update(), which starts the thumb loader at the end
+  int m_thumbLoaderSelected = -1; //!< the selected item the thumb loader started at
+  bool m_checkThumbLoaderSelection = false; //!< DoProcess() checks the selection once
+  bool m_thumbLoaderInTime = false; //!< the loader filled the art of the items shown in time
 
 private:
   /*!

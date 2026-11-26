@@ -105,6 +105,10 @@ protected:
   virtual void OnPrepareFileItems(CFileItemList &items);
   virtual void OnCacheFileItems(CFileItemList &items);
   virtual void GetGroupedItems(CFileItemList &items) { }
+  /*! \brief Called at the end of OnFilterItems(), when the items are filtered, grouped,
+   sorted and in the view.
+   */
+  virtual void OnItemsFiltered() {}
 
   void ClearFileItems();
   virtual void SortItems(CFileItemList &items);

@@ -45,6 +45,8 @@ public:
   int GetViewModeByID(int id) const;
 
   int GetCurrentControl() const;
+  /*! \brief The number of items a page of the current view shows, 0 if it is not a container. */
+  int GetItemsPerPage() const;
 
   void Clear();
 
