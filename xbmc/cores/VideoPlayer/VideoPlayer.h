@@ -346,6 +346,7 @@ public:
 
   void SeekTime(int64_t iTime) override;
   bool SeekTimeRelative(int64_t iTime) override;
+  bool SeekTimeRelative(int64_t iTime, std::optional<int64_t> origin) override;
   void SetSpeed(float speed) override;
   void SetTempo(float tempo) override;
   bool SupportsTempo() const override;
@@ -530,6 +531,7 @@ protected:
   void FinishSeek(bool trickplay);
   void QueueTimeSeek(const CDVDMsgPlayerSeek::CMode& mode, bool largeStep = false);
   void ClearRejectedLargeSkip(const CDVDMsg* request);
+  void ClearSeekTarget();
   bool m_waitingForVideoFlush{false};
 
   CVideoSeekQueueState GetVideoSeekQueueState();
@@ -650,6 +652,8 @@ protected:
   // Latest large time skip, protected by m_StateSection. Use its destination
   // until the player publishes the resynchronized playback position.
   std::shared_ptr<CDVDMsgPlayerSeek> m_pendingLargeSkip;
+  // GUI intent is independent of the playback clock until stream resynchronization.
+  std::shared_ptr<CDVDMsgPlayerSeek> m_pendingSeek;
 
   CDVDMessageQueue m_messenger;
   std::unique_ptr<CJobQueue> m_outboundEvents;

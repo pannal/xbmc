@@ -13,7 +13,9 @@
 #include "threads/CriticalSection.h"
 #include "utils/Stopwatch.h"
 
+#include <cstdint>
 #include <map>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -46,6 +48,7 @@ public:
   void Configure();
 
   int GetSeekSize() const;
+  double GetSeekTime() const;
   bool InProgress() const;
 
   bool HasTimeCode() const { return m_timeCodePosition > 0; }
@@ -69,6 +72,7 @@ private:
   bool m_seekChanged = false;
   bool m_analogSeek = false;
   double m_seekSize = 0;
+  std::optional<int64_t> m_seekBase;
   int m_seekStep = 0;
   std::map<SeekType, std::vector<int> > m_forwardSeekSteps;
   std::map<SeekType, std::vector<int> > m_backwardSeekSteps;

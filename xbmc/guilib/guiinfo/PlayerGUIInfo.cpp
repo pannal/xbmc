@@ -136,10 +136,8 @@ float CPlayerGUIInfo::GetSeekPercent() const
   if (iTotal == 0)
     return 0.0f;
 
-  float fPercentPlayTime = static_cast<float>(GetPlayTime() * 1000) / iTotal * 0.1f;
-  float fPercentPerSecond = 100.0f / static_cast<float>(iTotal);
   float fPercent =
-      fPercentPlayTime + fPercentPerSecond * m_appPlayer->GetSeekHandler().GetSeekSize();
+      static_cast<float>(m_appPlayer->GetSeekHandler().GetSeekTime() * 100.0 / iTotal);
   fPercent = std::max(0.0f, std::min(fPercent, 100.0f));
   return fPercent;
 }
@@ -181,8 +179,7 @@ std::string CPlayerGUIInfo::GetCurrentSeekTime(TIME_FORMAT format) const
   if (format == TIME_FORMAT_GUESS && GetTotalPlayTime() >= 3600)
     format = TIME_FORMAT_HH_MM_SS;
 
-  return StringUtils::SecondsToTimeString(
-      g_application.GetTime() + m_appPlayer->GetSeekHandler().GetSeekSize(), format);
+  return StringUtils::SecondsToTimeString(m_appPlayer->GetSeekHandler().GetSeekTime(), format);
 }
 
 std::string CPlayerGUIInfo::GetSeekTime(TIME_FORMAT format) const

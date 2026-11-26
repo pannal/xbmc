@@ -74,6 +74,7 @@ bool CApplicationPlayer::ClosePlayer(bool shutdown, std::shared_ptr<CEvent> comp
 
 void CApplicationPlayer::ResetPlayer(std::shared_ptr<CEvent> completion)
 {
+  m_seekHandler.Reset();
   if (!m_closingPlayer)
   {
     std::unique_lock<CCriticalSection> lock(m_playerLock);
@@ -196,6 +197,7 @@ bool CApplicationPlayer::OpenFile(const CFileItem& item, const CPlayerOptions& o
 {
   if (m_shutdown)
     return false;
+  m_seekHandler.Reset();
   // A queued open keeps the intent of the request; a later open is newer.
   m_lastAcceptedIntent = std::max(m_lastAcceptedIntent, intent);
   // Every new intent, including a failed or deferred open, supersedes terminal
@@ -568,6 +570,22 @@ void CApplicationPlayer::SeekTimeRelative(int64_t iTime)
       int64_t abstime = GetTime() + iTime;
       player->SeekTime(abstime);
     }
+  }
+}
+
+void CApplicationPlayer::SeekTimeRelative(int64_t iTime, std::optional<int64_t> origin)
+{
+  if (!origin)
+  {
+    SeekTimeRelative(iTime);
+    return;
+  }
+  if (SeekWaitingItem(*origin + iTime, false))
+    return;
+  if (auto player = GetControllable())
+  {
+    if (!player->SeekTimeRelative(iTime, origin))
+      player->SeekTime(*origin + iTime);
   }
 }
 

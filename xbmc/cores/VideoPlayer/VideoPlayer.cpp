@@ -981,6 +981,7 @@ bool CVideoPlayer::CloseFile(bool reopen)
   CSingleExit graphics(CServiceBroker::GetWinSystem()->GetGfxContext());
   if (m_closeStage == CloseStage::NONE)
   {
+    ClearSeekTarget();
     aml_detector_end_playback(m_detectorPlaybackId);
     m_bAbortRequest = true;
     m_bCloseRequest = true;
@@ -1818,6 +1819,7 @@ void CVideoPlayer::Prepare()
     std::unique_lock<CCriticalSection> lock(m_StateSection);
     m_State.Clear();
     m_pendingLargeSkip.reset();
+    ClearSeekTarget();
   }
 #if defined(HAS_LIBAMCODEC)
   // Prepare is shared by fresh opens and PLAYER_OPENFILE replacements.
@@ -3974,7 +3976,23 @@ void CVideoPlayer::QueueTimeSeek(const CDVDMsgPlayerSeek::CMode& mode, bool larg
   std::unique_lock<CCriticalSection> lock(m_StateSection);
   auto request = std::make_shared<CDVDMsgPlayerSeek>(mode);
   if (m_messenger.Put(request) == MSGQ_OK)
+  {
+    m_pendingSeek = request;
+    int64_t target = std::llround(mode.time + (mode.relative ? m_State.time : 0));
+    if (!mode.restore)
+      target = m_Edl.GetTimeWithoutCuts(target);
+    CServiceBroker::GetDataCacheCore().SetSeekTarget(
+        std::clamp(target, static_cast<int64_t>(m_State.timeMin),
+                   static_cast<int64_t>(m_State.timeMax)));
     m_pendingLargeSkip = largeStep ? std::move(request) : nullptr;
+  }
+}
+
+void CVideoPlayer::ClearSeekTarget()
+{
+  std::unique_lock<CCriticalSection> lock(m_StateSection);
+  m_pendingSeek.reset();
+  CServiceBroker::GetDataCacheCore().SetSeekTarget(std::nullopt);
 }
 
 void CVideoPlayer::ClearRejectedLargeSkip(const CDVDMsg* request)
@@ -3982,6 +4000,8 @@ void CVideoPlayer::ClearRejectedLargeSkip(const CDVDMsg* request)
   std::unique_lock<CCriticalSection> lock(m_StateSection);
   if (m_pendingLargeSkip.get() == request)
     m_pendingLargeSkip.reset();
+  if (m_pendingSeek.get() == request)
+    ClearSeekTarget();
 }
 
 void CVideoPlayer::CompleteFileReplacement()
@@ -4004,7 +4024,7 @@ CVideoSeekQueueState CVideoPlayer::GetVideoSeekQueueState()
 {
   // The recovery seek has its own message type so it cannot coalesce away a user seek.
   CVideoSeekQueueState state;
-  state.userTimeSeeks = m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK);
+  state.userTimeSeeks = m_messenger.GetUserTimeSeekCount();
   state.userChapterSeeks = m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER);
   return state;
 }
@@ -4170,6 +4190,8 @@ void CVideoPlayer::HandleMessages()
         seekSuperseded = GetVideoSeekQueueState().HasQueuedUserSeek();
         if (!seekSuperseded && !msg.GetTrickPlay() && m_pendingLargeSkip != pMsg)
           m_pendingLargeSkip.reset();
+        if (!seekSuperseded && !msg.GetTrickPlay() && m_pendingSeek != pMsg)
+          ClearSeekTarget();
       }
       if (seekSuperseded)
       {
@@ -4219,6 +4241,7 @@ void CVideoPlayer::HandleMessages()
       if (msg.GetRecovery() &&
           (IsInMenuInternal() || (menus && !menus->IsTimeSearchAllowed())))
       {
+        ClearRejectedLargeSkip(pMsg.get());
         CLog::Log(LOGDEBUG,
                   "CVideoPlayer - corruption recovery reseek skipped (disc menu or time search "
                   "masked)");
@@ -4354,6 +4377,7 @@ void CVideoPlayer::HandleMessages()
         if (GetVideoSeekQueueState().HasQueuedUserSeek())
           continue;
         m_pendingLargeSkip.reset();
+        ClearSeekTarget();
       }
 
       m_processInfo->SeekFinished(0);
@@ -4611,6 +4635,13 @@ void CVideoPlayer::HandleMessages()
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
       int speed = std::static_pointer_cast<CDVDMsgPlayerSetSpeed>(pMsg)->GetSpeed();
+      if (speed != DVD_PLAYSPEED_NORMAL && speed != DVD_PLAYSPEED_PAUSE)
+      {
+        std::unique_lock<CCriticalSection> lock(m_StateSection);
+        const auto queued = GetVideoSeekQueueState();
+        if (!queued.HasQueuedUserSeek())
+          ClearSeekTarget();
+      }
 
       // correct our current clock, as it would start going wrong otherwise
       if (m_State.timestamp > 0)
@@ -4642,7 +4673,8 @@ void CVideoPlayer::HandleMessages()
       // do a seek after rewind, clock is not in sync with current pts
       if ((speed == DVD_PLAYSPEED_NORMAL) &&
           (m_playSpeed != DVD_PLAYSPEED_NORMAL) &&
-          (m_playSpeed != DVD_PLAYSPEED_PAUSE))
+          (m_playSpeed != DVD_PLAYSPEED_PAUSE) &&
+          !GetVideoSeekQueueState().HasQueuedUserSeek())
       {
         double iTime = m_VideoPlayerVideo->GetCurrentPts();
         if (iTime == DVD_NOPTS_VALUE)
@@ -5442,7 +5474,14 @@ void CVideoPlayer::SeekTime(int64_t iTime)
 
 bool CVideoPlayer::SeekTimeRelative(int64_t iTime)
 {
-  int64_t abstime = GetTime() + iTime;
+  return SeekTimeRelative(iTime, std::nullopt);
+}
+
+bool CVideoPlayer::SeekTimeRelative(int64_t iTime, std::optional<int64_t> origin)
+{
+  std::unique_lock<CCriticalSection> lock(m_StateSection);
+  const auto pendingTarget = origin ? origin : CServiceBroker::GetDataCacheCore().GetSeekTarget();
+  const int64_t abstime = pendingTarget.value_or(GetTime()) + iTime;
 
   // if the file has EDL cuts we can't rely on m_clock for relative seeks
   // EDL cuts remove time from the original file, hence we might seek to
@@ -5450,19 +5489,21 @@ bool CVideoPlayer::SeekTimeRelative(int64_t iTime)
   // time instead
   if (m_Edl.HasCuts())
   {
+    lock.unlock();
     SeekTime(abstime);
     return true;
   }
 
   CDVDMsgPlayerSeek::CMode mode;
-  mode.time = (int)iTime;
-  mode.relative = true;
+  mode.time = static_cast<double>(pendingTarget ? abstime : iTime);
+  mode.relative = !pendingTarget;
   mode.backward = (iTime < 0) ? true : false;
   mode.accurate = false;
   mode.trickplay = false;
   mode.sync = true;
 
   QueueTimeSeek(mode);
+  lock.unlock();
   m_processInfo->SetStateSeeking(true);
 
   m_callback.OnPlayBackSeek(abstime, iTime);
@@ -6202,6 +6243,7 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync, std::funct
 
 void CVideoPlayer::CancelParentLifecycle()
 {
+  ClearSeekTarget();
   m_audioRecoveryPending = false;
   m_videoRecoveryGate.CancelPending();
   ++m_videoRecoveryGeneration;
@@ -7175,6 +7217,7 @@ int CVideoPlayer::SeekChapter(int iChapter)
       {
         m_chapterSeekTarget = std::max(iChapter, 1);
         m_pendingLargeSkip.reset();
+        ClearSeekTarget();
       }
     }
     SynchronizeDemuxer();
@@ -7598,6 +7641,8 @@ void CVideoPlayer::UpdatePlayState(double timeout)
       m_chapterSeekTarget.compare_exchange_strong(pendingChapter, 0);
     if (m_pendingLargeSkip && m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK) == 0)
       m_pendingLargeSkip.reset();
+    if (m_pendingSeek && !GetVideoSeekQueueState().HasQueuedUserSeek())
+      ClearSeekTarget();
   }
 }
 

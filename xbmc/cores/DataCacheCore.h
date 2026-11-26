@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -282,6 +283,10 @@ public:
 
   void SetStateSeeking(bool active);
   bool IsSeeking();
+  // GUI intent in display milliseconds; never substitutes for the playback clock.
+  void SetSeekTarget(std::optional<int64_t> target);
+  std::optional<int64_t> GetSeekTarget() const;
+  int64_t GetSeekTargetOffset() const;
 
   /*!
    * @brief Checks if a seek has been performed in the last provided seconds interval
@@ -509,6 +514,7 @@ protected:
   struct SStateInfo
   {
     bool m_stateSeeking{false};
+    std::optional<int64_t> m_seekTarget;
     bool m_renderGuiLayer{false};
     bool m_renderVideoLayer{false};
     float m_tempo{1.0f};

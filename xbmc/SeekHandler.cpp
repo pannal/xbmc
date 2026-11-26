@@ -13,6 +13,7 @@
 #include "application/Application.h"
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
+#include "application/ApplicationStackHelper.h"
 #include "cores/DataCacheCore.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
@@ -84,6 +85,7 @@ void CSeekHandler::Reset()
   m_analogSeek = false;
   m_seekStep = 0;
   m_seekSize = 0;
+  m_seekBase.reset();
   m_timeCodePosition = 0;
 }
 
@@ -189,14 +191,33 @@ void CSeekHandler::SeekSeconds(int seconds)
 
 int CSeekHandler::GetSeekSize() const
 {
-  return MathUtils::round_int(m_seekSize);
+  if (m_seekBase)
+    return MathUtils::round_int(GetSeekTime() - g_application.GetTime());
+  return MathUtils::round_int(
+      m_seekSize + CServiceBroker::GetDataCacheCore().GetSeekTargetOffset() / 1000.0);
+}
+
+double CSeekHandler::GetSeekTime() const
+{
+  const auto target = m_seekBase ? m_seekBase : CServiceBroker::GetDataCacheCore().GetSeekTarget();
+  if (!target)
+    return g_application.GetTime() + m_seekSize;
+
+  const auto stackHelper =
+      CServiceBroker::GetAppComponents().GetComponent<CApplicationStackHelper>();
+  const uint64_t stackStart =
+      stackHelper->IsPlayingRegularStack() ? stackHelper->GetCurrentStackPartStartTimeMs() : 0;
+  return *target / 1000.0 + stackStart / 1000.0 + m_seekSize;
 }
 
 void CSeekHandler::SetSeekSize(double seekSize)
 {
   const auto& components = CServiceBroker::GetAppComponents();
   const auto appPlayer = components.GetComponent<CApplicationPlayer>();
-  int64_t playTime = appPlayer->GetTime();
+  if (!m_seekBase)
+    m_seekBase = CServiceBroker::GetDataCacheCore().GetSeekTarget();
+  const int64_t playTime =
+      m_seekBase.value_or(appPlayer->GetTime());
   double minSeekSize = (appPlayer->GetMinTime() - playTime) / 1000.0;
   double maxSeekSize = (appPlayer->GetMaxTime() - playTime) / 1000.0;
 
@@ -207,7 +228,8 @@ void CSeekHandler::SetSeekSize(double seekSize)
 
 bool CSeekHandler::InProgress() const
 {
-  return m_requireSeek || CServiceBroker::GetDataCacheCore().IsSeeking();
+  return m_requireSeek || CServiceBroker::GetDataCacheCore().GetSeekTarget().has_value() ||
+         CServiceBroker::GetDataCacheCore().IsSeeking();
 }
 
 void CSeekHandler::FrameMove()
@@ -216,10 +238,11 @@ void CSeekHandler::FrameMove()
   {
     std::unique_lock<CCriticalSection> lock(m_critSection);
 
-    // perform relative seek
+    // A preview based on an outstanding request owns its absolute destination,
+    // even if that older request has since completed at a different keyframe.
     auto& components = CServiceBroker::GetAppComponents();
     const auto appPlayer = components.GetComponent<CApplicationPlayer>();
-    appPlayer->SeekTimeRelative(static_cast<int64_t>(m_seekSize * 1000));
+    appPlayer->SeekTimeRelative(static_cast<int64_t>(m_seekSize * 1000), m_seekBase);
 
     m_seekChanged = true;
 

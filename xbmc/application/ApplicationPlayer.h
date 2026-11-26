@@ -210,6 +210,7 @@ public:
   bool SeekScene(bool bPlus = true);
   void SeekTime(int64_t iTime = 0);
   void SeekTimeRelative(int64_t iTime = 0);
+  void SeekTimeRelative(int64_t iTime, std::optional<int64_t> origin);
   void SetAudioStream(int iStream);
   void SetAVDelay(float fValue = 0.0f);
   void SetDynamicRangeCompression(long drc);

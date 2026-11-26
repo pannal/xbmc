@@ -43,6 +43,7 @@ PRELUDE = r'''
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 using CCriticalSection = std::recursive_mutex;
@@ -69,7 +70,7 @@ struct Messenger {
   }
   int GetPacketCount(int type) const {return type==CDVDMsg::PLAYER_SEEK ? queuedTime : queued;}
 };
-struct State {bool canseek=true; int chapter=7; double time=3638907;};
+struct State {bool canseek=true; int chapter=7; double time=3638907,timeMin=0,timeMax=6400000;};
 struct CAdvancedSettings {
   bool m_videoUseTimeSeeking=true;
   int m_videoTimeSeekForwardBig=600,m_videoTimeSeekBackwardBig=-600;
@@ -81,7 +82,11 @@ struct Settings {
   std::shared_ptr<CAdvancedSettings> advanced=std::make_shared<CAdvancedSettings>();
   auto GetAdvancedSettings(){return advanced;}
 };
-struct CServiceBroker {static Settings* GetSettingsComponent(){static Settings s;return &s;}};
+struct CServiceBroker {
+  static Settings* GetSettingsComponent(){static Settings s;return &s;}
+  struct Cache {void SetSeekTarget(std::optional<int64_t>) {}};
+  static Cache& GetDataCacheCore(){static Cache c;return c;}
+};
 static struct {
   struct Item {bool IsStack(){return false;}} item;
   Item& CurrentFileItem(){return item;}
@@ -96,6 +101,11 @@ public:
   CurrentStream m_CurrentVideo,m_CurrentAudio;
   std::atomic<int> m_chapterSeekTarget{0}; int m_caching=CACHESTATE_DONE;
   std::shared_ptr<CDVDMsgPlayerSeek> m_pendingLargeSkip;
+  std::shared_ptr<CDVDMsgPlayerSeek> m_pendingSeek;
+  struct {int64_t GetTimeWithoutCuts(int64_t time){return time;}} m_Edl;
+  void ClearSeekTarget(){m_pendingSeek.reset();}
+  struct QueueState {bool queued;bool HasQueuedUserSeek()const{return queued;}};
+  QueueState GetVideoSeekQueueState(){return {m_messenger.queuedTime>0||m_messenger.queued>0};}
   struct ProcessInfo {int64_t GetMaxTime(){return 6400000;}} processInfo;
   ProcessInfo* m_processInfo=&processInfo;
   struct Callback {void OnPlayBackSeek(int64_t,int64_t){}} m_callback;

@@ -886,6 +886,24 @@ bool CDataCacheCore::IsSeeking()
   return m_stateInfo.m_stateSeeking;
 }
 
+void CDataCacheCore::SetSeekTarget(std::optional<int64_t> target)
+{
+  std::unique_lock<CCriticalSection> lock(m_stateSection);
+  m_stateInfo.m_seekTarget = target;
+}
+
+std::optional<int64_t> CDataCacheCore::GetSeekTarget() const
+{
+  std::unique_lock<CCriticalSection> lock(m_stateSection);
+  return m_stateInfo.m_seekTarget;
+}
+
+int64_t CDataCacheCore::GetSeekTargetOffset() const
+{
+  std::unique_lock<CCriticalSection> lock(m_stateSection);
+  return m_stateInfo.m_seekTarget ? *m_stateInfo.m_seekTarget - m_timeInfo.m_time : 0;
+}
+
 void CDataCacheCore::SetSpeed(float tempo, float speed)
 {
   std::unique_lock<CCriticalSection> lock(m_stateSection);
