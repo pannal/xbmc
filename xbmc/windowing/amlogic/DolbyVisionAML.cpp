@@ -1009,6 +1009,8 @@ bool CDolbyVisionAML::Setup(CAMLSession::DisplayRequest display)
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_LIMITER);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_LUMINANCE);
   settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL);
+  settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_SEAMLESS_TRANSITIONS);
+  settingSet.insert(CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS);
   settingsManager->RegisterCallback(this, settingSet);
 
   // These controls also work with native HDR10 on devices without DV support.
@@ -1017,6 +1019,14 @@ bool CDolbyVisionAML::Setup(CAMLSession::DisplayRequest display)
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_LUMINANCE, hdr10Limits);
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL, hdr10Limits);
   aml_apply_hdr10_metadata_limits();
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_SEAMLESS_TRANSITIONS,
+              aml_hdr10_seamless_transitions_supported());
+  aml_apply_hdr10_seamless_transitions();
+  aml_apply_lldv_vsif_suppress(false);
+  // Stays visible while enabled on an unsupported kernel so it can be turned off.
+  set_visible(CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS,
+              aml_lldv_vsif_suppress_supported() ||
+                  settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS));
 
   // Override EDID is always visible (no DV mode dependency) so users can enable DV on non-DV displays
   set_visible(CSettings::SETTING_COREELEC_AMLOGIC_DV_OVERRIDE_EDID, true);
@@ -1117,6 +1127,14 @@ void CDolbyVisionAML::apply_native_setting(const std::string& settingId)
   {
     aml_apply_hdr10_metadata_limits();
   }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_SEAMLESS_TRANSITIONS)
+  {
+    aml_apply_hdr10_seamless_transitions();
+  }
+  else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS)
+  {
+    aml_apply_lldv_vsif_suppress(true);
+  }
   else if (settingId == CSettings::SETTING_COREELEC_AMLOGIC_DV_MODE_ON_LUMINANCE)
   {
     int max(settings()->GetInt(settingId));
@@ -1206,7 +1224,9 @@ void CDolbyVisionAML::OnSettingChanged(const std::shared_ptr<const CSetting>& se
       setting->GetId() == CSettings::SETTING_COREELEC_AUDIO_DDR_PRIORITY ||
       setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_LIMITER ||
       setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_LUMINANCE ||
-      setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL)
+      setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL ||
+      setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_HDR10_SEAMLESS_TRANSITIONS ||
+      setting->GetId() == CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS)
   {
     schedule_native_setting_apply(setting->GetId());
     return;

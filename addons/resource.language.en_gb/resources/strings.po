@@ -27499,6 +27499,16 @@ msgctxt "#60627"
 msgid "For Player-Led output on projectors whose automatic dynamic-range detection flip-flops between SDR and HDR. Re-applies the Dolby Vision / VS10 output after the resolution switches at playback start (the same effect as manually toggling the VS10 mode). May cause a brief blip at playback start, so leave this off unless you actually see SDR/HDR flickering."
 msgstr ""
 
+#: system/settings/settings.xml
+msgctxt "#60628"
+msgid "Seamless SDR/HDR10 switching"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60629"
+msgid "Avoids display resyncs when switching between SDR and HDR10 at the same resolution and refresh rate. SDR is sent with BT.2020 colourimetry (colour-converted, so it should look unchanged), and HDR10 is signalled while the video loads so the display can switch before the picture appears. Only plain HDR10 (or a Dolby Vision base layer when Dolby Vision output is off) is affected; HDR10+, HLG, Dolby Vision output and display mode changes use the normal path. Turn off if menus show wrong colours, the display fails to enter HDR, or the picture is corrupted."
+msgstr ""
+
 #. "Dolby Vision HDR Bypass"
 #: system/settings/settings.xml
 msgctxt "#60644"
@@ -27543,6 +27553,27 @@ msgstr ""
 #: system/settings/settings.xml
 msgctxt "#60651"
 msgid "Use only if scene-dependent dimming of SDR subtitles or controls is unwanted in display-led Dolby Vision. Leave disabled for dovi5’s native graphics tone mapping (SDR-only adjustment)."
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#60652"
+msgid "Suppress LLDV VSIF"
+msgstr ""
+
+#. Help text for setting "Suppress LLDV VSIF" of label #60652
+#: system/settings/settings.xml
+msgctxt "#60653"
+msgid "Stops sending the Dolby Vision low-latency (LLDV) vendor-specific infoframe (VSIF) while video is still processed and sent as LLDV. Other Dolby Vision, HDR10+ and ALLM VSIFs are unchanged; 4K timings the display lists are declared in the AVI infoframe instead of an HDMI 1.4 VSIF. Enable for manually configured LLDV setups, such as older JVC projectors. Disable for displays that require Dolby Vision signaling. Requires a kernel with LLDV VSIF suppression support."
+msgstr ""
+
+#. Notification when the kernel rejects the LLDV VSIF suppression setting
+msgctxt "#60654"
+msgid "The kernel did not accept the LLDV VSIF setting. See the log."
+msgstr ""
+
+#. Notification when LLDV VSIF suppression is enabled but the kernel lacks support
+msgctxt "#60655"
+msgid "This kernel does not support LLDV VSIF suppression; the VSIF is still sent."
 msgstr ""
 
 

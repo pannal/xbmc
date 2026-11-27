@@ -28,6 +28,7 @@
 #include <thread>
 
 #include "AMLUtils.h"
+#include "AMLLldvVsifPolicy.h"
 #include "AMLVideoMute.h"
 #include "utils/DetectorAdmission.h"
 #include "utils/ActiveAreaDetector.h"
@@ -1518,6 +1519,206 @@ void aml_apply_hdr10_metadata_limits()
       settings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_MAX_CLL), 0, 10000) : 0;
   CSysfsPath("/sys/module/hdmitx20/parameters/xbmc_hdr10_max_lum_override").Set(maxLum);
   CSysfsPath("/sys/module/hdmitx20/parameters/xbmc_hdr10_max_cll_override").Set(maxCll);
+}
+
+static const char* const AML_NATIVE_HDR_MUTE_BYPASS =
+    "/sys/class/amhdmitx/amhdmitx0/native_hdr_mute_bypass";
+static const char* const AML_SDR_BT2020_OUT = "/sys/module/am_vecm/parameters/sdr_bt2020_out";
+static const char* const AML_HDR_PREARM = "/sys/class/amhdmitx/amhdmitx0/hdr_prearm";
+
+bool aml_hdr10_seamless_transitions_supported()
+{
+  return CSysfsPath(AML_NATIVE_HDR_MUTE_BYPASS).Exists();
+}
+
+void aml_apply_hdr10_seamless_transitions()
+{
+  if (!aml_hdr10_seamless_transitions_supported())
+    return;
+
+  // The kernel only skips the mute when transport is unchanged and the target is plain HDR10.
+  // BT.2020 SDR output keeps colourimetry fixed across SDR/HDR10 changes; enable it after the
+  // bypass and disable it first so a mode-4 endpoint never exists without the bypass.
+  const bool enabled = settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_SEAMLESS_TRANSITIONS);
+  CSysfsPath sdrBt2020(AML_SDR_BT2020_OUT);
+  if (enabled)
+  {
+    CSysfsPath(AML_NATIVE_HDR_MUTE_BYPASS).Set(1);
+    if (sdrBt2020.Exists())
+      sdrBt2020.Set(1);
+  }
+  else
+  {
+    aml_hdr10_prearm_cancel();
+    if (sdrBt2020.Exists())
+      sdrBt2020.Set(0);
+    CSysfsPath(AML_NATIVE_HDR_MUTE_BYPASS).Set(0);
+  }
+}
+
+static const char* const AML_LLDV_VSIF_SUPPRESS =
+    "/sys/module/hdmi_tx_hw/parameters/lldv_vsif_suppress";
+static std::mutex s_lldvVsifMutex;
+
+bool aml_lldv_vsif_suppress_supported()
+{
+  return CSysfsPath(AML_LLDV_VSIF_SUPPRESS).Exists();
+}
+
+static std::optional<bool> aml_lldv_vsif_suppress_read()
+{
+  const auto value = CSysfsPath(AML_LLDV_VSIF_SUPPRESS).Get<std::string>();
+  return value ? AML_LLDV_VSIF::ParseKernelBool(*value) : std::nullopt;
+}
+
+void aml_apply_lldv_vsif_suppress(bool userChange)
+{
+  using namespace AML_LLDV_VSIF;
+
+  // Independent of the seamless switching gate; only the LLDV Dolby VSIF is affected.
+  std::unique_lock<std::mutex> lock(s_lldvVsifMutex);
+  const bool supported = aml_lldv_vsif_suppress_supported();
+  const bool adopted =
+      settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS_ADOPTED);
+  const bool setting = settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS);
+  const Plan plan = Decide(supported, adopted, userChange, setting,
+                           supported ? aml_lldv_vsif_suppress_read() : std::nullopt);
+
+  switch (plan.action)
+  {
+    case Action::NONE:
+      return;
+    case Action::UNSUPPORTED:
+      CLog::Log(LOGWARNING, "{} - enabled, but the kernel lacks {}; the LLDV VSIF is still sent",
+                __FUNCTION__, AML_LLDV_VSIF_SUPPRESS);
+      CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Warning,
+                                            g_localizeStrings.Get(60652),
+                                            g_localizeStrings.Get(60655));
+      return;
+    case Action::READ_ERROR:
+      CLog::Log(LOGERROR, "{} - cannot read {}; kernel value left unchanged", __FUNCTION__,
+                AML_LLDV_VSIF_SUPPRESS);
+      CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Error,
+                                            g_localizeStrings.Get(60652),
+                                            g_localizeStrings.Get(60654));
+      return;
+    case Action::ADOPT_KERNEL:
+      settings()->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS_ADOPTED, true);
+      CLog::Log(LOGINFO, "{} - adopted kernel LLDV VSIF suppression {}", __FUNCTION__,
+                plan.value ? "on" : "off");
+      if (plan.value != setting)
+      {
+        lock.unlock();
+        settings()->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS, plan.value);
+      }
+      return;
+    case Action::WRITE:
+      break;
+  }
+
+  try
+  {
+    CSysfsPath(AML_LLDV_VSIF_SUPPRESS).Set(plan.value ? 1 : 0);
+  }
+  catch (const std::exception& e)
+  {
+    // A stale readback could match the request, so the failed write itself is the result.
+    CLog::Log(LOGERROR, "{} - write of LLDV VSIF suppression {} failed: {}", __FUNCTION__,
+              plan.value ? "on" : "off", e.what());
+    CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Error,
+                                          g_localizeStrings.Get(60652),
+                                          g_localizeStrings.Get(60654));
+    return;
+  }
+  const std::optional<bool> readback = aml_lldv_vsif_suppress_read();
+  if (!Verified(plan.value, readback))
+  {
+    CLog::Log(LOGERROR, "{} - kernel did not accept LLDV VSIF suppression {} (readback {})",
+              __FUNCTION__, plan.value ? "on" : "off",
+              readback ? (*readback ? "on" : "off") : "unreadable");
+    CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Error,
+                                          g_localizeStrings.Get(60652),
+                                          g_localizeStrings.Get(60654));
+    return;
+  }
+  CLog::Log(LOGINFO, "{} - LLDV VSIF suppression {}", __FUNCTION__, plan.value ? "on" : "off");
+  // Only a verified write takes ownership; a failure retries adoption at the next start.
+  if (!adopted)
+    settings()->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_LLDV_VSIF_SUPPRESS_ADOPTED, true);
+}
+
+// Stream changes open the next decoder before closing the previous one, so only the latest
+// HDR10 opener owns (and may cancel) the single kernel pre-arm.
+static std::atomic<uint64_t> s_hdrPrearmOwner{0};
+static std::atomic<uint64_t> s_hdrPrearmTokens{0};
+// Makes each arm or cancel write and its ownership update one step, so a stale
+// owner's cancel can't land between a new arm and its takeover. Leaf lock.
+static std::mutex s_hdrPrearmMutex;
+
+static void aml_hdr10_prearm_cancel_locked()
+{
+  s_hdrPrearmOwner.store(0);
+  // Idle or already released pre-arms ignore cancel; failure must not break playback teardown.
+  std::ofstream file(AML_HDR_PREARM);
+  if (file)
+    file << 0;
+}
+
+bool aml_hdr10_prearm_plain_route(StreamHdrType hdrType)
+{
+  // DV output (On demand engages it only after Open), VS10 conversion and HDR10+ to DV P8.1
+  // conversion never send the plain HDR10 packet that releases a pre-arm.
+  if (aml_is_dv_enable())
+    return false;
+  if (!aml_dolby_vision_enabled())
+    return true;
+  return hdrType == StreamHdrType::HDR_TYPE_HDR10 &&
+         aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10) >=
+             DOLBY_VISION_OUTPUT_MODE_BYPASS &&
+         aml_vs10_by_setting(CSettings::SETTING_COREELEC_AMLOGIC_DV_VS10_HDR10PLUS) >=
+             DOLBY_VISION_OUTPUT_MODE_BYPASS &&
+         !settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_HDR10PLUS_CONVERT);
+}
+
+uint64_t aml_hdr10_prearm()
+{
+  if (!CSysfsPath(AML_HDR_PREARM).Exists() ||
+      !settings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR10_SEAMLESS_TRANSITIONS))
+    return 0;
+
+  // The kernel rejects (EAGAIN) unless the current output is eligible for a native HDR10 entry;
+  // rejection is a normal fallback to the existing entry path, so don't log it as an error.
+  std::lock_guard<std::mutex> lock(s_hdrPrearmMutex);
+  std::ofstream file(AML_HDR_PREARM);
+  file << 1;
+  file.close();
+  const bool armed = static_cast<bool>(file);
+  // A rejection while the previous decoder still owns a pre-arm (pending, or already released
+  // or idle, where cancel is a no-op) takes that ownership over instead of letting its close
+  // return the output to SDR under this stream.
+  const bool held = s_hdrPrearmOwner.load() != 0;
+  CLog::Log(LOGINFO, "aml_hdr10_prearm: {}",
+            armed ? "armed" : (held ? "taken over" : "not eligible"));
+  if (!armed && !held)
+    return 0;
+  const uint64_t token = s_hdrPrearmTokens.fetch_add(1) + 1;
+  s_hdrPrearmOwner.store(token);
+  return token;
+}
+
+void aml_hdr10_prearm_cancel(uint64_t token)
+{
+  if (!token)
+    return;
+  std::lock_guard<std::mutex> lock(s_hdrPrearmMutex);
+  if (s_hdrPrearmOwner.compare_exchange_strong(token, 0))
+    aml_hdr10_prearm_cancel_locked();
+}
+
+void aml_hdr10_prearm_cancel()
+{
+  std::lock_guard<std::mutex> lock(s_hdrPrearmMutex);
+  aml_hdr10_prearm_cancel_locked();
 }
 
 void aml_dv_send_hdr10_data()

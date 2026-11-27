@@ -142,6 +142,7 @@ protected:
   h264_sequence  *m_h264_sequence;
   double          m_h264_sequence_pts;
   bool            m_has_keyframe;
+  uint64_t        m_hdrPrearm = 0;
 
   CBitstreamParser *m_bitparser;
   std::unique_ptr<CBitstreamConverter> m_bitstream;
