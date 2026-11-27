@@ -26,7 +26,7 @@ namespace ACTIVE_AREA_CACHE
 namespace
 {
 // Bump when detection policy or the meaning of stored geometry changes.
-constexpr int CACHE_VERSION = 5;
+constexpr int CACHE_VERSION = 6;
 constexpr auto CACHE_DIRECTORY = "special://profile/active-area-cache/";
 std::mutex maintenanceMutex;
 
